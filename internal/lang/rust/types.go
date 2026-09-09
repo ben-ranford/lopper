@@ -4,6 +4,7 @@ import (
 	"regexp"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -40,6 +41,7 @@ type fileScan struct {
 
 type scanResult struct {
 	Files                    []fileScan
+	CoverageGaps             []report.CoverageGap
 	Warnings                 []string
 	UnresolvedImports        map[string]int
 	RenamedAliasesByDep      map[string][]string

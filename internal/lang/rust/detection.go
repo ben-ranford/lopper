@@ -16,6 +16,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
+	malformedRoot := false
 	workspaceOnlyRoot, err := applyRustRootSignals(repoPath, &detection, roots)
 	if err != nil {
 		if isCargoManifestParseError(err) {
@@ -23,10 +24,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 				return language.Detection{}, ctxErr
 			}
 			// The malformed root cannot define package boundaries. Analyze one
-			// repository fallback so root sources and children are covered once.
-			return shared.FinalizeDetection(repoPath, detection, roots), nil
+			// repository fallback so root sources and children are covered once,
+			// while retaining nested manifests, locks, and source signals.
+			roots[repoPath] = struct{}{}
+			malformedRoot = true
+			workspaceOnlyRoot = true
+		} else {
+			return language.Detection{}, err
 		}
-		return language.Detection{}, err
 	}
 
 	visited := 0
@@ -35,6 +40,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	})
 	if err != nil {
 		return language.Detection{}, err
+	}
+	if malformedRoot {
+		clear(roots)
+		roots[repoPath] = struct{}{}
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil

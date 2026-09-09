@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -23,27 +24,39 @@ const (
 type manifestDiscoveryResult struct {
 	ManifestPaths      []string
 	Warnings           []string
+	CoverageGaps       []report.CoverageGap
 	ParsedDependencies map[string]map[string]dependencyInfo
 }
 
 func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, error) {
+	manifestPaths, lookup, renamed, warnings, _, err := collectManifestDataWithCoverage(repoPath)
+	return manifestPaths, lookup, renamed, warnings, err
+}
+
+func collectManifestDataWithCoverage(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
 	discovery, err := discoverManifestData(repoPath)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
-	lookup, renamedByDep, warnings, err := extractManifestDependencies(repoPath, discovery)
+	lookup, renamedByDep, warnings, coverageGaps, err := extractManifestDependenciesWithCoverage(repoPath, discovery)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return discovery.ManifestPaths, lookup, renamedByDep, warnings, nil
+	return discovery.ManifestPaths, lookup, renamedByDep, warnings, coverageGaps, nil
 }
 
 func extractManifestDependencies(repoPath string, discovery manifestDiscoveryResult) (map[string]dependencyInfo, map[string][]string, []string, error) {
+	lookup, renamed, warnings, _, err := extractManifestDependenciesWithCoverage(repoPath, discovery)
+	return lookup, renamed, warnings, err
+}
+
+func extractManifestDependenciesWithCoverage(repoPath string, discovery manifestDiscoveryResult) (map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
 	lookup := make(map[string]dependencyInfo)
 	renamed := make(map[string]map[string]struct{})
 
 	warnings := append([]string(nil), discovery.Warnings...)
+	coverageGaps := append([]report.CoverageGap(nil), discovery.CoverageGaps...)
 	for _, manifestPath := range discovery.ManifestPaths {
 		deps, ok := discovery.ParsedDependencies[manifestPath]
 		if !ok {
@@ -51,9 +64,10 @@ func extractManifestDependencies(repoPath string, discovery manifestDiscoveryRes
 			if parseErr != nil {
 				if isCargoManifestParseError(parseErr) {
 					warnings = append(warnings, malformedCargoManifestWarning(repoPath, manifestPath, parseErr))
+					coverageGaps = append(coverageGaps, malformedCargoManifestCoverageGap(repoPath, manifestPath, parseErr))
 					continue
 				}
-				return nil, nil, nil, parseErr
+				return nil, nil, nil, nil, parseErr
 			}
 			deps = parsedDeps
 		}
@@ -64,7 +78,7 @@ func extractManifestDependencies(repoPath string, discovery manifestDiscoveryRes
 	for dependency, aliases := range renamed {
 		renamedByDep[dependency] = shared.SortedKeys(aliases)
 	}
-	return lookup, renamedByDep, dedupeWarnings(warnings), nil
+	return lookup, renamedByDep, dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
 }
 
 func mergeDependencyLookup(lookup map[string]dependencyInfo, renamed map[string]map[string]struct{}, deps map[string]dependencyInfo, warnings []string) []string {
@@ -134,12 +148,14 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 			if walkErr != nil {
 				return manifestDiscoveryResult{}, walkErr
 			}
-			warnings = append(warnings, malformedCargoManifestWarning(repoPath, rootManifest, parseErr))
+			warning := malformedCargoManifestWarning(repoPath, rootManifest, parseErr)
+			warnings = append(warnings, warning)
 			// Keep the root for source discovery, but cache an empty dependency
 			// result so extraction does not parse its malformed manifest again.
 			return manifestDiscoveryResult{
 				ManifestPaths:      paths,
 				Warnings:           dedupeWarnings(warnings),
+				CoverageGaps:       []report.CoverageGap{malformedCargoManifestCoverageGap(repoPath, rootManifest, parseErr)},
 				ParsedDependencies: map[string]map[string]dependencyInfo{rootManifest: nil},
 			}, nil
 		}
@@ -351,6 +367,16 @@ func isCargoManifestParseError(err error) bool {
 
 func malformedCargoManifestWarning(repoPath, manifestPath string, err error) string {
 	return fmt.Sprintf("skipped malformed Cargo manifest %s: %v", relativeManifestPath(repoPath, manifestPath), err)
+}
+
+func malformedCargoManifestCoverageGap(repoPath, manifestPath string, err error) report.CoverageGap {
+	warning := malformedCargoManifestWarning(repoPath, manifestPath, err)
+	return report.CoverageGap{
+		Code:     report.CoverageGapRustMalformedManifest,
+		Language: rustAdapterID,
+		Path:     filepath.ToSlash(relativeManifestPath(repoPath, manifestPath)),
+		Evidence: []string{warning},
+	}
 }
 
 func parseCargoManifestContent(content string) manifestMeta {

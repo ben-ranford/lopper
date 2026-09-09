@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 type dependencyExpectation struct {
@@ -228,8 +229,25 @@ func assertRustAnalysisSkipsMalformedManifest(t *testing.T, rootManifest, broken
 	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
 		t.Fatalf("expected dependency from valid Cargo manifest, got %#v", reportData.Dependencies)
 	}
-	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest "+brokenPath) {
+	var malformedWarning string
+	for _, warning := range reportData.Warnings {
+		if strings.Contains(warning, "skipped malformed Cargo manifest "+brokenPath) {
+			malformedWarning = warning
+			break
+		}
+	}
+	if malformedWarning == "" {
 		t.Fatalf("expected malformed manifest warning for %s, got %#v", brokenPath, reportData.Warnings)
+	}
+	if len(reportData.CoverageGaps) != 1 {
+		t.Fatalf("expected one malformed manifest coverage gap, got %#v", reportData.CoverageGaps)
+	}
+	gap := reportData.CoverageGaps[0]
+	if gap.Code != report.CoverageGapRustMalformedManifest || gap.Language != rustAdapterID || gap.Path != filepath.ToSlash(brokenPath) {
+		t.Fatalf("unexpected malformed manifest coverage gap: %#v", gap)
+	}
+	if len(gap.Evidence) != 1 || gap.Evidence[0] != malformedWarning {
+		t.Fatalf("expected coverage gap evidence to retain the warning, got %#v", gap)
 	}
 }
 

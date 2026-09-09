@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -62,6 +63,20 @@ func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
 	for _, manifest := range []string{"Broken.csproj", centralPackagesFile} {
 		if !strings.Contains(joinedWarnings, manifest) || !strings.Contains(joinedWarnings, "skipped malformed .NET manifest") {
 			t.Fatalf("expected malformed-manifest warning for %s, got %#v", manifest, reportData.Warnings)
+		}
+	}
+	if len(reportData.CoverageGaps) != 2 {
+		t.Fatalf("expected one coverage gap per malformed manifest, got %#v", reportData.CoverageGaps)
+	}
+	for _, gap := range reportData.CoverageGaps {
+		if gap.Code != report.CoverageGapDotNetMalformedManifest || gap.Language != "dotnet" {
+			t.Fatalf("expected malformed .NET manifest coverage gap, got %#v", gap)
+		}
+		if gap.Path != "Broken.csproj" && gap.Path != centralPackagesFile {
+			t.Fatalf("expected relative malformed manifest path, got %#v", gap)
+		}
+		if len(gap.Evidence) != 1 || !strings.Contains(gap.Evidence[0], gap.Path) || !strings.Contains(gap.Evidence[0], "skipped malformed .NET manifest") {
+			t.Fatalf("expected matching malformed-manifest warning evidence, got %#v", gap)
 		}
 	}
 }

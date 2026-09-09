@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -25,6 +26,7 @@ type sourceDocument struct {
 type scanInputs struct {
 	DeclaredDependencies []string
 	SourceFiles          []sourceDocument
+	CoverageGaps         []report.CoverageGap
 	Warnings             []string
 	SkippedGenerated     int
 	SkippedFileLimit     bool
@@ -39,6 +41,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	}
 
 	result.DeclaredDependencies = inputs.DeclaredDependencies
+	result.CoverageGaps = inputs.CoverageGaps
 	result.Warnings = append(result.Warnings, inputs.Warnings...)
 	result.SkippedGeneratedFiles = inputs.SkippedGenerated
 	result.SkippedFileLimit = inputs.SkippedFileLimit
@@ -75,6 +78,7 @@ func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error
 
 	inputs.DeclaredDependencies = sortedDependencies(scanner.dependencySet)
 	inputs.SourceFiles = sourceScan.Files
+	inputs.CoverageGaps = scanner.coverageGaps
 	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
 	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
 	inputs.Warnings = append(inputs.Warnings, sourceScan.Warnings...)
@@ -112,6 +116,7 @@ type sourceDiscoverer struct {
 
 type scanInputDiscoverer struct {
 	dependencySet     map[string]struct{}
+	coverageGaps      []report.CoverageGap
 	sourceDiscoverer  sourceDiscoverer
 	sourceScanLimited bool
 }
@@ -144,7 +149,14 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 	dependencies, err := parseManifestDependenciesForEntry(d.sourceDiscoverer.repoPath, path, entry.Name())
 	if err != nil {
 		if isDotNetManifestParseError(err) {
-			d.sourceDiscoverer.discovery.Warnings = append(d.sourceDiscoverer.discovery.Warnings, malformedDotNetManifestWarning(d.sourceDiscoverer.repoPath, path, err))
+			warning := malformedDotNetManifestWarning(d.sourceDiscoverer.repoPath, path, err)
+			d.sourceDiscoverer.discovery.Warnings = append(d.sourceDiscoverer.discovery.Warnings, warning)
+			d.coverageGaps = append(d.coverageGaps, report.CoverageGap{
+				Code:     report.CoverageGapDotNetMalformedManifest,
+				Language: "dotnet",
+				Path:     malformedDotNetManifestPath(d.sourceDiscoverer.repoPath, path),
+				Evidence: []string{warning},
+			})
 			return nil
 		}
 		return err
@@ -307,11 +319,16 @@ func isDotNetManifestParseError(err error) bool {
 }
 
 func malformedDotNetManifestWarning(repoPath, manifestPath string, err error) string {
-	path, pathErr := filepath.Rel(repoPath, manifestPath)
-	if pathErr != nil {
+	path := malformedDotNetManifestPath(repoPath, manifestPath)
+	return fmt.Sprintf("skipped malformed .NET manifest %s: %v", path, err)
+}
+
+func malformedDotNetManifestPath(repoPath, manifestPath string) string {
+	path, err := filepath.Rel(repoPath, manifestPath)
+	if err != nil {
 		path = filepath.Base(manifestPath)
 	}
-	return fmt.Sprintf("skipped malformed .NET manifest %s: %v", path, err)
+	return filepath.ToSlash(path)
 }
 
 func parseXMLManifestIncludes(content []byte, elementName string) ([]string, error) {

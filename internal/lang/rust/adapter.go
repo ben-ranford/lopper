@@ -24,7 +24,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	manifestPaths, depLookup, renamedAliases, warnings, err := collectManifestData(repoPath)
+	manifestPaths, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -34,7 +34,9 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	if err != nil {
 		return report.Report{}, err
 	}
+	scan.CoverageGaps = append(scan.CoverageGaps, coverageGaps...)
 	result.Warnings = append(result.Warnings, scan.Warnings...)
+	result.CoverageGaps = append(result.CoverageGaps, scan.CoverageGaps...)
 
 	dependencies, dependencyWarnings := buildRequestedRustDependencies(req, scan)
 	result.Dependencies = dependencies

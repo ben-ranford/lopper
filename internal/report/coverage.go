@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-const CoverageGapRubyOversizedGemspec = "ruby-oversized-gemspec-declaration"
+const (
+	CoverageGapRubyOversizedGemspec    = "ruby-oversized-gemspec-declaration"
+	CoverageGapDotNetMalformedManifest = "dotnet-malformed-manifest-declaration"
+	CoverageGapRustMalformedManifest   = "rust-malformed-manifest-declaration"
+)
 
 func StableCoverageGaps(gaps []CoverageGap) []CoverageGap {
 	if len(gaps) == 0 {

@@ -46,6 +46,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, scan.Warnings...)
+	result.CoverageGaps = append(result.CoverageGaps, scan.CoverageGaps...)
 
 	dependencies, warnings := buildRequestedDotNetDependencies(req, scan)
 	result.Dependencies = dependencies
@@ -69,6 +70,7 @@ type fileScan struct {
 type scanResult struct {
 	Files                  []fileScan
 	DeclaredDependencies   []string
+	CoverageGaps           []report.CoverageGap
 	Warnings               []string
 	AmbiguousByDependency  map[string]int
 	UndeclaredByDependency map[string]int
