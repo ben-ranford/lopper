@@ -167,6 +167,13 @@ func TestApplyRoutingDistinguishesCodeownerEscapedEdgeSpaces(t *testing.T) {
 	assertRoutingAssignment(t, routed[1], "@plain", "", "", "open", ".github/CODEOWNERS")
 }
 
+func TestParseCodeownersPreservesEscapedTrailingSpaceInOwnerlessRule(t *testing.T) {
+	rules := parseCodeowners("/docs/readme\\ ", ".github/CODEOWNERS")
+	if len(rules) != 1 || rules[0].Pattern != "/docs/readme " || len(rules[0].Owners) != 0 {
+		t.Fatalf("expected ownerless escaped-space rule, got %#v", rules)
+	}
+}
+
 func TestApplyRoutingFallsBackWhenEvidenceIsFreeFormMessage(t *testing.T) {
 	item := RemediationItem{
 		RepoPath: "docs/config.json",

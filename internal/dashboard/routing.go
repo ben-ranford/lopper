@@ -333,7 +333,7 @@ var (
 )
 
 func parseCodeownersLine(line, source string) (CodeownerRule, bool) {
-	line = strings.TrimSpace(stripCodeownersComment(line))
+	line = strings.TrimLeft(stripCodeownersComment(line), " \t\r")
 	if line == "" {
 		return CodeownerRule{}, false
 	}
