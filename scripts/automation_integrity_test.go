@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -512,17 +513,45 @@ func TestMakefileToolchainIncludesPython3ForCI(t *testing.T) {
 	})
 }
 
+var automationExamplesFixtureSlots = make(chan struct{}, 2)
+
 func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, error) {
+	t.Helper()
+	return runAutomationExamplesFixtureWithCommand(t, lefthookYAML, func(scriptPath string) *exec.Cmd {
+		return exec.Command(scriptPath)
+	})
+}
+
+func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, newCommand func(string) *exec.Cmd) (string, error) {
 	t.Helper()
 
 	repoDir := t.TempDir()
 	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
 	writeFixtureFile(t, repoDir, "examples/lefthook.yml", lefthookYAML)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
+	automationExamplesFixtureSlots <- struct{}{}
+	defer func() { <-automationExamplesFixtureSlots }()
+	cmd := newCommand(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
+	if err != nil && len(output) == 0 {
+		return fmt.Sprintf("automation examples fixture command failed before producing output: %v", err), err
+	}
 	return string(output), err
+}
+
+func TestRunAutomationExamplesFixturePreservesLaunchError(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixtureWithCommand(t, "pre-commit: {}\n", func(scriptPath string) *exec.Cmd {
+		return exec.Command(scriptPath + ".missing")
+	})
+	if err == nil {
+		t.Fatal("expected missing fixture command to fail")
+	}
+	if !strings.Contains(output, err.Error()) {
+		t.Fatalf("expected launch error to be retained in fixture output, got %q for %v", output, err)
+	}
 }
 
 type lopperReportRunCase struct {
