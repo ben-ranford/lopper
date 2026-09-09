@@ -280,7 +280,11 @@ func parseManifestDependencies(repoPath, manifestPath string, elementName string
 	}
 	dependencies, err := parseXMLManifestIncludes(content, elementName)
 	if err != nil {
-		return nil, &dotNetManifestParseError{err: err}
+		var syntaxErr *xml.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			return nil, &dotNetManifestParseError{err: err}
+		}
+		return nil, err
 	}
 	return dependencies, nil
 }

@@ -77,6 +77,16 @@ func TestDotNetManifestErrorPreservesXMLSyntaxDetails(t *testing.T) {
 	}
 }
 
+func TestDotNetAnalysisReturnsUnsupportedManifestEncoding(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Unsupported.csproj"), `<?xml version="1.0" encoding="windows-1252"?><Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
+
+	_, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "newtonsoft.json"})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "encoding") {
+		t.Fatalf("expected unsupported manifest encoding to be returned, got %v", err)
+	}
+}
+
 func TestDotNetDiscoveryPathBoundaryBranches(t *testing.T) {
 	repo := t.TempDir()
 	if !isRepoBoundedPath(repo, filepath.Join(repo, "src", "App.csproj")) {

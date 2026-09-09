@@ -54,7 +54,7 @@ func applyRootCargoManifestSignal(repoPath string, detection *language.Detection
 			if !isCargoManifestParseError(parseErr) {
 				return false, parseErr
 			}
-			return false, nil
+			return true, nil
 		}
 		if meta.HasPackage {
 			roots[repoPath] = struct{}{}
