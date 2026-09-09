@@ -220,9 +220,7 @@ func codeownerEvidenceTarget(value string) string {
 
 func codeownerStaticLocationPath(value string) string {
 	target := strings.TrimPrefix(value, "static_location:")
-	if strings.HasPrefix(target, " ") {
-		target = strings.TrimPrefix(target, " ")
-	}
+	target = strings.TrimPrefix(target, " ")
 	if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
 		return target[:index]
 	}
