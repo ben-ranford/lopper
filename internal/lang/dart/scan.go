@@ -231,9 +231,47 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 			Line:   lineIndex + 1,
 			Column: shared.FirstContentColumn(lines[lineIndex]),
 		}
-		imports = append(imports, buildDirectiveBindings(kind, module, clause, dependency, location)...)
+		bindings := buildDirectiveBindings(kind, module, clause, dependency, location)
+		imports = append(imports, locateDirectiveBindings(lines[lineIndex:lineIndex+consumed], bindings)...)
 	}
 	return imports
+}
+
+func locateDirectiveBindings(lines []string, bindings []importBinding) []importBinding {
+	for i := range bindings {
+		if bindings[i].Wildcard {
+			continue
+		}
+		for lineOffset, line := range lines[1:] {
+			column := directiveIdentifierColumn(line, bindings[i].Local)
+			if column == 0 {
+				continue
+			}
+			bindings[i].Location.Line += lineOffset + 1
+			bindings[i].Location.Column = column
+			break
+		}
+	}
+	return bindings
+}
+
+func directiveIdentifierColumn(line, identifier string) int {
+	for offset := 0; ; {
+		index := strings.Index(line[offset:], identifier)
+		if index < 0 {
+			return 0
+		}
+		index += offset
+		end := index + len(identifier)
+		if (index == 0 || !isDartIdentifierByte(line[index-1])) && (end == len(line) || !isDartIdentifierByte(line[end])) {
+			return index + 1
+		}
+		offset = end
+	}
+}
+
+func isDartIdentifierByte(value byte) bool {
+	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
 }
 
 func stripBlockCommentLines(lines []string) []string {

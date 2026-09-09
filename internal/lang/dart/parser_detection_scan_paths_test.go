@@ -75,8 +75,8 @@ void main() {
 	if imports[0].Dependency != "http" || imports[0].Local != "http" {
 		t.Fatalf("expected http alias binding, got %#v", imports[0])
 	}
-	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
-		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
+	if imports[0].Location.Line != 2 || imports[0].Location.Column != 8 {
+		t.Fatalf("expected multiline alias location at line 2 column 8, got %#v", imports[0].Location)
 	}
 }
 

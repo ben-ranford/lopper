@@ -180,6 +180,49 @@ void main() {
 	}
 }
 
+func TestDartAdapterDoesNotCountMultilineDirectiveDeclarationsAsUsage(t *testing.T) {
+	testCases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "alias",
+			source: `import 'package:http/http.dart'
+    as clientLib;
+
+void main() {}
+`,
+		},
+		{
+			name: "show",
+			source: `import 'package:http/http.dart'
+    show Client;
+
+void main() {}
+`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
+			writeFile(t, filepath.Join(repo, "lib", mainDartFileName), tc.source)
+
+			depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "http"})
+			if err != nil {
+				t.Fatalf("analyse multiline %s directive: %v", tc.name, err)
+			}
+			if len(depReport.Dependencies) != 1 {
+				t.Fatalf(expectedOneDependencyReport, len(depReport.Dependencies))
+			}
+			if got := depReport.Dependencies[0].UsedExportsCount; got != 0 {
+				t.Fatalf("expected multiline %s declaration-only import usage to be zero, got %d", tc.name, got)
+			}
+		})
+	}
+}
+
 func TestDartAdapterUndeclaredImportRisk(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
