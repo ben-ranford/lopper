@@ -48,7 +48,21 @@ func ConfigureCommandCancellation(cmd *exec.Cmd) {
 }
 
 // StartCommand starts a command configured with ConfigureCommandCancellation.
-// Unix process groups require no post-wait cleanup.
 func StartCommand(cmd *exec.Cmd) (func(), error) {
-	return nil, cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return func() {
+		if err := cleanupRuntimeProcessGroup(cmd.Process.Pid); err != nil {
+			return
+		}
+	}, nil
+}
+
+func cleanupRuntimeProcessGroup(processID int) error {
+	err := runtimeKillProcessGroup(-processID, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }

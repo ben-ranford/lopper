@@ -7,9 +7,12 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestConfigureRuntimeCommandCancelPropagatesSignalErrors(t *testing.T) {
@@ -93,4 +96,43 @@ func TestConfigureRuntimeCommandCancelRunningProcess(t *testing.T) {
 	if err := cmd.Wait(); err != nil && !errors.Is(err, os.ErrProcessDone) && !strings.Contains(err.Error(), "signal: killed") {
 		t.Fatalf("wait process: %v", err)
 	}
+}
+
+func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "child.pid")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "sleep 30 & printf '%s' \"$!\" > \"$1\"", "runtime-helper", markerPath)
+	configureRuntimeCommand(cmd)
+
+	cleanup, err := StartCommand(cmd)
+	if err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+	defer cleanup()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait for parent command: %v", err)
+	}
+
+	contents, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read child process ID: %v", err)
+	}
+	childPID, err := strconv.Atoi(string(contents))
+	if err != nil {
+		t.Fatalf("parse child process ID %q: %v", contents, err)
+	}
+	if err := syscall.Kill(childPID, 0); err != nil {
+		t.Fatalf("expected child process %d to outlive its parent: %v", childPID, err)
+	}
+
+	cleanup()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(childPID, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		} else if err != nil {
+			t.Fatalf("check child process %d: %v", childPID, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("child process %d outlived process group cleanup", childPID)
 }

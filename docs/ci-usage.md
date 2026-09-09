@@ -342,7 +342,7 @@ jobs:
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
-- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, and `macos-26-intel`.
+- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, and `windows-latest`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`

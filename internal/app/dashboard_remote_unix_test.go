@@ -31,7 +31,7 @@ func TestDashboardRepoMaterializerRunGitBoundsHelperPipeWaitAfterCancellation(t 
 	if err == nil {
 		t.Fatal("expected canceled git command to fail")
 	}
-	if elapsed := time.Since(start); elapsed > dashboardGitCommandWaitDelay+time.Second {
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("runGit returned after %s; helper pipe wait should be bounded", elapsed)
 	}
 }
