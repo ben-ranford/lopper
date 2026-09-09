@@ -361,7 +361,8 @@ toolchain-install-macos:
 	brew install go zig shellcheck ruby node python
 
 toolchain-install-linux:
-	@if command -v apt-get >/dev/null 2>&1; then \
+	@set -e; \
+	if command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO apt-get update; \
 		$$SUDO apt-get install -y golang-go zig shellcheck ruby python3 ca-certificates curl gnupg; \
@@ -369,6 +370,7 @@ toolchain-install-linux:
 		$$SUDO curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /usr/share/keyrings/nodesource-repo.gpg.key; \
 		$$SUDO gpg --dearmor --yes --output /usr/share/keyrings/nodesource.gpg /usr/share/keyrings/nodesource-repo.gpg.key; \
 		$$SUDO rm -f /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO chmod 0644 /usr/share/keyrings/nodesource.gpg; \
 		printf '%s\n' 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main' | $$SUDO tee /etc/apt/sources.list.d/nodesource.list >/dev/null; \
 		$$SUDO apt-get update; \
 		$$SUDO apt-get install -y nodejs; \
