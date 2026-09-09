@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestDartAdditionalBranchCoverage(t *testing.T) {
@@ -278,5 +279,24 @@ func TestDartManifestLoopingLockSymlinkFailsLoad(t *testing.T) {
 
 	if _, _, err := loadPackageManifest(repo, manifestPath); err == nil {
 		t.Fatalf("expected looping pubspec.lock symlink to fail manifest load")
+	}
+}
+
+func TestDartPubspecParsingBoundsUntrustedInput(t *testing.T) {
+	repo := t.TempDir()
+	manifestPath := filepath.Join(repo, pubspecYAMLName)
+	if err := os.WriteFile(manifestPath, []byte("name: app\n#"+strings.Repeat("x", maxPubspecYAMLBytes)), 0o644); err != nil {
+		t.Fatalf("write oversized manifest: %v", err)
+	}
+	if _, err := readPubspecManifest(repo, manifestPath); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized manifest to be rejected before YAML parsing, got %v", err)
+	}
+
+	metadata := any(map[string]any{"platforms": "valid"})
+	for range maxPluginMetadataDepth {
+		metadata = map[string]any{"nested": metadata}
+	}
+	if hasPluginMetadataValue(metadata) {
+		t.Fatalf("expected plugin metadata beyond the traversal limit to be ignored")
 	}
 }
