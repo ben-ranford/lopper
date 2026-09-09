@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -253,6 +254,27 @@ func TestComposerAndPubIdentityReadFailuresAreWarnings(t *testing.T) {
 		"identity manifest read failed for composer.lock: not found",
 		"identity manifest read failed for pubspec.lock: not found",
 		"identity manifest read failed for pubspec.yaml: not found",
+	})
+}
+
+func TestPubIdentityBoundsYAMLInput(t *testing.T) {
+	repoPath := t.TempDir()
+	pubManifest := filepath.Join(repoPath, pubIdentityManifestYAMLName)
+	pubLock := filepath.Join(repoPath, pubIdentityLockName)
+	testutil.MustWriteFile(t, pubManifest, "dependencies:\n#"+strings.Repeat("x", maxPubIdentityYAMLBytes))
+	testutil.MustWriteFile(t, pubLock, "packages:\n#"+strings.Repeat("x", maxPubIdentityYAMLBytes))
+
+	warnings := newIdentityWarningCollector(repoPath)
+	if pins := readPubIdentityDeclarations(repoPath, pubManifest, map[string]struct{}{}, warnings); len(pins) != 0 {
+		t.Fatalf("expected oversized pubspec manifest to produce no declarations, got %#v", pins)
+	}
+	resolved, nonHosted := collectPubLockIdentityEvidence(repoPath, pubLock, map[string]struct{}{}, identityIndex{}, warnings)
+	if len(resolved) != 0 || len(nonHosted) != 0 {
+		t.Fatalf("expected oversized pubspec lock to produce no evidence, got resolved=%#v nonHosted=%#v", resolved, nonHosted)
+	}
+	assertWarningsExact(t, repoPath, warnings.list(), []string{
+		"identity manifest read failed for pubspec.lock: file exceeds size limit",
+		"identity manifest read failed for pubspec.yaml: file exceeds size limit",
 	})
 }
 
