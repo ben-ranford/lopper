@@ -40,3 +40,9 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+// ConfigureCommandCancellation makes a command's cancellation terminate its
+// process group where supported, preventing child helpers from outliving it.
+func ConfigureCommandCancellation(cmd *exec.Cmd) {
+	configureRuntimeCommand(cmd)
+}

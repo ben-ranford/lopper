@@ -12,3 +12,8 @@ const runtimeCommandWaitDelay = 100 * time.Millisecond
 func configureRuntimeCommand(cmd *exec.Cmd) {
 	cmd.WaitDelay = runtimeCommandWaitDelay
 }
+
+// ConfigureCommandCancellation applies the portable cancellation behavior.
+func ConfigureCommandCancellation(cmd *exec.Cmd) {
+	configureRuntimeCommand(cmd)
+}

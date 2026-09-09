@@ -15,6 +15,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 const (
@@ -247,6 +248,7 @@ func (m *dashboardRepoMaterializer) runGit(ctx context.Context, args ...string) 
 		return nil, err
 	}
 	command.Env = append(gitexec.SanitizedEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	runtime.ConfigureCommandCancellation(command)
 	// CommandContext stops git when the materialization deadline expires, but a
 	// transport helper can retain the stderr pipe after git exits. Bound that
 	// post-cancellation wait so one unresponsive remote cannot hold the whole
