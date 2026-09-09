@@ -957,7 +957,7 @@ func (f *benchGateFixture) runBenchGate() (string, int) {
 		"BENCH_COUNT=1",
 		// These fixtures validate benchmark-harness selection, not performance.
 		// A longer fixture run amortizes one-off allocation instrumentation noise.
-		"BENCH_TIME=100x",
+		"BENCH_TIME=100000x",
 		"BENCH_BASE_OUTPUT=.artifacts/bench-base.out",
 		"BENCH_HEAD_OUTPUT=.artifacts/bench-head.out",
 		"MEMORY_BENCH_SUMMARY=.artifacts/memory-bench-summary.md",
