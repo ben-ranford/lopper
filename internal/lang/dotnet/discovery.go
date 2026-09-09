@@ -129,12 +129,13 @@ type sourceDiscoverer struct {
 }
 
 type scanInputDiscoverer struct {
-	dependencySet       map[string]struct{}
-	projectDependencies map[string][]string
-	centralDependencies map[string][]string
-	coverageGaps        []report.CoverageGap
-	sourceDiscoverer    sourceDiscoverer
-	sourceScanLimited   bool
+	dependencySet          map[string]struct{}
+	projectDependencies    map[string][]string
+	centralDependencies    map[string][]string
+	malformedManifestRoots map[string]struct{}
+	coverageGaps           []report.CoverageGap
+	sourceDiscoverer       sourceDiscoverer
+	sourceScanLimited      bool
 }
 
 func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDiscoverer {
@@ -146,10 +147,11 @@ func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDisc
 
 func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputDiscoverer {
 	return scanInputDiscoverer{
-		dependencySet:       make(map[string]struct{}),
-		projectDependencies: make(map[string][]string),
-		centralDependencies: make(map[string][]string),
-		sourceDiscoverer:    newSourceDiscoverer(repoPath, source),
+		dependencySet:          make(map[string]struct{}),
+		projectDependencies:    make(map[string][]string),
+		centralDependencies:    make(map[string][]string),
+		malformedManifestRoots: make(map[string]struct{}),
+		sourceDiscoverer:       newSourceDiscoverer(repoPath, source),
 	}
 }
 
@@ -167,6 +169,7 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 	dependencies, err := parseManifestDependenciesForEntry(d.sourceDiscoverer.repoPath, path, entry.Name())
 	if err != nil {
 		if isDotNetManifestParseError(err) {
+			d.recordMalformedManifest(path, entry.Name())
 			warning := malformedDotNetManifestWarning(d.sourceDiscoverer.repoPath, path, err)
 			d.sourceDiscoverer.discovery.Warnings = append(d.sourceDiscoverer.discovery.Warnings, warning)
 			d.coverageGaps = append(d.coverageGaps, report.CoverageGap{
@@ -191,6 +194,13 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 		return nil
 	}
 	return err
+}
+
+func (d *scanInputDiscoverer) recordMalformedManifest(path, name string) {
+	switch signalForName(name) {
+	case fileSignalProject, fileSignalCentral:
+		d.malformedManifestRoots[filepath.Dir(path)] = struct{}{}
+	}
 }
 
 func (d *scanInputDiscoverer) recordManifestDependencies(path, name string, dependencies []string) {
@@ -230,7 +240,7 @@ func (d *scanInputDiscoverer) sourceFiles() []sourceDocument {
 		files[index].MapperKey = strings.Join(dependencies, "\x00")
 	}
 	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject {
-		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath)
+		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)
 	}
 	return files
 }
@@ -239,6 +249,9 @@ func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string,
 	directory := filepath.Dir(filepath.Join(d.sourceDiscoverer.repoPath, relativePath))
 	projectRoot := ""
 	for current := directory; ; current = filepath.Dir(current) {
+		if _, malformed := d.malformedManifestRoots[current]; malformed {
+			break
+		}
 		if _, ok := d.projectDependencies[current]; ok {
 			projectRoot = current
 			break
@@ -262,15 +275,30 @@ func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string,
 	return sortedDependencies(dependencies), projectRoot != "" || len(d.projectDependencies) > 0, projectRoot
 }
 
-func excludeNestedProjectSources(files []sourceDocument, repoPath string) []sourceDocument {
+func excludeNestedProjectSources(files []sourceDocument, repoPath string, malformedRoots map[string]struct{}) []sourceDocument {
 	filtered := files[:0]
 	for _, file := range files {
 		if file.ProjectRoot != "" && !sameDotNetPath(file.ProjectRoot, repoPath) {
 			continue
 		}
+		if sourceIsUnderMalformedRoot(repoPath, file.RelativePath, malformedRoots) {
+			continue
+		}
 		filtered = append(filtered, file)
 	}
 	return filtered
+}
+
+func sourceIsUnderMalformedRoot(repoPath, relativePath string, malformedRoots map[string]struct{}) bool {
+	directory := filepath.Dir(filepath.Join(repoPath, relativePath))
+	for current := directory; ; current = filepath.Dir(current) {
+		if _, malformed := malformedRoots[current]; malformed && !sameDotNetPath(current, repoPath) {
+			return true
+		}
+		if sameDotNetPath(current, repoPath) {
+			return false
+		}
+	}
 }
 
 func sameDotNetPath(first, second string) bool {

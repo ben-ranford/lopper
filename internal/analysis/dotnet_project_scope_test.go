@@ -108,3 +108,52 @@ func TestServiceAnalyseDotNetValidRootDoesNotRescanNestedProject(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceAnalyseDotNetValidRootSeparatesMalformedChildBoundary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Root.csproj"), `<Project><ItemGroup><PackageReference Include="Foo" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using Foo;\nclass Root {}\n")
+	writeFile(t, filepath.Join(repo, "apps", "Broken.csproj"), "<Project><PackageReference Include=\"broken\"")
+	writeFile(t, filepath.Join(repo, "apps", "App.cs"), "using Foo;\nclass BrokenApp {}\n")
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Foo" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Foo;\nclass Child {}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Language:   "dotnet",
+		Dependency: "foo",
+		Cache:      &CacheOptions{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("analyse valid root with malformed child .NET project: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{".", "apps"}) {
+		t.Fatalf("expected valid root and malformed child fallback scopes, got %#v", reportData.Scope)
+	}
+	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "apps/Broken.csproj" {
+		t.Fatalf("expected malformed child coverage gap, got %#v", reportData.CoverageGaps)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected merged Foo report, got %#v", reportData.Dependencies)
+	}
+	dependency := reportData.Dependencies[0]
+	if dependency.UsedExportsCount != 2 || dependency.TotalExportsCount != 2 || len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected root and valid child Foo declarations exactly once, got %#v", dependency)
+	}
+	if len(dependency.UsedImports) != 1 || len(dependency.UsedImports[0].Locations) != 2 {
+		t.Fatalf("expected only root and valid child Foo locations, got %#v", dependency.UsedImports)
+	}
+
+	_, err = NewService().Analyse(context.Background(), Request{
+		RepoPath:                repo,
+		Language:                "dotnet",
+		ScopeMode:               ScopeModeChangedPackages,
+		ChangedFilesExplicit:    true,
+		ChangedFiles:            []string{"apps/App.cs"},
+		RequireCompleteCoverage: true,
+		Cache:                   &CacheOptions{Enabled: false},
+	})
+	if !errors.Is(err, ErrIncompleteCoverage) {
+		t.Fatalf("expected malformed child coverage gap in strict changed scope, got %v", err)
+	}
+}

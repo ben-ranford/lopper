@@ -75,13 +75,21 @@ func dropNestedScanRoots(roots []string, candidate string) []string {
 }
 
 func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	return scanRepoRootExcluding(ctx, repoPath, root, depLookup, nil, scannedFiles, fileCount, result)
+}
+
+func scanRepoRootExcluding(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, excludedSourceRoots []string, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
 	return shared.WalkRepoFiles(ctx, root, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return scanRepoFileEntry(repoPath, root, path, depLookup, scannedFiles, fileCount, result)
+		return scanRepoFileEntryExcluding(repoPath, root, path, depLookup, excludedSourceRoots, scannedFiles, fileCount, result)
 	})
 }
 
 func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	if !strings.EqualFold(filepath.Ext(path), ".rs") {
+	return scanRepoFileEntryExcluding(repoPath, root, path, depLookup, nil, scannedFiles, fileCount, result)
+}
+
+func scanRepoFileEntryExcluding(repoPath, root, path string, depLookup map[string]dependencyInfo, excludedSourceRoots []string, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	if !strings.EqualFold(filepath.Ext(path), ".rs") || isExcludedRustSource(path, excludedSourceRoots) {
 		return nil
 	}
 	if _, ok := scannedFiles[path]; ok {
@@ -95,4 +103,13 @@ func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]depende
 		return fs.SkipAll
 	}
 	return scanRustSourceFile(repoPath, root, path, depLookup, result)
+}
+
+func isExcludedRustSource(path string, excludedRoots []string) bool {
+	for _, root := range excludedRoots {
+		if isSubPath(root, path) {
+			return true
+		}
+	}
+	return false
 }

@@ -113,12 +113,7 @@ func updateDetection(repoPath, path, name string, detection *language.Detection,
 
 func isolateMalformedManifestRoots(roots, malformedRoots map[string]struct{}) {
 	for malformedRoot := range malformedRoots {
-		owner := malformedRoot
-		for root := range roots {
-			if isDotNetSubPath(root, malformedRoot) && len(root) < len(owner) {
-				owner = root
-			}
-		}
+		owner := malformedRootOwner(malformedRoot, malformedRoots)
 		for root := range roots {
 			if isDotNetSubPath(owner, root) {
 				delete(roots, root)
@@ -126,6 +121,16 @@ func isolateMalformedManifestRoots(roots, malformedRoots map[string]struct{}) {
 		}
 		roots[owner] = struct{}{}
 	}
+}
+
+func malformedRootOwner(root string, malformedRoots map[string]struct{}) string {
+	owner := root
+	for candidate := range malformedRoots {
+		if isDotNetSubPath(candidate, root) && len(candidate) < len(owner) {
+			owner = candidate
+		}
+	}
+	return owner
 }
 
 func isDotNetSubPath(parent, child string) bool {

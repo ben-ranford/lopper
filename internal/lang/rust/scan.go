@@ -12,10 +12,10 @@ import (
 )
 
 func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depLookup map[string]dependencyInfo, renamedAliases map[string][]string) (scanResult, error) {
-	return scanRepoWithFallback(ctx, repoPath, manifestPaths, "", depLookup, renamedAliases)
+	return scanRepoWithFallback(ctx, repoPath, manifestPaths, "", nil, depLookup, renamedAliases)
 }
 
-func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []string, sourceFallbackRoot string, depLookup map[string]dependencyInfo, renamedAliases map[string][]string) (scanResult, error) {
+func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []string, sourceFallbackRoot string, excludedSourceRoots []string, depLookup map[string]dependencyInfo, renamedAliases map[string][]string) (scanResult, error) {
 	result := scanResult{
 		UnresolvedImports:   make(map[string]int),
 		RenamedAliasesByDep: renamedAliases,
@@ -40,14 +40,14 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []
 			rootLookup = lookupsByRoot[root]
 			result.RequireDeclaredDependency = true
 		}
-		err := scanRepoRoot(ctx, repoPath, root, rootLookup, scannedFiles, &fileCount, &result)
+		err := scanRepoRootExcluding(ctx, repoPath, root, rootLookup, excludedSourceRoots, scannedFiles, &fileCount, &result)
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
 	}
 	if sourceFallbackRoot != "" {
 		result.RequireDeclaredDependency = true
-		err := scanRepoRoot(ctx, repoPath, sourceFallbackRoot, map[string]dependencyInfo{}, scannedFiles, &fileCount, &result)
+		err := scanRepoRootExcluding(ctx, repoPath, sourceFallbackRoot, map[string]dependencyInfo{}, nil, scannedFiles, &fileCount, &result)
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
