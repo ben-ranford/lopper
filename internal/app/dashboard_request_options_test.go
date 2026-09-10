@@ -38,6 +38,36 @@ func TestResolveDashboardRequestConfigRelativeRepo(t *testing.T) {
 	}
 }
 
+func TestResolveDashboardRequestUsesCLIReposWithConfigDefaults(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "dashboard-defaults.yml")
+	config := "dashboard:\n  output: html\n  baseline_store: ./baselines\n  ownership:\n    default_owner: platform\n    default_team: foundations\n    rules:\n      - repo: cli-repo\n        path_prefix: internal/\n        owner: security\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		Repos:      []DashboardRepo{{Name: "cli-repo", Path: "./cli-repo"}},
+		ConfigPath: configPath,
+		Format:     "csv",
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request with CLI repo and config defaults: %v", err)
+	}
+	if len(resolved.repos) != 1 || resolved.repos[0].Name != "cli-repo" || resolved.repos[0].Path != "./cli-repo" {
+		t.Fatalf("expected CLI repo to be retained, got %#v", resolved.repos)
+	}
+	if resolved.format != dashboard.FormatCSV {
+		t.Fatalf("expected CLI format to override config output, got %q", resolved.format)
+	}
+	if resolved.baselineStorePath != filepath.Join(configDir, "baselines") {
+		t.Fatalf("expected config baseline store, got %q", resolved.baselineStorePath)
+	}
+	if resolved.routing.DefaultOwner != "platform" || resolved.routing.DefaultTeam != "foundations" || len(resolved.routing.Rules) != 1 || resolved.routing.Rules[0].Owner != "security" {
+		t.Fatalf("expected config ownership routing, got %#v", resolved.routing)
+	}
+}
+
 func TestResolveDashboardRequestConfigRepoURL(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "lopper-org.yml")

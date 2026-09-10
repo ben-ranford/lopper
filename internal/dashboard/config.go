@@ -81,10 +81,6 @@ func LoadConfig(path string) (LoadedConfig, error) {
 		return LoadedConfig{}, err
 	}
 
-	if len(parsed.Dashboard.Repos) == 0 {
-		return LoadedConfig{}, fmt.Errorf("dashboard config must define at least one repo")
-	}
-
 	return LoadedConfig{
 		Path:      trimmedPath,
 		ConfigDir: filepath.Dir(trimmedPath),

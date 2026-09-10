@@ -72,6 +72,16 @@ func TestParseArgsDashboardConfig(t *testing.T) {
 	}
 }
 
+func TestParseArgsDashboardReposAndConfig(t *testing.T) {
+	req := mustParseArgs(t, []string{"dashboard", dashboardReposFlagName, "./api", dashboardConfigFlagName, dashboardConfigFileName, dashboardFormatFlagName, "csv"})
+	if len(req.Dashboard.Repos) != 1 || req.Dashboard.Repos[0].Path != filepath.Clean("./api") {
+		t.Fatalf("expected CLI dashboard repo to be preserved, got %#v", req.Dashboard.Repos)
+	}
+	if req.Dashboard.ConfigPath != dashboardConfigFileName || req.Dashboard.Format != "csv" {
+		t.Fatalf("expected dashboard config defaults and CLI format to be preserved, got %#v", req.Dashboard)
+	}
+}
+
 func TestParseArgsDashboardOutputFlags(t *testing.T) {
 	req := mustParseArgs(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, dashboardOutputFlagName, dashboardReportCSVFileName, "-o", dashboardReportCSVFileName})
 	if req.Dashboard.OutputPath != dashboardReportCSVFileName {
