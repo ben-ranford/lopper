@@ -239,6 +239,48 @@ func TestDetectLockfileDriftDotnetCentralProjectLockfilesAvoidRootMissingWarning
 	}
 }
 
+func TestPrepareLockfileManifestChangeCandidatesBoundsNestedDotnetDiscoveryAllocations(t *testing.T) {
+	assertNestedDotnetLockfileAllocationBound(t, "nested .NET discovery", 16, measurePreparedDotnetLockfileScanAllocs)
+}
+
+func assertNestedDotnetLockfileAllocationBound(t *testing.T, label string, maxMultiplier float64, measure func(*testing.T, string, []lockfileRule) float64) {
+	t.Helper()
+	rules := []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)}
+	smallRepo := newNestedDotnetCentralLockfileRepo(t, 8)
+	largeRepo := newNestedDotnetCentralLockfileRepo(t, 64)
+
+	smallAllocs := measure(t, smallRepo, rules)
+	largeAllocs := measure(t, largeRepo, rules)
+	t.Logf("%s allocations: depth 8=%.0f depth 64=%.0f", label, smallAllocs, largeAllocs)
+	if largeAllocs > smallAllocs*maxMultiplier {
+		t.Fatalf("expected bounded %s allocation growth, got depth 8=%.0f depth 64=%.0f", label, smallAllocs, largeAllocs)
+	}
+}
+
+func newNestedDotnetCentralLockfileRepo(t *testing.T, depth int) string {
+	t.Helper()
+	repo := t.TempDir()
+	dir := repo
+	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
+	for range depth {
+		writeFile(t, filepath.Join(dir, dotnetCentralManifest), manifest)
+		writeFile(t, filepath.Join(dir, "project", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(dir, "project", dotnetLockfileName), "{}\n")
+		dir = filepath.Join(dir, "nested")
+	}
+	return repo
+}
+
+func measurePreparedDotnetLockfileScanAllocs(t *testing.T, repo string, rules []lockfileRule) float64 {
+	t.Helper()
+	return testing.AllocsPerRun(3, func() {
+		_, _, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, rules)
+		if err != nil {
+			t.Fatalf("prepare lockfile manifest change candidates: %v", err)
+		}
+	})
+}
+
 func TestDetectLockfileDriftDotnetCentralProjectLockfileManifestChange(t *testing.T) {
 	t.Run("warns when central manifest changes without project lockfile changes", func(t *testing.T) {
 		repo := t.TempDir()

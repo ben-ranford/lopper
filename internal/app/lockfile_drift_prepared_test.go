@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package app
 
 import (
@@ -7,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -78,6 +81,211 @@ func TestFindDotnetProjectLockfilesSortsResultsAndSkipsDirectories(t *testing.T)
 	}
 	if lockfiles[1].name != filepath.ToSlash(filepath.Join("src", "Zulu", dotnetLockfileName)) {
 		t.Fatalf("expected sorted Zulu lockfile second, got %#v", lockfiles)
+	}
+}
+
+func TestDotnetLockfilePathIsRelativeToFilesystemRoot(t *testing.T) {
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	path := filepath.Join(root, "projects", dotnetLockfileName)
+
+	relPath, err := dotnetProjectLockfileRelativePath(root, path)
+	if err != nil {
+		t.Fatalf("relative lockfile path: %v", err)
+	}
+	if want := "projects/" + dotnetLockfileName; relPath != want {
+		t.Fatalf("expected root-relative lockfile path %q, got %q", want, relPath)
+	}
+}
+
+func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t *testing.T) {
+	repo := t.TempDir()
+	for _, dir := range []string{"alpha", "beta", "gamma"} {
+		writeFile(t, filepath.Join(repo, dir, dotnetCentralManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, dir, "src", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, dir, "src", dotnetLockfileName), "{}\n")
+	}
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(ctx, rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	_, _, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("prepare lockfile manifest change candidates: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one distributed .NET lockfile walk, got %d", calls)
+	}
+}
+
+func TestDotnetProjectLockfileIndexSlicesSortedRepositoryPathsByScope(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath: t.TempDir(),
+		lockfiles: []string{
+			"alpha-other/src/" + dotnetLockfileName,
+			"alpha/src/" + dotnetLockfileName,
+			"beta/src/" + dotnetLockfileName,
+		},
+		initialized: true,
+	}
+
+	lockfiles, err := index.lockfilesUnder("alpha")
+	if err != nil {
+		t.Fatalf("index alpha lockfiles: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != "src/"+dotnetLockfileName {
+		t.Fatalf("expected only alpha lockfile, got %#v", lockfiles)
+	}
+	if len(index.lockfiles) != 3 {
+		t.Fatalf("expected one repository-wide lockfile list, got %#v", index.lockfiles)
+	}
+	rootLockfiles, err := index.lockfilesUnder(".")
+	if err != nil {
+		t.Fatalf("index root lockfiles: %v", err)
+	}
+	if len(rootLockfiles) != 3 || rootLockfiles[1].name != "alpha/src/"+dotnetLockfileName {
+		t.Fatalf("expected root scope to retain sorted repository-relative paths, got %#v", rootLockfiles)
+	}
+}
+
+func TestDotnetProjectLockfileIndexDoesNotMaterializeAncestorCopies(t *testing.T) {
+	assertNestedDotnetLockfileAllocationBound(t, ".NET lockfile index", 10, measureDotnetProjectLockfileIndexAllocs)
+}
+
+func TestDotnetProjectLockfileIndexCachesAncestorDerivedRangesWithoutCopies(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath: ".",
+		scoped:   true,
+		scopedLockfilesByScope: map[string][]string{
+			".": {
+				"nested/one/" + dotnetLockfileName,
+				"nested/two/" + dotnetLockfileName,
+			},
+		},
+	}
+	for _, scope := range []string{"nested", "nested/one", "nested/two"} {
+		lockfiles, err := index.scopedLockfilesUnder(scope)
+		if err != nil {
+			t.Fatalf("read %s lockfiles: %v", scope, err)
+		}
+		if len(lockfiles) == 0 {
+			t.Fatalf("expected %s lockfiles from ancestor scope", scope)
+		}
+	}
+	if len(index.scopedLockfilesByScope) != 1 {
+		t.Fatalf("expected only filesystem-walk scopes to remain cached, got %#v", index.scopedLockfilesByScope)
+	}
+	if len(index.scopedRangesByScope) != 3 {
+		t.Fatalf("expected derived ranges for each queried scope, got %#v", index.scopedRangesByScope)
+	}
+	for scope, rangeValue := range index.scopedRangesByScope {
+		if len(rangeValue.lockfiles) != len(index.scopedLockfilesByScope["."]) || &rangeValue.lockfiles[0] != &index.scopedLockfilesByScope["."][0] {
+			t.Fatalf("expected %s derived range to share the root lockfile storage, got %#v", scope, rangeValue)
+		}
+	}
+}
+
+func measureDotnetProjectLockfileIndexAllocs(t *testing.T, repo string, rules []lockfileRule) float64 {
+	t.Helper()
+	return testing.AllocsPerRun(3, func() {
+		index, err := newDotnetProjectLockfileIndex(context.Background(), repo, rules, false)
+		if err != nil {
+			t.Fatalf("new .NET lockfile index: %v", err)
+		}
+		if _, err := index.lockfilesUnder("."); err != nil {
+			t.Fatalf("read .NET lockfile index: %v", err)
+		}
+	})
+}
+
+func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", dotnetProjectManifest), "<Project></Project>\\n")
+	writeFile(t, filepath.Join(repo, "src", dotnetLockfileName), "{}\\n")
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(ctx, rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	_, _, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("prepare lockfile manifest change candidates: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no distributed .NET lockfile walk without a central manifest, got %d", calls)
+	}
+}
+
+func TestScanLockfileDriftStopOnFirstScopesDotnetLockfileIndexToCentralManifest(t *testing.T) {
+	repo := t.TempDir()
+	centralDir := filepath.Join(repo, "a-central")
+	writeFile(t, filepath.Join(centralDir, dotnetCentralManifest), "<Project></Project>\n")
+
+	original := findDotnetProjectLockfilesFn
+	var roots []string
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
+		roots = append(roots, rootDir)
+		if filepath.Clean(rootDir) == filepath.Clean(repo) {
+			return nil, errors.New("unrelated later subtree is unreadable")
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, true, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("scan lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "a-central") {
+		t.Fatalf("expected early central-manifest warning, got %#v", warnings)
+	}
+	if len(roots) != 1 || filepath.Clean(roots[0]) != filepath.Clean(centralDir) {
+		t.Fatalf("expected one central-subtree lockfile walk, got %#v", roots)
+	}
+}
+
+func TestScanLockfileDriftStopOnFirstReusesAncestorDotnetLockfileIndex(t *testing.T) {
+	repo := t.TempDir()
+	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
+	for _, dir := range []string{".", "src", "src/App"} {
+		writeFile(t, filepath.Join(repo, dir, dotnetCentralManifest), manifest)
+	}
+	writeFile(t, filepath.Join(repo, "src", "App", "Project", dotnetProjectManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", "Project", dotnetLockfileName), "{}\n")
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(ctx, rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, true, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("scan lockfile drift: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings with matching project lockfile, got %#v", warnings)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one distributed .NET lockfile walk, got %d", calls)
 	}
 }
 

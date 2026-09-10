@@ -16,6 +16,7 @@ import (
 
 var resolveGitBinaryPathFn = gitexec.ResolveBinaryPath
 var collectLockfileGitContextFn = collectLockfileGitContext
+var collectLockfileGitContextForPathsFn = collectLockfileGitContextForPaths
 var execGitCommandContextFn = gitexec.CommandContext
 
 const (
