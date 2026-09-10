@@ -6,7 +6,7 @@ Thanks for contributing to Lopper.
 
 Requirements:
 
-- Go `1.26.x`
+- Go `1.27.1` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
 - `zig` (required for cross-CGO release builds)
 - `shellcheck` (required for `make ci` and git hooks)
 - Ruby (required for automation integrity YAML/JSON checks in `make ci`)
