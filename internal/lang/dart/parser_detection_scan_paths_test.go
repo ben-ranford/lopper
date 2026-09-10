@@ -75,8 +75,35 @@ void main() {
 	if imports[0].Dependency != "http" || imports[0].Local != "http" {
 		t.Fatalf("expected http alias binding, got %#v", imports[0])
 	}
-	if imports[0].Location.Line != 1 || imports[0].Location.Column != 1 {
-		t.Fatalf("expected multiline directive location at line 1 column 1, got %#v", imports[0].Location)
+	if imports[0].Location.Line != 2 || imports[0].Location.Column != 8 {
+		t.Fatalf("expected multiline alias location at line 2 column 8, got %#v", imports[0].Location)
+	}
+}
+
+func TestParseDartImportsLocatesLargeSplitShowList(t *testing.T) {
+	const symbols = 8192
+	var content strings.Builder
+	content.WriteString("import 'package:foo/foo.dart' show Symbol0000,\n")
+	for index := 1; index < symbols; index++ {
+		suffix := ","
+		if index == symbols-1 {
+			suffix = ";"
+		}
+		fmt.Fprintf(&content, "    Symbol%04d%s\n", index, suffix)
+	}
+
+	imports := parseDartImports([]byte(content.String()), "lib/main.dart", map[string]dependencyInfo{"foo": {}}, map[string]int{})
+	if len(imports) != symbols {
+		t.Fatalf("expected %d imports, got %d", symbols, len(imports))
+	}
+	for _, index := range []int{0, symbols / 2, symbols - 1} {
+		binding := imports[index]
+		if want := fmt.Sprintf("Symbol%04d", index); binding.Local != want {
+			t.Fatalf("binding %d local = %q, want %q", index, binding.Local, want)
+		}
+		if want := index + 1; binding.Location.Line != want {
+			t.Fatalf("binding %d line = %d, want %d", index, binding.Location.Line, want)
+		}
 	}
 }
 
