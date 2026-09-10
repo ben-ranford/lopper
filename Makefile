@@ -186,7 +186,7 @@ test:
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
 		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs
 	@$(MAKE) test-lockfiledrift-head
-	@python3 -m unittest scripts/vscode_release_notes_test.py
+	@python3 -m unittest scripts/vscode_release_notes_test.py scripts/release_build_notes_test.py
 	@$(MAKE) vscode-release-notes-check
 
 vscode-release-notes-check:

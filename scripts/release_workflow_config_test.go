@@ -194,8 +194,8 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
 	checkout := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release-please PR")
 	trustedTooling := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout trusted release-notes tooling")
-	refresh := workflowStepByName(t, workflow.Jobs, "prepare-release", "Refresh VS Code extension release notes")
-	push := workflowStepByName(t, workflow.Jobs, "prepare-release", "Push refreshed VS Code extension release notes")
+	refresh := workflowStepByName(t, workflow.Jobs, "prepare-release", "Refresh release notes")
+	push := workflowStepByName(t, workflow.Jobs, "prepare-release", "Push refreshed release notes")
 
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "release notes checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
@@ -216,9 +216,10 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 		`grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'`,
 		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}" --date "$(date -u +%F)"`,
 		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --check`,
-		`git diff --quiet -- extensions/vscode-lopper/CHANGELOG.md`,
-		`git add extensions/vscode-lopper/CHANGELOG.md`,
-		`git commit -m "docs(vscode): refresh release notes"`,
+		`python3 .trusted-release-notes-tooling/scripts/release_build_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}"`,
+		`git diff --quiet -- CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md`,
+		`git add CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md`,
+		`git commit -m "docs(release): refresh release notes"`,
 	})
 	assertWorkflowStepEnv(t, push, "release notes push", map[string]string{"PUSH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}", "RELEASE_PLEASE_PRS": "${{ steps.release.outputs.prs }}"})
 	assertWorkflowStepRunContainsAll(t, push, "release notes push", []string{
@@ -235,7 +236,7 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 	if strings.Contains(push.Run, `GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \\`) {
 		t.Fatal("release notes push must not pass its authorization header through env argv")
 	}
-	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh VS Code extension release notes", "Push refreshed VS Code extension release notes", "Checkout release metadata")
+	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh release notes", "Push refreshed release notes", "Checkout release metadata")
 }
 
 func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangelogSection) {
@@ -1275,7 +1276,7 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 	want := []string{
 		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release-please PR#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
-		"jobs.prepare-release.steps.Push refreshed VS Code extension release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Push refreshed release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",

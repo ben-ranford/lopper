@@ -25,6 +25,7 @@ Stable release automation:
 
 - Release versioning and changelog generation are configured in `release-please-config.json` and tracked in `.release-please-manifest.json`.
 - The Go project release notes are generated into the root `CHANGELOG.md`; the VS Code extension keeps its own `extensions/vscode-lopper/CHANGELOG.md`.
+- Before updating the release PR, trusted tooling compares the `go.mod` minimum and the extension’s `engines.vscode` requirement with the previous stable tag. Changes get explicit compatibility notes even when the original commit is omitted from the changelog. Repeated refreshes update those notices without duplicating them.
 - The current stable version is also synced into `extensions/vscode-lopper/package.json` and `extensions/vscode-lopper/package-lock.json` by the release-please PR.
 - Manual `workflow_dispatch` runs accept only a release tag/version, normalize it to the semver tag, validate the tag ref, resolve `refs/tags/<tag>` through the GitHub API, and derive the release source SHA from that immutable tag commit.
 - Manual retries only rebuild an existing GitHub release for the selected tag. The workflow reuses the existing published or draft release metadata and fails instead of creating a missing release.
