@@ -26,15 +26,17 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def write_release(self, version: str, changelog: str, *, production=None, dev=None) -> None:
+    def write_release(self, version: str, changelog: str, *, production=None, dev=None, engines=None) -> None:
         extension = self.repo / "extensions/vscode-lopper"
         extension.mkdir(parents=True, exist_ok=True)
         if production is None:
             production = {"tar": "^1.0.0"}
         if dev is None:
             dev = {"mocha": "^1.0.0"}
-        package = {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev}
-        packages = {"": {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev}}
+        if engines is None:
+            engines = {"vscode": "^1.90.0"}
+        package = {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev, "engines": engines}
+        packages = {"": {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev, "engines": engines}}
         for name, constraint in production.items():
             packages[f"node_modules/{name}"] = {"version": constraint.lstrip("^")}
         for name, constraint in dev.items():
@@ -115,6 +117,32 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
         output = (self.repo / vscode_release_notes.CHANGELOG_PATH).read_text()
         self.assertIn("bundled `tar` dependency from 1.0.0 to 2.0.0", output)
         self.assertNotIn("mocha", output)
+
+    def test_includes_changed_vscode_compatibility_requirement_and_refreshes_idempotently(self) -> None:
+        compatibility_range = ">=1.101.0 <1.103.0 || ^1.105.0"
+        self.write_release(
+            "1.0.1",
+            "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n",
+            engines={"vscode": compatibility_range},
+        )
+        self.commit("chore(vscode): update compatibility")
+
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        changelog = self.repo / vscode_release_notes.CHANGELOG_PATH
+        output = changelog.read_text(encoding="utf-8")
+        self.assertIn(
+            "Requires VS Code `>=1.101.0 <1.103.0 || ^1.105.0` (previously `^1.90.0`).",
+            output,
+        )
+
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        self.assertEqual(changelog.read_text(encoding="utf-8"), output)
+
+    def test_omits_vscode_compatibility_requirement_when_unchanged(self) -> None:
+        self.write_release("1.0.1", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n")
+        self.commit("chore: release")
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        self.assertNotIn("Requires VS Code", (self.repo / vscode_release_notes.CHANGELOG_PATH).read_text(encoding="utf-8"))
 
     def test_reports_production_dependency_removal(self) -> None:
         self.write_release("1.0.1", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n", production={}, dev={"tar": "^1.0.0"})
