@@ -142,6 +142,52 @@ func TestApplyRoutingUsesRootEvidencePathsForCodeowners(t *testing.T) {
 	assertRoutingAssignment(t, routed[0], "@team/api", "", "", "open", ".github/CODEOWNERS")
 }
 
+func TestApplyRoutingDropsCodeownerEvidencePathsWithSpaces(t *testing.T) {
+	rules := parseCodeowners("/docs/read\\ me.md @team/docs", ".github/CODEOWNERS")
+	items := []RemediationItem{{
+		Repo:     "docs",
+		RepoPath: "docs",
+		Evidence: []string{"static_location: docs/read me.md:12"},
+	}}
+
+	routed := ApplyRouting(items, RoutingOptions{Codeowners: rules})
+
+	assertRoutingAssignment(t, routed[0], "@team/docs", "", "", "open", ".github/CODEOWNERS")
+}
+
+func TestApplyRoutingDistinguishesCodeownerEscapedEdgeSpaces(t *testing.T) {
+	rules := parseCodeowners("/docs/readme\\  @spaced\n/docs/readme @plain", ".github/CODEOWNERS")
+	items := []RemediationItem{
+		{Evidence: []string{"static_location: docs/readme :12"}},
+		{Evidence: []string{"static_location: docs/readme:12"}},
+	}
+
+	routed := ApplyRouting(items, RoutingOptions{Codeowners: rules})
+	assertRoutingAssignment(t, routed[0], "@spaced", "", "", "open", ".github/CODEOWNERS")
+	assertRoutingAssignment(t, routed[1], "@plain", "", "", "open", ".github/CODEOWNERS")
+}
+
+func TestParseCodeownersPreservesEscapedTrailingSpaceInOwnerlessRule(t *testing.T) {
+	rules := parseCodeowners("/docs/readme\\ ", ".github/CODEOWNERS")
+	if len(rules) != 1 || rules[0].Pattern != "/docs/readme " || len(rules[0].Owners) != 0 {
+		t.Fatalf("expected ownerless escaped-space rule, got %#v", rules)
+	}
+}
+
+func TestApplyRoutingFallsBackWhenEvidenceIsFreeFormMessage(t *testing.T) {
+	item := RemediationItem{
+		RepoPath: "docs/config.json",
+		Evidence: []string{"unable to read docs/config.json: permission denied"},
+	}
+	routed := ApplyRouting([]RemediationItem{item}, RoutingOptions{Codeowners: []CodeownerRule{{
+		Pattern: "/docs/",
+		Owners:  []string{"@docs"},
+		Source:  ".github/CODEOWNERS",
+	}}})
+
+	assertRoutingAssignment(t, routed[0], "@docs", "", "", "open", ".github/CODEOWNERS")
+}
+
 func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) {
 	got := codeownerEvidenceTargets([]string{
 		"",
@@ -160,7 +206,6 @@ func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) 
 		"../outside/file.go",
 		"/absolute/file.go",
 		"README.md",
-		"docs/read me.md",
 	})
 	want := []string{"services/api/go.mod", "services/web/main.go:not-a-line", "services/empty.go:", "main.go", "src/pkg/main.go"}
 	if !slices.Equal(got, want) {
@@ -202,6 +247,16 @@ func TestLoadCodeownersPrefersGitHubPrecedenceAndFallsBack(t *testing.T) {
 	rules = LoadCodeowners(repoPath)
 	if len(rules) != 1 || strings.Join(rules[0].Owners, ",") != "@docs" || rules[0].Source != "docs/CODEOWNERS" {
 		t.Fatalf("expected docs/CODEOWNERS fallback, got %#v", rules)
+	}
+}
+
+func TestLoadCodeownersParsesCRLFFields(t *testing.T) {
+	repoPath := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repoPath, "CODEOWNERS"), "/docs/ @docs\r\n")
+
+	rules := LoadCodeowners(repoPath)
+	if len(rules) != 1 || rules[0].Pattern != "/docs/" || !slices.Equal(rules[0].Owners, []string{"@docs"}) {
+		t.Fatalf("expected CRLF CODEOWNERS rule, got %#v", rules)
 	}
 }
 
