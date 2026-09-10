@@ -1715,6 +1715,13 @@ jobs:
           end
           RUBY
 
+          git add Formula/lopper.rb
+          git -c user.name="Homebrew tap validation" \
+            -c user.email="homebrew-tap-validation@users.noreply.github.com" \
+            -c core.hooksPath=/dev/null \
+            -c commit.gpgsign=false \
+            commit --allow-empty --no-verify -m "Validate lopper formula" -- Formula/lopper.rb
+
       - name: Validate formula
         working-directory: homebrew-tap
         run: |
