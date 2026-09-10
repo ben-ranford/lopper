@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.7 (2026-09-10)
+
+- Updated VS Code behavior: chore(deps): update dependency mocha to v12 with VS Code test compatibility (#1545).
+- Requires VS Code `^1.101.0` (previously `^1.90.0`).
+
 ## 1.8.6 (2026-09-01)
 
 - Updated VS Code behavior: normalize managed binary release tags
