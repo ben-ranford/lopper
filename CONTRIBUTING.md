@@ -122,6 +122,8 @@ PR descriptions are also validated before merge.
 Keep every heading from `.github/PULL_REQUEST_TEMPLATE.md`, fill every risk field with a concrete value such as `None` or `N/A`, and check every checklist item once it has been considered.
 Generated release-please PRs keep their release-generated changelog body, but their title still has to use `chore(main): release x.y.z`.
 
+Release preparation automatically documents changes to the minimum Go version in `go.mod` and the VS Code engine requirement against the previous stable tag, including changes introduced by `chore` commits.
+
 Before merging a generated release PR, audit every shipped component against the previous stable tag rather than relying only on the generated root changelog. For the VS Code extension:
 
 - Review `git diff --name-status <previous-tag>..HEAD -- extensions/vscode-lopper` and the corresponding commit log for source, manifest, and dependency changes.
