@@ -5715,6 +5715,94 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 	}
 }
 
+func TestHomebrewTapValidationCommitsCandidateFormulaBeforeFileRemoteClone(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow struct {
+				Jobs map[string]workflowJobConfig `yaml:"jobs"`
+			}
+			readYAMLConfig(t, tc.workflowPath, &workflow)
+
+			regenerateStep := workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName)
+			for _, candidate := range []struct {
+				name     string
+				contents string
+			}{
+				{name: "changed formula", contents: "generated candidate formula\n"},
+				{name: "unchanged formula", contents: "committed formula\n"},
+			} {
+				candidate := candidate
+				t.Run(candidate.name, func(t *testing.T) {
+					assertFileRemoteCloneUsesValidationCommit(t, tc.formulaPath, candidate.contents, validationFormulaCommitSnippet(t, regenerateStep, tc.formulaPath))
+				})
+			}
+		})
+	}
+}
+
+func validationFormulaCommitSnippet(t *testing.T, step workflowStepConfig, formulaPath string) string {
+	t.Helper()
+
+	start := strings.Index(step.Run, "git add "+formulaPath)
+	if start < 0 {
+		return ""
+	}
+	return strings.TrimSpace(step.Run[start:])
+}
+
+func assertFileRemoteCloneUsesValidationCommit(t *testing.T, formulaPath string, candidateFormula string, validationCommit string) {
+	t.Helper()
+
+	repoPath := filepath.Join(t.TempDir(), "homebrew-tap")
+	formulaFilePath := filepath.Join(repoPath, filepath.FromSlash(formulaPath))
+	readmePath := filepath.Join(repoPath, "README.md")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("create tap directory: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.name", "Homebrew tap validation"},
+		{"config", "user.email", "homebrew-tap-validation@users.noreply.github.com"},
+	} {
+		runGitCommand(t, repoPath, args...)
+	}
+	writeFile(t, formulaFilePath, "committed formula\n")
+	writeFile(t, readmePath, "committed readme\n")
+	runGitCommand(t, repoPath, "add", formulaPath, "README.md")
+	runGitCommand(t, repoPath, "commit", "--no-verify", "-m", "committed formula")
+
+	writeFile(t, formulaFilePath, candidateFormula)
+	writeFile(t, readmePath, "uncommitted readme\n")
+	runGitCommand(t, repoPath, "add", "README.md")
+	firstClonePath := filepath.Join(t.TempDir(), "first-clone")
+	runGitCommand(t, t.TempDir(), "clone", "file://"+repoPath, firstClonePath)
+	if got := readFile(t, filepath.Join(firstClonePath, filepath.FromSlash(formulaPath))); got != "committed formula\n" {
+		t.Fatalf("file remote clone formula = %q, want committed formula", got)
+	}
+
+	if validationCommit != "" {
+		validationCommand := exec.Command("bash", "-c", validationCommit)
+		validationCommand.Dir = repoPath
+		validationCommand.Env = gitexec.SanitizedEnv()
+		if output, err := validationCommand.CombinedOutput(); err != nil {
+			t.Fatalf("run validation formula commit: %v\n%s", err, output)
+		}
+	}
+	secondClonePath := filepath.Join(t.TempDir(), "second-clone")
+	runGitCommand(t, t.TempDir(), "clone", "file://"+repoPath, secondClonePath)
+	if got := readFile(t, filepath.Join(secondClonePath, filepath.FromSlash(formulaPath))); got != candidateFormula {
+		t.Fatalf("file remote clone formula after local commit = %q, want %q", got, candidateFormula)
+	}
+	if got := readFile(t, filepath.Join(secondClonePath, "README.md")); got != "committed readme\n" {
+		t.Fatalf("file remote clone readme = %q, want unchanged committed readme", got)
+	}
+}
+
 func TestHomebrewTapWorkflowsSkipAllTapJobsWithoutToken(t *testing.T) {
 	t.Parallel()
 
