@@ -516,8 +516,8 @@ hooks-install:
 		chmod 755 "$$temp_hook"; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		trap - EXIT HUP INT TERM; \
-		git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; \
 		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
+		git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; \
 		if ! git -c core.bare=false config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then \
 			echo "Managed core.hooksPath was not activated" >&2; \
 			exit 1; \
@@ -547,10 +547,13 @@ hooks-uninstall:
 			status=0; git -c core.bare=false config "$$@" --fixed-value --unset-all core.hooksPath .githooks >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove legacy core.hooksPath" >&2; exit 1; fi; \
 		}; \
 		managed_hook_is_referenced() { \
-			label="$$1"; git_dir="$$2"; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; run_config "$$git_dir" --includes --get-all core.hooksPath >/dev/null 2>"$$error_file" || status=$$?; \
-			if [ "$$status" -eq 0 ]; then rm -f "$$error_file"; return 0; fi; \
-			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; return 1; fi; \
-			cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; \
+			label="$$1"; git_dir="$$2"; values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; status=0; run_config "$$git_dir" --includes --null --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then \
+				if xargs -0 -n 1 sh -c 'managed_dir="$$1"; path="$$2"; case "$$path" in "$$managed_dir"|"$$managed_dir"/) printf "%s\\n" referenced ;; /*) if [ -e "$$path" ] && [ "$$path" -ef "$$managed_dir" ]; then printf "%s\\n" referenced; fi ;; *) printf "%s\\n" referenced ;; esac' sh "$$managed_dir" <"$$values_file" | grep -q .; then rm -f "$$values_file" "$$error_file"; return 0; fi; \
+				rm -f "$$values_file" "$$error_file"; return 1; \
+			fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file"; return 1; fi; \
+			cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; \
 		}; \
 		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
@@ -573,12 +576,16 @@ hooks-uninstall:
 				if managed_hook_is_referenced "another worktree" "$$foreign_git_dir"; then managed_hook_still_referenced=true; fi; \
 			done; \
 		fi; \
-		if [ "$$managed_hook_still_referenced" = true ]; then \
-			echo "Preserved managed pre-commit hook because another configuration still uses it"; \
+		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then \
+			if [ "$$managed_hook_still_referenced" = true ]; then \
+				echo "Preserved managed pre-commit hook because another configuration still uses it"; \
+			else \
+				rm -f "$$managed_hook"; \
+				rmdir "$$managed_dir" 2>/dev/null || :; \
+				echo "Removed managed pre-commit hook"; \
+			fi; \
 		else \
-			rm -f "$$managed_hook"; \
-			rmdir "$$managed_dir" 2>/dev/null || :; \
-			echo "Removed managed pre-commit hook"; \
+			echo "No managed pre-commit hook to remove"; \
 		fi; \
 		:
 

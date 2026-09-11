@@ -89,6 +89,23 @@ func TestHooksInstallMigratesLegacyWorktreeHooksPath(t *testing.T) {
 	assertNoHooksPath(t, repoDir, "--worktree", "worktree")
 }
 
+func TestHooksInstallLeavesConfigUnchangedWhenLegacyWorktreeConfigIsLocked(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.worktree.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil {
+		t.Fatalf("install with locked worktree config unexpectedly succeeded:\n%s", output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	assertConfigValues(t, repoDir, "--worktree", ".githooks")
+}
+
 func TestHooksInstallPreservesMaskedCustomLocalHooksPath(t *testing.T) {
 	t.Parallel()
 
@@ -533,7 +550,49 @@ func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *tes
 	}
 }
 
-func TestHooksUninstallPreservesHookForForeignManagedPathAliases(t *testing.T) {
+func TestHooksUninstallPreservesHookForForeignAbsoluteManagedPathAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		hooksPath func(t *testing.T, managedDir string) string
+	}{
+		{
+			name: "trailing slash",
+			hooksPath: func(_ *testing.T, managedDir string) string {
+				return managedDir + string(filepath.Separator)
+			},
+		},
+		{
+			name: "symlink alias",
+			hooksPath: func(t *testing.T, managedDir string) string {
+				aliasDir := filepath.Join(t.TempDir(), "managed-hooks-alias")
+				if err := os.Symlink(managedDir, aliasDir); err != nil {
+					t.Skipf("create managed hook alias: %v", err)
+				}
+				return aliasDir
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+			runCommand(t, repoDir, "make", "hooks-install")
+			managedHook := managedHookPath(t, repoDir)
+			managedDir := filepath.Dir(managedHook)
+			linkedDir := filepath.Join(t.TempDir(), "linked")
+			runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+			runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", testCase.hooksPath(t, managedDir))
+
+			runCommand(t, repoDir, "make", "hooks-uninstall")
+			if _, err := os.Stat(managedHook); err != nil {
+				t.Fatalf("uninstaller removed managed hook used through %s: %v", testCase.name, err)
+			}
+		})
+	}
+}
+
+func TestHooksUninstallPreservesHookForForeignRelativeManagedPath(t *testing.T) {
 	t.Parallel()
 
 	repoDir := newHookTestRepository(t)
@@ -547,12 +606,49 @@ func TestHooksUninstallPreservesHookForForeignManagedPathAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("make managed hook path relative: %v", err)
 	}
-	runCommand(t, linkedDir, "git", "config", "--worktree", "--add", "core.hooksPath", managedDir+string(filepath.Separator))
-	runCommand(t, linkedDir, "git", "config", "--worktree", "--add", "core.hooksPath", relativeManagedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", relativeManagedDir)
 
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	if _, err := os.Stat(managedHook); err != nil {
-		t.Fatalf("uninstaller removed managed hook used through foreign aliases: %v", err)
+		t.Fatalf("uninstaller removed managed hook used through a relative foreign path: %v", err)
+	}
+}
+
+func TestHooksUninstallRemovesUnreferencedHookWithUnrelatedGlobalAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	customDir := filepath.Join(t.TempDir(), "custom-hooks")
+	if err := os.Mkdir(customDir, 0o755); err != nil {
+		t.Fatalf("create unrelated global hook directory: %v", err)
+	}
+	writeFile(t, globalConfig, "[core]\n\thooksPath = "+customDir+"\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall", "GIT_CONFIG_GLOBAL="+globalConfig, "GIT_CONFIG_NOSYSTEM=1")
+	if err != nil {
+		t.Fatalf("uninstall with unrelated global hook path = %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "Removed managed pre-commit hook") {
+		t.Fatalf("uninstall did not report removal: %s", output)
+	}
+	if _, err := os.Stat(managedHook); !os.IsNotExist(err) {
+		t.Fatalf("uninstaller preserved hook for unrelated global path: %v", err)
+	}
+}
+
+func TestHooksUninstallReportsAbsentManagedHookNeutrally(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err != nil {
+		t.Fatalf("uninstall without managed hook = %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "No managed pre-commit hook to remove") || strings.Contains(string(output), "Removed managed") || strings.Contains(string(output), "Preserved managed") {
+		t.Fatalf("absent managed hook output = %q", output)
 	}
 }
 
