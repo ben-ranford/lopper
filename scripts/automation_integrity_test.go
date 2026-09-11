@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,36 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestGeneratedManpageMatchesCheckedInBody(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "lopper.1")
+	cmd := exec.Command("./scripts/generate-manpage.sh", outputPath)
+	cmd.Dir = ".."
+	cmd.Env = append(os.Environ(), "MANPAGE_DATE=1970-01-01")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate manpage: %v\n%s", err, output)
+	}
+
+	generated, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read generated manpage: %v", err)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "docs", "man", "lopper.1"))
+	if err != nil {
+		t.Fatalf("read checked-in manpage: %v", err)
+	}
+
+	if !bytes.Equal(manpageBody(checkedIn), manpageBody(generated)) {
+		t.Fatal("checked-in manpage body does not match generated CLI usage")
+	}
+}
+
+func manpageBody(manpage []byte) []byte {
+	if newline := bytes.IndexByte(manpage, '\n'); newline >= 0 {
+		return manpage[newline+1:]
+	}
+	return nil
+}
 
 func TestAutomationIntegrityIsDirectCIPrequisite(t *testing.T) {
 	t.Parallel()

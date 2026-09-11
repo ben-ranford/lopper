@@ -24,6 +24,7 @@ GO_BIN ?=
 GO_TOOLCHAIN ?= go1.27.1
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
+MANPAGE_DATE ?= 1970-01-01
 GOLANGCI_LINT_VERSION ?= v2.13.1
 GOSTYLE_VERSION ?= v0.26.1-0.20260607232238-6ca19a9c9020
 GOSEC_VERSION ?= v2.28.0
@@ -292,7 +293,7 @@ build:
 	GOFLAGS=-buildvcs=false $(GO_CMD) build -ldflags "$(BUILD_GO_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 manpage:
-	./scripts/generate-manpage.sh $(MANPAGE_OUT)
+	MANPAGE_DATE="$(MANPAGE_DATE)" ./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
 ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
 
