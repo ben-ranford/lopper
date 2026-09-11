@@ -228,8 +228,7 @@ Release-please PRs also receive an automated sticky comment with the same releas
 - edit `internal/featureflags/release_locks.json` to ship a preview flag default-on for that release only
 - run `graduate-feature.yml` to open a dedicated PR that changes a flag from `preview` to `stable`
 
-After a stable release publishes, the release workflow stamps `firstStableRelease` on any flags that shipped in that release for the first time.
-Subsequent release PR comments treat only unstamped preview flags as first-release graduation candidates.
+After a stable release publishes, the release workflow stamps `firstStableRelease` on any flags that shipped in that release for the first time. The stamp records shipping history only: release PR comments list every flag whose lifecycle remains `preview` as a graduation candidate, whether or not it has a stamp.
 
 ## Graduation
 

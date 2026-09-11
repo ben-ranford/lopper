@@ -1447,6 +1447,59 @@ func TestRunReleasePRComment(t *testing.T) {
 	}
 }
 
+func TestRunReleasePRCommentListsStampedPreviewCandidate(t *testing.T) {
+	registry, err := featureflags.NewRegistry([]featureflags.Flag{
+		{
+			Code:               "LOP-FEAT-0001",
+			Name:               "shipped-preview-flag",
+			Description:        "Preview behavior that already shipped",
+			Lifecycle:          featureflags.LifecyclePreview,
+			FirstStableRelease: "v1.5.0",
+		},
+		{
+			Code:        "LOP-FEAT-0002",
+			Name:        "stable-flag",
+			Description: "Stable behavior",
+			Lifecycle:   featureflags.LifecycleStable,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	oldValidate := validateDefaultRegistryFn
+	oldValidateLocks := validateDefaultReleaseLocksFn
+	oldDefaultRegistry := defaultRegistryFn
+	t.Cleanup(func() {
+		validateDefaultRegistryFn = oldValidate
+		validateDefaultReleaseLocksFn = oldValidateLocks
+		defaultRegistryFn = oldDefaultRegistry
+	})
+	validateDefaultRegistryFn = func() error { return nil }
+	validateDefaultReleaseLocksFn = func() error { return nil }
+	defaultRegistryFn = func() *featureflags.Registry { return registry }
+
+	root := t.TempDir()
+	t.Chdir(root)
+	previousCatalog := "previous-features.json"
+	testutil.MustWriteFile(t, filepath.Join(root, previousCatalog), `[]`)
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{
+			"release-pr-comment",
+			"--release", "v1.5.1",
+			"--previous-catalog", previousCatalog,
+		})
+	})
+	if err != nil {
+		t.Fatalf("run release-pr-comment: %v", err)
+	}
+	for _, want := range []string{"### Graduation candidates", "`LOP-FEAT-0001` `shipped-preview-flag`"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected release PR comment to contain %q, got %s", want, output)
+		}
+	}
+}
+
 func TestRunReleasePRCommentRejectsCatalogErrors(t *testing.T) {
 	oldValidate := validateDefaultRegistryFn
 	oldValidateLocks := validateDefaultReleaseLocksFn
@@ -1511,7 +1564,18 @@ func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
 	}
 
 	if got := graduationCandidatePreviewFlags(testRegistry(t).Flags()); len(got) != 1 || got[0].Code != "LOP-FEAT-0001" {
-		t.Fatalf("expected only unstamped preview flags as candidates, got %#v", got)
+		t.Fatalf("expected preview lifecycle flags as candidates, got %#v", got)
+	}
+}
+
+func TestGraduationCandidatePreviewFlagsPreserveShippingHistory(t *testing.T) {
+	candidates := graduationCandidatePreviewFlags([]featureflags.Flag{
+		{Code: "LOP-FEAT-0001", Name: "unstamped-preview", Lifecycle: featureflags.LifecyclePreview},
+		{Code: "LOP-FEAT-0002", Name: "shipped-preview", Lifecycle: featureflags.LifecyclePreview, FirstStableRelease: "v1.5.0"},
+		{Code: "LOP-FEAT-0003", Name: "stable", Lifecycle: featureflags.LifecycleStable, FirstStableRelease: "v1.5.0"},
+	})
+	if len(candidates) != 2 || candidates[0].Code != "LOP-FEAT-0001" || candidates[1].Code != "LOP-FEAT-0002" {
+		t.Fatalf("graduation candidates = %#v, want both preview flags regardless of shipping history", candidates)
 	}
 }
 
@@ -1623,13 +1687,6 @@ func TestFormatReleasePRCommentWithoutCandidates(t *testing.T) {
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{
 		{
 			Code:               "LOP-FEAT-0001",
-			Name:               "preview-flag",
-			Description:        "Preview behavior",
-			Lifecycle:          featureflags.LifecyclePreview,
-			FirstStableRelease: "v1.5.0",
-		},
-		{
-			Code:               "LOP-FEAT-0002",
 			Name:               "stable-flag",
 			Description:        "Stable behavior",
 			Lifecycle:          featureflags.LifecycleStable,
@@ -1644,7 +1701,7 @@ func TestFormatReleasePRCommentWithoutCandidates(t *testing.T) {
 		t.Fatalf("manifest: %v", err)
 	}
 	output := formatReleasePRComment("v1.5.0", registry.Flags(), manifest, registry.Flags(), true, "")
-	if !strings.Contains(output, "No preview flags are shipping in their first stable release candidate.") {
+	if !strings.Contains(output, "No preview flags are currently available for graduation.") {
 		t.Fatalf("expected no-candidate note, got %s", output)
 	}
 	if strings.Contains(output, "### Graduation candidates") {

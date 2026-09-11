@@ -109,9 +109,7 @@ func graduationCandidatePreviewFlags(current []featureflags.Flag) []featureflags
 		if flag.Lifecycle != featureflags.LifecyclePreview {
 			continue
 		}
-		if flag.FirstStableRelease == "" {
-			candidates = append(candidates, flag)
-		}
+		candidates = append(candidates, flag)
 	}
 	return candidates
 }
@@ -133,7 +131,7 @@ func formatReleasePRComment(release string, current []featureflags.Flag, manifes
 
 	candidates := graduationCandidatePreviewFlags(current)
 	if len(candidates) == 0 {
-		b.WriteString("- No preview flags are shipping in their first stable release candidate.\n")
+		b.WriteString("- No preview flags are currently available for graduation.\n")
 		return b.String()
 	}
 
