@@ -14,7 +14,6 @@ const (
 	swiftSourceExtension                  = ".swift"
 	maxDetectFiles                        = 2048
 	maxRootCarthageSourceTraversalEntries = 2048
-	maxRootCarthageSourceRootEntries      = 1024
 	maxRootCarthageSourceDepth            = 32
 	rootCarthageSourceReadBatchSize       = 128
 	maxScanFiles                          = 4096
