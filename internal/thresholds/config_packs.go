@@ -2,7 +2,6 @@ package thresholds
 
 import (
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -178,17 +177,11 @@ func resolvePackRef(currentPath, ref string) (string, error) {
 	}
 
 	if parentURL, ok := parseRemoteURL(currentPath); ok {
-		parentBase := *parentURL
-		parentBase.Fragment = ""
-		relativeRef, err := url.Parse(trimmed)
-		if err != nil {
-			return "", fmt.Errorf("invalid remote pack reference %q: %w", trimmed, err)
-		}
-		return canonicalRemotePolicyURL(parentBase.ResolveReference(relativeRef).String())
+		return "", fmt.Errorf("remote policy packs are disabled: %s", parentURL.String())
 	}
 
 	if _, ok := parseRemoteURL(trimmed); ok {
-		return canonicalRemotePolicyURL(trimmed)
+		return "", fmt.Errorf("remote policy packs are disabled: %s", trimmed)
 	}
 	if filepath.IsAbs(trimmed) {
 		return filepath.Clean(trimmed), nil
@@ -218,11 +211,7 @@ func canonicalPolicyLocation(path string) (string, bool, error) {
 
 func readPolicyLocation(location string, trust packTrust, remote bool) ([]byte, error) {
 	if remote {
-		data, err := readRemotePolicyFile(location)
-		if err != nil {
-			return nil, fmt.Errorf("read remote policy file %s: %w", location, err)
-		}
-		return data, nil
+		return nil, fmt.Errorf("remote policy packs are disabled: %s", location)
 	}
 
 	var (

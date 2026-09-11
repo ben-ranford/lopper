@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -571,6 +572,24 @@ func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPathRejectsRemoteURLBeforeLocalPathLookup(t *testing.T) {
+	repo := t.TempDir()
+	remoteURL := "https://example.com/policies/base.yml"
+	if runtime.GOOS != "windows" {
+		// Windows disallows ':' in directory names, so this collision cannot exist there.
+		localCollision := filepath.Join(repo, "https:", "example.com", "policies", "base.yml")
+		testutil.MustWriteFile(t, localCollision, "thresholds:\n  fail_on_increase_percent: 3\n")
+	}
+
+	_, found, err := resolveConfigPath(repo, remoteURL)
+	if err == nil || !strings.Contains(err.Error(), "remote policy locations are disabled") {
+		t.Fatalf("expected explicit remote URL rejection, got %v", err)
+	}
+	if found {
+		t.Fatal("expected remote URL not to resolve through a matching local path")
+	}
+}
+
 func TestLoadWithPolicyPackPrecedenceAndSources(t *testing.T) {
 	repo := t.TempDir()
 	basePolicy := `thresholds:
@@ -726,15 +745,32 @@ func TestLoadWithPolicyPackCycle(t *testing.T) {
 	}
 }
 
-func TestLoadWithPolicyRejectsRemotePackWithoutPin(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - https://example.com/policy.yml\n")
-	_, err := LoadWithPolicy(repo, "")
-	if err == nil {
-		t.Fatalf("expected remote pack rejection")
-	}
-	if !strings.Contains(err.Error(), "must include a sha256 pin") {
-		t.Fatalf("unexpected remote rejection error: %v", err)
+func TestLoadWithPolicyRejectsUnpinnedRemotePackWithoutFetching(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server func(http.Handler) *httptest.Server
+	}{
+		{name: "HTTP", server: httptest.NewServer},
+		{name: "HTTPS", server: httptest.NewTLSServer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests int32
+			server := tc.server(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				atomic.AddInt32(&requests, 1)
+			}))
+			defer server.Close()
+
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), "policy:\n  packs:\n    - "+server.URL+"/policy.yml\n")
+			result, err := LoadWithPolicy(repo, "")
+			if err == nil {
+				t.Fatal("expected remote pack rejection")
+			}
+			assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
+			if got := atomic.LoadInt32(&requests); got != 0 {
+				t.Fatalf("expected no remote fetches for unpinned remote pack, got %d", got)
+			}
+		})
 	}
 }
 
@@ -790,6 +826,20 @@ func TestLoadWithPolicyExplicitConfigTreatsRepoOverlayAsUntrustedForRemotePack(t
 	assertRejectedPolicyLoadResult(t, result, err, "remote policy packs are disabled")
 	if got := atomic.LoadInt32(requests); got != 0 {
 		t.Fatalf("expected no remote fetches for rejected overlay remote pack, got %d", got)
+	}
+}
+
+func TestReadPolicyLocationRejectsRemoteWithoutFetching(t *testing.T) {
+	server, pin, requests := newPinnedRemotePolicyServer(t, "thresholds:\n  fail_on_increase_percent: 3\n")
+	defer server.Close()
+	location := server.URL + "/org.yml#sha256=" + pin
+
+	_, err := readPolicyLocation(location, packTrust{}, true)
+	if err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+		t.Fatalf("expected local-only policy reader to reject remote policy, got %v", err)
+	}
+	if got := atomic.LoadInt32(requests); got != 0 {
+		t.Fatalf("expected no remote policy fetches, got %d", got)
 	}
 }
 
@@ -918,11 +968,11 @@ func TestResolvePackRefRejectsEmptyReference(t *testing.T) {
 	}
 }
 
-func TestResolvePackRefRejectsInvalidRemoteReference(t *testing.T) {
+func TestResolvePackRefRejectsRemoteParentBeforeValidatingReference(t *testing.T) {
 	current := "https://example.com/policies/root.yml#sha256=" + strings.Repeat("a", 64)
 	_, err := resolvePackRef(current, "http://%zz")
-	if err == nil || !strings.Contains(err.Error(), "invalid remote pack reference") {
-		t.Fatalf("expected invalid remote pack reference error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+		t.Fatalf("expected remote parent rejection, got %v", err)
 	}
 }
 
@@ -945,15 +995,10 @@ func TestResolvePackRefSupportsAbsoluteAndRelativePaths(t *testing.T) {
 	}
 }
 
-func TestResolvePackRefCanonicalizesRemoteReference(t *testing.T) {
+func TestResolvePackRefRejectsRemoteReferenceBeforeValidatingPin(t *testing.T) {
 	remote := "https://example.com/org.yml#SHA256=" + strings.Repeat("B", 64)
-	got, err := resolvePackRef("/repo/.lopper.yml", remote)
-	if err != nil {
-		t.Fatalf("resolve remote ref: %v", err)
-	}
-	want := "https://example.com/org.yml#sha256=" + strings.Repeat("b", 64)
-	if got != want {
-		t.Fatalf("unexpected canonical remote ref: got %q want %q", got, want)
+	if _, err := resolvePackRef("/repo/.lopper.yml", remote); err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+		t.Fatalf("expected remote reference rejection, got %v", err)
 	}
 }
 
@@ -1089,47 +1134,20 @@ func TestThresholdHelperEdgeCases(t *testing.T) {
 	}
 }
 
-func TestRemotePolicyURLValidationAndFetchErrors(t *testing.T) {
+func TestRemotePolicyURLValidation(t *testing.T) {
 	if parsed, ok := parseRemoteURL("http://%zz"); ok || parsed != nil {
 		t.Fatalf("expected invalid URL parse to be rejected")
 	}
 	if parsed, ok := parseRemoteURL("https:///missing-host"); ok || parsed != nil {
 		t.Fatalf("expected hostless remote URL to be rejected")
 	}
+	for _, raw := range []string{"HTTP://example.com/policy.yml", "HTTPS://example.com/policy.yml"} {
+		if parsed, ok := parseRemoteURL(raw); !ok || parsed == nil {
+			t.Fatalf("expected mixed-case remote URL %q to be recognized", raw)
+		}
+	}
 	if _, err := canonicalRemotePolicyURL("mailto:test@example.com"); err == nil {
 		t.Fatalf("expected invalid canonical remote URL error")
-	}
-	if _, err := readRemotePolicyFile("://bad"); err == nil {
-		t.Fatalf("expected parse remote policy URL error")
-	}
-	if _, err := readRemotePolicyFile("https://example.com/policy.yml#bad-pin"); err == nil {
-		t.Fatalf("expected invalid pin error")
-	}
-
-	originalClient := remotePolicyHTTPClient
-	t.Cleanup(func() {
-		remotePolicyHTTPClient = originalClient
-	})
-	remotePolicyHTTPClient = &http.Client{Transport: &roundTripFunc{fn: func(*http.Request) (*http.Response, error) {
-		return nil, fmt.Errorf("boom")
-	}}}
-	if _, err := readRemotePolicyFile("https://example.com/policy.yml#sha256=" + strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "fetch remote policy") {
-		t.Fatalf("expected fetch remote policy error, got %v", err)
-	}
-	remotePolicyHTTPClient = originalClient
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(strings.Repeat("a", maxRemotePolicyBytes+1))); err != nil {
-			t.Fatalf("write oversized body: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	sum := sha256.Sum256([]byte("tiny"))
-	location := server.URL + "/policy.yml#sha256=" + hex.EncodeToString(sum[:])
-	if _, err := readRemotePolicyFile(location); err == nil || !strings.Contains(err.Error(), "size limit") {
-		t.Fatalf("expected remote policy size limit error, got %v", err)
 	}
 }
 
@@ -1149,12 +1167,4 @@ func assertLoadConfigErrorContains(t *testing.T, config string, expectedText str
 func stringList(values ...string) *[]string {
 	out := append(make([]string, 0, len(values)), values...)
 	return &out
-}
-
-type roundTripFunc struct {
-	fn func(*http.Request) (*http.Response, error)
-}
-
-func (rt *roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return rt.fn(req)
 }
