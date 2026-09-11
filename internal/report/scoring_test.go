@@ -507,8 +507,8 @@ func TestFilterFindingsByConfidencePreservesSecurityRiskCues(t *testing.T) {
 	FilterFindingsByConfidence(deps, 95)
 	AnnotateRemovalCandidateScores(deps)
 
-	if len(deps[0].RiskCues) != 3 || deps[0].RiskCues[0].Code != "critical-loader" || deps[0].RiskCues[1].Code != "dynamic-loader" || deps[0].RiskCues[2].Code != "runtime-eval" {
-		t.Fatalf("expected security risk cues to survive low confidence filtering, got %#v", deps[0].RiskCues)
+	if len(deps[0].RiskCues) != 2 || deps[0].RiskCues[0].Code != "dynamic-loader" || deps[0].RiskCues[1].Code != "runtime-eval" {
+		t.Fatalf("expected only high and medium risk cues to survive low confidence filtering, got %#v", deps[0].RiskCues)
 	}
 	if len(deps[0].UnusedExports) != 0 || len(deps[0].Recommendations) != 0 {
 		t.Fatalf("expected low-confidence unused/removal findings to remain filtered, got %#v", deps[0])
@@ -522,13 +522,16 @@ func TestFilterFindingsByConfidencePreservesSecurityRiskCues(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &sarif); err != nil {
 		t.Fatal(err)
 	}
-	if len(sarif.Runs) != 1 || len(sarif.Runs[0].Results) != 3 {
-		t.Fatalf("expected all security risks in SARIF, got %s", payload)
+	if len(sarif.Runs) != 1 || len(sarif.Runs[0].Results) != 2 {
+		t.Fatalf("expected high and medium security risks in SARIF, got %s", payload)
 	}
 	for _, cue := range deps[0].RiskCues {
 		if cue.ConfidenceScore != 40 || len(cue.ConfidenceReasonCodes) != 1 {
 			t.Fatalf("confidence evidence was lost: %#v", cue)
 		}
+	}
+	if deps[0].RemovalCandidate == nil || deps[0].RemovalCandidate.Confidence != 40 {
+		t.Fatalf("expected removal candidate confidence to retain low-confidence evidence, got %#v", deps[0].RemovalCandidate)
 	}
 }
 
