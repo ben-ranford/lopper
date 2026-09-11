@@ -356,6 +356,24 @@ func TestServiceAnalyseSwiftCarthageAutoModeBehindPreviewFlag(t *testing.T) {
 	}
 }
 
+func TestServiceAutoRetainsNestedSwiftCarthagePackage(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftCarthageAnalysisFixture(t, filepath.Join(repo, "apps", "ios"))
+	result, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := singleDependencyReport(t, result)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("nested Carthage package lost dependency attribution: %#v", dep)
+	}
+}
+
 func TestServiceAutoIgnoresCarthageMetadataInJavaScriptRepository(t *testing.T) {
 	repo := t.TempDir()
 	writeJSFixture(t, repo)
