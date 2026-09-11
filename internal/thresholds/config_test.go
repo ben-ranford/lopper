@@ -582,7 +582,7 @@ func TestResolveConfigPathRejectsRemoteURLBeforeLocalPathLookup(t *testing.T) {
 	}
 
 	_, found, err := resolveConfigPath(repo, remoteURL)
-	if err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+	if err == nil || !strings.Contains(err.Error(), "remote policy locations are disabled") {
 		t.Fatalf("expected explicit remote URL rejection, got %v", err)
 	}
 	if found {
