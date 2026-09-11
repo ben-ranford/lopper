@@ -15,7 +15,8 @@ func TestGeneratedManpageMatchesCheckedInBody(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "lopper.1")
 	cmd := exec.Command("./scripts/generate-manpage.sh", outputPath)
 	cmd.Dir = ".."
-	cmd.Env = append(os.Environ(), "MANPAGE_DATE=1970-01-01")
+	const generatedDate = "2042-02-03"
+	cmd.Env = append(os.Environ(), "MANPAGE_DATE="+generatedDate)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generate manpage: %v\n%s", err, output)
 	}
@@ -23,6 +24,9 @@ func TestGeneratedManpageMatchesCheckedInBody(t *testing.T) {
 	generated, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("read generated manpage: %v", err)
+	}
+	if !bytes.HasPrefix(generated, []byte(".TH LOPPER 1 \""+generatedDate+"\" \"lopper\" \"User Commands\"\n")) {
+		t.Fatalf("generated manpage does not preserve MANPAGE_DATE=%s in its header", generatedDate)
 	}
 	checkedIn, err := os.ReadFile(filepath.Join("..", "docs", "man", "lopper.1"))
 	if err != nil {
