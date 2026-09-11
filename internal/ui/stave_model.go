@@ -297,10 +297,6 @@ func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[
 		model.interaction.status = ""
 		model.interaction.error = failure
 	}
-	if actionID == staveActionRefresh {
-		clampStaveSlice(model)
-		clearMissingStaveDetail(model)
-	}
 	if actionID == staveActionQuit {
 		model.interaction.quit = true
 	}
@@ -349,6 +345,8 @@ func updateStaveOutcomeReport(model *staveSummaryModel, actionID string, value m
 	}
 	mapped := mapSummaryReportView(decoded)
 	model.view = &mapped
+	clampStaveSlice(model)
+	clearMissingStaveDetail(model)
 	return true
 }
 
