@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.8 (2026-09-11)
+
+- Updated the bundled `adm-zip` dependency from 0.6.0 to 0.6.1.
+
 ## 1.8.7 (2026-09-10)
 
 - Updated VS Code behavior: chore(deps): update dependency mocha to v12 with VS Code test compatibility (#1545).
