@@ -218,11 +218,7 @@ func canonicalPolicyLocation(path string) (string, bool, error) {
 
 func readPolicyLocation(location string, trust packTrust, remote bool) ([]byte, error) {
 	if remote {
-		data, err := readRemotePolicyFile(location)
-		if err != nil {
-			return nil, fmt.Errorf("read remote policy file %s: %w", location, err)
-		}
-		return data, nil
+		return nil, fmt.Errorf("remote policy packs are disabled: %s", location)
 	}
 
 	var (
