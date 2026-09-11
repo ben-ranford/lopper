@@ -2802,21 +2802,36 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 		t.Fatal("Renovate platformAutomerge must be disabled so dependency updates require human review")
 	}
 
+	var matcherConfig struct {
+		PackageRules []map[string]json.RawMessage `json:"packageRules"`
+	}
+	readJSONConfig(t, "renovate.json", &matcherConfig)
+
 	hasCatchAllReviewRule := false
-	for _, rule := range config.PackageRules {
+	for index, rule := range config.PackageRules {
 		if rule.Enabled != nil && !*rule.Enabled {
 			t.Fatalf("Renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
 		}
 		if rule.Automerge != nil && *rule.Automerge {
 			t.Fatalf("Renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
 		}
-		if slices.Contains(rule.MatchPackageNames, "*") && rule.Automerge != nil && !*rule.Automerge {
+		if len(rule.MatchPackageNames) == 1 && rule.MatchPackageNames[0] == "*" &&
+			rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(matcherConfig.PackageRules[index]) {
 			hasCatchAllReviewRule = true
 		}
 	}
 	if !hasCatchAllReviewRule {
 		t.Fatal("Renovate must include a catch-all automerge=false rule to override inherited automerge settings")
 	}
+}
+
+func renovateRuleHasNarrowingMatcher(rule map[string]json.RawMessage) bool {
+	for key := range rule {
+		if (strings.HasPrefix(key, "match") && key != "matchPackageNames") || strings.HasPrefix(key, "exclude") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
