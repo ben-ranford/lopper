@@ -464,6 +464,21 @@ hooks-install:
 		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
+		worktree_config_enabled="$$(git config --bool --get extensions.worktreeConfig || :)"; \
+		if [ "$$worktree_config_enabled" = true ]; then \
+			current_git_dir="$$(git rev-parse --path-format=absolute --git-dir)"; \
+			for config_file in "$$common_dir"/config.worktree "$$common_dir"/worktrees/*/config.worktree; do \
+				[ -f "$$config_file" ] || continue; \
+				[ "$$config_file" = "$$current_git_dir/config.worktree" ] && continue; \
+				if git config --file "$$config_file" --get-all core.hooksPath >/dev/null 2>&1; then \
+					other_path="$$(git config --file "$$config_file" --get-all core.hooksPath)"; \
+					if [ "$$other_path" != "$$managed_dir" ]; then \
+						echo "Refusing to install while another worktree has a non-managed core.hooksPath" >&2; \
+						exit 1; \
+					fi; \
+				fi; \
+			done; \
+		fi; \
 		current_path="$$(git config --get core.hooksPath || :)"; \
 		case "$$current_path" in \
 			''|"$$managed_dir"|.githooks) ;; \
@@ -474,7 +489,8 @@ hooks-install:
 			''|"$$managed_dir"|.githooks) ;; \
 			*) echo "Refusing to replace local core.hooksPath: $$local_path" >&2; exit 1 ;; \
 		esac; \
-		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		worktree_path=; \
+		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
 		case "$$worktree_path" in \
 			''|"$$managed_dir"|.githooks) ;; \
 			*) echo "Refusing to replace worktree core.hooksPath: $$worktree_path" >&2; exit 1 ;; \
@@ -488,7 +504,8 @@ hooks-install:
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		trap - EXIT HUP INT TERM; \
 		git config --local core.hooksPath "$$managed_dir"; \
-		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		worktree_path=; \
+		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
 		case "$$worktree_path" in \
 			''|"$$managed_dir") ;; \
 			.githooks) git config --worktree core.hooksPath "$$managed_dir" ;; \
@@ -506,15 +523,17 @@ hooks-uninstall:
 		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
+		worktree_config_enabled="$$(git config --bool --get extensions.worktreeConfig || :)"; \
 		local_path="$$(git config --local --get core.hooksPath || :)"; \
 		case "$$local_path" in \
 			"$$managed_dir"|.githooks) git config --local --unset-all core.hooksPath ;; \
 			'') ;; \
 			*) echo "Preserved unrelated core.hooksPath: $$local_path" ;; \
 		esac; \
-		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		worktree_path=; \
+		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
 		case "$$worktree_path" in \
-			"$$managed_dir"|.githooks) git config --worktree --unset-all core.hooksPath ;; \
+			"$$managed_dir"|.githooks) if [ "$$worktree_config_enabled" = true ]; then git config --worktree --unset-all core.hooksPath; fi ;; \
 			'') ;; \
 			*) echo "Preserved unrelated worktree core.hooksPath: $$worktree_path" ;; \
 		esac; \

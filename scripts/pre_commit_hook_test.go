@@ -111,13 +111,62 @@ func TestHooksInstallUsesCommonGitDirectoryForLinkedWorktree(t *testing.T) {
 	repoDir := newHookTestRepository(t)
 	linkedDir := filepath.Join(t.TempDir(), "linked")
 	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
-	runCommand(t, linkedDir, "make", "hooks-install")
+	command := exec.Command("make", "hooks-install")
+	command.Dir = linkedDir
+	output, err := command.CombinedOutput()
+	if err != nil || strings.Contains(string(output), "cannot be used with multiple working trees") {
+		t.Fatalf("linked worktree install = %v\n%s", err, output)
+	}
 
 	managedHook := managedHookPath(t, linkedDir)
 	assertConfigEquals(t, linkedDir, filepath.Dir(managedHook))
 	writeFile(t, filepath.Join(linkedDir, "linked.txt"), "linked\n")
 	runCommand(t, linkedDir, "git", "add", "linked.txt")
 	runCommitWithHook(t, linkedDir, "linked commit")
+	command = exec.Command("make", "hooks-uninstall")
+	command.Dir = linkedDir
+	output, err = command.CombinedOutput()
+	if err != nil || strings.Contains(string(output), "cannot be used with multiple working trees") {
+		t.Fatalf("linked worktree uninstall = %v\n%s", err, output)
+	}
+}
+
+func TestHooksInstallRefusesLinkedWorktreeOverrideBeforeMutationAndSucceedsAfterRemoval(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+
+	command := exec.Command("make", "hooks-install")
+	command.Dir = repoDir
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "another worktree") {
+		t.Fatalf("linked worktree install = %v\n%s", err, output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if got := gitOutput(t, linkedDir, "config", "--worktree", "--get", "core.hooksPath"); got != ".githooks" {
+		t.Fatalf("linked worktree core.hooksPath = %q, want .githooks", got)
+	}
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before refusal: %v", err)
+	}
+	runCommand(t, linkedDir, "git", "config", "--worktree", "--unset-all", "core.hooksPath")
+	runCommand(t, repoDir, "make", "hooks-install")
+	assertConfigEquals(t, repoDir, filepath.Dir(managedHookPath(t, repoDir)))
+}
+
+func TestHooksInstallAllowsSafeLinkedWorktrees(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, repoDir, "make", "hooks-install")
+	assertConfigEquals(t, repoDir, filepath.Dir(managedHookPath(t, repoDir)))
 }
 
 func TestHooksInstallAndUninstallPreserveCustomHooks(t *testing.T) {
