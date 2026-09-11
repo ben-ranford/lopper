@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package dotnet
 
 import (
@@ -5,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -51,11 +54,27 @@ func TestDetectAndRootSignalBranches(t *testing.T) {
 	if updateDetection(repo, filepath.Join(repo, "broken.sln"), "broken.sln", &detection, roots) == nil {
 		t.Fatalf("expected updateDetection to fail for unreadable solution")
 	}
+	if updateDetection(repo, filepath.Join(repo, "missing.csproj"), "missing.csproj", &detection, roots) == nil {
+		t.Fatal("expected updateDetection to preserve missing project manifest error")
+	}
+
+	if _, err := NewAdapter().DetectWithConfidence(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled detection context, got %v", err)
+	}
 }
 
 func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	if _, err := scanRepo(context.Background(), ""); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected fs.ErrInvalid for empty repo path, got %v", err)
+	}
+	if _, err := scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected missing streaming scan repo path to fail")
+	}
+	if _, err := discoverScanInputs(context.Background(), ""); !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("expected fs.ErrInvalid for empty scan input repo path, got %v", err)
+	}
+	if _, err := discoverScanInputs(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected missing scan input repo path to fail")
 	}
 
 	repo := t.TempDir()
@@ -80,6 +99,34 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), "using Foo.Bar;\n")
 	if _, err := scanRepo(canceled, repo); err == nil {
 		t.Fatalf("expected canceled context error")
+	}
+	if _, err := discoverScanInputs(canceled, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan input discovery, got %v", err)
+	}
+}
+
+func TestScanRepoCancellationPrecedesManifestParsing(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Broken.csproj"), `<Project><PackageReference Include="broken"`)
+
+	if _, err := scanRepo(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan to stop before manifest parsing, got %v", err)
+	}
+}
+
+func TestStreamingDiscoveryReturnsSourceReadErrors(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(t.TempDir(), programSourceName)
+	testutil.MustWriteFile(t, outside, "using Acme.Foo;\n")
+	if err := os.Symlink(outside, filepath.Join(repo, programSourceName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if _, err := scanRepo(context.Background(), repo); err == nil {
+		t.Fatal("expected streaming scan to reject symlinked source")
+	}
+	if _, err := discoverScanInputs(context.Background(), repo); err != nil {
+		t.Fatalf("expected metadata-only scan input discovery to defer source reads, got %v", err)
 	}
 }
 
@@ -164,10 +211,13 @@ func TestByteWhitespaceAndCommentHelpers(t *testing.T) {
 	if _, ok := consumeKeyword([]byte("using"), "using"); ok {
 		t.Fatalf("expected consumeKeyword to require trailing whitespace")
 	}
+	if next, ok := consumeKeyword([]byte("using\fFoo.Bar;"), "using"); !ok || string(next) != "Foo.Bar;" {
+		t.Fatalf("expected consumeKeyword to accept form-feed whitespace: next=%q ok=%v", next, ok)
+	}
 	if !hasBytesPrefix([]byte("using Foo"), "using") || hasBytesPrefix([]byte("use Foo"), "using") {
 		t.Fatalf("unexpected hasBytesPrefix behavior")
 	}
-	if !isSpaceByte('\n') || isSpaceByte('x') {
+	if !isSpaceByte('\n') || !isSpaceByte('\f') || isSpaceByte('x') {
 		t.Fatalf("unexpected isSpaceByte behavior")
 	}
 	if !bytes.Equal(stripLineCommentBytes([]byte(" "+fooBarImportLine+" // note ")), []byte(fooBarImportLine)) {

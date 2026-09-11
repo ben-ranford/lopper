@@ -75,7 +75,7 @@ jobs:
           ref: ${{ steps.trusted_main.outputs.trusted_main_sha }}
           path: .trusted-release-notes-tooling
 
-      - name: Refresh VS Code extension release notes
+      - name: Refresh release notes
         if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' }}
         id: refresh_release_notes
         env:
@@ -93,19 +93,20 @@ jobs:
             echo "::error::No previous stable tag is reachable from the release-please PR." >&2
             exit 1
           fi
+          python3 .trusted-release-notes-tooling/scripts/release_build_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}"
           python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}" --date "$(date -u +%F)"
           python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --check
-          if git diff --quiet -- extensions/vscode-lopper/CHANGELOG.md; then
+          if git diff --quiet -- CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add extensions/vscode-lopper/CHANGELOG.md
-          git commit -m "docs(vscode): refresh release notes"
+          git add CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md
+          git commit -m "docs(release): refresh release notes"
           echo 'changed=true' >> "$GITHUB_OUTPUT"
 
-      - name: Push refreshed VS Code extension release notes
+      - name: Push refreshed release notes
         if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' && steps.refresh_release_notes.outputs.changed == 'true' }}
         env:
           PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
@@ -157,7 +158,7 @@ jobs:
           push_token="${PUSH_TOKEN}"
           unset PUSH_TOKEN
           if [ -z "${push_token}" ]; then
-            echo "::error::No token is available to push refreshed VS Code extension release notes." >&2
+            echo "::error::No token is available to push refreshed release notes." >&2
             exit 1
           fi
           auth_header="$(printf 'x-access-token:%s' "${push_token}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
@@ -1714,6 +1715,13 @@ jobs:
             end
           end
           RUBY
+
+          git add Formula/lopper.rb
+          git -c user.name="Homebrew tap validation" \
+            -c user.email="homebrew-tap-validation@users.noreply.github.com" \
+            -c core.hooksPath=/dev/null \
+            -c commit.gpgsign=false \
+            commit --allow-empty --no-verify -m "Validate lopper formula" -- Formula/lopper.rb
 
       - name: Validate formula
         working-directory: homebrew-tap

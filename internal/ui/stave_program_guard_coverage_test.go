@@ -158,8 +158,14 @@ func TestStaveProgramUnavailableServicesAndBaselineBuildErrors(t *testing.T) {
 		}
 	}
 
+	checkBaselineServiceAndBuildErrors(t, opts, view, current)
+}
+
+func checkBaselineServiceAndBuildErrors(t *testing.T, opts Options, view summaryReportView, current map[string]any) {
+	t.Helper()
+	ctx := context.Background()
 	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
-	program, err = newLopperStaveProgram(summary, &opts, &view, nil)
+	program, err := newLopperStaveProgram(summary, &opts, &view, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

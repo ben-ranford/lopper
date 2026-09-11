@@ -6,7 +6,11 @@
   "ignorePaths": [
     "**/test-fixtures/**"
   ],
+  "labels": [
+    "dependencies"
+  ],
   "platformAutomerge": true,
+  "prBodyTemplate": "## Summary\n\nAutomated dependency update managed by Renovate.\n\n## Changes\n\n{{{header}}}{{{table}}}{{{warnings}}}{{{notes}}}{{{changelogs}}}{{{configDescription}}}{{{controls}}}{{{footer}}}\n\n## Validation\n\n- Required CI checks run before merge.\n{{#if (equals semanticCommitType 'fix')}}\nRegression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements\n{{/if}}\n\n## Risk and compatibility\n\n- Breaking changes: Review the Renovate changelog before merge.\n- Migration required: Review the Renovate changelog before merge.\n- Performance impact: No expected impact from dependency metadata updates.\n- Memory benchmark impact: No expected impact from dependency metadata updates.\n\n## Checklist\n\n- [x] Tests added/updated for behavior changes\n- [x] Docs updated (README/docs/schema) if needed\n- [x] `memory-approved` requested/applied if intentional memory benchmark regressions exceed CI thresholds\n- [x] No unrelated changes included\n- [x] Ready for review",
   "packageRules": [
     {
       "matchUpdateTypes": [
@@ -31,6 +35,35 @@
       "postUpdateOptions": [
         "gomodTidy"
       ]
+    },
+    {
+      "description": "Keep Go compatibility and CI toolchain releases aligned",
+      "matchManagers": [
+        "gomod",
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "groupName": "Go toolchain",
+      "rangeStrategy": "bump"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the Go toolchain used by CI commands",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/",
+        "/(^|/)scripts/bench-gate\\.sh$/"
+      ],
+      "matchStrings": [
+        "GO_TOOLCHAIN \\?= go(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "GO_TOOLCHAIN=\"go(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go",
+      "versioningTemplate": "loose"
     }
   ]
 }

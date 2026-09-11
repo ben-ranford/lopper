@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -182,17 +184,21 @@ func appendBaselineSaveWarning(reportData report.Report, savedPath string) repor
 	return reportData
 }
 
-func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, error) {
-	if strings.TrimSpace(req.AdvisorySourcePath) == "" {
+func applyAdvisories(reportData report.Report, advisorySourceTrustRoot, advisorySourcePath string) (report.Report, error) {
+	if strings.TrimSpace(advisorySourcePath) == "" {
 		return reportData, nil
 	}
-	advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
+	advisories, err := advisory.LoadWithinRoot(advisorySourceTrustRoot, advisorySourcePath)
 	if err != nil {
 		return reportData, err
 	}
 	report.AnnotateVulnerabilities(&reportData, advisories)
 	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	return reportData, nil
+}
+
+func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, error) {
+	return applyAdvisories(reportData, req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
 }
 
 func applyVulnerabilityExceptionsIfNeeded(reportData report.Report, req AnalyseRequest, now time.Time) (report.Report, error) {
@@ -276,6 +282,12 @@ func validateReachableVulnerabilityThreshold(reportData report.Report, threshold
 	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
 		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
 	}
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
+		return nil
+	}
+	if hasOversizedRubyGemspecCoverageGap(reportData) {
+		return ErrReachableVulnerabilities
+	}
 	if !hasReachableVulnerabilityAtOrAbove(reportData, threshold) {
 		return nil
 	}
@@ -283,13 +295,113 @@ func validateReachableVulnerabilityThreshold(reportData report.Report, threshold
 }
 
 func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold string) bool {
-	if strings.TrimSpace(threshold) == "" || report.NormalizeVulnerabilityPriorityThreshold(threshold) == report.VulnerabilityPriorityOff {
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
 		return false
 	}
 	if reportData.BaselineComparison != nil {
 		return baselineHasReachableVulnerabilityAtOrAbove(reportData.BaselineComparison.NewReachableVulnerabilities, threshold)
 	}
 	return dependencyHasReachableVulnerabilityAtOrAbove(reportData.Dependencies, threshold)
+}
+
+func reachableVulnerabilityThresholdEnabled(threshold string) bool {
+	return strings.TrimSpace(threshold) != "" && report.NormalizeVulnerabilityPriorityThreshold(threshold) != report.VulnerabilityPriorityOff
+}
+
+func hasOversizedRubyGemspecCoverageGap(reportData report.Report) bool {
+	if reportData.BaselineComparison != nil {
+		return hasOversizedRubyGemspecCoverageGapList(reportData.BaselineComparison.NewCoverageGaps)
+	}
+	if hasOversizedRubyGemspecCoverageGapList(reportData.CoverageGaps) {
+		return true
+	}
+	return hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings)
+}
+
+func hasOversizedRubyGemspecCoverageGapList(gaps []report.CoverageGap) bool {
+	for _, gap := range gaps {
+		if strings.TrimSpace(gap.Code) != report.CoverageGapRubyOversizedGemspec {
+			continue
+		}
+		path := strings.TrimSpace(gap.Path)
+		if path == "" || strings.EqualFold(filepath.Ext(path), ".gemspec") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
+	for _, warning := range warnings {
+		if path, found := oversizedRubyGemspecDeclarationWarningPath(warning); found && strings.EqualFold(filepath.Ext(path), ".gemspec") {
+			return true
+		}
+	}
+	return false
+}
+
+func oversizedRubyGemspecDeclarationWarningPath(warning string) (string, bool) {
+	warning = strings.TrimSpace(warning)
+	for {
+		if path, found := oversizedRubyGemspecDeclarationWarningPathFromMessage(warning); found {
+			return path, true
+		}
+		rest, found := cutPRReviewRevisionWarningPrefix(warning)
+		if !found {
+			return "", false
+		}
+		warning = rest
+	}
+}
+
+func oversizedRubyGemspecDeclarationWarningPathFromMessage(warning string) (string, bool) {
+	path, found := equalFoldCutPrefix(warning, "skipped ")
+	if !found {
+		return "", false
+	}
+	const delimiter = " because it exceeds "
+	index := strings.LastIndex(path, delimiter)
+	if index < 0 {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.TrimSpace(path[index+len(delimiter):]), " bytes") {
+		return "", false
+	}
+	return strings.TrimSpace(path[:index]), true
+}
+
+func cutPRReviewRevisionWarningPrefix(warning string) (string, bool) {
+	for _, prefix := range []string{"base ", "head "} {
+		suffix, found := equalFoldCutPrefix(warning, prefix)
+		if !found {
+			continue
+		}
+		index := strings.Index(suffix, ": ")
+		if index < 0 {
+			return "", false
+		}
+		return strings.TrimSpace(suffix[index+2:]), true
+	}
+	return "", false
+}
+
+func equalFoldCutPrefix(value, prefix string) (string, bool) {
+	if prefix == "" {
+		return value, true
+	}
+
+	cut := 0
+	for _, prefixChar := range prefix {
+		if cut >= len(value) {
+			return "", false
+		}
+		valueChar, size := utf8.DecodeRuneInString(value[cut:])
+		if !strings.EqualFold(string(valueChar), string(prefixChar)) {
+			return "", false
+		}
+		cut += size
+	}
+	return value[cut:], true
 }
 
 func baselineHasReachableVulnerabilityAtOrAbove(findings []report.VulnerabilityDelta, threshold string) bool {

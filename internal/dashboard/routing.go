@@ -92,7 +92,7 @@ func routingRuleMatches(rule RoutingRule, item RemediationItem) bool {
 }
 
 func codeownerRuleMatches(rule CodeownerRule, item RemediationItem) bool {
-	pattern := strings.TrimSpace(rule.Pattern)
+	pattern := rule.Pattern
 	if pattern == "" {
 		return false
 	}
@@ -114,7 +114,7 @@ func codeownerPathMatch(pattern, target string) (bool, error) {
 }
 
 func codeownerGlobRegexp(pattern string) (*regexp.Regexp, error) {
-	pattern = strings.TrimSpace(filepath.ToSlash(pattern))
+	pattern = filepath.ToSlash(pattern)
 	if pattern == "" || isUnsupportedCodeownerPattern(pattern) {
 		return nil, errInvalidCodeownerPattern
 	}
@@ -206,27 +206,44 @@ func codeownerEvidenceTarget(value string) string {
 	}
 	staticLocation := strings.HasPrefix(target, "static_location:")
 	if staticLocation {
-		target = strings.TrimSpace(strings.TrimPrefix(target, "static_location:"))
-		if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
-			target = target[:index]
-		}
+		target = codeownerStaticLocationPath(target)
 	}
-	target = strings.TrimSpace(strings.ReplaceAll(target, "\\", "/"))
+	target = strings.ReplaceAll(target, "\\", "/")
 	for strings.HasPrefix(target, "./") {
 		target = strings.TrimPrefix(target, "./")
 	}
-	if target == "" || target == "." || strings.HasPrefix(target, "/") || codeownerWindowsDrivePath(target) {
-		return ""
-	}
-	for _, segment := range strings.Split(target, "/") {
-		if segment == ".." {
-			return ""
-		}
-	}
-	if strings.ContainsAny(target, " \t\r\n") || !staticLocation && !strings.Contains(target, "/") {
+	if !codeownerRelativePath(target) || !codeownerEvidencePathAllowed(target, staticLocation) {
 		return ""
 	}
 	return target
+}
+
+func codeownerStaticLocationPath(value string) string {
+	target := strings.TrimPrefix(value, "static_location:")
+	target = strings.TrimPrefix(target, " ")
+	if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
+		return target[:index]
+	}
+	return target
+}
+
+func codeownerRelativePath(target string) bool {
+	if target == "" || target == "." || strings.HasPrefix(target, "/") || codeownerWindowsDrivePath(target) {
+		return false
+	}
+	for _, segment := range strings.Split(target, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func codeownerEvidencePathAllowed(target string, staticLocation bool) bool {
+	if strings.ContainsAny(target, "\t\r\n") {
+		return false
+	}
+	return staticLocation || !strings.Contains(target, " ") && strings.Contains(target, "/")
 }
 
 func codeownerWindowsDrivePath(target string) bool {
@@ -314,11 +331,11 @@ var (
 )
 
 func parseCodeownersLine(line, source string) (CodeownerRule, bool) {
-	line = strings.TrimSpace(stripCodeownersComment(line))
+	line = strings.TrimLeft(stripCodeownersComment(line), " \t\r")
 	if line == "" {
 		return CodeownerRule{}, false
 	}
-	fields := strings.Fields(line)
+	fields := codeownerFields(line)
 	if len(fields) == 0 || isUnsupportedCodeownerPattern(fields[0]) {
 		return CodeownerRule{}, false
 	}
@@ -328,6 +345,52 @@ func parseCodeownersLine(line, source string) (CodeownerRule, bool) {
 	}
 	sort.Strings(owners)
 	return CodeownerRule{Pattern: fields[0], Owners: owners, Source: source}, true
+}
+
+func codeownerFields(line string) []string {
+	fields := make([]string, 0)
+	var field strings.Builder
+	escaped := false
+	for _, r := range line {
+		if escaped {
+			writeCodeownerEscapedRune(&field, r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if isCodeownerFieldSpace(r) {
+			fields = appendCodeownerField(fields, &field)
+			continue
+		}
+		field.WriteRune(r)
+	}
+	if escaped {
+		field.WriteByte('\\')
+	}
+	return appendCodeownerField(fields, &field)
+}
+
+func writeCodeownerEscapedRune(field *strings.Builder, r rune) {
+	if !isCodeownerFieldSpace(r) {
+		field.WriteByte('\\')
+	}
+	field.WriteRune(r)
+}
+
+func isCodeownerFieldSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\r'
+}
+
+func appendCodeownerField(fields []string, field *strings.Builder) []string {
+	if field.Len() == 0 {
+		return fields
+	}
+	fields = append(fields, field.String())
+	field.Reset()
+	return fields
 }
 
 func stripCodeownersComment(line string) string {
@@ -349,7 +412,6 @@ func stripCodeownersComment(line string) string {
 }
 
 func isUnsupportedCodeownerPattern(pattern string) bool {
-	pattern = strings.TrimSpace(pattern)
 	return pattern == "" ||
 		strings.HasPrefix(pattern, "!") ||
 		strings.HasPrefix(pattern, `\#`) ||

@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -21,14 +21,15 @@ LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
 GO_BIN ?=
-GO_TOOLCHAIN ?= go1.26.5
+GO_TOOLCHAIN ?= go1.27.1
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
-GOLANGCI_LINT_VERSION ?= v2.9.0
-GOSTYLE_VERSION ?= v0.25.3
-GOSEC_VERSION ?= v2.22.11
+GOLANGCI_LINT_VERSION ?= v2.13.1
+GOSTYLE_VERSION ?= v0.26.1-0.20260607232238-6ca19a9c9020
+GOSEC_VERSION ?= v2.28.0
+GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/main\\.go:G204
 ACTIONLINT_VERSION ?= v1.7.12
-GOVULNCHECK_VERSION ?= v1.1.4
+GOVULNCHECK_VERSION ?= v1.7.1-0.20260819171436-ff4f1c5e865b
 DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
@@ -61,6 +62,11 @@ RELEASE_GO_LDFLAGS ?= -s -w $(RELEASE_VERSION_LDFLAGS)
 TEST_VERSION_LDFLAGS = -X $(VERSION_PKG).buildChannel=$(BUILD_CHANNEL)
 GO_TEST_LDFLAGS ?= $(TEST_VERSION_LDFLAGS)
 GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)")
+
+# Keep the parallel CI partitions fixed so environment or command-line overrides
+# cannot omit a required gate. runtime-pycache-check runs after each partition.
+override CI_TEST_TARGETS := stave-ui-check test test-leaks
+override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test-race bench-gate build cov runtime-pycache-check
 
 format:
 	gofmt -w .
@@ -152,8 +158,26 @@ dup-check:
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
 
+github-actions-pinning:
+	@./scripts/check-github-actions-pinning.sh
+
+github-actions-runners:
+	@ruby scripts/check-github-actions-runners.rb
+
+automation-examples:
+	@./scripts/check-automation-examples.sh
+
+release-automation-check:
+	@./scripts/check-release-automation.sh
+
+managed-output-check:
+	@./scripts/check-managed-output.sh
+
+automation-integrity:
+	@./scripts/check-automation-integrity.sh
+
 security:
-	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
+	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -exclude-rules "$(GOSEC_EXCLUDE_RULES)" ./...
 
 vuln-check:
 	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
@@ -162,7 +186,7 @@ test:
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
 		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs
 	@$(MAKE) test-lockfiledrift-head
-	@python3 -m unittest scripts/vscode_release_notes_test.py
+	@python3 -m unittest scripts/vscode_release_notes_test.py scripts/release_build_notes_test.py
 	@$(MAKE) vscode-release-notes-check
 
 vscode-release-notes-check:
@@ -208,7 +232,12 @@ test-race-lockfiledrift-head:
 # the regular test/race/leak/coverage targets remain the repository-wide gates.
 stave-ui-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui -run '^(TestStave|TestCompareParity|TestLopperStave|TestNewStaveRenderer)'
-	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./cmd/lopper -run '^(TestStaveTUI|TestTUIWithoutStaveFlag)'
+	@results=$$(mktemp); \
+	trap 'rm -f "$$results"' EXIT INT TERM; \
+	if ! $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -json -count=1 ./cmd/lopper -run '^(TestStaveTUI.*|TestTUIWithoutStaveFlagUsesLegacyLinePath)$$' > "$$results"; then \
+		cat "$$results"; exit 1; \
+	fi; \
+	python3 scripts/check-stave-test-results.py < "$$results"
 
 bench-mem:
 	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
@@ -226,7 +255,11 @@ bench-delta:
 
 export MEMORY_BENCH_BASE GO GO_BIN GO_TOOLCHAIN BENCH_COUNT BENCH_TIME MEMORY_BENCH_PACKAGES MEMORY_BENCH_MAX_BYTES_PCT MEMORY_BENCH_MAX_ALLOCS_PCT BENCH_BASE_OUTPUT BENCH_HEAD_OUTPUT MEMORY_BENCH_SUMMARY MEMORY_BENCH_STATUS MEMORY_BENCH_ENFORCE GO_TEST_LDFLAGS
 bench-gate:
-	@./scripts/bench-gate.sh
+	@if [ -x ./scripts/bench-gate-pr-base.sh ]; then \
+		./scripts/bench-gate-pr-base.sh ./scripts/bench-gate.sh; \
+	else \
+		./scripts/bench-gate.sh; \
+	fi
 
 .PHONY: benchdelta-cov
 benchdelta-cov:
@@ -249,9 +282,8 @@ cov:
 	@$(MAKE) cov-lockfiledrift-head
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@{ \
-		sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"; \
-		sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"; \
-		sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
+		awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"; \
+		awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
 	} > "$(COVERAGE_FILE)"
 	@mkdir -p .artifacts
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
@@ -273,7 +305,11 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+
+ci-tests: $(CI_TEST_TARGETS) runtime-pycache-check
+
+ci-checks: $(CI_CHECK_TARGETS)
 
 smoke: mod-check stave-ui-check test-race build
 
@@ -313,6 +349,15 @@ toolchain-check:
 	fi
 	@command -v $(ZIG) >/dev/null 2>&1 || (echo "zig not found in PATH (required for cross-CGO builds)"; exit 1)
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
+	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
+	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
+	@node_version="$$(node -e 'console.log(process.versions.node)' 2>/dev/null || echo 0.0.0)"; \
+	if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then \
+		echo "Node.js >=22.12.0 is required (found $$node_version)."; \
+		echo "Install/update Node from https://nodejs.org/ or use NodeSource (see .github/workflows/ci.yml)."; \
+		exit 1; \
+	fi
+	@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)
 
 toolchain-install:
 	@uname_s="$$(uname -s)"; \
@@ -324,21 +369,36 @@ toolchain-install:
 
 toolchain-install-macos:
 	@command -v brew >/dev/null 2>&1 || (echo "homebrew not found"; exit 1)
-	brew install go zig shellcheck
+	brew install go zig shellcheck ruby node python
 
 toolchain-install-linux:
-	@if command -v apt-get >/dev/null 2>&1; then \
+	@set -e; \
+	if command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO apt-get update; \
-		$$SUDO apt-get install -y golang-go zig shellcheck; \
+		$$SUDO apt-get install -y golang-go zig shellcheck ruby python3 ca-certificates curl gnupg; \
+		$$SUDO install -d -m 0755 /usr/share/keyrings; \
+		$$SUDO curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO gpg --dearmor --yes --output /usr/share/keyrings/nodesource.gpg /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO rm -f /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO chmod 0644 /usr/share/keyrings/nodesource.gpg; \
+		printf '%s\n' 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main' | $$SUDO tee /etc/apt/sources.list.d/nodesource.list >/dev/null; \
+		$$SUDO apt-get update; \
+		$$SUDO apt-get install -y nodejs; \
 	elif command -v dnf >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO dnf install -y golang zig ShellCheck; \
+		$$SUDO dnf install -y golang zig ShellCheck ruby python3; \
+		printf '%s\n' '[nodesource-nodejs]' 'name=Node.js 24.x Packages for Linux RPM based distros - $$basearch' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$$basearch' 'priority=9' 'enabled=1' 'gpgcheck=1' 'gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key' 'module_hotfixes=1' | $$SUDO tee /etc/yum.repos.d/nodesource-nodejs.repo >/dev/null; \
+		$$SUDO dnf install -y nodejs; \
 	elif command -v pacman >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck; \
+		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python; \
 	else \
 		echo "No supported package manager found (need apt-get, dnf, or pacman)"; \
+		exit 1; \
+	fi; \
+	if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then \
+		echo "NodeSource installation did not provide Node.js >=22.12.0."; \
 		exit 1; \
 	fi
 

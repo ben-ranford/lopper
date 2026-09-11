@@ -25,6 +25,23 @@ type ptyReadResult struct {
 	err error
 }
 
+type ptyOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *ptyOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
+}
+
+func (o *ptyOutput) Write(p []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.buf.Write(p)
+}
+
 func TestStaveTUIFeatureFlagRendersAndQuitsInPTY(t *testing.T) {
 	root := mustModuleRoot(t)
 	bin := filepath.Join(t.TempDir(), "lopper")
@@ -113,84 +130,87 @@ func TestStaveTUIProcessSignalsRestoreTerminal(t *testing.T) {
 		{name: "terminate", sig: syscall.SIGTERM},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "js-ts", "--enable-feature", "stave-tui-preview")
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
-			ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
-			if err != nil {
-				t.Fatalf("start lopper in pty: %v", err)
-			}
-
-			var mu sync.Mutex
-			var output bytes.Buffer
-			readDone := make(chan struct{})
-			go func() {
-				defer close(readDone)
-				buf := make([]byte, 4096)
-				for {
-					n, readErr := ptmx.Read(buf)
-					if n > 0 {
-						mu.Lock()
-						if _, writeErr := output.Write(buf[:n]); writeErr != nil {
-							mu.Unlock()
-							return
-						}
-						mu.Unlock()
-					}
-					if readErr != nil {
-						return
-					}
-				}
-			}()
-			defer func() {
-				if err := ptmx.Close(); err != nil {
-					t.Logf("close pty: %v", err)
-				}
-				if err := cmd.Process.Kill(); err != nil {
-					t.Logf("kill process: %v", err)
-				}
-			}()
-
-			deadline := time.Now().Add(stavePTYTimeout)
-			for time.Now().Before(deadline) {
-				mu.Lock()
-				ready := strings.Contains(output.String(), "Status: Stave preview")
-				mu.Unlock()
-				if ready {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			mu.Lock()
-			initial := output.String()
-			mu.Unlock()
-			if !strings.Contains(initial, "Status: Stave preview") {
-				t.Fatalf("signal test did not render initial frame: %q", initial)
-			}
-			if err := cmd.Process.Signal(tc.sig); err != nil {
-				t.Fatalf("send %s: %v", tc.name, err)
-			}
-			if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
-				t.Fatalf("%s did not terminate within bound: %v", tc.name, err)
-			}
-			if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
-				t.Logf("set signal PTY read deadline: %v", err)
-			}
-			<-readDone
-			mu.Lock()
-			finalOutput := output.String()
-			mu.Unlock()
-
-			if got := strings.Count(finalOutput, "\x1b[?1049l"); got != 1 {
-				t.Fatalf("%s alternate-screen leave count = %d, want 1; output=%q", tc.name, got, finalOutput)
-			}
-			if got := strings.Count(finalOutput, "\x1b[?25h"); got != 1 {
-				t.Fatalf("%s cursor restore count = %d, want 1; output=%q", tc.name, got, finalOutput)
-			}
-			if idx := strings.LastIndex(finalOutput, "\x1b[?1049l"); idx >= 0 && strings.Contains(finalOutput[idx+len("\x1b[?1049l"):], "Status: Stave preview") {
-				t.Fatalf("%s repainted Stave frame after alternate-screen leave: %q", tc.name, finalOutput[idx:])
-			}
+			testStaveSignalRestore(t, bin, root, fixture, tc.name, tc.sig)
 		})
+	}
+}
+
+func testStaveSignalRestore(t *testing.T, bin, root, fixture, name string, sig os.Signal) {
+	t.Helper()
+	cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "js-ts", "--enable-feature", "stave-tui-preview")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
+	if err != nil {
+		t.Fatalf("start lopper in pty: %v", err)
+	}
+	defer closePTYProcess(t, ptmx, cmd)
+	output, readDone := collectPTYOutput(ptmx)
+	waitForStaveFrame(t, output)
+	if err := cmd.Process.Signal(sig); err != nil {
+		t.Fatalf("send %s: %v", name, err)
+	}
+	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
+		t.Fatalf("%s did not terminate within bound: %v", name, err)
+	}
+	if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Logf("set signal PTY read deadline: %v", err)
+	}
+	<-readDone
+	assertStaveSignalRestore(t, name, output.String())
+}
+
+func collectPTYOutput(ptmx *os.File) (*ptyOutput, <-chan struct{}) {
+	output := &ptyOutput{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				output.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return output, done
+}
+
+func waitForStaveFrame(t *testing.T, output *ptyOutput) {
+	t.Helper()
+	deadline := time.Now().Add(stavePTYTimeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(output.String(), "Status: Stave preview") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("signal test did not render initial frame: %q", output.String())
+}
+
+func assertStaveSignalRestore(t *testing.T, name, output string) {
+	t.Helper()
+	if got := strings.Count(output, "\x1b[?1049l"); got != 1 {
+		t.Fatalf("%s alternate-screen leave count = %d, want 1; output=%q", name, got, output)
+	}
+	if got := strings.Count(output, "\x1b[?25h"); got != 1 {
+		t.Fatalf("%s cursor restore count = %d, want 1; output=%q", name, got, output)
+	}
+	if idx := strings.LastIndex(output, "\x1b[?1049l"); idx >= 0 && strings.Contains(output[idx+len("\x1b[?1049l"):], "Status: Stave preview") {
+		t.Fatalf("%s repainted Stave frame after alternate-screen leave: %q", name, output[idx:])
+	}
+}
+
+func closePTYProcess(t *testing.T, ptmx *os.File, cmd *exec.Cmd) {
+	t.Helper()
+	if err := ptmx.Close(); err != nil {
+		t.Logf("close pty: %v", err)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Logf("kill process: %v", err)
 	}
 }
 
@@ -214,6 +234,14 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 		}
 	}()
 
+	assertStaveInteractiveNavigation(t, ptmx)
+	assertStaveInteractiveFilterAndDetail(t, ptmx)
+	assertStaveInteractiveRefreshHelpAndSort(t, ptmx)
+	assertStaveInteractiveCompactQuit(t, ptmx, cmd)
+}
+
+func assertStaveInteractiveNavigation(t *testing.T, ptmx *os.File) {
+	t.Helper()
 	initial := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool {
 		return strings.Contains(s, "Status: Stave preview") && strings.Contains(s, "go-toml")
 	})
@@ -225,27 +253,21 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 	if _, err := ptmx.Write([]byte("\x1b[B")); err != nil {
 		t.Fatalf("send down key: %v", err)
 	}
-	selected := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool {
-		line := selectedLine(s)
-		return line != "" && line != initialSelected
-	})
+	selected := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return selectedLine(s) != "" && selectedLine(s) != initialSelected })
 	if selectedLine(selected) == "" || selectedLine(selected) == initialSelected {
 		t.Fatalf("down key did not move selection: %q", selected)
 	}
+}
 
-	if _, err := ptmx.Write([]byte("/charm")); err != nil {
+func assertStaveInteractiveFilterAndDetail(t *testing.T, ptmx *os.File) {
+	t.Helper()
+	if _, err := ptmx.Write([]byte("/charm\r")); err != nil {
 		t.Fatalf("send filter command: %v", err)
 	}
-	if _, err := ptmx.Write([]byte("\r")); err != nil {
-		t.Fatalf("commit filter command: %v", err)
-	}
-	filtered := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool {
-		return strings.Contains(s, "filter charm") && strings.Contains(s, "bubbletea")
-	})
+	filtered := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "filter charm") && strings.Contains(s, "bubbletea") })
 	if !strings.Contains(filtered, "filter charm") || !strings.Contains(filtered, "bubbletea") {
 		t.Fatalf("filter did not select expected dependency: %q", filtered)
 	}
-
 	if _, err := ptmx.Write([]byte("\r")); err != nil {
 		t.Fatalf("open selected dependency: %v", err)
 	}
@@ -260,15 +282,18 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 	if !strings.Contains(detail, "Detail:") || !strings.Contains(detail, "Waste") {
 		t.Fatalf("enter did not open selected detail: %q", detail)
 	}
+}
+
+func assertStaveInteractiveRefreshHelpAndSort(t *testing.T, ptmx *os.File) {
+	t.Helper()
 	if err := pty.Setsize(ptmx, &pty.Winsize{Cols: 160, Rows: 30}); err != nil {
 		t.Fatalf("widen interactive pty: %v", err)
 	}
 	if _, err := ptmx.Write([]byte("r")); err != nil {
 		t.Fatalf("send refresh key: %v", err)
 	}
-	refresh := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Refreshed") })
-	if !strings.Contains(refresh, "Refreshed") {
-		t.Fatalf("refresh status was not visible: %q", refresh)
+	if output := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Refreshed") }); !strings.Contains(output, "Refreshed") {
+		t.Fatalf("refresh status was not visible: %q", output)
 	}
 	if _, err := ptmx.Write([]byte("?")); err != nil {
 		t.Fatalf("send help key: %v", err)
@@ -280,23 +305,20 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 	if !strings.Contains(help, "Navigate:") || !strings.Contains(help, "Codemod:") {
 		t.Fatalf("help content was not visible: %q", help)
 	}
-	if _, err := ptmx.Write([]byte("?")); err != nil {
-		t.Fatalf("close help key: %v", err)
-	}
-	if _, err := ptmx.Write([]byte(":sort name\r")); err != nil {
+	if _, err := ptmx.Write([]byte("?:sort name\r")); err != nil {
 		t.Fatalf("send sort command: %v", err)
 	}
-	sorted := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Sorted by name") })
-	if !strings.Contains(sorted, "Sorted by name") {
-		t.Fatalf("sort command status was not visible: %q", sorted)
+	if output := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Sorted by name") }); !strings.Contains(output, "Sorted by name") {
+		t.Fatalf("sort command status was not visible: %q", output)
 	}
+}
+
+func assertStaveInteractiveCompactQuit(t *testing.T, ptmx *os.File, cmd *exec.Cmd) {
+	t.Helper()
 	if err := pty.Setsize(ptmx, &pty.Winsize{Cols: 40, Rows: 12}); err != nil {
 		t.Fatalf("resize interactive pty: %v", err)
 	}
-	compact := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool {
-		return strings.Contains(s, "Status:") || strings.Contains(s, "Context:")
-	})
-	assertNoUnsafeTerminalSequences(t, compact)
+	assertNoUnsafeTerminalSequences(t, readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status:") || strings.Contains(s, "Context:") }))
 	if _, err := ptmx.Write([]byte("q")); err != nil {
 		t.Fatalf("quit interactive TUI: %v", err)
 	}
@@ -378,45 +400,58 @@ func TestStavePTYResizeBoundsAndRepeatedRestore(t *testing.T) {
 	buildBinary(t, root, bin)
 	fixture := filepath.Join(root, "testdata", "js", "esm")
 	for run := 0; run < 5; run++ {
-		cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "js-ts", "--enable-feature", "stave-tui-preview")
-		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
-		ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
-		if err != nil {
-			t.Fatalf("run %d start: %v", run+1, err)
+		testStavePTYResizeRun(t, bin, root, fixture, run+1)
+	}
+}
+
+func testStavePTYResizeRun(t *testing.T, bin, root, fixture string, run int) {
+	t.Helper()
+	cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "js-ts", "--enable-feature", "stave-tui-preview")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("run %d start: %v", run, err)
+	}
+	defer closePTYProcess(t, ptmx, cmd)
+	assertStavePTYResizeFrames(t, ptmx, run)
+	assertStavePTYExitRestoresTerminal(t, ptmx, cmd, run)
+}
+
+func assertStavePTYResizeFrames(t *testing.T, ptmx *os.File, run int) {
+	t.Helper()
+	initial := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status: Stave preview") })
+	assertNoUnsafeTerminalSequences(t, initial)
+	for _, size := range []struct{ cols, rows uint16 }{{40, 12}, {20, 8}} {
+		if err := pty.Setsize(ptmx, &pty.Winsize{Cols: size.cols, Rows: size.rows}); err != nil {
+			t.Fatalf("run %d resize: %v", run, err)
 		}
-		initial := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status: Stave preview") })
-		assertNoUnsafeTerminalSequences(t, initial)
-		for _, size := range []struct{ cols, rows uint16 }{{40, 12}, {20, 8}} {
-			if err := pty.Setsize(ptmx, &pty.Winsize{Cols: size.cols, Rows: size.rows}); err != nil {
-				t.Fatalf("run %d resize: %v", run+1, err)
-			}
-			frame := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status:") })
-			assertNoUnsafeTerminalSequences(t, frame)
-			if len(frame) == 0 {
-				t.Fatalf("run %d resize produced empty frame", run+1)
-			}
+		frame := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status:") })
+		assertNoUnsafeTerminalSequences(t, frame)
+		if len(frame) == 0 {
+			t.Fatalf("run %d resize produced empty frame", run)
 		}
-		if _, err := ptmx.Write([]byte("q")); err != nil {
-			t.Fatalf("run %d quit: %v", run+1, err)
-		}
-		if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
-			t.Fatalf("run %d exit: %v", run+1, err)
-		}
-		if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
-			t.Logf("set read deadline: %v", err)
-		}
-		var tail bytes.Buffer
-		if _, err := io.Copy(&tail, ptmx); err != nil {
-			t.Logf("read PTY tail: %v", err)
-		}
-		tailText := tail.String()
-		if strings.Count(tailText, "\x1b[?1049l") > 1 || (strings.Contains(tailText, "\x1b[?1049l") && strings.Contains(tailText, "Status: Stave preview")) {
-			t.Fatalf("run %d invalid restore tail: %q", run+1, tailText)
-		}
-		if err := ptmx.Close(); err != nil {
-			t.Logf("close pty: %v", err)
-		}
+	}
+}
+
+func assertStavePTYExitRestoresTerminal(t *testing.T, ptmx *os.File, cmd *exec.Cmd, run int) {
+	t.Helper()
+	if _, err := ptmx.Write([]byte("q")); err != nil {
+		t.Fatalf("run %d quit: %v", run, err)
+	}
+	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
+		t.Fatalf("run %d exit: %v", run, err)
+	}
+	if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Logf("set read deadline: %v", err)
+	}
+	var tail bytes.Buffer
+	if _, err := io.Copy(&tail, ptmx); err != nil {
+		t.Logf("read PTY tail: %v", err)
+	}
+	tailText := tail.String()
+	if strings.Count(tailText, "\x1b[?1049l") > 1 || (strings.Contains(tailText, "\x1b[?1049l") && strings.Contains(tailText, "Status: Stave preview")) {
+		t.Fatalf("run %d invalid restore tail: %q", run, tailText)
 	}
 }
 

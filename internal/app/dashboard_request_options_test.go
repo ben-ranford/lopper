@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -34,6 +35,36 @@ func TestResolveDashboardRequestConfigRelativeRepo(t *testing.T) {
 	}
 	if resolved.baselineStorePath != filepath.Join(tmpDir, "baselines") {
 		t.Fatalf("expected baseline store to resolve relative to config dir, got %q", resolved.baselineStorePath)
+	}
+}
+
+func TestResolveDashboardRequestUsesCLIReposWithConfigDefaults(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "dashboard-defaults.yml")
+	config := "dashboard:\n  output: html\n  baseline_store: ./baselines\n  ownership:\n    default_owner: platform\n    default_team: foundations\n    rules:\n      - repo: cli-repo\n        path_prefix: internal/\n        owner: security\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := resolveDashboardRequest(DashboardRequest{
+		Repos:      []DashboardRepo{{Name: "cli-repo", Path: "./cli-repo"}},
+		ConfigPath: configPath,
+		Format:     "csv",
+	})
+	if err != nil {
+		t.Fatalf("resolve dashboard request with CLI repo and config defaults: %v", err)
+	}
+	if len(resolved.repos) != 1 || resolved.repos[0].Name != "cli-repo" || resolved.repos[0].Path != "./cli-repo" {
+		t.Fatalf("expected CLI repo to be retained, got %#v", resolved.repos)
+	}
+	if resolved.format != dashboard.FormatCSV {
+		t.Fatalf("expected CLI format to override config output, got %q", resolved.format)
+	}
+	if resolved.baselineStorePath != filepath.Join(configDir, "baselines") {
+		t.Fatalf("expected config baseline store, got %q", resolved.baselineStorePath)
+	}
+	if resolved.routing.DefaultOwner != "platform" || resolved.routing.DefaultTeam != "foundations" || len(resolved.routing.Rules) != 1 || resolved.routing.Rules[0].Owner != "security" {
+		t.Fatalf("expected config ownership routing, got %#v", resolved.routing)
 	}
 }
 
@@ -124,6 +155,55 @@ func TestResolveDashboardRequestAppliesDefaultLanguageAndOutputTrim(t *testing.T
 	}
 	if resolved.outputPath != "./out/report.json" {
 		t.Fatalf("expected output path to be trimmed, got %q", resolved.outputPath)
+	}
+}
+
+func TestDashboardRoutingOptionsCopiesOwnershipConfig(t *testing.T) {
+	config := dashboard.ConfigOwnership{
+		DefaultOwner:  "alex",
+		DefaultTeam:   "platform",
+		DefaultStatus: "planned",
+		DefaultDue:    "2026-09-01",
+		Rules: []dashboard.ConfigOwnershipRule{
+			{
+				Repo:       "api",
+				PathPrefix: "internal/",
+				Category:   "security",
+				Dependency: "golang.org/x/sys",
+				Owner:      "sam",
+				Team:       "infra",
+				Due:        "2026-09-15",
+				Status:     "investigating",
+			},
+		},
+	}
+
+	options := dashboardRoutingOptions(config)
+	if options.DefaultOwner != config.DefaultOwner ||
+		options.DefaultTeam != config.DefaultTeam ||
+		options.DefaultStatus != config.DefaultStatus ||
+		options.DefaultDue != config.DefaultDue {
+		t.Fatalf("expected defaults to copy from config, got %#v", options)
+	}
+	wantRules := []dashboard.RoutingRule{
+		{
+			Repo:       "api",
+			PathPrefix: "internal/",
+			Category:   "security",
+			Dependency: "golang.org/x/sys",
+			Owner:      "sam",
+			Team:       "infra",
+			Due:        "2026-09-15",
+			Status:     "investigating",
+		},
+	}
+	if !reflect.DeepEqual(options.Rules, wantRules) {
+		t.Fatalf("unexpected routing rules:\n got: %#v\nwant: %#v", options.Rules, wantRules)
+	}
+
+	config.Rules[0].Owner = "mutated"
+	if options.Rules[0].Owner != "sam" {
+		t.Fatalf("expected routing rules to be copied, got %#v", options.Rules)
 	}
 }
 

@@ -123,41 +123,7 @@ func runStaveSignalHelper(t *testing.T) {
 
 func runStaveSignalParent(t *testing.T, sig os.Signal) {
 	t.Helper()
-	markerReader, markerWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create marker pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := markerReader.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close marker reader: %v", closeErr)
-		}
-	})
-
-	cmd := exec.Command(os.Args[0], "-test.run=^TestStaveInFlightActionProcessSignalsRestoreTerminal$")
-	cmd.Env = append(os.Environ(), staveSignalHelperEnv+"=1", "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
-	cmd.ExtraFiles = []*os.File{markerWriter}
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
-	if err != nil {
-		if closeErr := markerWriter.Close(); closeErr != nil {
-			t.Logf("close failed marker writer: %v", closeErr)
-		}
-		t.Fatalf("start signal helper in PTY: %v", err)
-	}
-	if err := markerWriter.Close(); err != nil {
-		t.Fatalf("close parent marker writer: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := ptmx.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close signal PTY: %v", closeErr)
-		}
-	})
-	defer func() {
-		if cmd.Process != nil {
-			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-				t.Logf("kill signal helper: %v", killErr)
-			}
-		}
-	}()
+	cmd, ptmx, markerReader := startStaveSignalHelper(t)
 
 	capture := newSignalPTYCapture(ptmx)
 	markers := scanSignalMarkers(markerReader)
@@ -190,7 +156,11 @@ func runStaveSignalParent(t *testing.T, sig os.Signal) {
 	}
 	waitSignalCapture(t, capture)
 
-	output := capture.String()
+	assertStaveSignalRestored(t, sig, capture.String())
+}
+
+func assertStaveSignalRestored(t *testing.T, sig os.Signal, output string) {
+	t.Helper()
 	if got := strings.Count(output, "\x1b[?1049h"); got != 1 {
 		t.Fatalf("%s alternate-screen enter count = %d, want 1; output=%q", sig, got, output)
 	}
@@ -213,6 +183,51 @@ func runStaveSignalParent(t *testing.T, sig os.Signal) {
 	}
 }
 
+func startStaveSignalHelper(t *testing.T) (*exec.Cmd, *os.File, *os.File) {
+	t.Helper()
+	markerReader, markerWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create marker pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := markerReader.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close marker reader: %v", closeErr)
+		}
+	})
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStaveInFlightActionProcessSignalsRestoreTerminal$")
+	cmd.Env = append(os.Environ(), staveSignalHelperEnv+"=1", "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
+	cmd.ExtraFiles = []*os.File{markerWriter}
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
+	if err != nil {
+		if closeErr := markerWriter.Close(); closeErr != nil {
+			t.Logf("close failed marker writer: %v", closeErr)
+		}
+		t.Fatalf("start signal helper in PTY: %v", err)
+	}
+	if err := markerWriter.Close(); err != nil {
+		t.Fatalf("close parent marker writer: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := ptmx.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close signal PTY: %v", closeErr)
+		}
+	})
+	t.Cleanup(func() { stopStaveSignalHelper(t, cmd) })
+
+	return cmd, ptmx, markerReader
+}
+
+func stopStaveSignalHelper(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd.Process == nil {
+		return
+	}
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Logf("kill signal helper: %v", err)
+	}
+}
+
 type signalPTYCapture struct {
 	mu      sync.Mutex
 	output  bytes.Buffer
@@ -228,15 +243,8 @@ func newSignalPTYCapture(reader io.Reader) *signalPTYCapture {
 		for {
 			n, err := reader.Read(buffer)
 			if n > 0 {
-				capture.mu.Lock()
-				if _, writeErr := capture.output.Write(buffer[:n]); writeErr != nil {
-					capture.mu.Unlock()
+				if !capture.append(buffer[:n]) {
 					return
-				}
-				capture.mu.Unlock()
-				select {
-				case capture.updated <- struct{}{}:
-				default:
 				}
 			}
 			if err != nil {
@@ -245,6 +253,20 @@ func newSignalPTYCapture(reader io.Reader) *signalPTYCapture {
 		}
 	}()
 	return capture
+}
+
+func (c *signalPTYCapture) append(chunk []byte) bool {
+	c.mu.Lock()
+	if _, writeErr := c.output.Write(chunk); writeErr != nil {
+		c.mu.Unlock()
+		return false
+	}
+	c.mu.Unlock()
+	select {
+	case c.updated <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 func (c *signalPTYCapture) String() string {

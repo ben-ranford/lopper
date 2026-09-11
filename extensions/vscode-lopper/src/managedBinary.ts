@@ -115,7 +115,7 @@ export class ManagedBinaryInstaller {
   }
 
   async findInstalledBinary(releaseTag?: string): Promise<string | undefined> {
-    const explicitTag = normalizeReleaseTag(releaseTag);
+    const explicitTag = normalizeConfiguredReleaseTag(releaseTag);
     const metadata = await this.readMetadata();
     const binaryPath = explicitTag ? this.binaryPathFor(explicitTag) : metadata?.binaryPath;
 
@@ -141,13 +141,13 @@ export class ManagedBinaryInstaller {
 
   async ensureInstalled(releaseTag?: string, signal?: AbortSignal): Promise<ManagedBinaryInstallResult> {
     throwIfAborted(signal);
-    const cachedBinary = await this.findInstalledBinary(releaseTag);
+    const requestedTag = normalizeConfiguredReleaseTag(releaseTag);
+    const cachedBinary = await this.findInstalledBinary(requestedTag);
     if (cachedBinary) {
-      const tag = normalizeReleaseTag(releaseTag) ?? (await this.readMetadata())?.tag ?? "unknown";
+      const tag = requestedTag ?? (await this.readMetadata())?.tag ?? "unknown";
       return { binaryPath: cachedBinary, tag, downloaded: false };
     }
 
-    const requestedTag = normalizeReleaseTag(releaseTag);
     const release = await this.deps.fetchRelease(requestedTag, signal);
     throwIfAborted(signal);
     const asset = selectReleaseAsset(release, this.deps.host);
@@ -325,7 +325,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       );
     }
 
-    const releaseTag = normalizeReleaseTag(request.managedBinaryTag);
+    const releaseTag = normalizeConfiguredReleaseTag(request.managedBinaryTag);
     const cachedBinary = await this.installer.findInstalledBinary(releaseTag);
     if (cachedBinary) {
       return cachedBinary;
@@ -491,12 +491,90 @@ function normalizeReleaseTag(releaseTag?: string): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeConfiguredReleaseTag(releaseTag?: string): string | undefined {
+  const normalizedTag = normalizeReleaseTag(releaseTag);
+  if (!normalizedTag || normalizedTag.startsWith("v")) {
+    return normalizedTag;
+  }
+  if (isUnprefixedSemverReleaseTag(normalizedTag)) {
+    return `v${normalizedTag}`;
+  }
+  return normalizedTag;
+}
+
+function isUnprefixedSemverReleaseTag(releaseTag: string): boolean {
+  const buildSeparator = releaseTag.indexOf("+");
+  const withoutBuild = buildSeparator === -1 ? releaseTag : releaseTag.slice(0, buildSeparator);
+  const build = buildSeparator === -1 ? undefined : releaseTag.slice(buildSeparator + 1);
+  if (build !== undefined && !isBuildMetadata(build)) {
+    return false;
+  }
+
+  const prereleaseSeparator = withoutBuild.indexOf("-");
+  const version = prereleaseSeparator === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseSeparator);
+  const prerelease = prereleaseSeparator === -1 ? undefined : withoutBuild.slice(prereleaseSeparator + 1);
+  if (prerelease !== undefined && !isPrerelease(prerelease)) {
+    return false;
+  }
+
+  const versionParts = version.split(".");
+  return versionParts.length === 3 && versionParts.every(isNumericSemverIdentifier);
+}
+
+function isPrerelease(prerelease: string): boolean {
+  const identifiers = prerelease.split(".");
+  return identifiers.length > 0 && identifiers.every(isPrereleaseIdentifier);
+}
+
+function isBuildMetadata(build: string): boolean {
+  const identifiers = build.split(".");
+  return identifiers.length > 0 && identifiers.every(isSemverIdentifierText);
+}
+
+function isPrereleaseIdentifier(identifier: string): boolean {
+  return (
+    isSemverIdentifierText(identifier) &&
+    (!isDigitsOnly(identifier) || isNumericSemverIdentifier(identifier))
+  );
+}
+
+function isNumericSemverIdentifier(identifier: string): boolean {
+  return isDigitsOnly(identifier) && (identifier === "0" || !identifier.startsWith("0"));
+}
+
+function isDigitsOnly(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (const char of value) {
+    if (char < "0" || char > "9") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isSemverIdentifierText(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (const char of value) {
+    const numeric = char >= "0" && char <= "9";
+    const uppercase = char >= "A" && char <= "Z";
+    const lowercase = char >= "a" && char <= "z";
+    if (!numeric && !uppercase && !lowercase && char !== "-") {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function fetchRelease(
   releaseTag?: string,
   signal?: AbortSignal,
   timeoutMs = defaultManagedBinaryHttpTimeoutMs,
 ): Promise<GitHubRelease> {
-  const normalizedTag = normalizeReleaseTag(releaseTag);
+  const normalizedTag = normalizeConfiguredReleaseTag(releaseTag);
   const endpoint = normalizedTag
     ? `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/tags/${encodeURIComponent(normalizedTag)}`
     : `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/latest`;

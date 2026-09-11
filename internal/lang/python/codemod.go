@@ -50,7 +50,6 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)
 
-	importsByLine := pythonImportsByLine(file.Imports)
 	lines, warning, loaded := shared.LoadCodemodSourceLines(repoPath, file.Path, lineCache)
 	if !loaded {
 		if warning != "" {
@@ -58,6 +57,7 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 		}
 		return suggestions, skips, warnings
 	}
+	importsByLine := pythonImportsByLine(lines, file.Imports)
 
 	for _, line := range pythonSortedImportLines(importsByLine) {
 		lineImports := importsByLine[line]
@@ -99,15 +99,77 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 	return suggestions, skips, warnings
 }
 
-func pythonImportsByLine(imports []importBinding) map[int][]importBinding {
+func pythonImportsByLine(lines []string, imports []importBinding) map[int][]importBinding {
 	grouped := make(map[int][]importBinding)
+	openerLines := pythonFromImportOpenerLines(lines)
 	for _, imported := range imports {
 		if imported.Location.Line <= 0 {
 			continue
 		}
-		grouped[imported.Location.Line] = append(grouped[imported.Location.Line], imported)
+		statementLine := pythonImportStatementLine(lines, imported, openerLines)
+		normalized := imported
+		normalized.Location.Line = statementLine
+		grouped[statementLine] = append(grouped[statementLine], normalized)
 	}
 	return grouped
+}
+
+func pythonImportStatementLine(lines []string, imported importBinding, openerLines map[int]int) int {
+	if imported.Location.Line <= 0 {
+		return imported.Location.Line
+	}
+	sourceLine, ok := pythonSourceLine(lines, imported.Location.Line)
+	if !ok {
+		return imported.Location.Line
+	}
+	if pythonLineStartsImport(sourceLine) {
+		return imported.Location.Line
+	}
+	if opener, ok := openerLines[imported.Location.Line]; ok {
+		return opener
+	}
+	return imported.Location.Line
+}
+
+// pythonFromImportOpenerLines maps each continuation line of a parenthesized
+// "from X import (...)" block to that block's opening line, via a single
+// forward pass tracking parenthesis depth. Determining each import's
+// statement line this way, once per file, avoids a separate backward scan
+// to the opener for every imported symbol: a large generated import block
+// with one symbol per line would otherwise make codemod generation
+// quadratic in the number of imported symbols.
+func pythonFromImportOpenerLines(lines []string) map[int]int {
+	openers := make(map[int]int)
+	parenDepth := 0
+	openerLine := 0
+	var mask pythonStringMask
+	for i, raw := range lines {
+		line := i + 1
+		masked := stripComment(mask.codeLine(raw))
+		if parenDepth > 0 {
+			openers[line] = openerLine
+			parenDepth += fromImportParenthesisDelta(masked)
+			if parenDepth <= 0 {
+				parenDepth = 0
+				openerLine = 0
+			}
+			continue
+		}
+		matches := fromLinePattern.FindStringSubmatch(masked)
+		if len(matches) != 3 {
+			continue
+		}
+		if delta := fromImportParenthesisDelta(strings.TrimSpace(matches[2])); delta > 0 {
+			openerLine = line
+			parenDepth = delta
+		}
+	}
+	return openers
+}
+
+func pythonLineStartsImport(sourceLine string) bool {
+	lineNoComment := stripComment(sourceLine)
+	return len(importLinePattern.FindStringSubmatch(lineNoComment)) == 2 || len(fromLinePattern.FindStringSubmatch(lineNoComment)) == 3
 }
 
 func pythonSortedImportLines(importsByLine map[int][]importBinding) []int {

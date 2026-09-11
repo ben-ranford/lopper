@@ -74,6 +74,43 @@ func TestFormatCycloneDXJSONDispatch(t *testing.T) {
 	requireCycloneDXProperty(t, bom.Properties, "lopper:export:coverage", "direct-dependencies")
 }
 
+// TestFormatCycloneDXJSONMarksIncompleteCoverageAndSurfacesGaps proves that
+// a report with coverage gaps (e.g. a gemspec skipped for being too large
+// to parse) no longer looks complete to downstream SBOM consumers: the
+// coverage marker reflects the gap, and the gap itself is surfaced as a
+// property rather than silently dropped.
+func TestFormatCycloneDXJSONMarksIncompleteCoverageAndSurfacesGaps(t *testing.T) {
+	reportData := Report{
+		SchemaVersion: SchemaVersion,
+		RepoPath:      ".",
+		Dependencies: []DependencyReport{
+			{Name: "rails", Language: "ruby", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		},
+		CoverageGaps: []CoverageGap{
+			{
+				Code:     CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "big.gemspec",
+				Evidence: []string{"skipped big.gemspec because it exceeds 65536 bytes"},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatCycloneDX)
+	if err != nil {
+		t.Fatalf("format CycloneDX JSON: %v", err)
+	}
+
+	bom := decodeCycloneDXBOM(t, output)
+	requireCycloneDXProperty(t, bom.Properties, "lopper:export:coverage", "direct-dependencies-incomplete")
+	gapsJSON, ok := cycloneDXPropertyValue(bom.Properties, "lopper:coverage-gaps")
+	if !ok {
+		t.Fatalf("expected lopper:coverage-gaps property, got %#v", bom.Properties)
+	}
+	if !strings.Contains(gapsJSON, "big.gemspec") || !strings.Contains(gapsJSON, CoverageGapRubyOversizedGemspec) {
+		t.Fatalf("expected coverage gap details in property, got %q", gapsJSON)
+	}
+}
+
 func TestFormatCycloneDXJSONDeterministicOrdering(t *testing.T) {
 	first := Report{Dependencies: []DependencyReport{
 		{

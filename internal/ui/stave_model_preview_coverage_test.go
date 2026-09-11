@@ -87,24 +87,30 @@ func TestReduceStaveSummaryHandlesPayloadsAndEffects(t *testing.T) {
 		{"shutdown", coverageEvent(t, event.Shutdown, nil), func(g staveSummaryModel) bool { return g.interaction.quit }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var err error
-			if tc.name == "effect success" || tc.name == "effect error" {
-				// Each completion consumes the pending call; announce it again for
-				// the next independent effect assertion.
-				m, _, err = reduceStaveSummary(stave.ReduceContext{}, m, coverageEvent(t, event.ActionInvoked, event.ActionInvokedPayload{CallID: "c", ActionID: "test.action"}))
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			m, _, err = reduceStaveSummary(stave.ReduceContext{}, m, tc.ev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !tc.check(m) {
-				t.Fatalf("unexpected state: %+v", m.interaction)
-			}
+			m = reduceStaveCoverageCase(t, m, tc.name, tc.ev, tc.check)
 		})
 	}
+}
+
+func reduceStaveCoverageCase(t *testing.T, model staveSummaryModel, name string, ev event.Event, check func(staveSummaryModel) bool) staveSummaryModel {
+	t.Helper()
+	var err error
+	if name == "effect success" || name == "effect error" {
+		// Each completion consumes the pending call; announce it again for
+		// the next independent effect assertion.
+		model, _, err = reduceStaveSummary(stave.ReduceContext{}, model, coverageEvent(t, event.ActionInvoked, event.ActionInvokedPayload{CallID: "c", ActionID: "test.action"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	model, _, err = reduceStaveSummary(stave.ReduceContext{}, model, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !check(model) {
+		t.Fatalf("unexpected state: %+v", model.interaction)
+	}
+	return model
 }
 
 func TestReduceStaveKeyEditingNavigationAndFocus(t *testing.T) {
@@ -284,13 +290,13 @@ func TestStaveTerminalAdapterGuardsAndDispatchBranches(t *testing.T) {
 	if _, err := b.sessionSnapshot(); err == nil {
 		t.Fatal("unprepared session snapshot accepted")
 	}
-	if cmd := b.beginCommand("x"); cmd == nil {
+	if b.beginCommand("x") == nil {
 		t.Fatal("command without snapshot failed to report completion")
 	}
 	b.snapshot = func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{model: staveSummaryModel{}}, nil
 	}
-	if cmd := b.beginCommand("plain text"); cmd == nil {
+	if b.beginCommand("plain text") == nil {
 		t.Fatal("text command returned nil")
 	}
 	_ = b.beginCommand("refresh")

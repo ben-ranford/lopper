@@ -2,6 +2,82 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.7](https://github.com/ben-ranford/lopper/compare/v1.8.6...v1.8.7) (2026-09-10)
+
+* Source builds require Go `1.27.1` or newer (previously `1.27.0`).
+
+
+### Bug Fixes
+
+* **ci:** move suppression verification to trusted pull_request_target workflow ([#1549](https://github.com/ben-ranford/lopper/issues/1549)) ([317ff4c](https://github.com/ben-ranford/lopper/commit/317ff4cbf1c3eabb1ff0ae1b05bb75beca9ce475))
+* **dart:** bound multiline directive parsing ([#1558](https://github.com/ben-ranford/lopper/issues/1558)) ([943d12d](https://github.com/ben-ranford/lopper/commit/943d12d9d710910133256de1a02cdc2f80dbcba3))
+* **dart:** bound pubspec parsing ([#1560](https://github.com/ben-ranford/lopper/issues/1560)) ([c5c1e7a](https://github.com/ben-ranford/lopper/commit/c5c1e7a5991311ada4926cd44410bb18bff84a07))
+* **dart:** exclude multiline alias declarations ([#1565](https://github.com/ben-ranford/lopper/issues/1565)) ([a09fac3](https://github.com/ben-ranford/lopper/commit/a09fac3d82adeee4f10dfab8929e71ac903f1896))
+* **dashboard:** allow config-only defaults ([#1567](https://github.com/ben-ranford/lopper/issues/1567)) ([cbd0379](https://github.com/ben-ranford/lopper/commit/cbd037911efdfba4d32d254ffce84e35fa223841))
+* **dashboard:** bound repoUrl git materialization with a deadline ([#1554](https://github.com/ben-ranford/lopper/issues/1554)) ([8d4d42a](https://github.com/ben-ranford/lopper/commit/8d4d42acf8c35aaefbcacbe662a081f269b011fb))
+* **dashboard:** keep SBOM path identities portable ([#1564](https://github.com/ben-ranford/lopper/issues/1564)) ([5c745f6](https://github.com/ben-ranford/lopper/commit/5c745f6bebe7c6046ad3b399205378785acd4ebb))
+* **dashboard:** route codeowners paths with spaces ([#1566](https://github.com/ben-ranford/lopper/issues/1566)) ([44716dc](https://github.com/ben-ranford/lopper/commit/44716dcbdac5fb4be83046184adc24777d3957c9))
+* **deps:** update module golang.org/x/mod to v0.41.0 ([1c2a1a0](https://github.com/ben-ranford/lopper/commit/1c2a1a0384eab6a4be634b3d6c2d08f389a83cac))
+* **deps:** update module golang.org/x/sys to v0.48.0 ([c0eddc2](https://github.com/ben-ranford/lopper/commit/c0eddc2326432827c993352c3f3720a1ace61511))
+* **dotnet:** bound distributed lockfile scans ([#1561](https://github.com/ben-ranford/lopper/issues/1561)) ([36c35eb](https://github.com/ben-ranford/lopper/commit/36c35eb8f9a6d68d2fc2ccf97aa0cbc9661ea40d))
+* **dotnet:** parse form-feed after directives ([#1563](https://github.com/ben-ranford/lopper/issues/1563)) ([e1212d1](https://github.com/ben-ranford/lopper/commit/e1212d1fe6ac005f5ed16fa3008784b48a2c7398))
+* **dotnet:** stream source discovery ([#1562](https://github.com/ben-ranford/lopper/issues/1562)) ([8ea0d96](https://github.com/ben-ranford/lopper/commit/8ea0d968f58667882f73c3647e83a55a1ec0ce3c))
+* **manifests:** skip malformed parser inputs ([#1557](https://github.com/ben-ranford/lopper/issues/1557)) ([86f08a1](https://github.com/ben-ranford/lopper/commit/86f08a14d2487cebe629443b45ecbf1738779224))
+* **powershell:** bound module array nesting ([#1559](https://github.com/ben-ranford/lopper/issues/1559)) ([9383417](https://github.com/ben-ranford/lopper/commit/9383417c962e70ed72b00ab9e7594b4667c4492e))
+* **release:** document Go 1.27.1 build and VS Code requirements ([#1582](https://github.com/ben-ranford/lopper/issues/1582)) ([2efc873](https://github.com/ben-ranford/lopper/commit/2efc873c8c22ed35657972e8a6d2f5cf6b0fbcd3))
+* **release:** generate Go build requirement notes automatically ([#1584](https://github.com/ben-ranford/lopper/issues/1584)) ([557bb3d](https://github.com/ben-ranford/lopper/commit/557bb3d9b03e42519c407d883736ef87861d9199))
+* **release:** validate generated Homebrew formulas ([#1580](https://github.com/ben-ranford/lopper/issues/1580)) ([fe3c877](https://github.com/ben-ranford/lopper/commit/fe3c877e195657e505173f4cd1afd266e7b625ba))
+
+
+### Performance Improvements
+
+* **ci:** parallelize PR verification without dropping gates ([#1570](https://github.com/ben-ranford/lopper/issues/1570)) ([c3d861c](https://github.com/ben-ranford/lopper/commit/c3d861cd66cf94d9e006e10821a43fb679c99af4))
+
+
+### Code Refactoring
+
+* **sbom:** share component ref allocation ([#1568](https://github.com/ben-ranford/lopper/issues/1568)) ([e7e40bd](https://github.com/ben-ranford/lopper/commit/e7e40bd678df9c74e4336db12f05f28baffc2c74))
+
+## [1.8.6](https://github.com/ben-ranford/lopper/compare/v1.8.5...v1.8.6) (2026-09-01)
+
+
+### Bug Fixes
+
+* **build:** require Go 1.27 toolchain ([42d38d1](https://github.com/ben-ranford/lopper/commit/42d38d10cf6af1c51557232622ee8118311ffa31))
+* **cache:** capability-bound writable cache roots ([#1521](https://github.com/ben-ranford/lopper/issues/1521)) ([369779a](https://github.com/ben-ranford/lopper/commit/369779a7eab1460ca5aa6532b251bd6e16063c3b))
+* **cache:** detect writable root replacement ([#1527](https://github.com/ben-ranford/lopper/issues/1527)) ([6cd106a](https://github.com/ben-ranford/lopper/commit/6cd106a0e9657d405ddbb25c40f59d407e55d765))
+* **ci:** align Go toolchain Renovate updates ([#1506](https://github.com/ben-ranford/lopper/issues/1506)) ([cf2f413](https://github.com/ben-ranford/lopper/commit/cf2f413e1dd326027f5a070f2cb691c151fef0d9))
+* **ci:** disable SonarQube PR comments ([#1538](https://github.com/ben-ranford/lopper/issues/1538)) ([a8ae9f2](https://github.com/ben-ranford/lopper/commit/a8ae9f226799396bce90d3398a28e33544dd3285))
+* **cpp:** bound manifest parsing inputs ([#1518](https://github.com/ben-ranford/lopper/issues/1518)) ([553e868](https://github.com/ben-ranford/lopper/commit/553e868bb09c8dde496ff681dd4d05668265d511))
+* **cpp:** bound source and compile database inputs ([#1517](https://github.com/ben-ranford/lopper/issues/1517)) ([1d020ed](https://github.com/ben-ranford/lopper/commit/1d020ed342f184786ba7525d456939f701193cfb))
+* **cpp:** resolve nested third-party standard headers ([#1516](https://github.com/ben-ranford/lopper/issues/1516)) ([a2d047d](https://github.com/ben-ranford/lopper/commit/a2d047dadff443b259ad8fa6140af7731754cb2e))
+* **deps:** update module golang.org/x/mod to v0.40.0 ([#1501](https://github.com/ben-ranford/lopper/issues/1501)) ([a437c13](https://github.com/ben-ranford/lopper/commit/a437c131a17174574a861a21ea5cd6755aa1851e))
+* **golang:** bound malformed go.mod fallback parsing ([#1543](https://github.com/ben-ranford/lopper/issues/1543)) ([7cc87f9](https://github.com/ben-ranford/lopper/commit/7cc87f9bb6d66b32416713f19da3b39efa1b25a9))
+* **jvm:** normalize escaped package segments ([#1515](https://github.com/ben-ranford/lopper/issues/1515)) ([1ab2b7c](https://github.com/ben-ranford/lopper/commit/1ab2b7c37792139e5ee4c1a1ef3209e651c49c3e))
+* **php:** bound namespace scan work ([#1510](https://github.com/ben-ranford/lopper/issues/1510)) ([3d4ad4e](https://github.com/ben-ranford/lopper/commit/3d4ad4efcdc2eb2ca7da4110191fe691c88c9f4d))
+* **php:** bound untrusted adapter inputs ([#1509](https://github.com/ben-ranford/lopper/issues/1509)) ([a80a6c2](https://github.com/ben-ranford/lopper/commit/a80a6c2fbbfef4831f2093a7a624bd635c199889))
+* **profile:** confine Unix profile output writes ([#1526](https://github.com/ben-ranford/lopper/issues/1526)) ([d2c7f0b](https://github.com/ben-ranford/lopper/commit/d2c7f0bc5b2f2057df8363a49c32324a48e118d4))
+* **python:** bound lockfile parsing ([#1529](https://github.com/ben-ranford/lopper/issues/1529)) ([183f986](https://github.com/ben-ranford/lopper/commit/183f986a6c4d6f3946fc86c39421c45218546782))
+* **python:** bound requirements parsing ([#1528](https://github.com/ben-ranford/lopper/issues/1528)) ([57fbc47](https://github.com/ben-ranford/lopper/commit/57fbc474201e54a8b57f29f699eead282d5700cc))
+* **python:** honor PEP 621 optional exact pins ([#1511](https://github.com/ben-ranford/lopper/issues/1511)) ([c9000a6](https://github.com/ben-ranford/lopper/commit/c9000a60c99a2a2e6bc4548065658d7fe565540b))
+* **python:** preserve import-like string lines ([#1531](https://github.com/ben-ranford/lopper/issues/1531)) ([bd29352](https://github.com/ben-ranford/lopper/commit/bd29352c32b3af8a02a5e47b26795ce41e2a2287))
+* **queue-me:** advance after rebase conflicts ([#1539](https://github.com/ben-ranford/lopper/issues/1539)) ([b95f180](https://github.com/ben-ranford/lopper/commit/b95f1803ab1272950177d3b9c5f7c847a6ce37f2))
+* **ruby:** bound gemspec parsing ([#1530](https://github.com/ben-ranford/lopper/issues/1530)) ([198cb2a](https://github.com/ben-ranford/lopper/commit/198cb2a14480ef63a04bd065811982ec28b850af))
+* **safeio:** add Windows no-replace fallback ([#1522](https://github.com/ben-ranford/lopper/issues/1522)) ([c6c75dc](https://github.com/ben-ranford/lopper/commit/c6c75dcd3b11674d8b53266de5ddfae4d6187c6f))
+* **safeio:** validate generic atomic write sources ([#1514](https://github.com/ben-ranford/lopper/issues/1514)) ([841e133](https://github.com/ben-ranford/lopper/commit/841e1333f7fae6fafd24f7ab805f6e542891c02d))
+* **vscode:** normalize managed binary release tags ([#1525](https://github.com/ben-ranford/lopper/issues/1525)) ([792e630](https://github.com/ben-ranford/lopper/commit/792e6306ff45d23d5deda0898dd89f272f544315))
+* **workspace:** isolate SHA-256 git index ([#1520](https://github.com/ben-ranford/lopper/issues/1520)) ([d3c89b7](https://github.com/ben-ranford/lopper/commit/d3c89b785e5988926980bfcf620e5000cb6c2554))
+
+
+### Documentation
+
+* **readme:** streamline project overview ([#1532](https://github.com/ben-ranford/lopper/issues/1532)) ([3187de4](https://github.com/ben-ranford/lopper/commit/3187de4a1e0c933a374a87c5b0b58c1bc8e5abfe))
+
+
+### Code Refactoring
+
+* **kotlin:** decompose scanner normalization helpers ([#1512](https://github.com/ben-ranford/lopper/issues/1512)) ([08c9be9](https://github.com/ben-ranford/lopper/commit/08c9be9c111ea375fc3b184dbb2d4269ba307430))
+
 ## [1.8.5](https://github.com/ben-ranford/lopper/compare/v1.8.4...v1.8.5) (2026-08-12)
 
 

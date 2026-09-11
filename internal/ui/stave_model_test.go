@@ -74,7 +74,7 @@ func TestStaveSortActionUpdatesSharedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer prepared.Session.Close()
-	if _, err := completeLopperAction(context.Background(), t, prepared, action.ID("lopper.summary.sort.v1"), map[string]any{"value": "name"}, "lopper-preview", "sort", false); err != nil {
+	if _, err := completeLopperAction(context.Background(), t, prepared, action.ID("lopper.summary.sort.v1"), map[string]any{"value": "name"}, staveTestActionCall{sessionID: "lopper-preview", callID: "sort", confirm: false}); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := prepared.Session.Snapshot()

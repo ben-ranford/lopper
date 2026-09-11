@@ -1649,3 +1649,33 @@ func TestBaselineRuntimeDeltasForDependenciesAlignsByInstance(t *testing.T) {
 		t.Fatalf("expected reversed v1 duplicate to keep its runtime delta, got %#v", aligned[1])
 	}
 }
+
+func TestComputeBaselineComparisonTracksOnlyNewCoverageGaps(t *testing.T) {
+	unchanged := CoverageGap{
+		Code:     CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "gems/oversized.gem\u017fpec",
+		Evidence: []string{"base evidence"},
+	}
+	introduced := CoverageGap{
+		Code:     CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "pkg because it exceeds old/dependencies.gem\u017fpec",
+		Evidence: []string{"head evidence", "head evidence"},
+	}
+
+	comparison := ComputeBaselineComparison(
+		Report{CoverageGaps: []CoverageGap{introduced, unchanged, {Code: unchanged.Code, Language: unchanged.Language, Path: unchanged.Path, Evidence: []string{"head warning changed"}}}},
+		Report{CoverageGaps: []CoverageGap{unchanged}},
+	)
+
+	if len(comparison.NewCoverageGaps) != 1 {
+		t.Fatalf("expected only the introduced coverage gap to remain differential, got %#v", comparison.NewCoverageGaps)
+	}
+	if comparison.NewCoverageGaps[0].Path != introduced.Path {
+		t.Fatalf("expected unicode/delimiter path to be preserved, got %#v", comparison.NewCoverageGaps[0])
+	}
+	if !slices.Equal(comparison.NewCoverageGaps[0].Evidence, []string{"head evidence"}) {
+		t.Fatalf("expected evidence to be de-duplicated deterministically, got %#v", comparison.NewCoverageGaps[0].Evidence)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"regexp"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -20,9 +21,10 @@ const (
 )
 
 type dependencyInfo struct {
-	Canonical string
-	LocalPath bool
-	Renamed   bool
+	Canonical         string
+	LocalPath         bool
+	Renamed           bool
+	InheritsWorkspace bool
 }
 
 type manifestMeta struct {
@@ -39,14 +41,16 @@ type fileScan struct {
 }
 
 type scanResult struct {
-	Files                    []fileScan
-	Warnings                 []string
-	UnresolvedImports        map[string]int
-	RenamedAliasesByDep      map[string][]string
-	LocalModuleCache         map[string]bool
-	MacroAmbiguityDetected   bool
-	SkippedLargeFiles        int
-	SkippedFilesByBoundLimit bool
+	Files                     []fileScan
+	CoverageGaps              []report.CoverageGap
+	Warnings                  []string
+	UnresolvedImports         map[string]int
+	RenamedAliasesByDep       map[string][]string
+	LocalModuleCache          map[string]bool
+	RequireDeclaredDependency bool
+	MacroAmbiguityDetected    bool
+	SkippedLargeFiles         int
+	SkippedFilesByBoundLimit  bool
 }
 
 type useImportContext struct {

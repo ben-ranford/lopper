@@ -72,12 +72,12 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 		// Force enforceRepoBoundary failure by scanning a file outside repo.
 		outside := filepath.Join(t.TempDir(), "outside.py")
 		testutil.MustWriteFile(t, outside, importRequestsLine)
-		err := scanPythonRepoEntry(fileRepo, outside, entry, &scanResult{})
+		err := scanPythonRepoEntry(fileRepo, outside, entry, &scanResult{}, nil)
 		if err == nil {
 			t.Fatalf("expected boundary error for outside path")
 		}
 
-		err = scanPythonRepoEntry(fileRepo, filepath.Join(fileRepo, "missing.py"), entry, &scanResult{})
+		err = scanPythonRepoEntry(fileRepo, filepath.Join(fileRepo, "missing.py"), entry, &scanResult{}, nil)
 		if err == nil {
 			t.Fatalf("expected read error for missing python file path")
 		}

@@ -549,6 +549,30 @@ func TestChangedFilesAndRunGitErrorPaths(t *testing.T) {
 	}
 }
 
+func TestSelectProofFilesSkipsHeadOnlyPackageTests(t *testing.T) {
+	t.Parallel()
+
+	files, err := selectProofFiles([]string{
+		"pkg/buggy_head_test.go",
+		"pkg/buggy_test.go",
+		"pkg/testdata/case.txt",
+		"testdata/shared.txt",
+	}, []prmetadata.RegressionDeclaration{
+		{PackagePath: "./pkg", TestName: "TestRegressionProof"},
+	})
+	if err != nil {
+		t.Fatalf("selectProofFiles: %v", err)
+	}
+	want := []string{
+		"pkg/buggy_test.go",
+		"pkg/testdata/case.txt",
+		"testdata/shared.txt",
+	}
+	if strings.Join(files, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("selected files = %#v, want %#v", files, want)
+	}
+}
+
 func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 	originalResolve := resolveGitBinaryPath
 	originalRemoveAll := removeAll

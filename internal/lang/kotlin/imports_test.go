@@ -36,6 +36,19 @@ func TestMatchImportAndLocalName(t *testing.T) {
 	}
 }
 
+func TestMatchImportModule(t *testing.T) {
+	matches, module, ok := MatchImportModule("import com.acme.`when`.Widget as `when`")
+	if !ok || module != "com.acme.`when`.Widget" || LocalName(matches, module) != "when" {
+		t.Fatalf("expected escaped import module and local, got module %q ok=%v matches %#v", module, ok, matches)
+	}
+	if _, _, ok := MatchImportModule("import"); ok {
+		t.Fatal("expected empty import module to be rejected")
+	}
+	if _, _, ok := MatchImportModule("val text = \"import com.acme.Widget\""); ok {
+		t.Fatal("expected non-import source line to be rejected")
+	}
+}
+
 func TestCountUsageForEscapedImports(t *testing.T) {
 	imports := []shared.ImportRecord{{Local: "when", Location: report.Location{File: "App.kt", Line: 2}}, {Local: "Alias", Location: report.Location{File: "App.kt", Line: 3}}}
 	content := []byte("package demo.`when`\nimport\tcom.acme.Widget as `when`\nimport com.acme.Other as `Alias`\n// `when`()\nval text = \"`when`()\"\nwhen { else -> `when`() }\nAlias()\n")

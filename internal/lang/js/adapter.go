@@ -31,10 +31,12 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		RepoPath:    repoPath,
 	}
 
-	scanResult, err := ScanRepo(ctx, repoPath)
+	excludedPaths := shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
+	scanResult, err := ScanRepoWithExcludedPaths(ctx, repoPath, excludedPaths)
 	if err != nil {
 		return report.Report{}, err
 	}
+	result.UsageIncomplete = scanResult.UsageIncomplete
 	result.UsageUncertainty = summarizeUsageUncertainty(scanResult)
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 

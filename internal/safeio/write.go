@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // WriteRoot pins a filesystem root for path-confined atomic writes.
@@ -72,11 +73,52 @@ func (r *WriteRoot) VerifyIdentity(expected fs.FileInfo) error {
 // WriteFileCreatingParents atomically writes a root-relative file, creating
 // missing parent directories inside the pinned root.
 func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileAtRoot)
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
+		write: writeFileAtRootWithChecks,
+	})
+}
+
+// WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
+// file after parentReady validates state with the target parent pinned.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady func() error) error {
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
+		write: writeFileAtRootWithChecks,
+	})
+}
+
+// WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck atomically writes a
+// root-relative file after parentReady validates state with the target parent
+// pinned, then runs preWrite immediately before the file mutation begins.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, preWrite func() error) error {
+	options := checkedWriteToTargetParentOptions()
+	options.preWrite = preWrite
+	options.postWrite = preWrite
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
+}
+
+// WriteFileCreatingParentsAfterParentReadyWithPublishCheck atomically writes a
+// root-relative file after parentReady validates state with the target parent
+// pinned. It runs publishCheck immediately before publishing the target and
+// again after the target has been committed.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, publishCheck func() error) error {
+	options := checkedWriteToTargetParentOptions()
+	options.commitReady = publishCheck
+	options.postWrite = publishCheck
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
+}
+
+// WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck
+// atomically writes a root-relative file after the target parent is pinned. It
+// passes the actual pinned parent identity to publishCheck before publishing and
+// again after the target has been committed.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, publishCheck func(parentPath string, parentIdentity fs.FileInfo) error) error {
+	options := checkedWriteToTargetParentOptions()
+	options.publishParent = publishCheck
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
+}
+
+func checkedWriteToTargetParentOptions() writeToTargetParentOptions {
+	return writeToTargetParentOptions{write: writeFileAtRootWithChecks}
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -98,11 +140,9 @@ func (r *WriteRoot) WriteFileCreatingParentsWithPermissionFallback(targetPath st
 // target path does not already exist, creating missing parent directories
 // inside the pinned root without following symlinks.
 func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileIfAbsentAtRoot)
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
+		write: writeFileIfAbsentAtRootWithChecks,
+	})
 }
 
 // WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
@@ -118,6 +158,24 @@ func (r *WriteRoot) WriteFileCreatingParentsAtomicallyIfAbsent(targetPath string
 	})
 }
 
+// Remove deletes a root-relative path inside the pinned root.
+func (r *WriteRoot) Remove(targetPath string) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.root.Remove(target.rel)
+}
+
+// Lstat returns identity information for a root-relative path.
+func (r *WriteRoot) Lstat(targetPath string) (fs.FileInfo, error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	return r.root.Lstat(target.rel)
+}
+
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	if filepath.IsAbs(targetPath) {
 		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
@@ -130,13 +188,136 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
-	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: createParents,
+		parentPerm:    parentPerm,
+		write:         writeFileAtRootWithChecks,
+	})
 }
 
-func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
-	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
-		return write(parent, parentTarget, data, perm)
+func (r *WriteRoot) writeFileCreatingParentsWithOptions(targetPath string, data []byte, perm, parentPerm os.FileMode, options writeToTargetParentOptions) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	options.createParents = true
+	options.parentPerm = parentPerm
+	return r.writeFileToTargetParent(target, data, perm, options)
+}
+
+func (r *WriteRoot) writeFileCreatingParentsAfterParentReadyWithOptions(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady func() error, options writeToTargetParentOptions) error {
+	options.parentReady = parentReady
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
+}
+
+type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, options writeFileAtRootOptions) error
+
+type writeFileAtRootOptions struct {
+	allowPermissionFallback    bool
+	commitReady                func() error
+	postWrite                  func() error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
+}
+
+type writeToTargetParentOptions struct {
+	createParents              bool
+	parentPerm                 os.FileMode
+	parentReady                func() error
+	preWrite                   func() error
+	commitReady                func() error
+	postWrite                  func() error
+	publishParent              func(parentPath string, parentIdentity fs.FileInfo) error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
+	write                      writeAtRootFunc
+}
+
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, options writeToTargetParentOptions) (returnErr error) {
+	return r.withTargetParent(target, options.createParents, options.parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		if options.parentReady != nil {
+			if err := options.parentReady(); err != nil {
+				return err
+			}
+		}
+		if options.preWrite != nil {
+			if err := writeFilePreWriteReadyFn(); err != nil {
+				return err
+			}
+			if err := options.preWrite(); err != nil {
+				return err
+			}
+		}
+		commitReady := options.commitReady
+		postWrite := options.postWrite
+		if options.publishParent != nil {
+			parentIdentity, err := parent.Lstat(".")
+			if err != nil {
+				return err
+			}
+			parentPath := filepath.Dir(target.abs)
+			parentCheck := func() error {
+				if err := VerifyDirectoryIdentity(parentPath, parentIdentity); err != nil {
+					return err
+				}
+				return options.publishParent(parentPath, parentIdentity)
+			}
+			commitReady = nil
+			postWrite = parentCheck
+			options.rollbackOnPostWriteFailure = true
+			options.commitRename = func(oldName, newName string, expected fs.FileInfo) error {
+				if err := writeFileRenameReadyFn(); err != nil {
+					return err
+				}
+				if err := parentCheck(); err != nil {
+					return err
+				}
+				return renameAtPinnedDirectory(parent, parentIdentity, oldName, newName, expected)
+			}
+			if err := parentCheck(); err != nil {
+				return err
+			}
+		}
+		return options.write(parent, parentTarget, data, perm, writeFileAtRootOptions{
+			commitReady:                commitReady,
+			postWrite:                  postWrite,
+			commitRename:               options.commitRename,
+			rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
+		})
 	})
+}
+
+// renameAtPinnedDirectory publishes oldName to newName within parent after
+// re-verifying parent's own identity hasn't changed since it was pinned. The
+// rename itself is conditioned on oldName still matching expected -- the
+// source's identity as snapshotted before this call -- via renameFileIfMatches
+// rather than a blind path-based rename: without that, another process with
+// access to the directory could replace oldName between the snapshot and
+// this rename, and the substitute would be published to newName. A caller
+// that only verifies identity after publishing would catch the mismatch too
+// late, once the substitute is already live and readable at newName.
+func renameAtPinnedDirectory(parent Root, parentIdentity fs.FileInfo, oldName, newName string, expected fs.FileInfo) error {
+	if filepath.Dir(oldName) != "." || filepath.Dir(newName) != "." {
+		return fmt.Errorf("rename paths must be direct children of pinned parent")
+	}
+	actual, err := parent.Lstat(".")
+	if err != nil {
+		return err
+	}
+	if !actual.IsDir() || !os.SameFile(parentIdentity, actual) {
+		return fmt.Errorf("pinned parent identity changed")
+	}
+	consumed, err := renameFileIfMatches(parent, oldName, newName, expected, temporaryFileChangedBeforeCommit)
+	if err != nil {
+		return withPublishRenameSource(err, oldName)
+	}
+	if !consumed {
+		return errors.Join(
+			verifyPublishedPathMatchesInfo(parent, newName, expected, committedTargetChangedBeforeValidation),
+			cleanupAtomicTempFileIfMatches(parent, oldName, expected),
+		)
+	}
+	return nil
 }
 
 func (r *WriteRoot) withTargetParent(target rootedTarget, createParents bool, parentPerm os.FileMode, write func(parent Root, parentTarget rootedTarget) error) (returnErr error) {
@@ -214,9 +395,12 @@ func closeOwnedRootWithError(root Root, owned bool, err error) error {
 const atomicTempPrefix = ".safeio-atomic-"
 
 var (
-	randomTempNameFn       = randomTempName
-	randReadFn             = rand.Read
-	writeFileParentReadyFn = func() error { return nil }
+	randomTempNameFn         = randomTempName
+	randReadFn               = rand.Read
+	writeFileParentReadyFn   = func() error { return nil }
+	writeFilePreWriteReadyFn = func() error { return nil }
+	writeFilePublishReadyFn  = func() error { return nil }
+	writeFileRenameReadyFn   = func() error { return nil }
 )
 
 // CreateTempFileWithinRoot creates a temporary file under dir within root.
@@ -250,20 +434,33 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, false)
+	return writeFileAtRootWithChecks(root, target, data, perm, writeFileAtRootOptions{})
+}
+
+func writeFileAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error {
+	return writeFileAtRootWithChecks(root, target, data, perm, writeFileAtRootOptions{postWrite: postWrite})
+}
+
+func writeFileAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, options writeFileAtRootOptions) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, options)
 }
 
 func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, true)
+	return writeFileAtRootWithOptions(root, target, data, perm, writeFileAtRootOptions{allowPermissionFallback: true})
 }
 
-func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool) (returnErr error) {
+func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, options writeFileAtRootOptions) (returnErr error) {
 	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
 	if existingInfo == nil {
-		return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+		return writeAtomicReplacementWithChecks(root, target.rel, data, writePerm, atomicReplacementOptions{
+			commitReady:                options.commitReady,
+			postWrite:                  options.postWrite,
+			commitRename:               options.commitRename,
+			rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
+		})
 	}
 
 	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
@@ -276,66 +473,97 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, allowPermissionFallback)
+	return writeAtomicReplacementWithPinnedTargetCallbacks(root, target.rel, data, writePerm, file, options.allowPermissionFallback, pinnedReplacementChecks{
+		commitReady:                options.commitReady,
+		postWrite:                  options.postWrite,
+		commitRename:               options.commitRename,
+		rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
+	})
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, nil)
+}
+
+func writeFileIfAbsentAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, options writeFileAtRootOptions) error {
+	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, options.postWrite)
+}
+
+func writeFileIfAbsentAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) (returnErr error) {
 	if _, err := root.Lstat(target.rel); err == nil {
 		return os.ErrExist
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return createFileExclusivelyAtRoot(root, target.rel, data, perm)
+	if err := publishFileIfAbsentAtRoot(root, target.rel, data, perm); err != nil {
+		return err
+	}
+	if postWrite != nil {
+		return postWrite()
+	}
+	return nil
 }
 
-func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
-	file, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+func publishFileIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) error {
+	err := writeFileAtomicallyIfAbsentAtRoot(root, targetRel, data, perm)
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		return err
+	}
+	if atomicWriteCleanupFailed(err) {
+		return err
+	}
+	return writeFileExclusivelyIfAbsentAtRoot(root, targetRel, data, perm)
+}
+
+func writeFileExclusivelyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
+	targetFile, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return os.ErrExist
-		}
 		return err
 	}
 
-	targetCreated := true
+	targetInfo, err := targetFile.Stat()
+	if err != nil {
+		return closeFilePreservingPrimary(targetFile, err)
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return errors.Join(
+			fmt.Errorf("target file is not regular after exclusive create: %s", targetRel),
+			cleanupAtomicTempFileIfMatches(root, targetRel, targetInfo),
+			targetFile.Close(),
+		)
+	}
+
 	defer func() {
-		if targetCreated {
-			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
+		if targetFile != nil {
+			returnErr = errors.Join(returnErr, targetFile.Close())
+		}
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, targetRel, targetInfo))
 		}
 	}()
 
-	openedInfo, err := file.Stat()
+	if _, err := targetFile.Write(data); err != nil {
+		return err
+	}
+	refreshedInfo, err := targetFile.Stat()
 	if err != nil {
 		return err
 	}
-	if !openedInfo.Mode().IsRegular() {
-		return fmt.Errorf("exclusive-create target is not a regular file: %s", targetRel)
-	}
-	if _, err := file.Write(data); err != nil {
+	targetInfo = refreshedInfo
+	if err := targetFile.Chmod(perm); err != nil {
 		return err
 	}
-	if err := file.Chmod(perm); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	file = nil
-	pathInfo, err := root.Lstat(targetRel)
+	refreshedInfo, err = targetFile.Stat()
 	if err != nil {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target changed before validation: %w", err)
+		return err
 	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target became a symlink before validation: %s", targetRel)
+	targetInfo = refreshedInfo
+	if err := targetFile.Close(); err != nil {
+		targetFile = nil
+		return err
 	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target changed before validation: %s", targetRel)
-	}
-	targetCreated = false
-	return nil
+	targetFile = nil
+	return verifyPublishedPathMatchesInfo(root, targetRel, targetInfo, committedTargetChangedBeforeValidation)
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
@@ -404,6 +632,8 @@ func WriteFileReplacingWithinRoot(root Root, targetPath string, data []byte, per
 	return writeAtomicReplacement(root, target.rel, data, writePerm, existingInfo)
 }
 
+const cleanupFileChangedBeforeRemoval = "cleanup file changed before removal"
+
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 	var cleanupErr error
 	if tempFile != nil {
@@ -420,6 +650,452 @@ func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 		}
 	}
 	return cleanupErr
+}
+
+func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileInfo) error {
+	err := cleanupAtomicTempFileIfMatchesOnce(root, tempRel, expected, cleanupFileChangedBeforeRemoval)
+	if err == nil {
+		return nil
+	}
+	if tempRel == "" || expected == nil || strings.Contains(err.Error(), cleanupFileChangedBeforeRemoval) {
+		return err
+	}
+	return errors.Join(err, retryCleanupAtomicTempFileIfStillMatches(root, tempRel, expected, cleanupFileChangedBeforeRemoval))
+}
+
+func cleanupAtomicTempFileIfMatchesOnce(root Root, tempRel string, expected fs.FileInfo, changedBeforeRemoval string) error {
+	if tempRel == "" {
+		return nil
+	}
+	if expected == nil {
+		return fmt.Errorf("cleanup file identity unavailable: %s", tempRel)
+	}
+	info, err := root.Lstat(tempRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil
+	}
+	cleanupRel, err := stageIdentityBoundLink(root, tempRel, info, changedBeforeRemoval)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err) {
+			return removeFileIfMatches(root, tempRel, info, changedBeforeRemoval)
+		}
+		return err
+	}
+	if err := removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval); err != nil {
+		return errors.Join(err, removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval))
+	}
+	return removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval)
+}
+
+func retryCleanupAtomicTempFileIfStillMatches(root Root, tempRel string, expected fs.FileInfo, changedBeforeRemoval string) error {
+	info, err := root.Lstat(tempRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !sameRegularFile(expected, info) {
+		return nil
+	}
+	return removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval)
+}
+
+func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message string) error {
+	if rel == "" {
+		return nil
+	}
+	if expected == nil {
+		return fmt.Errorf("%s: %s", message, rel)
+	}
+	var err error
+	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
+		err = guardedRoot.RemoveIfMatches(rel, expected, message)
+	} else {
+		err = removeFileIfMatchesUsingBasicRoot(root, rel, expected, message)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func removeFileIfStillMatches(root Root, rel string, expected fs.FileInfo, message string) error {
+	return removeFileIfMatches(root, rel, expected, message)
+}
+
+func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, oldName)
+	if err != nil {
+		return err
+	}
+	cleanupDir := true
+	defer func() {
+		if cleanupDir {
+			returnErr = withAtomicWriteCleanup(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
+		}
+	}()
+
+	if err := root.Link(oldName, quarantineRel); err != nil {
+		if identityBoundLinkUnsupported(err) {
+			return fmt.Errorf("%w: %w", errIdentityBoundLinkUnavailable, err)
+		}
+		return err
+	}
+
+	quarantineInfo, err := publishedRegularFileInfo(root, quarantineRel, message)
+	if err != nil {
+		cleanupDir = false
+		return err
+	}
+	if !sameRegularFile(expected, quarantineInfo) {
+		cleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		if cleanupErr != nil {
+			cleanupDir = false
+		}
+		return errors.Join(fmt.Errorf("%s: %s", message, oldName), cleanupErr)
+	}
+
+	if err := root.Link(quarantineRel, newName); err != nil {
+		cleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		if cleanupErr != nil {
+			cleanupDir = false
+		}
+		return withAtomicWriteCleanup(err, cleanupErr)
+	}
+
+	newInfo, err := publishedRegularFileInfo(root, newName, message)
+	if err != nil {
+		targetCleanupErr := removeFileIfMatchesUsingBasicRoot(root, newName, quarantineInfo, message)
+		sourceCleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		if sourceCleanupErr != nil {
+			cleanupDir = false
+		}
+		return errors.Join(err, targetCleanupErr, sourceCleanupErr)
+	}
+	if !sameRegularFile(quarantineInfo, newInfo) {
+		targetCleanupErr := removeFileIfMatchesUsingBasicRoot(root, newName, quarantineInfo, message)
+		sourceCleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		if sourceCleanupErr != nil {
+			cleanupDir = false
+		}
+		return errors.Join(fmt.Errorf("%s: %s", message, newName), targetCleanupErr, sourceCleanupErr)
+	}
+
+	cleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+	if cleanupErr != nil {
+		cleanupDir = false
+	}
+	return cleanupErr
+}
+
+func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
+	if expected == nil {
+		return false, fmt.Errorf("%s: %s", message, oldName)
+	}
+	if !expected.Mode().IsRegular() {
+		return false, fmt.Errorf("%s: %s", message, oldName)
+	}
+	renameState, err := newBasicRootRenameState(root, oldName, newName, expected, message)
+	if err != nil {
+		return false, err
+	}
+	defer renameState.cleanup(&returnErr)
+
+	if err := root.Rename(oldName, renameState.quarantineRel); err != nil {
+		return false, err
+	}
+	if err := renameState.snapshotQuarantine(); err != nil {
+		return false, err
+	}
+	if !sameRegularFile(expected, renameState.quarantineInfo) {
+		return false, renameState.restoreSourceMismatch()
+	}
+	if err := renameState.publishToTarget(); err != nil {
+		return false, err
+	}
+	return renameState.finishAfterTargetRename()
+}
+
+type basicRootRenameState struct {
+	root                   Root
+	oldName                string
+	newName                string
+	expected               fs.FileInfo
+	message                string
+	quarantineDir          string
+	quarantineRel          string
+	quarantineInfo         fs.FileInfo
+	cleanupDir             bool
+	cleanupQuarantineEntry bool
+}
+
+func newBasicRootRenameState(root Root, oldName, newName string, expected fs.FileInfo, message string) (*basicRootRenameState, error) {
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, oldName)
+	if err != nil {
+		return nil, err
+	}
+	return &basicRootRenameState{
+		root:          root,
+		oldName:       oldName,
+		newName:       newName,
+		expected:      expected,
+		message:       message,
+		quarantineDir: quarantineDir,
+		quarantineRel: quarantineRel,
+		cleanupDir:    true,
+	}, nil
+}
+
+func (s *basicRootRenameState) cleanup(returnErr *error) {
+	if s.cleanupQuarantineEntry {
+		*returnErr = errors.Join(*returnErr, retryCleanupAtomicTempFileIfStillMatches(s.root, s.quarantineRel, s.quarantineInfo, s.message))
+	}
+	if s.cleanupDir {
+		*returnErr = errors.Join(*returnErr, ignoreRemoveNotExist(s.root.Remove(s.quarantineDir)))
+	}
+}
+
+func (s *basicRootRenameState) snapshotQuarantine() error {
+	info, err := publishedRegularFileInfo(s.root, s.quarantineRel, s.message)
+	if err != nil {
+		return s.restoreSourceAfterSnapshotFailure(err)
+	}
+	s.quarantineInfo = info
+	s.cleanupQuarantineEntry = true
+	return nil
+}
+
+func (s *basicRootRenameState) restoreSourceAfterSnapshotFailure(snapshotErr error) error {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.expected)
+	if !restored || retained {
+		s.disableQuarantineCleanup()
+	} else {
+		s.quarantineInfo = s.expected
+		s.cleanupQuarantineEntry = true
+	}
+	sourceRel := s.quarantineRel
+	if restored {
+		sourceRel = s.oldName
+	}
+	return withPublishRenameSource(errors.Join(snapshotErr, restoreErr), sourceRel)
+}
+
+func (s *basicRootRenameState) restoreSourceMismatch() error {
+	restoreErr := s.restoreOriginalFromQuarantine()
+	err := errors.Join(fmt.Errorf("%s: %s", s.message, s.oldName), restoreErr)
+	return withPublishRenameSource(err, s.quarantineRel)
+}
+
+func (s *basicRootRenameState) publishToTarget() error {
+	if err := s.root.Rename(s.quarantineRel, s.newName); err != nil {
+		return s.handleTargetRenameError(err)
+	}
+	return nil
+}
+
+func (s *basicRootRenameState) handleTargetRenameError(err error) error {
+	if errors.Is(err, syscall.EXDEV) {
+		s.disableQuarantineCleanup()
+		return withPublishRenameSource(err, s.quarantineRel)
+	}
+	restoreErr := s.restoreOriginalFromQuarantine()
+	return withPublishRenameSource(errors.Join(err, restoreErr), s.quarantineRel)
+}
+
+func (s *basicRootRenameState) restoreOriginalFromQuarantine() error {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.quarantineInfo)
+	if !restored || retained {
+		s.disableQuarantineCleanup()
+	}
+	if retained && restoreErr == nil {
+		return errIdentityBoundRestoreRetainedStaging
+	}
+	if restored && !retained && restoreErr == nil {
+		s.cleanupQuarantineEntry = false
+	}
+	return restoreErr
+}
+
+func (s *basicRootRenameState) disableQuarantineCleanup() {
+	s.cleanupDir = false
+	s.cleanupQuarantineEntry = false
+}
+
+func (s *basicRootRenameState) finishAfterTargetRename() (bool, error) {
+	stagedInfo, err := s.root.Lstat(s.quarantineRel)
+	if errors.Is(err, os.ErrNotExist) {
+		s.cleanupQuarantineEntry = false
+		return true, nil
+	}
+	if err != nil {
+		s.cleanupDir = false
+		return false, withPublishRenameSource(err, s.quarantineRel)
+	}
+	if !sameRegularFile(s.quarantineInfo, stagedInfo) {
+		s.disableQuarantineCleanup()
+		return false, withPublishRenameSource(fmt.Errorf("%s: %s", s.message, s.quarantineRel), s.quarantineRel)
+	}
+	return s.removeUnconsumedQuarantineEntry()
+}
+
+func (s *basicRootRenameState) removeUnconsumedQuarantineEntry() (bool, error) {
+	_, cleanupErr := finishRestoredQuarantinedPath(s.root, s.quarantineRel, s.message, s.quarantineInfo)
+	if cleanupErr != nil {
+		s.cleanupDir = false
+		return false, cleanupErr
+	}
+	s.cleanupQuarantineEntry = false
+	return false, nil
+}
+
+func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, rel)
+	if err != nil {
+		return err
+	}
+	cleanupDir := true
+	cleanupQuarantineEntry := false
+	var quarantineInfo fs.FileInfo
+	defer func() {
+		if cleanupQuarantineEntry {
+			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
+		}
+		if cleanupDir {
+			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
+		}
+	}()
+
+	if err := root.Rename(rel, quarantineRel); err != nil {
+		return err
+	}
+
+	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
+	if err != nil {
+		cleanupDir = false
+		return err
+	}
+	cleanupQuarantineEntry = true
+	if !sameRegularFile(expected, quarantineInfo) {
+		restored, retained, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
+		if !restored || retained {
+			cleanupDir = false
+			cleanupQuarantineEntry = false
+		}
+		if restored && restoreErr == nil {
+			cleanupQuarantineEntry = false
+		}
+		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+
+	if err := removeVerifiedQuarantinedFile(root, quarantineRel, quarantineInfo, message); err != nil {
+		cleanupDir = false
+		return err
+	}
+	cleanupQuarantineEntry = false
+	return nil
+}
+
+func removeVerifiedQuarantinedFile(root Root, rel string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(root, rel, expected, message); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func cleanupCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
+	info, ok, err := createdFileInfoIfSameFile(root, rel, expected, message)
+	if err != nil || !ok {
+		return err
+	}
+	return removeCreatedFileIfSameFile(root, rel, info, message)
+}
+
+func createdFileInfoIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (fs.FileInfo, bool, error) {
+	if rel == "" {
+		return nil, false, nil
+	}
+	if expected == nil {
+		return nil, false, fmt.Errorf("%s: %s", message, rel)
+	}
+	info, err := root.Lstat(rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil, false, nil
+	}
+	return info, true, nil
+}
+
+func removeCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, rel)
+	if err != nil {
+		return err
+	}
+	cleanupDir := true
+	cleanupQuarantineEntry := false
+	var quarantineInfo fs.FileInfo
+	defer func() {
+		if cleanupQuarantineEntry {
+			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
+		}
+		if cleanupDir {
+			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
+		}
+	}()
+
+	if err := root.Rename(rel, quarantineRel); err != nil {
+		return err
+	}
+	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
+	if err != nil {
+		cleanupDir = false
+		return err
+	}
+	cleanupQuarantineEntry = true
+	if !os.SameFile(expected, quarantineInfo) {
+		cleanupDir, cleanupQuarantineEntry, err = restoreMismatchedCreatedCleanup(root, quarantineRel, rel, message, quarantineInfo)
+		return err
+	}
+	cleanupDir, cleanupQuarantineEntry, err = removeQuarantinedCreatedCleanup(root, quarantineRel, quarantineInfo, message)
+	return err
+}
+
+func restoreMismatchedCreatedCleanup(root Root, quarantineRel, rel, message string, quarantineInfo fs.FileInfo) (bool, bool, error) {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
+	if !restored || retained {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+	if restoreErr == nil {
+		return true, false, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+	return true, true, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+}
+
+func removeQuarantinedCreatedCleanup(root Root, quarantineRel string, quarantineInfo fs.FileInfo, message string) (bool, bool, error) {
+	if err := removeFileIfStillMatches(root, quarantineRel, quarantineInfo, message); err != nil {
+		return false, true, err
+	}
+	return true, false, nil
 }
 
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {

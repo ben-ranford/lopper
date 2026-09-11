@@ -59,7 +59,7 @@ func TestStaveActionsSaveBaselineThenCompareUseTempStoreAndRefreshModel(t *testi
 		t.Fatal(err)
 	}
 	defer prepared.Session.Close()
-	if _, err := completeLopperAction(context.Background(), t, prepared, staveActionSaveBaseline, map[string]any{"label": "nightly", "store": store}, "e2e", "save", false); err != nil {
+	if _, err := completeLopperAction(context.Background(), t, prepared, staveActionSaveBaseline, map[string]any{"label": "nightly", "store": store}, staveTestActionCall{sessionID: "e2e", callID: "save", confirm: false}); err != nil {
 		t.Fatal(err)
 	}
 	if runner.saveReq.BaselineStorePath != store || runner.path == "" {
@@ -68,7 +68,7 @@ func TestStaveActionsSaveBaselineThenCompareUseTempStoreAndRefreshModel(t *testi
 	if _, err := os.Stat(runner.path); err != nil {
 		t.Fatalf("saved baseline file missing: %v", err)
 	}
-	if _, err := completeLopperAction(context.Background(), t, prepared, staveActionCompareBaseline, map[string]any{"file": runner.path}, "e2e", "compare", false); err != nil {
+	if _, err := completeLopperAction(context.Background(), t, prepared, staveActionCompareBaseline, map[string]any{"file": runner.path}, staveTestActionCall{sessionID: "e2e", callID: "compare", confirm: false}); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := prepared.Session.Snapshot()
@@ -147,7 +147,7 @@ func TestStaveCodemodSkipOnlyOutcomeIsNotReportedAsApplied(t *testing.T) {
 	}
 	defer prepared.Session.Close()
 
-	result, err := completeLopperAction(context.Background(), t, prepared, staveActionApplyCodemod, map[string]any{"dependency": "js:lodash", "confirm": true, "allowDirty": false}, "e2e", "skip-only", true)
+	result, err := completeLopperAction(context.Background(), t, prepared, staveActionApplyCodemod, map[string]any{"dependency": "js:lodash", "confirm": true, "allowDirty": false}, staveTestActionCall{sessionID: "e2e", callID: "skip-only", confirm: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestStaveTypedActionsUpdateSessionStateAndTree(t *testing.T) {
 		{staveActionOpen, map[string]any{"dependency": "go:alpha"}},
 	}
 	for i, tc := range cases {
-		if _, err := completeLopperAction(context.Background(), t, prepared, action.ID(tc.id), tc.value, "e2e", "typed-"+string(rune('a'+i)), false); err != nil {
+		if _, err := completeLopperAction(context.Background(), t, prepared, action.ID(tc.id), tc.value, staveTestActionCall{sessionID: "e2e", callID: "typed-" + string(rune('a'+i)), confirm: false}); err != nil {
 			t.Fatalf("%s: %v", tc.id, err)
 		}
 	}

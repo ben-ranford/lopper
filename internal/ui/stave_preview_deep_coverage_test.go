@@ -165,72 +165,13 @@ func TestStavePreviewStartLineModeBranches(t *testing.T) {
 }
 
 func TestReadStaveLineInputAndSendLopperEventBranches(t *testing.T) {
-	t.Run("complete line and eof", func(t *testing.T) {
-		line, eof, err := readStaveLineInput(bufio.NewReader(strings.NewReader("refresh\n")))
-		if err != nil || eof || line != "refresh" {
-			t.Fatalf("complete line mismatch: line=%q eof=%v err=%v", line, eof, err)
-		}
-		line, eof, err = readStaveLineInput(bufio.NewReader(strings.NewReader("refresh")))
-		if err != nil || !eof || line != "refresh" {
-			t.Fatalf("unterminated line mismatch: line=%q eof=%v err=%v", line, eof, err)
-		}
-	})
+	t.Run("complete line and eof", checkPreviewCompleteLineAndEof)
 
-	t.Run("reader error", func(t *testing.T) {
-		want := errors.New("read boom")
-		line, eof, err := readStaveLineInput(bufio.NewReader(&errReader{err: want}))
-		if !errors.Is(err, want) || eof || line != "" {
-			t.Fatalf("reader error mismatch: line=%q eof=%v err=%v", line, eof, err)
-		}
-	})
+	t.Run("reader error", checkPreviewReaderError)
 
-	t.Run("send lopper event snapshot send and wait", func(t *testing.T) {
-		_, _, prepared, _, _ := newPreparedStaveSession(t, report.Report{
-			Dependencies: []report.DependencyReport{
-				{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
-			},
-		})
-		defer prepared.Session.Close()
+	t.Run("send lopper event snapshot send and wait", checkPreviewSendLopperEventSnapshotSendAndWait)
 
-		okCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		ev, err := event.New(event.Text, event.TextPayload{Text: "refresh", Committed: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := sendLopperEvent(okCtx, prepared, ev); err != nil {
-			t.Fatalf("send success: %v", err)
-		}
-
-	})
-
-	t.Run("send failure and wait failure", func(t *testing.T) {
-		_, _, prepared, _, _ := newPreparedStaveSession(t, report.Report{
-			Dependencies: []report.DependencyReport{
-				{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
-			},
-		})
-		ev, err := event.New(event.Text, event.TextPayload{Text: "refresh", Committed: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		prepared.Session.Close()
-		if err := sendLopperEvent(context.Background(), prepared, ev); !errors.Is(err, session.ErrSessionClosed) {
-			t.Fatalf("send failure was not returned: %v", err)
-		}
-
-		_, _, prepared, _, _ = newPreparedStaveSession(t, report.Report{
-			Dependencies: []report.DependencyReport{
-				{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
-			},
-		})
-		defer prepared.Session.Close()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		if err := sendLopperEvent(ctx, prepared, ev); !errors.Is(err, context.Canceled) {
-			t.Fatalf("wait cancellation was not returned: %v", err)
-		}
-	})
+	t.Run("send failure and wait failure", checkPreviewSendFailureAndWaitFailure)
 }
 
 func TestStavePreviewRenderAndTreeBranches(t *testing.T) {
@@ -243,68 +184,13 @@ func TestStavePreviewRenderAndTreeBranches(t *testing.T) {
 	}
 	_, preview := newStavePreviewFixture(t, rep)
 
-	t.Run("render returns analyzer errors", func(t *testing.T) {
-		renderErr := errors.New("analysis failed")
-		broken := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{err: renderErr}, report.NewFormatter())
-		if _, err := NewStavePreview(broken).(*StavePreview).render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}); !errors.Is(err, renderErr) {
-			t.Fatalf("render analyzer error was not returned: %v", err)
-		}
-	})
+	t.Run("render returns analyzer errors", checkPreviewRenderReturnsAnalyzerErrors)
 
-	t.Run("renderView returns tree failures", func(t *testing.T) {
-		_, err := preview.renderView(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}, summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "\xff"}}}, summaryState{page: 1, pageSize: 10})
-		if err == nil {
-			t.Fatal("expected invalid tree to fail")
-		}
-	})
+	t.Run("renderView returns tree failures", func(t *testing.T) { checkPreviewRenderviewReturnsTreeFailures(t, preview) })
 
-	t.Run("renderView returns post-render cancellation", func(t *testing.T) {
-		opts := Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80, ASCII: true, Color: boolPtr(false)}
-		state := summaryState{page: 1, pageSize: 1}
-		view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
-		ctxCount := &countingContext{}
-		if output, err := preview.renderView(ctxCount, opts, view, state); err != nil {
-			t.Fatalf("renderView success: %v", err)
-		} else if !strings.Contains(output, "alpha") || !strings.Contains(output, "Stave preview") {
-			t.Fatalf("renderView output missing content: %q", output)
-		}
-		ctxCancel := &countingContext{cancelAfter: ctxCount.calls}
-		if _, err := preview.renderView(ctxCancel, opts, view, state); !errors.Is(err, context.Canceled) {
-			t.Fatalf("renderView cancellation was not returned: %v", err)
-		}
-	})
+	t.Run("renderView returns post-render cancellation", func(t *testing.T) { checkPreviewRenderviewReturnsPostRenderCancellation(t, preview) })
 
-	t.Run("renderer profiles and ascii override", func(t *testing.T) {
-		t.Setenv("NO_COLOR", "")
-		t.Setenv("CI", "")
-		for _, tc := range []struct {
-			name, term, colorTerm string
-			want                  string
-		}{
-			{name: "truecolor", term: "xterm-256color", colorTerm: "truecolor", want: "truecolor"},
-			{name: "ansi256", term: "screen-256color", want: "ansi256"},
-			{name: "ansi16", term: "vt100", want: "ansi16"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Setenv("TERM", tc.term)
-				t.Setenv("COLORTERM", tc.colorTerm)
-				renderer, err := newStaveRenderer(Options{Width: 80}, true)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got := renderer.Caps.Color.String(); got != tc.want {
-					t.Fatalf("color level = %s, want %s", got, tc.want)
-				}
-			})
-		}
-		renderer, err := newStaveRenderer(Options{Width: 80, ASCII: true}, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !renderer.ASCII {
-			t.Fatal("explicit ASCII override was ignored")
-		}
-	})
+	t.Run("renderer profiles and ascii override", checkPreviewRendererProfilesAndAsciiOverride)
 }
 
 func TestStaveTreeForInteractionBranches(t *testing.T) {
@@ -376,5 +262,143 @@ func TestStaveTreeForInteractionBranches(t *testing.T) {
 
 	if _, err := staveTreeForInteraction(summaryReportView{}, nil, []summaryDependencyView{{Language: "go", Name: "\xff"}}, summaryState{}, 1, false, staveSummaryInteraction{}); err == nil {
 		t.Fatal("invalid dependency tree was accepted")
+	}
+}
+
+func checkPreviewCompleteLineAndEof(t *testing.T) {
+	t.Helper()
+	line, eof, err := readStaveLineInput(bufio.NewReader(strings.NewReader("refresh\n")))
+	if err != nil || eof || line != "refresh" {
+		t.Fatalf("complete line mismatch: line=%q eof=%v err=%v", line, eof, err)
+	}
+	line, eof, err = readStaveLineInput(bufio.NewReader(strings.NewReader("refresh")))
+	if err != nil || !eof || line != "refresh" {
+		t.Fatalf("unterminated line mismatch: line=%q eof=%v err=%v", line, eof, err)
+	}
+}
+
+func checkPreviewReaderError(t *testing.T) {
+	t.Helper()
+	want := errors.New("read boom")
+	line, eof, err := readStaveLineInput(bufio.NewReader(&errReader{err: want}))
+	if !errors.Is(err, want) || eof || line != "" {
+		t.Fatalf("reader error mismatch: line=%q eof=%v err=%v", line, eof, err)
+	}
+}
+
+func checkPreviewSendLopperEventSnapshotSendAndWait(t *testing.T) {
+	t.Helper()
+	_, _, prepared, _, _ := newPreparedStaveSession(t, report.Report{
+		Dependencies: []report.DependencyReport{
+			{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
+		},
+	})
+	defer prepared.Session.Close()
+
+	okCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ev, err := event.New(event.Text, event.TextPayload{Text: "refresh", Committed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sendLopperEvent(okCtx, prepared, ev); err != nil {
+		t.Fatalf("send success: %v", err)
+	}
+
+}
+
+func checkPreviewSendFailureAndWaitFailure(t *testing.T) {
+	t.Helper()
+	_, _, prepared, _, _ := newPreparedStaveSession(t, report.Report{
+		Dependencies: []report.DependencyReport{
+			{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
+		},
+	})
+	ev, err := event.New(event.Text, event.TextPayload{Text: "refresh", Committed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Session.Close()
+	if err := sendLopperEvent(context.Background(), prepared, ev); !errors.Is(err, session.ErrSessionClosed) {
+		t.Fatalf("send failure was not returned: %v", err)
+	}
+
+	_, _, prepared, _, _ = newPreparedStaveSession(t, report.Report{
+		Dependencies: []report.DependencyReport{
+			{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10},
+		},
+	})
+	defer prepared.Session.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sendLopperEvent(ctx, prepared, ev); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait cancellation was not returned: %v", err)
+	}
+}
+
+func checkPreviewRenderReturnsAnalyzerErrors(t *testing.T) {
+	t.Helper()
+	renderErr := errors.New("analysis failed")
+	broken := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{err: renderErr}, report.NewFormatter())
+	if _, err := NewStavePreview(broken).(*StavePreview).render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}); !errors.Is(err, renderErr) {
+		t.Fatalf("render analyzer error was not returned: %v", err)
+	}
+}
+
+func checkPreviewRenderviewReturnsTreeFailures(t *testing.T, preview *StavePreview) {
+	t.Helper()
+	_, err := preview.renderView(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}, summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "\xff"}}}, summaryState{page: 1, pageSize: 10})
+	if err == nil {
+		t.Fatal("expected invalid tree to fail")
+	}
+}
+
+func checkPreviewRenderviewReturnsPostRenderCancellation(t *testing.T, preview *StavePreview) {
+	t.Helper()
+	opts := Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80, ASCII: true, Color: boolPtr(false)}
+	state := summaryState{page: 1, pageSize: 1}
+	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
+	ctxCount := &countingContext{}
+	if output, err := preview.renderView(ctxCount, opts, view, state); err != nil {
+		t.Fatalf("renderView success: %v", err)
+	} else if !strings.Contains(output, "alpha") || !strings.Contains(output, "Stave preview") {
+		t.Fatalf("renderView output missing content: %q", output)
+	}
+	ctxCancel := &countingContext{cancelAfter: ctxCount.calls}
+	if _, err := preview.renderView(ctxCancel, opts, view, state); !errors.Is(err, context.Canceled) {
+		t.Fatalf("renderView cancellation was not returned: %v", err)
+	}
+}
+
+func checkPreviewRendererProfilesAndAsciiOverride(t *testing.T) {
+	t.Helper()
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CI", "")
+	for _, tc := range []struct {
+		name, term, colorTerm string
+		want                  string
+	}{
+		{name: "truecolor", term: "xterm-256color", colorTerm: "truecolor", want: "truecolor"},
+		{name: "ansi256", term: "screen-256color", want: "ansi256"},
+		{name: "ansi16", term: "vt100", want: "ansi16"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM", tc.term)
+			t.Setenv("COLORTERM", tc.colorTerm)
+			renderer, err := newStaveRenderer(Options{Width: 80}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := renderer.Caps.Color.String(); got != tc.want {
+				t.Fatalf("color level = %s, want %s", got, tc.want)
+			}
+		})
+	}
+	renderer, err := newStaveRenderer(Options{Width: 80, ASCII: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renderer.ASCII {
+		t.Fatal("explicit ASCII override was ignored")
 	}
 }

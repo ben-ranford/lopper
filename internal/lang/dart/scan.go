@@ -231,9 +231,115 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 			Line:   lineIndex + 1,
 			Column: shared.FirstContentColumn(lines[lineIndex]),
 		}
-		imports = append(imports, buildDirectiveBindings(kind, module, clause, dependency, location)...)
+		bindings := buildDirectiveBindings(kind, module, clause, dependency, location)
+		imports = append(imports, locateDirectiveBindings(lines[lineIndex:lineIndex+consumed], bindings)...)
 	}
 	return imports
+}
+
+func locateDirectiveBindings(lines []string, bindings []importBinding) []importBinding {
+	locations := directiveDeclarationLocations(lines, bindings)
+	for i := range bindings {
+		if bindings[i].Wildcard {
+			continue
+		}
+		location, ok := locations[bindings[i].Local]
+		if ok && location.lineOffset > 0 {
+			bindings[i].Location.Line += location.lineOffset
+			bindings[i].Location.Column = location.column
+		}
+	}
+	return bindings
+}
+
+type directiveBindingLocation struct {
+	lineOffset int
+	column     int
+}
+
+func directiveDeclarationLocations(lines []string, bindings []importBinding) map[string]directiveBindingLocation {
+	wanted := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if !binding.Wildcard && binding.Local != "" {
+			wanted[binding.Local] = struct{}{}
+		}
+	}
+	locations := make(map[string]directiveBindingLocation, len(wanted))
+	code := string(shared.MaskCommentsAndStringsForFile([]byte(strings.Join(lines, "\n")), "directive.dart"))
+	addDirectiveAliasLocation(code, locations, wanted)
+	showList := false
+	for lineOffset, line := range strings.Split(code, "\n") {
+		showIndex := directiveIdentifierColumn(line, "show")
+		if showIndex > 0 {
+			showList = true
+			afterShow := line[showIndex-1+len("show"):]
+			collectShowBindingLocations(afterShow, lineOffset, showIndex+len("show")-1, locations, wanted)
+			continue
+		}
+		if !showList {
+			continue
+		}
+		collectShowBindingLocations(line, lineOffset, 0, locations, wanted)
+	}
+	return locations
+}
+
+func addDirectiveAliasLocation(code string, locations map[string]directiveBindingLocation, wanted map[string]struct{}) {
+	match := aliasPattern.FindStringSubmatchIndex(code)
+	if len(match) != 4 {
+		return
+	}
+	prefix := code[:match[2]]
+	lineOffset := strings.Count(prefix, "\n")
+	column := match[2] - strings.LastIndex(prefix, "\n")
+	addDirectiveBindingLocation(locations, wanted, code[match[2]:match[3]], lineOffset, column)
+}
+
+func collectShowBindingLocations(line string, lineOffset, columnOffset int, locations map[string]directiveBindingLocation, wanted map[string]struct{}) {
+	for index := 0; index < len(line); {
+		if !isDartIdentifierByte(line[index]) {
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(line) && isDartIdentifierByte(line[end]) {
+			end++
+		}
+		identifier := line[index:end]
+		if identifier == "hide" {
+			return
+		}
+		addDirectiveBindingLocation(locations, wanted, identifier, lineOffset, columnOffset+index+1)
+		index = end
+	}
+}
+
+func addDirectiveBindingLocation(locations map[string]directiveBindingLocation, wanted map[string]struct{}, identifier string, lineOffset, column int) {
+	if _, ok := wanted[identifier]; !ok {
+		return
+	}
+	if _, ok := locations[identifier]; !ok {
+		locations[identifier] = directiveBindingLocation{lineOffset: lineOffset, column: column}
+	}
+}
+
+func directiveIdentifierColumn(line, identifier string) int {
+	for offset := 0; ; {
+		index := strings.Index(line[offset:], identifier)
+		if index < 0 {
+			return 0
+		}
+		index += offset
+		end := index + len(identifier)
+		if (index == 0 || !isDartIdentifierByte(line[index-1])) && (end == len(line) || !isDartIdentifierByte(line[end])) {
+			return index + 1
+		}
+		offset = end
+	}
+}
+
+func isDartIdentifierByte(value byte) bool {
+	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
 }
 
 func stripBlockCommentLines(lines []string) []string {
@@ -309,14 +415,21 @@ func collectDirective(lines []string) (string, int, bool) {
 		return lines[0], 1, true
 	}
 
-	directive := lines[0]
+	directiveSize := len(lines[0])
 	for i := 1; i < len(lines); i++ {
 		if !isDirectiveContinuationLine(lines[i]) {
 			return "", 1, false
 		}
-		directive += "\n" + lines[i]
+		directiveSize += 1 + len(lines[i])
 		if hasDirectiveTerminator(lines[i]) {
-			return directive, i + 1, true
+			var directive strings.Builder
+			directive.Grow(directiveSize)
+			directive.WriteString(lines[0])
+			for _, line := range lines[1 : i+1] {
+				directive.WriteByte('\n')
+				directive.WriteString(line)
+			}
+			return directive.String(), i + 1, true
 		}
 	}
 	return "", 1, false

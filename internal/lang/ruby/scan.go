@@ -17,11 +17,12 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		ImportedDependencies: make(map[string]struct{}),
 	}
 
-	declWarnings, err := loadDeclaredDependencies(ctx, repoPath, scan.DeclaredDependencies, scan.DeclaredSources)
+	declWarnings, coverageGaps, err := loadDeclaredDependencies(ctx, repoPath, scan.DeclaredDependencies, scan.DeclaredSources)
 	if err != nil {
 		return scan, err
 	}
 	scan.Warnings = append(scan.Warnings, declWarnings...)
+	scan.CoverageGaps = append(scan.CoverageGaps, coverageGaps...)
 	if len(scan.DeclaredDependencies) == 0 {
 		scan.Warnings = append(scan.Warnings, "no gem declarations found in Gemfile, Gemfile.lock, or .gemspec files")
 	}

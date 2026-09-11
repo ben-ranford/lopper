@@ -96,6 +96,7 @@ func computeBaselineComparisonFromPairs(current, baseline Report, pairs []Depend
 		},
 	}
 	appendDependencyInstanceDeltas(&comparison, pairs)
+	comparison.NewCoverageGaps = newCoverageGaps(current.CoverageGaps, baseline.CoverageGaps)
 	comparison.NewDeniedLicenses = newlyDeniedLicensesFromPairs(pairs)
 	comparison.NewReachableVulnerabilities = newlyReachableVulnerabilitiesFromPairs(pairs)
 

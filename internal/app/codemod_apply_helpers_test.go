@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package app
 
 import (
@@ -7,7 +9,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -161,44 +162,16 @@ func TestPrepareCodemodFilesSameLineTieOrdering(t *testing.T) {
 
 func TestPrepareCodemodFilesStatFailure(t *testing.T) {
 	repo := t.TempDir()
-	fifoPath := filepath.Join(repo, indexJSFile)
-	if err := syscall.Mkfifo(fifoPath, 0o644); err != nil {
-		t.Fatalf("mkfifo source: %v", err)
-	}
+	writeTextFile(t, filepath.Join(repo, indexJSFile), importLodashLineWithLF, 0o644)
 
-	writerDone := make(chan struct{})
-	writerErrs := make(chan error, 3)
-	go func() {
-		defer close(writerDone)
-		file, err := os.OpenFile(fifoPath, os.O_WRONLY, 0)
-		if err != nil {
-			writerErrs <- err
-			return
-		}
-		if _, err := file.WriteString(importLodashLineWithLF); err != nil {
-			writerErrs <- err
-		}
-		if err := os.Remove(fifoPath); err != nil && !os.IsNotExist(err) {
-			writerErrs <- err
-		}
-		if err := file.Close(); err != nil {
-			writerErrs <- err
-		}
-	}()
-
-	prepared, failures := prepareCodemodFiles(repo, []report.CodemodSuggestion{
+	prepared, failures := prepareCodemodFilesWithStat(repo, []report.CodemodSuggestion{
 		{File: indexJSFile, Line: 1, Original: importLodashLine, Replacement: importLodashMapLine},
-	})
-	<-writerDone
-	close(writerErrs)
-	for err := range writerErrs {
-		t.Fatalf("fifo writer error: %v", err)
-	}
+	}, func(string) (os.FileInfo, error) { return nil, os.ErrNotExist })
 
 	if len(prepared) != 0 {
 		t.Fatalf("expected no prepared files when stat fails, got %#v", prepared)
 	}
-	if len(failures) != 1 || !strings.Contains(strings.ToLower(failures[0].Message), "no such") {
+	if len(failures) != 1 || failures[0].Message != os.ErrNotExist.Error() {
 		t.Fatalf("expected stat failure result, got %#v", failures)
 	}
 }

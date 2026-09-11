@@ -172,12 +172,7 @@ func reduceStaveSummary(_ stave.ReduceContext, model staveSummaryModel, ev event
 		}
 	case event.Text:
 		if p, ok := ev.Payload.(event.TextPayload); ok {
-			model.interaction.filterBuffer = p.Text
-			if p.Committed {
-				model.interaction.commandMode = false
-				model.interaction.status, model.interaction.error = applyStaveCommand(&model.interaction.summary, p.Text, model.view)
-				model.interaction.help = model.interaction.summary.showHelp
-			}
+			reduceStaveText(&model, p)
 		}
 	case event.Key:
 		if p, ok := ev.Payload.(event.KeyPayload); ok {
@@ -185,12 +180,7 @@ func reduceStaveSummary(_ stave.ReduceContext, model staveSummaryModel, ev event
 		}
 	case event.ActionInvoked:
 		if p, ok := ev.Payload.(event.ActionInvokedPayload); ok {
-			model.interaction.status = "Pending " + p.ActionID
-			model.interaction.pendingCallID, model.interaction.pendingActionID = p.CallID, p.ActionID
-			model.interaction.error = ""
-			if p.ActionID == staveActionQuit {
-				model.interaction.pendingConfirm = p.CallID
-			}
+			reduceStaveActionInvoked(&model, p)
 		}
 	case event.Diagnostic:
 		if p, ok := ev.Payload.(event.DiagnosticPayload); ok {
@@ -199,108 +189,168 @@ func reduceStaveSummary(_ stave.ReduceContext, model staveSummaryModel, ev event
 		}
 	case event.EffectResult:
 		if p, ok := ev.Payload.(event.EffectResultPayload); ok {
-			pendingAction := model.interaction.pendingActionID
-			if p.CallID == "" || p.CallID != model.interaction.pendingCallID {
-				break
-			}
-			model.interaction.pendingConfirm = ""
-			model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-			if p.Status == "error" || p.Error != "" {
-				model.interaction.error = p.Error
-			} else {
-				model.interaction.status = p.Status
-				model.interaction.error = ""
-				envelope, normalizeErr := normalizeOutcomeMap(p.Value)
-				if normalizeErr != nil {
-					model.interaction.error = "invalid action outcome: " + normalizeErr.Error()
-					model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-					break
-				}
-				if envelope["version"] != "lopper.action-result/v1" || envelope["action"] != pendingAction {
-					model.interaction.error = "invalid action outcome: version or action mismatch"
-					model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-					break
-				}
-				if envelope["value"] == nil {
-					model.interaction.error = "invalid action outcome: missing value"
-					model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-					break
-				}
-				valueMap, valueOK := envelope["value"].(map[string]any)
-				if !valueOK {
-					model.interaction.error = "invalid action outcome: value must be an object"
-					model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-					break
-				}
-				if validationErr := validateStaveOutcome(pendingAction, valueMap); validationErr != "" {
-					model.interaction.error = "invalid action outcome: " + validationErr
-					model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-					break
-				}
-				if opts, ok := valueMap["options"].(map[string]any); ok && model.opts != nil {
-					if v, ok := opts["baselinePath"].(string); ok {
-						model.opts.BaselinePath = v
-					}
-					if v, ok := opts["baselineStorePath"].(string); ok {
-						model.opts.BaselineStorePath = v
-					}
-					if v, ok := opts["baselineKey"].(string); ok {
-						model.opts.BaselineKey = v
-					}
-				}
-				if envelope["version"] == "lopper.action-result/v1" && envelope["action"] == pendingAction {
-					value, _ := envelope["value"].(map[string]any)
-					model.interaction.status = staveActionStatus(pendingAction, value)
-					if rawReport, ok := value["report"]; ok && model.view != nil {
-						if decoded, decodeErr := decodeStaveReportOutcome(rawReport); decodeErr == nil {
-							mapped := mapSummaryReportView(decoded)
-							model.view = &mapped
-						} else {
-							model.interaction.error = "invalid action outcome: report decode failed"
-							model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
-							break
-						}
-					}
-					if dep, ok := value["dependency"].(string); ok {
-						if model.view == nil {
-							model.interaction.status = ""
-							model.interaction.error = "No data for dependency " + dep
-							model.interaction.summary.selectedDependency = ""
-							model.interaction.focusPane = "summary"
-						} else if _, found := staveSelectedDetail(*model.view, dep); !found {
-							model.interaction.status = ""
-							model.interaction.error = "No data for dependency " + dep
-							model.interaction.summary.selectedDependency = ""
-							model.interaction.focusPane = "summary"
-						} else {
-							model.interaction.summary.selectedDependency = dep
-							model.interaction.focusPane = "detail"
-						}
-					}
-					if pendingAction == staveActionRefresh {
-						clampStavePage(&model)
-						clampStaveSelection(&model)
-						if selected := model.interaction.summary.selectedDependency; selected != "" {
-							if _, found := staveSelectedDetail(*model.view, selected); !found {
-								model.interaction.summary.selectedDependency = ""
-								model.interaction.focusPane = "summary"
-							}
-						}
-					}
-					if pendingAction == staveActionQuit {
-						model.interaction.quit = true
-					}
-					if cmd, ok := value["command"].(string); ok {
-						_, model.interaction.error = applyStaveCommand(&model.interaction.summary, cmd, model.view)
-						if model.interaction.error != "" {
-							model.interaction.status = ""
-						}
-					}
-				}
-			}
+			reduceStaveEffectResult(&model, p)
 		}
 	}
 	return model, nil, nil
+}
+
+func reduceStaveText(model *staveSummaryModel, payload event.TextPayload) {
+	model.interaction.filterBuffer = payload.Text
+	if !payload.Committed {
+		return
+	}
+	model.interaction.commandMode = false
+	model.interaction.status, model.interaction.error = applyStaveCommand(&model.interaction.summary, payload.Text, model.view)
+	if model.interaction.status != "" && model.interaction.error == "" {
+		clampStaveSlice(model)
+	}
+	model.interaction.help = model.interaction.summary.showHelp
+}
+
+func reduceStaveActionInvoked(model *staveSummaryModel, payload event.ActionInvokedPayload) {
+	model.interaction.status = "Pending " + payload.ActionID
+	model.interaction.pendingCallID, model.interaction.pendingActionID = payload.CallID, payload.ActionID
+	model.interaction.error = ""
+	if payload.ActionID == staveActionQuit {
+		model.interaction.pendingConfirm = payload.CallID
+	}
+}
+
+func reduceStaveEffectResult(model *staveSummaryModel, payload event.EffectResultPayload) {
+	pendingAction, matched := stavePendingAction(model, payload.CallID)
+	if !matched {
+		return
+	}
+	if payload.Status == "error" || payload.Error != "" {
+		model.interaction.error = payload.Error
+		return
+	}
+	model.interaction.status, model.interaction.error = payload.Status, ""
+	value, ok := validatedStaveEffectValue(pendingAction, payload.Value, model)
+	if !ok {
+		return
+	}
+	applyStaveEffectValue(model, pendingAction, value)
+}
+
+func stavePendingAction(model *staveSummaryModel, callID string) (string, bool) {
+	if callID == "" || callID != model.interaction.pendingCallID {
+		return "", false
+	}
+	pendingAction := model.interaction.pendingActionID
+	model.interaction.pendingConfirm = ""
+	model.interaction.pendingCallID, model.interaction.pendingActionID = "", ""
+	return pendingAction, true
+}
+
+func validatedStaveEffectValue(actionID string, outcome any, model *staveSummaryModel) (map[string]any, bool) {
+	envelope, err := normalizeOutcomeMap(outcome)
+	if err != nil {
+		model.interaction.error = "invalid action outcome: " + err.Error()
+		return nil, false
+	}
+	if envelope["version"] != "lopper.action-result/v1" || envelope["action"] != actionID {
+		model.interaction.error = "invalid action outcome: version or action mismatch"
+		return nil, false
+	}
+	if envelope["value"] == nil {
+		model.interaction.error = "invalid action outcome: missing value"
+		return nil, false
+	}
+	value, ok := envelope["value"].(map[string]any)
+	if !ok {
+		model.interaction.error = "invalid action outcome: value must be an object"
+		return nil, false
+	}
+	if validationErr := validateStaveOutcome(actionID, value); validationErr != "" {
+		model.interaction.error = "invalid action outcome: " + validationErr
+		return nil, false
+	}
+	updateStaveOutcomeOptions(model, value)
+	return value, true
+}
+
+func updateStaveOutcomeOptions(model *staveSummaryModel, value map[string]any) {
+	options, ok := value["options"].(map[string]any)
+	if !ok || model.opts == nil {
+		return
+	}
+	if v, ok := options["baselinePath"].(string); ok {
+		model.opts.BaselinePath = v
+	}
+	if v, ok := options["baselineStorePath"].(string); ok {
+		model.opts.BaselineStorePath = v
+	}
+	if v, ok := options["baselineKey"].(string); ok {
+		model.opts.BaselineKey = v
+	}
+}
+
+func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[string]any) {
+	model.interaction.status = staveActionStatus(actionID, value)
+	if !updateStaveOutcomeReport(model, value) {
+		return
+	}
+	updateStaveOutcomeDependency(model, value)
+	if actionID == staveActionRefresh {
+		clampStaveSlice(model)
+		clearMissingStaveDetail(model)
+	}
+	if actionID == staveActionQuit {
+		model.interaction.quit = true
+	}
+	if command, ok := value["command"].(string); ok {
+		_, model.interaction.error = applyStaveCommand(&model.interaction.summary, command, model.view)
+		clampStaveSlice(model)
+		if model.interaction.error != "" {
+			model.interaction.status = ""
+		}
+	}
+}
+
+func updateStaveOutcomeReport(model *staveSummaryModel, value map[string]any) bool {
+	rawReport, ok := value["report"]
+	if !ok || model.view == nil {
+		return true
+	}
+	decoded, err := decodeStaveReportOutcome(rawReport)
+	if err != nil {
+		model.interaction.error = "invalid action outcome: report decode failed"
+		return false
+	}
+	mapped := mapSummaryReportView(decoded)
+	model.view = &mapped
+	return true
+}
+
+func updateStaveOutcomeDependency(model *staveSummaryModel, value map[string]any) {
+	dependency, ok := value["dependency"].(string)
+	if !ok {
+		return
+	}
+	if model.view != nil {
+		if _, found := staveSelectedDetail(*model.view, dependency); found {
+			model.interaction.summary.selectedDependency = dependency
+			model.interaction.focusPane = "detail"
+			return
+		}
+	}
+	model.interaction.status = ""
+	model.interaction.error = "No data for dependency " + dependency
+	model.interaction.summary.selectedDependency = ""
+	model.interaction.focusPane = "summary"
+}
+
+func clearMissingStaveDetail(model *staveSummaryModel) {
+	selected := model.interaction.summary.selectedDependency
+	if selected == "" || model.view == nil {
+		return
+	}
+	if _, found := staveSelectedDetail(*model.view, selected); !found {
+		model.interaction.summary.selectedDependency = ""
+		model.interaction.focusPane = "summary"
+	}
 }
 
 func validateStaveOutcome(actionID string, value map[string]any) string {
@@ -309,31 +359,47 @@ func validateStaveOutcome(actionID string, value map[string]any) string {
 	boolTrue := func(k string) bool { v, ok := value[k].(bool); return ok && v }
 	switch actionID {
 	case staveActionOpen:
-		if !str("dependency") {
-			return "dependency missing"
-		}
+		return staveRequiredString(str, "dependency")
 	case staveActionRefresh:
-		if !boolTrue("refreshed") || value["report"] == nil {
-			return "refresh payload incomplete"
-		}
+		return staveRequiredTrueReport(boolTrue, value, "refreshed", "refresh")
 	case staveActionApplyCodemod:
-		if !str("dependency") || !boolValue("applied") || value["report"] == nil {
-			return "codemod payload incomplete"
-		}
+		return staveCodemodOutcomeError(str, boolValue, value)
 	case staveActionSaveBaseline:
-		if !boolTrue("ok") || value["report"] == nil || value["options"] == nil {
-			return "save payload incomplete"
-		}
+		return staveRequiredTrueReportOptions(boolTrue, value, "save")
 	case staveActionCompareBaseline:
-		if !boolTrue("ok") || value["report"] == nil || value["options"] == nil {
-			return "compare payload incomplete"
-		}
+		return staveRequiredTrueReportOptions(boolTrue, value, "compare")
 	case "lopper.summary.filter.v1", "lopper.summary.sort.v1", "lopper.summary.page.v1", "lopper.summary.size.v1":
-		if !str("command") {
-			return "command missing"
-		}
+		return staveRequiredString(str, "command")
 	}
 	return ""
+}
+
+func staveRequiredString(hasValue func(string) bool, name string) string {
+	if hasValue(name) {
+		return ""
+	}
+	return name + " missing"
+}
+
+func staveRequiredTrueReport(hasTrue func(string) bool, value map[string]any, field, action string) string {
+	if hasTrue(field) && value["report"] != nil {
+		return ""
+	}
+	return action + " payload incomplete"
+}
+
+func staveCodemodOutcomeError(hasString, hasBool func(string) bool, value map[string]any) string {
+	if hasString("dependency") && hasBool("applied") && value["report"] != nil {
+		return ""
+	}
+	return "codemod payload incomplete"
+}
+
+func staveRequiredTrueReportOptions(hasTrue func(string) bool, value map[string]any, action string) string {
+	if hasTrue("ok") && value["report"] != nil && value["options"] != nil {
+		return ""
+	}
+	return action + " payload incomplete"
 }
 
 func normalizeOutcomeMap(value any) (map[string]any, error) {
@@ -384,23 +450,21 @@ func staveActionStatus(id string, args any) string {
 	case staveActionRefresh:
 		return "Refreshed"
 	case staveActionOpen:
-		if m, ok := args.(map[string]any); ok {
-			if dep, ok := m["dependency"].(string); ok {
-				return "Opened " + dep
-			}
+		if dependency, ok := staveStringStatusValue(args, "dependency"); ok {
+			return "Opened " + dependency
 		}
 		return "Opened"
 	case "lopper.summary.sort.v1":
-		if m, ok := args.(map[string]any); ok {
-			return "Sorted by " + fmt.Sprint(m["value"])
+		if value, ok := staveStatusValue(args, "value"); ok {
+			return "Sorted by " + value
 		}
 	case "lopper.summary.filter.v1":
-		if m, ok := args.(map[string]any); ok {
-			return "Filtered " + fmt.Sprint(m["value"])
+		if value, ok := staveStatusValue(args, "value"); ok {
+			return "Filtered " + value
 		}
 	case "lopper.summary.page.v1":
-		if m, ok := args.(map[string]any); ok {
-			return "Page " + fmt.Sprint(m["value"])
+		if value, ok := staveStatusValue(args, "value"); ok {
+			return "Page " + value
 		}
 	case staveActionSaveBaseline:
 		return "Baseline saved"
@@ -417,15 +481,30 @@ func staveActionStatus(id string, args any) string {
 	return "Action complete"
 }
 
+func staveStatusValue(args any, field string) (string, bool) {
+	values, ok := args.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	value, ok := values[field]
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprint(value), true
+}
+
+func staveStringStatusValue(args any, field string) (string, bool) {
+	values, ok := args.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	value, ok := values[field].(string)
+	return value, ok
+}
+
 func reduceStaveKey(model *staveSummaryModel, p event.KeyPayload) {
 	key := strings.ToLower(strings.TrimSpace(p.Key))
-	ctrl := false
-	for _, modifier := range p.Modifiers {
-		if modifier == "ctrl" {
-			ctrl = true
-			break
-		}
-	}
+	ctrl := staveHasModifier(p.Modifiers, "ctrl")
 	if key == "rune" && p.Rune != 0 {
 		key = strings.ToLower(string(p.Rune))
 	}
@@ -433,19 +512,20 @@ func reduceStaveKey(model *staveSummaryModel, p event.KeyPayload) {
 		model.interaction.quit = true
 		return
 	}
-	// Printable input in command mode belongs to the editor, even when the
-	// rune is also a global shortcut (h/q/j/k/n/p).
-	if model.interaction.commandMode && p.Key == "rune" && p.Rune != 0 {
-		model.interaction.filterBuffer += string(p.Rune)
+	if reduceStaveCommandModeKey(model, key, p) {
 		return
 	}
-	if model.interaction.commandMode && key == "space" {
-		model.interaction.filterBuffer += " "
+	if reduceStaveGlobalKey(model, key) {
 		return
 	}
+	reduceStaveNavigationKey(model, key)
+}
+
+func reduceStaveGlobalKey(model *staveSummaryModel, key string) bool {
 	switch key {
 	case "q", "quit", "ctrl+c":
 		model.interaction.quit = true
+		return true
 	case "escape":
 		if model.interaction.commandMode {
 			model.interaction.commandMode = false
@@ -454,30 +534,47 @@ func reduceStaveKey(model *staveSummaryModel, p event.KeyPayload) {
 		} else {
 			model.interaction.quit = true
 		}
+		return true
 	case "?", "h", "help":
 		model.interaction.help = !model.interaction.help
 		model.interaction.summary.showHelp = model.interaction.help
+		return true
 	case "enter":
 		if model.interaction.commandMode {
 			model.interaction.commandMode = false
 		}
+		return true
 	case "/":
 		model.interaction.commandMode = true
 		model.interaction.filterBuffer = "filter "
+		return true
 	case ":":
 		model.interaction.commandMode = true
 		model.interaction.filterBuffer = ""
+		return true
 	case "r":
 		model.interaction.status = "refresh"
+		return true
 	case "backspace", "delete":
 		if model.interaction.commandMode {
-			buffer := model.interaction.filterBuffer
-			runes := []rune(buffer)
-			if len(runes) > 0 {
-				buffer = string(runes[:len(runes)-1])
-			}
-			model.interaction.filterBuffer = buffer
+			model.interaction.filterBuffer = staveTrimLastRune(model.interaction.filterBuffer)
 		}
+		return true
+	default:
+		return false
+	}
+}
+
+func staveTrimLastRune(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return value
+	}
+	return string(runes[:len(runes)-1])
+}
+
+func reduceStaveNavigationKey(model *staveSummaryModel, key string) {
+	switch key {
 	case "up", "k":
 		if model.interaction.focusPane == "summary" && model.interaction.selectedRow > 0 {
 			model.interaction.selectedRow--
@@ -491,22 +588,53 @@ func reduceStaveKey(model *staveSummaryModel, p event.KeyPayload) {
 		if model.interaction.summary.page > 1 {
 			model.interaction.summary.page--
 		}
+		clampStaveSelection(model)
 	case "right", "next", "n":
 		model.interaction.summary.page++
-		clampStavePage(model)
+		clampStaveSlice(model)
 	case "tab":
-		switch {
-		case model.interaction.summary.selectedDependency == "":
-			model.interaction.focusPane = "summary"
-			model.interaction.status = "Open a dependency before focusing detail"
-			model.interaction.error = ""
-		case model.interaction.focusPane == "summary":
-			model.interaction.focusPane = "detail"
-		default:
-			model.interaction.focusPane = "summary"
-		}
-	default:
+		reduceStaveFocus(model)
 	}
+}
+
+func reduceStaveFocus(model *staveSummaryModel) {
+	if model.interaction.summary.selectedDependency == "" {
+		model.interaction.focusPane = "summary"
+		model.interaction.status = "Open a dependency before focusing detail"
+		model.interaction.error = ""
+		return
+	}
+	if model.interaction.focusPane == "summary" {
+		model.interaction.focusPane = "detail"
+		return
+	}
+	model.interaction.focusPane = "summary"
+}
+
+func staveHasModifier(modifiers []string, wanted string) bool {
+	for _, modifier := range modifiers {
+		if modifier == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func reduceStaveCommandModeKey(model *staveSummaryModel, key string, payload event.KeyPayload) bool {
+	if !model.interaction.commandMode {
+		return false
+	}
+	// Printable input in command mode belongs to the editor, even when the
+	// rune is also a global shortcut (h/q/j/k/n/p).
+	if payload.Key == "rune" && payload.Rune != 0 {
+		model.interaction.filterBuffer += string(payload.Rune)
+		return true
+	}
+	if key == "space" {
+		model.interaction.filterBuffer += " "
+		return true
+	}
+	return false
 }
 
 func clampStaveSelection(model *staveSummaryModel) {
@@ -523,6 +651,11 @@ func clampStaveSelection(model *staveSummaryModel) {
 	}
 }
 
+func clampStaveSlice(model *staveSummaryModel) {
+	clampStavePage(model)
+	clampStaveSelection(model)
+}
+
 func clampStavePage(model *staveSummaryModel) {
 	if model.view != nil {
 		clampSummaryPage(*model.view, &model.interaction.summary)
@@ -533,11 +666,13 @@ func applyStaveCommand(s *summaryState, input string, target any) (string, strin
 	if strings.TrimSpace(input) == "" {
 		return "", ""
 	}
-	if !applySummaryCommand(s, strings.TrimSpace(input), io.Discard) {
+	candidate := *s
+	if !applySummaryCommand(&candidate, strings.TrimSpace(input), io.Discard) {
 		return "", fmt.Sprintf("unknown command: %s", strings.TrimSpace(input))
 	}
 	if value, ok := target.(*summaryReportView); ok && value != nil {
-		clampSummaryPage(*value, s)
+		clampSummaryPage(*value, &candidate)
 	}
+	*s = candidate
 	return "ok", ""
 }

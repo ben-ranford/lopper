@@ -48,6 +48,13 @@ func LegacyParityProjection(view summaryDisplayView, state summaryState, totalPa
 func StaveParityProjection(tree semantic.Tree, caps ParityCapabilities) (ParityFrame, error) {
 	root := tree.Snapshot().Root
 	frame := ParityFrame{Capabilities: caps}
+	frame.Actions = staveParityActions(root)
+	staveParityHeader(&frame, root)
+	staveParityChildren(&frame, root)
+	return frame, nil
+}
+
+func staveParityActions(root semantic.Node) []ParityAction {
 	actionNames := map[string]struct{}{}
 	var walkActions func(semantic.Node)
 	walkActions = func(node semantic.Node) {
@@ -64,9 +71,14 @@ func StaveParityProjection(tree semantic.Tree, caps ParityCapabilities) (ParityF
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	actions := make([]ParityAction, 0, len(names))
 	for _, name := range names {
-		frame.Actions = append(frame.Actions, ParityAction{Name: name, Supported: true})
+		actions = append(actions, ParityAction{Name: name, Supported: true})
 	}
+	return actions
+}
+
+func staveParityHeader(frame *ParityFrame, root semantic.Node) {
 	rootContent := root.Description()
 	if rootContent == "" {
 		rootContent = root.Value().Text
@@ -91,6 +103,10 @@ func StaveParityProjection(tree semantic.Tree, caps ParityCapabilities) (ParityF
 			}
 		}
 	}
+}
+
+func staveParityChildren(frame *ParityFrame, root semantic.Node) {
+	separator := staveParitySeparator(root)
 	for _, child := range root.Children() {
 		content := child.Description()
 		if content == "" {
@@ -111,7 +127,17 @@ func StaveParityProjection(tree semantic.Tree, caps ParityCapabilities) (ParityF
 		waste := parseParityInt64(strings.TrimSuffix(strings.TrimSpace(parts[2]), " bytes waste"))
 		frame.Rows = append(frame.Rows, ParityRow{Identity: parts[0] + ":" + child.Name(), Language: parts[0], Name: child.Name(), Used: used, Waste: waste})
 	}
-	return frame, nil
+}
+
+func staveParitySeparator(root semantic.Node) string {
+	content := root.Description()
+	if content == "" {
+		content = root.Value().Text
+	}
+	if !strings.Contains(content, " | ") && strings.Contains(content, " • ") {
+		return " • "
+	}
+	return " | "
 }
 
 func parseParityInt(value string) int {
@@ -140,79 +166,128 @@ func parseParityFloat(value string) float64 {
 
 func CompareParity(want, got ParityFrame) ParityReport {
 	report := ParityReport{}
-	add := func(path, a, b string) { report.Violations = append(report.Violations, ParityDiff{path, a, b}) }
+	compareParityPagination(&report, want, got)
+	compareParityCapabilities(&report, want.Capabilities, got.Capabilities)
+	compareParityRows(&report, want.Rows, got.Rows)
+	compareParityWarnings(&report, want.Warnings, got.Warnings)
+	compareParityActions(&report, want.Actions, got.Actions)
+	return report
+}
+
+func addParityViolation(report *ParityReport, path, want, got string) {
+	report.Violations = append(report.Violations, ParityDiff{path, want, got})
+}
+
+func compareParityPagination(report *ParityReport, want, got ParityFrame) {
 	if want.Page != got.Page {
-		add("page", strconv.Itoa(want.Page), strconv.Itoa(got.Page))
+		addParityViolation(report, "page", strconv.Itoa(want.Page), strconv.Itoa(got.Page))
 	}
 	if want.TotalPages != got.TotalPages {
-		add("total_pages", strconv.Itoa(want.TotalPages), strconv.Itoa(got.TotalPages))
+		addParityViolation(report, "total_pages", strconv.Itoa(want.TotalPages), strconv.Itoa(got.TotalPages))
 	}
 	if want.PageSize != got.PageSize {
-		add("page_size", strconv.Itoa(want.PageSize), strconv.Itoa(got.PageSize))
+		addParityViolation(report, "page_size", strconv.Itoa(want.PageSize), strconv.Itoa(got.PageSize))
 	}
-	if want.Capabilities.Width != got.Capabilities.Width {
-		add("capabilities.width", strconv.Itoa(want.Capabilities.Width), strconv.Itoa(got.Capabilities.Width))
+}
+
+func compareParityCapabilities(report *ParityReport, want, got ParityCapabilities) {
+	if want.Width != got.Width {
+		addParityViolation(report, "capabilities.width", strconv.Itoa(want.Width), strconv.Itoa(got.Width))
 	}
-	if want.Capabilities.ASCII != got.Capabilities.ASCII {
-		add("capabilities.ascii", fmt.Sprintf("%t", want.Capabilities.ASCII), fmt.Sprintf("%t", got.Capabilities.ASCII))
+	compareParityCapabilityBool(report, "ascii", want.ASCII, got.ASCII)
+	compareParityCapabilityBool(report, "color", want.Color, got.Color)
+	if want.Interactive != got.Interactive {
+		report.CapabilityGaps = append(report.CapabilityGaps, ParityDiff{"capabilities.interactive", fmt.Sprintf("%t", want.Interactive), fmt.Sprintf("%t (%s)", got.Interactive, "renderer capability gap")})
 	}
-	if want.Capabilities.Color != got.Capabilities.Color {
-		add("capabilities.color", fmt.Sprintf("%t", want.Capabilities.Color), fmt.Sprintf("%t", got.Capabilities.Color))
+}
+
+func compareParityCapabilityBool(report *ParityReport, name string, want, got bool) {
+	if want != got {
+		addParityViolation(report, "capabilities."+name, fmt.Sprintf("%t", want), fmt.Sprintf("%t", got))
 	}
-	if want.Capabilities.Interactive != got.Capabilities.Interactive {
-		report.CapabilityGaps = append(report.CapabilityGaps, ParityDiff{"capabilities.interactive", fmt.Sprintf("%t", want.Capabilities.Interactive), fmt.Sprintf("%t (%s)", got.Capabilities.Interactive, "renderer capability gap")})
+}
+
+func compareParityRows(report *ParityReport, want, got []ParityRow) {
+	if len(want) != len(got) {
+		addParityViolation(report, "rows.length", strconv.Itoa(len(want)), strconv.Itoa(len(got)))
 	}
-	if len(want.Rows) != len(got.Rows) {
-		add("rows.length", strconv.Itoa(len(want.Rows)), strconv.Itoa(len(got.Rows)))
+	for index := 0; index < len(want) && index < len(got); index++ {
+		compareParityRow(report, index, want[index], got[index])
 	}
-	for i := 0; i < len(want.Rows) && i < len(got.Rows); i++ {
-		a, b := want.Rows[i], got.Rows[i]
-		if a.Identity != b.Identity {
-			add(fmt.Sprintf("rows[%d].identity", i), a.Identity, b.Identity)
-		}
-		if a.Language != b.Language {
-			add(fmt.Sprintf("rows[%d].language", i), a.Language, b.Language)
-		}
-		if a.Name != b.Name {
-			add(fmt.Sprintf("rows[%d].name", i), a.Name, b.Name)
-		}
-		if a.Waste != b.Waste {
-			add(fmt.Sprintf("rows[%d].waste", i), strconv.FormatInt(a.Waste, 10), strconv.FormatInt(b.Waste, 10))
-		}
-		if a.Used != b.Used {
-			add(fmt.Sprintf("rows[%d].used", i), fmt.Sprintf("%g", a.Used), fmt.Sprintf("%g", b.Used))
-		}
+}
+
+func compareParityRow(report *ParityReport, index int, want, got ParityRow) {
+	prefix := fmt.Sprintf("rows[%d].", index)
+	if want.Identity != got.Identity {
+		addParityViolation(report, prefix+"identity", want.Identity, got.Identity)
 	}
-	if strings.Join(want.Warnings, "\x00") != strings.Join(got.Warnings, "\x00") {
-		add("warnings", strings.Join(want.Warnings, "|"), strings.Join(got.Warnings, "|"))
+	if want.Language != got.Language {
+		addParityViolation(report, prefix+"language", want.Language, got.Language)
 	}
+	if want.Name != got.Name {
+		addParityViolation(report, prefix+"name", want.Name, got.Name)
+	}
+	if want.Waste != got.Waste {
+		addParityViolation(report, prefix+"waste", strconv.FormatInt(want.Waste, 10), strconv.FormatInt(got.Waste, 10))
+	}
+	if want.Used != got.Used {
+		addParityViolation(report, prefix+"used", fmt.Sprintf("%g", want.Used), fmt.Sprintf("%g", got.Used))
+	}
+}
+
+func compareParityWarnings(report *ParityReport, want, got []string) {
+	if strings.Join(want, "\x00") != strings.Join(got, "\x00") {
+		addParityViolation(report, "warnings", strings.Join(want, "|"), strings.Join(got, "|"))
+	}
+}
+
+func compareParityActions(report *ParityReport, want, got []ParityAction) {
+	gotActions := parityActionsByName(got)
+	report.CapabilityGaps = append(report.CapabilityGaps, missingParityActions(want, gotActions)...)
+	report.CapabilityGaps = append(report.CapabilityGaps, unexpectedParityActions(want, got)...)
+}
+
+func parityActionsByName(actions []ParityAction) map[string]ParityAction {
 	gotActions := map[string]ParityAction{}
-	for _, action := range got.Actions {
+	for _, action := range actions {
 		gotActions[action.Name] = action
 	}
-	for _, action := range want.Actions {
-		other, ok := gotActions[action.Name]
+	return gotActions
+}
+
+func missingParityActions(want []ParityAction, got map[string]ParityAction) []ParityDiff {
+	gaps := make([]ParityDiff, 0)
+	for _, action := range want {
+		other, ok := got[action.Name]
 		if !ok || action.Supported != other.Supported {
-			reason := "legacy action is not exposed by the Stave preview"
-			if ok {
-				reason = other.GapReason
-				if reason == "" && !other.Supported {
-					reason = "Stave preview does not support this action"
-				}
-			}
-			report.CapabilityGaps = append(report.CapabilityGaps, ParityDiff{"actions." + action.Name, fmt.Sprintf("supported=%t", action.Supported), reason})
+			gaps = append(gaps, ParityDiff{"actions." + action.Name, fmt.Sprintf("supported=%t", action.Supported), parityActionGapReason(other, ok)})
 		}
 	}
+	return gaps
+}
+
+func parityActionGapReason(action ParityAction, found bool) string {
+	if !found {
+		return "legacy action is not exposed by the Stave preview"
+	}
+	if action.GapReason != "" {
+		return action.GapReason
+	}
+	return "Stave preview does not support this action"
+}
+
+func unexpectedParityActions(want, got []ParityAction) []ParityDiff {
 	wantActions := map[string]bool{}
-	for _, action := range want.Actions {
+	for _, action := range want {
 		wantActions[action.Name] = true
 	}
-	for _, action := range got.Actions {
+	gaps := make([]ParityDiff, 0)
+	for _, action := range got {
 		if !wantActions[action.Name] && action.Supported {
-			report.CapabilityGaps = append(report.CapabilityGaps, ParityDiff{"actions." + action.Name, "unexpected", "supported"})
+			gaps = append(gaps, ParityDiff{"actions." + action.Name, "unexpected", "supported"})
 		}
 	}
-	return report
+	return gaps
 }
 
 // EqualWithKnownGaps is the explicit oracle for the preview's documented

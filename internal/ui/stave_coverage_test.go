@@ -36,7 +36,7 @@ func TestStaveTerminalViewRendersAndUsesFallbackViewport(t *testing.T) {
 	b := &staveTerminal{ctx: context.Background(), width: 0, height: 0, snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{tree: tree, caps: capability.Manifest{}, theme: theme.Resolved{}}, nil
 	}}
-	if got := (&staveTerminalModel{bridge: b}).View().Content; got == "" {
+	if (&staveTerminalModel{bridge: b}).View().Content == "" {
 		t.Fatal("View returned empty output")
 	}
 }
@@ -110,7 +110,7 @@ func TestRunStaveTerminalQuitsFromInput(t *testing.T) {
 	defer cancel()
 	var output bytes.Buffer
 	preview := &StavePreview{legacy: shared.summary}
-	if err := preview.runStaveTerminal(ctx, opts, *view, *state, prepared, bytes.NewBufferString("q"), &output, false); err != nil {
+	if err := preview.runStaveTerminal(ctx, opts, prepared, bytes.NewBufferString("q"), &output, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -119,11 +119,11 @@ func TestStaveTerminalDispatchTextAndActionErrors(t *testing.T) {
 	b := &staveTerminal{ctx: context.Background(), prepared: struct{}{}, snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{model: staveSummaryModel{}}, nil
 	}, sendEvent: func(context.Context, any, event.Event) error { return nil }}
-	if msg := b.beginCommand("arbitrary text")(); msg == nil {
+	if b.beginCommand("arbitrary text")() == nil {
 		t.Fatal("text command returned nil completion")
 	}
 	b.inflight = false
-	if cmd := b.beginCommand("refresh"); cmd == nil {
+	if b.beginCommand("refresh") == nil {
 		t.Fatal("missing prepared action should return a completion command")
 	}
 }
@@ -132,7 +132,7 @@ func TestStaveTerminalDispatchCoversSnapshotAndPublishFailures(t *testing.T) {
 	b := &staveTerminal{snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{}, errors.New("snapshot")
 	}}
-	if cmd := b.beginCommand("refresh"); cmd == nil {
+	if b.beginCommand("refresh") == nil {
 		t.Fatal("snapshot failure swallowed")
 	}
 	b = &staveTerminal{snapshot: func(context.Context, any) (staveTerminalSnapshot, error) { return staveTerminalSnapshot{}, nil }, sendEvent: func(context.Context, any, event.Event) error { return errors.New("publish") }}
@@ -230,7 +230,7 @@ func TestStaveTerminalUpdateReturnsQuitWhenAlreadyFailed(t *testing.T) {
 
 func TestStaveTerminalDispatchActionPropagatesInvocationError(t *testing.T) {
 	b := &staveTerminal{ctx: context.Background(), prepared: struct{}{}}
-	if cmd := b.beginAction(action.ID("refresh"), nil, false); cmd == nil {
+	if b.beginAction(action.ID("refresh"), nil, false) == nil {
 		t.Fatal("beginAction did not return completion")
 	}
 }

@@ -286,17 +286,17 @@ func TestLoadDeclaredDependenciesToleratesNilSources(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, gemfileName), "gem 'rack'\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, rubyAppFile), "require 'rack'\nrequire 'httparty'\n")
 
-	out := make(map[string]struct{})
-	warnings, err := loadDeclaredDependencies(context.Background(), repo, out, nil)
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
 	if err != nil {
-		t.Fatalf("loadDeclaredDependencies: %v", err)
+		t.Fatalf("Analyse: %v", err)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings, got %#v", warnings)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", result.Warnings)
 	}
-	if got := sortedDependencyUnion(out); !slices.Equal(got, []string{"httparty", "rack"}) {
-		t.Fatalf("unexpected declared dependencies: %#v", got)
+	if !rubyReportHasDependency(result, "httparty") || !rubyReportHasDependency(result, "rack") {
+		t.Fatalf("unexpected declared dependencies: %#v", result.Dependencies)
 	}
 }
 

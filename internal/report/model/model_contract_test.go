@@ -66,6 +66,7 @@ func TestReportJSONContractShape(t *testing.T) {
 	reportKeys := []string{
 		"baselineComparison",
 		"cache",
+		"coverageGaps",
 		"dependencies",
 		"effectivePolicy",
 		"effectiveThresholds",
@@ -133,6 +134,7 @@ func TestReportJSONContractShape(t *testing.T) {
 		"baselineKey",
 		"currentKey",
 		"dependencies",
+		"newCoverageGaps",
 		"newDeniedLicenses",
 		"newReachableVulnerabilities",
 		"regressions",
@@ -410,6 +412,12 @@ func representativeReport() Report {
 			RemovalCandidateWeights: RemovalCandidateWeights{Usage: 0.5, Impact: 0.3, Confidence: 0.2},
 			License:                 LicensePolicy{Deny: []string{"GPL-3.0"}, FailOnDenied: true, IncludeRegistryProvenance: true},
 		},
+		CoverageGaps: []CoverageGap{{
+			Code:     "ruby-oversized-gemspec-declaration",
+			Language: "ruby",
+			Path:     "gems/oversized.gem\u017fpec",
+			Evidence: []string{"skipped gems/oversized.gem\u017fpec because it exceeds 1048576 bytes"},
+		}},
 		Warnings:             []string{"dynamic import detected"},
 		WasteIncreasePercent: &wasteIncreasePercent,
 		BaselineComparison: &BaselineComparison{
@@ -427,7 +435,13 @@ func representativeReport() Report {
 			Dependencies:       []DependencyDelta{delta},
 			Regressions:        []DependencyDelta{delta},
 			RuntimeRegressions: []DependencyDelta{delta},
-			NewDeniedLicenses:  []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},
+			NewCoverageGaps: []CoverageGap{{
+				Code:     "ruby-oversized-gemspec-declaration",
+				Language: "ruby",
+				Path:     "gems/oversized.gem\u017fpec",
+				Evidence: []string{"skipped gems/oversized.gem\u017fpec because it exceeds 1048576 bytes"},
+			}},
+			NewDeniedLicenses: []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},
 			NewReachableVulnerabilities: []VulnerabilityDelta{{
 				Language:      "js",
 				Name:          "lodash",

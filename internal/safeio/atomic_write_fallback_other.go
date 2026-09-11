@@ -2,6 +2,6 @@
 
 package safeio
 
-func fallbackAtomicReplacement(_ Root, _ string, _ string, _ File, _ []byte, renameErr error) error {
-	return renameErr
+func fallbackAtomicReplacement(_ Root, fallback atomicReplacementFallback) error {
+	return fallback.renameErr
 }

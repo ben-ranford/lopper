@@ -119,11 +119,11 @@ func loadPackageManifest(repoPath, manifestPath string) (packageManifest, []stri
 }
 
 func readPubspecManifest(repoPath, manifestPath string) (pubspecManifest, error) {
-	return shared.ReadYAMLUnderRepo[pubspecManifest](repoPath, manifestPath)
+	return shared.ReadYAMLUnderRepoLimit[pubspecManifest](repoPath, manifestPath, maxPubspecYAMLBytes)
 }
 
 func readPubspecLock(repoPath, lockPath string) (pubspecLock, error) {
-	return shared.ReadYAMLUnderRepo[pubspecLock](repoPath, lockPath)
+	return shared.ReadYAMLUnderRepoLimit[pubspecLock](repoPath, lockPath, maxPubspecYAMLBytes)
 }
 
 func parsePubspecDependencies(manifest pubspecManifest) (map[string]dependencyInfo, bool, bool, []string) {

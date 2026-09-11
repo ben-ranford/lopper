@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -35,6 +34,7 @@ const (
 	prReviewCategoryPolicyChanged      = "policy-changed"
 	prReviewCategoryNewlyReachable     = "newly-reachable"
 	prReviewCategoryMateriallyWorsened = "materially-worsened"
+	prReviewCategoryCoverageGap        = "coverage-gap"
 )
 
 var (
@@ -70,6 +70,7 @@ type prReviewSummary struct {
 	PolicyChanged        int `json:"policyChanged"`
 	NewlyReachable       int `json:"newlyReachable"`
 	MateriallyWorsened   int `json:"materiallyWorsened"`
+	CoverageGaps         int `json:"coverageGaps"`
 	RegressionCount      int `json:"regressionCount"`
 	MarkdownOverflowRows int `json:"markdownOverflowRows,omitempty"`
 }
@@ -139,6 +140,9 @@ func (a *App) executePRReview(ctx context.Context, req Request) (string, error) 
 
 	baseReport, headReport, warnings, err := a.analysePRReviewRevisions(ctx, repoPath, req.PRReview, baseSHA, headSHA)
 	if err != nil {
+		return "", err
+	}
+	if err := validatePRReviewReachableVulnerabilityThreshold(req.PRReview.Thresholds.ReachableVulnerabilityPriority); err != nil {
 		return "", err
 	}
 	artifact := buildPRReviewArtifact(prReviewArtifactInput{
@@ -378,6 +382,12 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 		IncludePatterns:      append([]string{}, req.IncludePatterns...),
 		ExcludePatterns:      append([]string{}, req.ExcludePatterns...),
 		Features:             req.Features,
+		// PR review collects CoverageGaps into its own base/head comparison
+		// (see buildPRReviewArtifact) rather than failing a revision on
+		// first sight of one, so it must analyze both revisions even when
+		// RequireCompleteCoverage is set for other reasons (e.g. a
+		// reachable-vulnerability threshold).
+		DeferCoverageGapEnforcement: true,
 		Cache: &analysis.CacheOptions{
 			Enabled:  false,
 			ReadOnly: true,
@@ -399,15 +409,31 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 	if resolvedCallerRepoPath := strings.TrimSpace(callerRepoPath); resolvedCallerRepoPath != "" {
 		reportData.RepoPath = resolvedCallerRepoPath
 	}
-	if strings.TrimSpace(req.AdvisorySourcePath) != "" {
-		advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
-		if err != nil {
-			return report.Report{}, err
-		}
-		report.AnnotateVulnerabilities(&reportData, advisories)
-		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	reportData, err = a.runPRReviewPostStages(ctx, reportData, req)
+	if err != nil {
+		return reportData, err
 	}
-	return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, prReviewNow().UTC()), nil
+	return reportData, nil
+}
+
+func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Report, req PRReviewRequest) (report.Report, error) {
+	now := prReviewNow().UTC()
+
+	return runAnalyseStages(ctx, reportData, []analyseReportStage{
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			return applyAdvisories(reportData, req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
+		},
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil
+		},
+	})
+}
+
+func validatePRReviewReachableVulnerabilityThreshold(threshold string) error {
+	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
+		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
+	}
+	return nil
 }
 
 func validatePRReviewFeatures(req PRReviewRequest) error {
@@ -415,7 +441,8 @@ func validatePRReviewFeatures(req PRReviewRequest) error {
 }
 
 func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
-	comparison := report.ComputeBaselineComparison(input.headReport, input.baseReport)
+	input.headReport = prReviewDifferentialHeadReport(input.baseReport, input.headReport)
+	comparison := *input.headReport.BaselineComparison
 	comparison.BaselineKey = "commit:" + input.baseSHA
 	comparison.CurrentKey = "commit:" + input.headSHA
 	input.headReport.BaselineComparison = &comparison
@@ -429,6 +456,7 @@ func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
 		{ID: prReviewCategoryPolicyChanged, Title: "Policy Changed Dependencies", Rows: prReviewPolicyRows(input.baseReport, input.headReport)},
 		{ID: prReviewCategoryNewlyReachable, Title: "Newly Reachable Vulnerabilities", Rows: prReviewNewlyReachableRows(input.headReport, comparison.NewReachableVulnerabilities, input.req.Thresholds.ReachableVulnerabilityPriority)},
 		{ID: prReviewCategoryMateriallyWorsened, Title: "Materially Worsened Dependencies", Rows: prReviewMaterialRows(input.baseReport, input.headReport, input.req.MaterialWasteBytes)},
+		{ID: prReviewCategoryCoverageGap, Title: "Coverage Gaps", Rows: prReviewCoverageGapRows(input.headReport.CoverageGaps, prReviewRequiresCompleteCoverage(input.req))},
 	}
 	for i := range sections {
 		sortPRReviewRows(sections[i].Rows)
@@ -448,6 +476,14 @@ func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
 	}
 	artifact.Summary = summarizePRReviewSections(sections)
 	return artifact
+}
+
+func prReviewDifferentialHeadReport(baseReport, headReport report.Report) report.Report {
+	differential := headReport
+	comparison := report.ComputeBaselineComparison(headReport, baseReport)
+	differential.BaselineComparison = &comparison
+	differential.CoverageGaps = append([]report.CoverageGap(nil), comparison.NewCoverageGaps...)
+	return differential
 }
 
 func collectPRReviewWarnings(input prReviewArtifactInput) []string {
@@ -651,6 +687,56 @@ func prReviewMaterialRows(baseReport, headReport report.Report, threshold int64)
 	return rows
 }
 
+// prReviewRequiresCompleteCoverage reports whether any policy PR review
+// enforces needs complete dependency coverage to be trustworthy -- not just
+// a reachable-vulnerability threshold. fail-on-increase, an uncertain-import
+// cap, and denied-license enforcement all rely on seeing every dependency
+// just as much: a gap that hides dependencies can hide a regression under
+// any of them, not only under vulnerability reachability. This mirrors
+// requiresCompleteCoverage's conditions but not its advisory-source gate
+// ahead of the reachable-threshold check: PR review's own reachability
+// determination doesn't require an advisory source the way the general
+// analyse command's does, so gating on one here would wrongly treat a
+// configured threshold as inactive.
+func prReviewRequiresCompleteCoverage(req PRReviewRequest) bool {
+	if req.Thresholds.FailOnIncreasePercent >= 0 {
+		return true
+	}
+	if req.Thresholds.MaxUncertainImportCount >= 0 {
+		return true
+	}
+	if req.Thresholds.LicenseFailOnDeny && len(req.Thresholds.LicenseDenyList) > 0 {
+		return true
+	}
+	return reachableVulnerabilityThresholdEnabled(req.Thresholds.ReachableVulnerabilityPriority)
+}
+
+func prReviewCoverageGapRows(gaps []report.CoverageGap, completeCoverageRequired bool) []prReviewRow {
+	rows := make([]prReviewRow, 0, len(gaps))
+	for _, gap := range report.StableCoverageGaps(gaps) {
+		row := prReviewRow{
+			Category:           prReviewCategoryCoverageGap,
+			Dependency:         strings.TrimSpace(gap.Path),
+			Language:           strings.TrimSpace(gap.Language),
+			IdentityConfidence: "high",
+			EvidenceConfidence: "high",
+			Regression:         completeCoverageRequired,
+			Evidence:           compactPRReviewEvidence(gap.Evidence),
+		}
+		if row.Dependency == "" {
+			row.Dependency = strings.TrimSpace(gap.Code)
+		}
+		if row.Dependency == "" {
+			row.Dependency = "coverage gap"
+		}
+		if strings.TrimSpace(gap.Code) != "" {
+			row.Evidence = append(row.Evidence, "coverage gap: "+strings.TrimSpace(gap.Code))
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 func prReviewRowForDependency(category string, dep report.DependencyReport) prReviewRow {
 	return prReviewRow{
 		Category:           category,
@@ -701,6 +787,8 @@ func summarizePRReviewSections(sections []prReviewSection) prReviewSummary {
 			summary.NewlyReachable = len(section.Rows)
 		case prReviewCategoryMateriallyWorsened:
 			summary.MateriallyWorsened = len(section.Rows)
+		case prReviewCategoryCoverageGap:
+			summary.CoverageGaps = len(section.Rows)
 		}
 	}
 	return summary
@@ -735,6 +823,7 @@ func formatPRReviewMarkdown(artifact prReviewArtifact, maxRows int) string {
 	fmt.Fprintf(&buffer, "| Policy changed | %d |\n", artifact.Summary.PolicyChanged)
 	fmt.Fprintf(&buffer, "| Newly reachable | %d |\n", artifact.Summary.NewlyReachable)
 	fmt.Fprintf(&buffer, "| Materially worsened | %d |\n", artifact.Summary.MateriallyWorsened)
+	fmt.Fprintf(&buffer, "| Coverage gaps | %d |\n", artifact.Summary.CoverageGaps)
 	fmt.Fprintf(&buffer, "| Regression rows | %d |\n", artifact.Summary.RegressionCount)
 
 	overflowRows := 0

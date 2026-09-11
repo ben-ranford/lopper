@@ -241,32 +241,45 @@ func parsePackage(content []byte) string {
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
 	sanitized := shared.StripBlockComments(content)
-	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
-		line = stripLineComment(line)
-		matches := kotlinlang.MatchImport(line)
-		if !kotlinlang.IsImportMatch(matches) {
-			return nil
-		}
-		module := strings.TrimSpace(matches[1])
-		if module == "" || shouldIgnoreImport(module, filePackage) {
-			return nil
-		}
+	parser := jvmImportParser{
+		filePackage: filePackage,
+		depPrefixes: depPrefixes,
+		depAliases:  depAliases,
+	}
+	return shared.ParseImportLines(sanitized, filePath, parser.parseLine)
+}
 
-		dependency := resolveDependency(module, depPrefixes, depAliases)
-		if dependency == "" {
-			dependency = fallbackDependency(module)
-		}
-		if dependency == "" {
-			return nil
-		}
+type jvmImportParser struct {
+	filePackage string
+	depPrefixes map[string]string
+	depAliases  map[string]string
+}
 
-		record, ok := buildImportRecord(matches, module, dependency)
-		if !ok {
-			return nil
-		}
+func (p *jvmImportParser) parseLine(line string, _ int) []shared.ImportRecord {
+	record, ok := p.importRecord(line)
+	if !ok {
+		return nil
+	}
+	return []shared.ImportRecord{record}
+}
 
-		return []shared.ImportRecord{record}
-	})
+func (p *jvmImportParser) importRecord(line string) (shared.ImportRecord, bool) {
+	matches, module, ok := kotlinlang.MatchImportModule(stripLineComment(line))
+	if !ok || shouldIgnoreImport(module, p.filePackage) {
+		return shared.ImportRecord{}, false
+	}
+	dependency := p.dependencyFor(module)
+	if dependency == "" {
+		return shared.ImportRecord{}, false
+	}
+	return buildImportRecord(matches, module, dependency)
+}
+
+func (p *jvmImportParser) dependencyFor(module string) string {
+	if dependency := resolveDependency(module, p.depPrefixes, p.depAliases); dependency != "" {
+		return dependency
+	}
+	return fallbackDependency(module)
 }
 
 func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
@@ -297,18 +310,20 @@ func shouldIgnoreImport(module, filePackage string) bool {
 	if module == "" {
 		return true
 	}
+	lookupModule := normalizeJVMModuleForLookup(module)
 
 	stdlibPrefixes := []string{
 		"java.", "javax.", "kotlin.", "jdk.", "sun.",
 	}
 	for _, prefix := range stdlibPrefixes {
-		if strings.HasPrefix(module, prefix) {
+		if strings.HasPrefix(lookupModule, prefix) {
 			return true
 		}
 	}
 
 	if filePackage != "" {
-		if module == filePackage || strings.HasPrefix(module, filePackage+".") {
+		lookupPackage := normalizeJVMModuleForLookup(filePackage)
+		if lookupModule == lookupPackage || strings.HasPrefix(lookupModule, lookupPackage+".") {
 			return true
 		}
 	}
@@ -316,6 +331,7 @@ func shouldIgnoreImport(module, filePackage string) bool {
 }
 
 func resolveDependency(module string, depPrefixes map[string]string, depAliases map[string]string) string {
+	module = normalizeJVMModuleForLookup(module)
 	best := ""
 	bestLen := 0
 
@@ -343,6 +359,7 @@ func resolveDependency(module string, depPrefixes map[string]string, depAliases 
 }
 
 func fallbackDependency(module string) string {
+	module = normalizeJVMModuleForLookup(module)
 	parts := strings.Split(module, ".")
 	if len(parts) >= 2 {
 		return normalizeDependencyID(parts[0] + "." + parts[1])
@@ -351,6 +368,10 @@ func fallbackDependency(module string) string {
 		return normalizeDependencyID(parts[0])
 	}
 	return ""
+}
+
+func normalizeJVMModuleForLookup(module string) string {
+	return shared.NormalizeEscapedModuleSegments(module)
 }
 
 func lastModuleSegment(module string) string {

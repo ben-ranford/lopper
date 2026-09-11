@@ -3,6 +3,7 @@ package analysis
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -19,6 +20,7 @@ type cachePointer struct {
 
 type cachedPayload struct {
 	Report                              report.Report              `json:"report"`
+	UsageIncompleteReport               bool                       `json:"usageIncompleteReport,omitempty"`
 	UsageIncompleteDependencies         []int                      `json:"usageIncompleteDependencies,omitempty"`
 	SuppressedUnusedImportsByDependency map[int][]report.ImportUse `json:"suppressedUnusedImportsByDependency,omitempty"`
 }
@@ -55,36 +57,38 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 
-	objectPath := filepath.Join(c.options.Path, "objects", pointer.ObjectDigest+".json")
-	objectData, err := safeio.ReadFileUnder(c.options.Path, objectPath)
+	payload, invalidationReason, err := readCachedPayload(c.options.Path, pointer.ObjectDigest)
 	if err != nil {
+		return report.Report{}, false, err
+	}
+	if invalidationReason != "" {
 		c.metadata.Misses++
-		reason := "object-read-error"
-		if os.IsNotExist(err) {
-			reason = "object-missing"
-		}
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: reason})
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: invalidationReason})
 		return report.Report{}, false, nil
+	}
+	payload.Report.UsageIncomplete = payload.Report.UsageIncomplete || payload.UsageIncompleteReport
+	c.metadata.Hits++
+	return payload.Report, true, nil
+}
+
+func readCachedPayload(cachePath, objectDigest string) (cachedPayload, string, error) {
+	objectPath := filepath.Join(cachePath, "objects", objectDigest+".json")
+	objectData, err := safeio.ReadFileUnder(cachePath, objectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cachedPayload{}, "object-missing", nil
+		}
+		return cachedPayload{}, "object-read-error", nil
 	}
 
 	var payload cachedPayload
-	if err = json.Unmarshal(objectData, &payload); err != nil {
-		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
-		return report.Report{}, false, nil
+	if err := json.Unmarshal(objectData, &payload); err != nil {
+		return cachedPayload{}, cacheObjectCorruptReason, nil
 	}
-	if !payload.restoreUsageIncomplete() {
-		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
-		return report.Report{}, false, nil
+	if !payload.restoreUsageIncomplete() || !payload.restoreSuppressedUnusedImports() {
+		return cachedPayload{}, cacheObjectCorruptReason, nil
 	}
-	if !payload.restoreSuppressedUnusedImports() {
-		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
-		return report.Report{}, false, nil
-	}
-	c.metadata.Hits++
-	return payload.Report, true, nil
+	return payload, "", nil
 }
 
 func (c *analysisCache) rejectDefaultCacheRead(entry cacheEntryDescriptor) (bool, error) {
@@ -138,7 +142,13 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	defer func() {
 		returnErr = errors.Join(returnErr, writeRoot.Close())
 	}()
+	if err := c.validateWriteRoot(writeRoot); err != nil {
+		return err
+	}
 	if err := writeRoot.WriteFileCreatingParentsAtomicallyIfAbsent(filepath.Join("objects", objectDigest+".json"), serializedPayload, 0o640, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := c.validateWriteRoot(writeRoot); err != nil {
 		return err
 	}
 
@@ -147,15 +157,31 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	if err != nil {
 		return err
 	}
-	if err := writeRoot.WriteFileCreatingParents(filepath.Join("keys", entry.KeyDigest+".json"), serializedPointer, 0o640, 0o750); err != nil {
+	if err := c.publishPointer(writeRoot, filepath.Join("keys", entry.KeyDigest+".json"), serializedPointer); err != nil {
 		return err
 	}
 	c.metadata.Writes++
 	return nil
 }
 
+func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel string, serializedPointer []byte) error {
+	if err := c.validateWriteRoot(writeRoot); err != nil {
+		return err
+	}
+	validatePointerParent := func(parentPath string, parentIdentity fs.FileInfo) error {
+		if err := validateAnalysisCacheRoot(parentPath, parentIdentity); err != nil {
+			return err
+		}
+		return c.validateWriteRoot(writeRoot)
+	}
+	return writeRoot.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(pointerRel, serializedPointer, 0o640, 0o750, validatePointerParent)
+}
+
 func newCachedPayload(data report.Report) cachedPayload {
-	payload := cachedPayload{Report: data}
+	payload := cachedPayload{
+		Report:                data,
+		UsageIncompleteReport: data.UsageIncomplete,
+	}
 	for index := range data.Dependencies {
 		if data.Dependencies[index].UsageIncomplete {
 			payload.UsageIncompleteDependencies = append(payload.UsageIncompleteDependencies, index)

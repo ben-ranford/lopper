@@ -101,7 +101,7 @@ func TestStaveRefreshReanalyzesAndPreservesInteractionState(t *testing.T) {
 	}
 	defer prepared.Session.Close()
 	analyzer.report = report.Report{SchemaVersion: report.SchemaVersion, Dependencies: []report.DependencyReport{{Language: "go", Name: "after"}}}
-	if _, err := completeLopperAction(context.Background(), t, prepared, action.ID(staveActionRefresh), map[string]any{}, "lifecycle", "refresh", false); err != nil {
+	if _, err := completeLopperAction(context.Background(), t, prepared, action.ID(staveActionRefresh), map[string]any{}, staveTestActionCall{sessionID: "lifecycle", callID: "refresh", confirm: false}); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := prepared.Session.Snapshot()

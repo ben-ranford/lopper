@@ -107,67 +107,15 @@ func TestStavePreviewStartLineModeBranchesCoverage(t *testing.T) {
 		},
 	}
 
-	t.Run("nil Out falls back to stdout", func(t *testing.T) {
-		summary := NewSummary(nil, strings.NewReader("q\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
-		preview := NewStavePreview(summary)
+	t.Run("nil Out falls back to stdout", func(t *testing.T) { checkPreviewNilOutFallsBackToStdout(t, rep) })
 
-		got := captureStdout(t, func() {
-			if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
-				t.Fatalf("start with nil Out: %v", err)
-			}
-		})
-		if !strings.Contains(got, "Stave preview") {
-			t.Fatalf("stdout fallback missing preview output: %q", got)
-		}
-	})
+	t.Run("empty eof exits after first render", func(t *testing.T) { checkPreviewEmptyEofExitsAfterFirstRender(t, rep) })
 
-	t.Run("empty eof exits after first render", func(t *testing.T) {
-		var out strings.Builder
-		summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
-		preview := NewStavePreview(summary)
-		if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
-			t.Fatalf("start on empty eof: %v", err)
-		}
-		if !strings.Contains(out.String(), "Stave preview") {
-			t.Fatalf("empty eof did not render preview: %q", out.String())
-		}
-	})
+	t.Run("unterminated handled command renders final frame", func(t *testing.T) { checkPreviewUnterminatedHandledCommandRendersFinalFrame(t, rep) })
 
-	t.Run("unterminated handled command renders final frame", func(t *testing.T) {
-		var out strings.Builder
-		summary := NewSummary(&out, strings.NewReader("refresh"), &stubAnalyzer{report: rep}, report.NewFormatter())
-		preview := NewStavePreview(summary)
-		if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
-			t.Fatalf("start on unterminated handled command: %v", err)
-		}
-		if strings.Count(out.String(), "Stave preview") < 2 {
-			t.Fatalf("handled eof command did not render a final frame after refresh: %q", out.String())
-		}
-	})
+	t.Run("unterminated unknown command renders final frame", func(t *testing.T) { checkPreviewUnterminatedUnknownCommandRendersFinalFrame(t, rep) })
 
-	t.Run("unterminated unknown command renders final frame", func(t *testing.T) {
-		var out strings.Builder
-		summary := NewSummary(&out, strings.NewReader("not-a-command"), &stubAnalyzer{report: rep}, report.NewFormatter())
-		preview := NewStavePreview(summary)
-		if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
-			t.Fatalf("start on unterminated unknown command: %v", err)
-		}
-		if !strings.Contains(out.String(), "unknown command") || !strings.Contains(out.String(), "Stave preview") {
-			t.Fatalf("unknown eof command did not render final frame: %q", out.String())
-		}
-	})
-
-	t.Run("text event branch is exercised for non-command input", func(t *testing.T) {
-		var out strings.Builder
-		summary := NewSummary(&out, strings.NewReader("bogus\nq\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
-		preview := NewStavePreview(summary)
-		if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
-			t.Fatalf("start on text event input: %v", err)
-		}
-		if !strings.Contains(out.String(), "unknown command") {
-			t.Fatalf("non-command input did not flow through the text-event branch: %q", out.String())
-		}
-	})
+	t.Run("text event branch is exercised for non-command input", func(t *testing.T) { checkPreviewTextEventBranchIsExercisedForNonCommandInput(t, rep) })
 }
 
 func TestStavePreviewSendLopperEventBranches(t *testing.T) {
@@ -238,69 +186,142 @@ func TestStavePreviewRenderViewCancellationAndTreeDetailBranches(t *testing.T) {
 	}
 	_, preview := newStavePreviewFixture(t, rep)
 
-	t.Run("renderView returns render errors from the renderer", func(t *testing.T) {
-		ctx := &countingContext{cancelAfter: 2}
-		view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
-		if _, err := preview.renderView(ctx, Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}, view, summaryState{page: 1, pageSize: 10}); !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected render cancellation from render.Render, got %v", err)
-		}
-	})
+	t.Run("renderView returns render errors from the renderer", func(t *testing.T) { checkPreviewRenderviewReturnsRenderErrorsFromTheRenderer(t, preview) })
 
-	t.Run("compact tree includes removal candidate detail and footer metadata", func(t *testing.T) {
-		view := summaryReportView{
-			Warnings: []string{"warn"},
-			Dependencies: []summaryDependencyView{
-				{
-					Language:             "go",
-					Name:                 "alpha",
-					UsedPercent:          50,
-					EstimatedUnusedBytes: 10,
-					RemovalCandidate:     &report.RemovalCandidate{Score: 42.5},
-				},
-			},
-		}
-		state := summaryState{page: 2, pageSize: 1, filter: "go", selectedDependency: "go:alpha"}
-		interaction := staveSummaryInteraction{
-			summary:        state,
-			selectedRow:    0,
-			focusPane:      "detail",
-			commandMode:    true,
-			filterBuffer:   "filter go",
-			viewport:       layout.Size{Width: 40, Height: 10},
-			help:           false,
-			status:         "ready",
-			error:          "backend failed",
-			pendingConfirm: "confirm?",
-		}
-		tree, err := staveTreeForInteraction(view, view.Dependencies, view.Dependencies, state, 3, true, interaction)
-		if err != nil {
-			t.Fatalf("compact tree: %v", err)
-		}
-		root := tree.Root()
-		if !strings.Contains(root.Description(), "Stave preview") {
-			t.Fatalf("compact tree root = %q", root.Description())
-		}
-		foundDetail := false
-		foundRemoval := false
-		childSummaries := make([]string, 0, root.ChildCount())
-		for i := 0; i < root.ChildCount(); i++ {
-			child, ok := root.Child(i)
-			if !ok {
-				t.Fatalf("missing child %d", i)
-			}
-			childSummaries = append(childSummaries, child.Name()+": "+child.Description()+" | "+child.Value().Text)
-			if strings.Contains(child.Name(), "Detail") && strings.Contains(child.Value().Text, "go:alpha") {
-				foundDetail = true
-			}
-			if strings.Contains(child.Name(), "Removal") && strings.Contains(child.Value().Text, "42.5") {
-				foundRemoval = true
-			}
-		}
-		if !foundDetail {
-			t.Fatalf("compact tree missing selected dependency detail: %#v", childSummaries)
-		}
-		if !foundRemoval {
-			t.Fatalf("compact tree missing removal candidate score: %#v", childSummaries)
+	t.Run("compact tree includes removal candidate detail and footer metadata", func(t *testing.T) { checkPreviewCompactTreeIncludesRemovalCandidateDetailAndFooterMetadata(t, preview) })
+}
+
+func checkPreviewNilOutFallsBackToStdout(t *testing.T, rep report.Report) {
+	t.Helper()
+	summary := NewSummary(nil, strings.NewReader("q\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	preview := NewStavePreview(summary)
+
+	got := captureStdout(t, func() {
+		if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
+			t.Fatalf("start with nil Out: %v", err)
 		}
 	})
+	if !strings.Contains(got, "Stave preview") {
+		t.Fatalf("stdout fallback missing preview output: %q", got)
+	}
+}
+
+func checkPreviewEmptyEofExitsAfterFirstRender(t *testing.T, rep report.Report) {
+	t.Helper()
+	var out strings.Builder
+	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: rep}, report.NewFormatter())
+	preview := NewStavePreview(summary)
+	if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
+		t.Fatalf("start on empty eof: %v", err)
+	}
+	if !strings.Contains(out.String(), "Stave preview") {
+		t.Fatalf("empty eof did not render preview: %q", out.String())
+	}
+}
+
+func checkPreviewUnterminatedHandledCommandRendersFinalFrame(t *testing.T, rep report.Report) {
+	t.Helper()
+	var out strings.Builder
+	summary := NewSummary(&out, strings.NewReader("refresh"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	preview := NewStavePreview(summary)
+	if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
+		t.Fatalf("start on unterminated handled command: %v", err)
+	}
+	if strings.Count(out.String(), "Stave preview") < 2 {
+		t.Fatalf("handled eof command did not render a final frame after refresh: %q", out.String())
+	}
+}
+
+func checkPreviewUnterminatedUnknownCommandRendersFinalFrame(t *testing.T, rep report.Report) {
+	t.Helper()
+	var out strings.Builder
+	summary := NewSummary(&out, strings.NewReader("not-a-command"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	preview := NewStavePreview(summary)
+	if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
+		t.Fatalf("start on unterminated unknown command: %v", err)
+	}
+	if !strings.Contains(out.String(), "unknown command") || !strings.Contains(out.String(), "Stave preview") {
+		t.Fatalf("unknown eof command did not render final frame: %q", out.String())
+	}
+}
+
+func checkPreviewTextEventBranchIsExercisedForNonCommandInput(t *testing.T, rep report.Report) {
+	t.Helper()
+	var out strings.Builder
+	summary := NewSummary(&out, strings.NewReader("bogus\nq\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
+	preview := NewStavePreview(summary)
+	if err := preview.Start(context.Background(), Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
+		t.Fatalf("start on text event input: %v", err)
+	}
+	if !strings.Contains(out.String(), "unknown command") {
+		t.Fatalf("non-command input did not flow through the text-event branch: %q", out.String())
+	}
+}
+
+func checkPreviewRenderviewReturnsRenderErrorsFromTheRenderer(t *testing.T, preview *StavePreview) {
+	t.Helper()
+	ctx := &countingContext{cancelAfter: 2}
+	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
+	if _, err := preview.renderView(ctx, Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}, view, summaryState{page: 1, pageSize: 10}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected render cancellation from render.Render, got %v", err)
+	}
+}
+
+func checkPreviewCompactTreeIncludesRemovalCandidateDetailAndFooterMetadata(t *testing.T, preview *StavePreview) {
+	t.Helper()
+	view := summaryReportView{
+		Warnings: []string{"warn"},
+		Dependencies: []summaryDependencyView{
+			{
+				Language:             "go",
+				Name:                 "alpha",
+				UsedPercent:          50,
+				EstimatedUnusedBytes: 10,
+				RemovalCandidate:     &report.RemovalCandidate{Score: 42.5},
+			},
+		},
+	}
+	state := summaryState{page: 2, pageSize: 1, filter: "go", selectedDependency: "go:alpha"}
+	interaction := staveSummaryInteraction{
+		summary:        state,
+		selectedRow:    0,
+		focusPane:      "detail",
+		commandMode:    true,
+		filterBuffer:   "filter go",
+		viewport:       layout.Size{Width: 40, Height: 10},
+		help:           false,
+		status:         "ready",
+		error:          "backend failed",
+		pendingConfirm: "confirm?",
+	}
+	tree, err := staveTreeForInteraction(view, view.Dependencies, view.Dependencies, state, 3, true, interaction)
+	if err != nil {
+		t.Fatalf("compact tree: %v", err)
+	}
+	root := tree.Root()
+	if !strings.Contains(root.Description(), "Stave preview") {
+		t.Fatalf("compact tree root = %q", root.Description())
+	}
+	foundDetail := false
+	foundRemoval := false
+	childSummaries := make([]string, 0, root.ChildCount())
+	for i := 0; i < root.ChildCount(); i++ {
+		child, ok := root.Child(i)
+		if !ok {
+			t.Fatalf("missing child %d", i)
+		}
+		childSummaries = append(childSummaries, child.Name()+": "+child.Description()+" | "+child.Value().Text)
+		if strings.Contains(child.Name(), "Detail") && strings.Contains(child.Value().Text, "go:alpha") {
+			foundDetail = true
+		}
+		if strings.Contains(child.Name(), "Removal") && strings.Contains(child.Value().Text, "42.5") {
+			foundRemoval = true
+		}
+	}
+	if !foundDetail {
+		t.Fatalf("compact tree missing selected dependency detail: %#v", childSummaries)
+	}
+	if !foundRemoval {
+		t.Fatalf("compact tree missing removal candidate score: %#v", childSummaries)
+	}
 }

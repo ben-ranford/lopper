@@ -23,6 +23,7 @@ VERSION_HEADER = re.compile(
     re.MULTILINE,
 )
 STABLE_TAG = re.compile(r"v\d{1,9}\.\d{1,9}\.\d{1,9}\Z")
+INVALID_STABLE_TAG = "previous tag must be a stable vMAJOR.MINOR.PATCH tag"
 
 
 def read_json(path: Path) -> dict:
@@ -84,9 +85,24 @@ def git(repo: Path, *args: str) -> str:
 
 def old_lockfile(repo: Path, previous_tag: str) -> dict:
     if not STABLE_TAG.fullmatch(previous_tag):
-        raise ValueError("previous tag must be a stable vMAJOR.MINOR.PATCH tag")
+        raise ValueError(INVALID_STABLE_TAG)
     raw = git(repo, "show", f"{previous_tag}:{LOCKFILE_PATH.as_posix()}")
     return json.loads(raw)
+
+
+def old_package(repo: Path, previous_tag: str) -> dict:
+    if not STABLE_TAG.fullmatch(previous_tag):
+        raise ValueError(INVALID_STABLE_TAG)
+    raw = git(repo, "show", f"{previous_tag}:{PACKAGE_PATH.as_posix()}")
+    return json.loads(raw)
+
+
+def vscode_compatibility_note(previous: dict, current: dict) -> str | None:
+    before = previous.get("engines", {}).get("vscode")
+    after = current.get("engines", {}).get("vscode")
+    if not isinstance(before, str) or not before or not isinstance(after, str) or not after or before == after:
+        return None
+    return f"Requires VS Code `{after}` (previously `{before}`)."
 
 
 def changed_dependency_notes(old: dict, current: dict) -> list[str]:
@@ -201,7 +217,7 @@ def render_entry(version: str, entry_date: str, notes: list[str]) -> str:
 
 def generate(repo: Path, previous_tag: str, entry_date: str) -> None:
     if not STABLE_TAG.fullmatch(previous_tag):
-        raise ValueError("previous tag must be a stable vMAJOR.MINOR.PATCH tag")
+        raise ValueError(INVALID_STABLE_TAG)
     errors = validate_versions(repo)
     if errors:
         raise ValueError("; ".join(errors))
@@ -209,6 +225,9 @@ def generate(repo: Path, previous_tag: str, entry_date: str) -> None:
     version = package["version"]
     notes = source_notes(repo, previous_tag)
     notes.extend(changed_dependency_notes(old_lockfile(repo, previous_tag), read_json(repo / LOCKFILE_PATH)))
+    compatibility_note = vscode_compatibility_note(old_package(repo, previous_tag), package)
+    if compatibility_note is not None:
+        notes.append(compatibility_note)
     notes = list(dict.fromkeys(notes))
     changelog_path = trusted_extension_changelog(repo)
     changelog = changelog_path.read_text(encoding="utf-8")

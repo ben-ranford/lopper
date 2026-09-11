@@ -111,16 +111,7 @@ func TestStaveGoldenOutputHasNoForbiddenControlsOrOverflow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := renderStaveGolden(t, tc.w, tc.name != "plain", false, false, "dumb", "")
-			for _, line := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
-				if len([]rune(line)) > tc.w {
-					t.Fatalf("line exceeds viewport width %d: %q", tc.w, line)
-				}
-			}
-			for _, r := range raw {
-				if r == '\x1b' || r == '\x07' || r == '\x00' {
-					t.Fatalf("forbidden control leaked: %U in %q", r, raw)
-				}
-			}
+			checkStaveGoldenControlsAndWidth(t, raw, tc.w)
 		})
 	}
 }
@@ -133,6 +124,20 @@ func TestStaveGoldenRenderRepeatDeterminism(t *testing.T) {
 			first = got
 		} else if got != first {
 			t.Fatalf("render %d differed from first", i)
+		}
+	}
+}
+
+func checkStaveGoldenControlsAndWidth(t *testing.T, raw string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
+		if len([]rune(line)) > width {
+			t.Fatalf("line exceeds viewport width %d: %q", width, line)
+		}
+	}
+	for _, r := range raw {
+		if r == '\x1b' || r == '\x07' || r == '\x00' {
+			t.Fatalf("forbidden control leaked: %U in %q", r, raw)
 		}
 	}
 }

@@ -230,6 +230,34 @@ func TestWarningHelpersCoverEmptyAndDefaultPaths(t *testing.T) {
 	if warnings := buildLockfileDriftWarnings(nil); len(warnings) != 0 {
 		t.Fatalf("expected no warnings for empty findings, got %#v", warnings)
 	}
+	findings := []lockfileDriftFinding{
+		{
+			kind:   lockfileDriftMissingLockfile,
+			rule:   lockfileRule{manager: "npm", manifest: "package.json", lockfiles: []string{"package-lock.json"}, remedy: "run npm install"},
+			relDir: "frontend",
+		},
+		{
+			kind:      lockfileDriftStaleLockfile,
+			rule:      lockfileRule{manager: "Go modules", manifest: "go.mod", lockfiles: []string{"go.sum"}},
+			relDir:    ".",
+			lockfiles: []presentLockfile{{name: "go.sum"}},
+		},
+		{
+			kind:     lockfileDriftManifestChange,
+			rule:     lockfileRule{manager: "uv", manifest: pyprojectManifestName, remedy: "run uv lock"},
+			manifest: "pyproject.toml",
+			relDir:   "pkg",
+		},
+	}
+	warnings := buildLockfileDriftWarnings(findings)
+	if len(warnings) != len(findings) {
+		t.Fatalf("expected one warning per finding, got %#v", warnings)
+	}
+	assertContainsAll(t, strings.Join(warnings, "\n"), []string{
+		"npm in frontend: package.json exists but no matching lockfile (package-lock.json) was found; run npm install",
+		"Go modules in .: go.sum exists without go.mod; remove stale lockfile or restore the manifest",
+		"uv in pkg: pyproject.toml changed while no matching lockfile changed; run uv lock",
+	})
 	if warning := buildLockfileDriftWarning(lockfileDriftFinding{
 		rule:   lockfileRule{manager: "uv", manifest: pyprojectManifestName},
 		relDir: ".",

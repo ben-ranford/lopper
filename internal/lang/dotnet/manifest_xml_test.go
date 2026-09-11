@@ -1,9 +1,15 @@
 package dotnet
 
 import (
+	"context"
+	"encoding/xml"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -36,6 +42,78 @@ func TestParseXMLManifestIncludesStructuredBranches(t *testing.T) {
 
 	if _, err := parseXMLManifestIncludes([]byte(`<Project><PackageReference Include="broken"`), "PackageReference"); err == nil {
 		t.Fatalf("expected malformed XML to return an error")
+	}
+}
+
+func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Broken.csproj"), `<Project><PackageReference Include="broken"`)
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFile), `<Project><PackageVersion Include="broken"`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Working.csproj"), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), "using Newtonsoft.Json;\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "newtonsoft.json"})
+	if err != nil {
+		t.Fatalf("analyse malformed project manifests: %v", err)
+	}
+	assertMalformedManifestDependency(t, reportData)
+	assertMalformedManifestWarnings(t, reportData)
+	assertMalformedManifestCoverageGaps(t, reportData)
+}
+
+func assertMalformedManifestDependency(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "newtonsoft.json" {
+		t.Fatalf("expected dependency from valid project manifest, got %#v", reportData.Dependencies)
+	}
+}
+
+func assertMalformedManifestWarnings(t *testing.T, reportData report.Report) {
+	t.Helper()
+	joinedWarnings := strings.Join(reportData.Warnings, "\n")
+	for _, manifest := range []string{"Broken.csproj", centralPackagesFile} {
+		if !strings.Contains(joinedWarnings, manifest) || !strings.Contains(joinedWarnings, "skipped malformed .NET manifest") {
+			t.Fatalf("expected malformed-manifest warning for %s, got %#v", manifest, reportData.Warnings)
+		}
+	}
+}
+
+func assertMalformedManifestCoverageGaps(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if len(reportData.CoverageGaps) != 2 {
+		t.Fatalf("expected one coverage gap per malformed manifest, got %#v", reportData.CoverageGaps)
+	}
+	for _, gap := range reportData.CoverageGaps {
+		if gap.Code != "dotnet-malformed-manifest-declaration" || gap.Language != "dotnet" {
+			t.Fatalf("expected malformed .NET manifest coverage gap, got %#v", gap)
+		}
+		if gap.Path != "Broken.csproj" && gap.Path != centralPackagesFile {
+			t.Fatalf("expected relative malformed manifest path, got %#v", gap)
+		}
+		if len(gap.Evidence) != 1 || !strings.Contains(gap.Evidence[0], gap.Path) || !strings.Contains(gap.Evidence[0], "skipped malformed .NET manifest") {
+			t.Fatalf("expected matching malformed-manifest warning evidence, got %#v", gap)
+		}
+	}
+}
+
+func TestDotNetManifestErrorPreservesXMLSyntaxDetails(t *testing.T) {
+	repo := t.TempDir()
+	manifest := filepath.Join(repo, "Broken.csproj")
+	testutil.MustWriteFile(t, manifest, "<Project>\n<PackageReference")
+	_, err := parsePackageReferences(repo, manifest)
+	var syntaxError *xml.SyntaxError
+	if !errors.As(err, &syntaxError) || syntaxError.Line != 2 {
+		t.Fatalf("expected underlying XML syntax error on line 2, got %v", err)
+	}
+}
+
+func TestDotNetAnalysisReturnsUnsupportedManifestEncoding(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Unsupported.csproj"), `<?xml version="1.0" encoding="windows-1252"?><Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
+
+	_, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "newtonsoft.json"})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "encoding") {
+		t.Fatalf("expected unsupported manifest encoding to be returned, got %v", err)
 	}
 }
 

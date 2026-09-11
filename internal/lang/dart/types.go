@@ -20,6 +20,8 @@ const (
 	maxManifestCount                    = 256
 	maxScanFiles                        = 4096
 	maxScannableDartFile                = 2 * 1024 * 1024
+	maxPubspecYAMLBytes                 = 1 * 1024 * 1024
+	maxPluginMetadataDepth              = 64
 	maxWarningSamples                   = 5
 )
 

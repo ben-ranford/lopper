@@ -140,62 +140,74 @@ func finalCoverageSnapshotFailurePrepared(t *testing.T) (*StavePreview, Options,
 }
 
 func TestStaveProgramFinalCoverageActionFailures(t *testing.T) {
-	t.Run("refresh propagate analyzer error", func(t *testing.T) {
-		_, _, _, _, prepared := finalCoveragePreparedSession(t, io.Discard, &stubAnalyzer{err: errors.New("refresh boom")})
-		defer prepared.Session.Close()
+	t.Run("refresh propagate analyzer error", checkStaveActionRefreshPropagateAnalyzerError)
 
-		err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionRefresh), preparedLopperActionArgs(t, prepared, action.ID(staveActionRefresh), map[string]any{}), "lopper-preview", false)
-		if err == nil || !strings.Contains(err.Error(), "refresh boom") {
-			t.Fatalf("refresh error = %v", err)
-		}
-	})
+	t.Run("confirmation issuance fails for empty session", checkStaveActionConfirmationIssuanceFailsForEmptySession)
 
-	t.Run("confirmation issuance fails for empty session", func(t *testing.T) {
-		_, _, _, _, prepared := finalCoveragePreparedSession(t, io.Discard, nil)
-		defer prepared.Session.Close()
+	t.Run("nil-summary handlers reject typed action input", checkStaveActionNilSummaryHandlersRejectTypedActionInput)
 
-		args := map[string]any{"dependency": "go:alpha", "confirm": true, "allowDirty": false}
-		err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionApplyCodemod), args, "", true)
-		if err == nil || !strings.Contains(err.Error(), "invalid confirmation") {
-			t.Fatalf("confirmation issue error = %v", err)
-		}
-	})
+	t.Run("baseline action propagates writer failure", checkStaveActionBaselineActionPropagatesWriterFailure)
+}
 
-	t.Run("nil-summary handlers reject typed action input", func(t *testing.T) {
-		opts := Options{Width: 80}
-		view := summaryReportView{}
-		state := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
-		program, err := newLopperStaveProgram(nil, &opts, &view, &state)
-		if err != nil {
-			t.Fatalf("newLopperStaveProgram: %v", err)
-		}
-		prepared, err := program.NewSession(context.Background(), staveSessionOptions(opts, false))
-		if err != nil {
-			t.Fatalf("program.NewSession: %v", err)
-		}
-		defer prepared.Session.Close()
+func checkStaveActionRefreshPropagateAnalyzerError(t *testing.T) {
+	t.Helper()
+	_, _, _, _, prepared := finalCoveragePreparedSession(t, io.Discard, &stubAnalyzer{err: errors.New("refresh boom")})
+	defer prepared.Session.Close()
 
-		args := map[string]any{"dependency": "go:alpha", "confirm": true, "allowDirty": false}
-		err = invokeLopperAction(context.Background(), prepared, action.ID(staveActionApplyCodemod), args, "lopper-preview", true)
-		if err == nil || !strings.Contains(err.Error(), "invalid codemod action input") {
-			t.Fatalf("codemod input guard error = %v", err)
-		}
+	err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionRefresh), preparedLopperActionArgs(t, prepared, action.ID(staveActionRefresh), map[string]any{}), "lopper-preview", false)
+	if err == nil || !strings.Contains(err.Error(), "refresh boom") {
+		t.Fatalf("refresh error = %v", err)
+	}
+}
 
-		err = invokeLopperAction(context.Background(), prepared, action.ID(staveActionSaveBaseline), preparedLopperActionArgs(t, prepared, action.ID(staveActionSaveBaseline), map[string]any{}), "lopper-preview", false)
-		if err == nil || !strings.Contains(err.Error(), "invalid Save baseline action input") {
-			t.Fatalf("baseline input guard error = %v", err)
-		}
-	})
+func checkStaveActionConfirmationIssuanceFailsForEmptySession(t *testing.T) {
+	t.Helper()
+	_, _, _, _, prepared := finalCoveragePreparedSession(t, io.Discard, nil)
+	defer prepared.Session.Close()
 
-	t.Run("baseline action propagates writer failure", func(t *testing.T) {
-		_, opts, view, state, prepared := finalCoveragePreparedSession(t, &staveCoverageErrWriter{}, nil)
-		defer prepared.Session.Close()
+	args := map[string]any{"dependency": "go:alpha", "confirm": true, "allowDirty": false}
+	err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionApplyCodemod), args, "", true)
+	if err == nil || !strings.Contains(err.Error(), "invalid confirmation") {
+		t.Fatalf("confirmation issue error = %v", err)
+	}
+}
 
-		err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionCompareBaseline), preparedLopperActionArgs(t, prepared, action.ID(staveActionCompareBaseline), map[string]any{"key": "nightly"}), "lopper-preview", false)
-		if err != nil {
-			t.Fatalf("compare baseline unexpectedly failed: %v (opts=%+v view=%+v state=%+v)", err, opts, *view, *state)
-		}
-	})
+func checkStaveActionNilSummaryHandlersRejectTypedActionInput(t *testing.T) {
+	t.Helper()
+	opts := Options{Width: 80}
+	view := summaryReportView{}
+	state := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
+	program, err := newLopperStaveProgram(nil, &opts, &view, &state)
+	if err != nil {
+		t.Fatalf("newLopperStaveProgram: %v", err)
+	}
+	prepared, err := program.NewSession(context.Background(), staveSessionOptions(opts, false))
+	if err != nil {
+		t.Fatalf("program.NewSession: %v", err)
+	}
+	defer prepared.Session.Close()
+
+	args := map[string]any{"dependency": "go:alpha", "confirm": true, "allowDirty": false}
+	err = invokeLopperAction(context.Background(), prepared, action.ID(staveActionApplyCodemod), args, "lopper-preview", true)
+	if err == nil || !strings.Contains(err.Error(), "invalid codemod action input") {
+		t.Fatalf("codemod input guard error = %v", err)
+	}
+
+	err = invokeLopperAction(context.Background(), prepared, action.ID(staveActionSaveBaseline), preparedLopperActionArgs(t, prepared, action.ID(staveActionSaveBaseline), map[string]any{}), "lopper-preview", false)
+	if err == nil || !strings.Contains(err.Error(), "invalid Save baseline action input") {
+		t.Fatalf("baseline input guard error = %v", err)
+	}
+}
+
+func checkStaveActionBaselineActionPropagatesWriterFailure(t *testing.T) {
+	t.Helper()
+	_, opts, view, state, prepared := finalCoveragePreparedSession(t, &staveCoverageErrWriter{}, nil)
+	defer prepared.Session.Close()
+
+	err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionCompareBaseline), preparedLopperActionArgs(t, prepared, action.ID(staveActionCompareBaseline), map[string]any{"key": "nightly"}), "lopper-preview", false)
+	if err != nil {
+		t.Fatalf("compare baseline unexpectedly failed: %v (opts=%+v view=%+v state=%+v)", err, opts, *view, *state)
+	}
 }
 
 func TestStaveProgramFinalCoverageRegistryGuards(t *testing.T) {
@@ -231,74 +243,86 @@ func TestStaveProgramFinalCoverageRegistryGuards(t *testing.T) {
 }
 
 func TestStaveTerminalFinalCoverageBranches(t *testing.T) {
-	t.Run("paste rejects truncation after UTF-8 normalization", func(t *testing.T) {
-		var sends int
-		b := &staveTerminal{
-			ctx:      context.Background(),
-			prepared: struct{}{},
-			sendEvent: func(context.Context, any, event.Event) error {
-				sends++
-				return nil
-			},
-			snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
-				return staveTerminalSnapshot{model: staveSummaryModel{interaction: staveSummaryInteraction{commandMode: true}}}, nil
-			},
-		}
+	t.Run("paste rejects truncation after UTF-8 normalization", checkStaveTerminalPasteRejectsTruncationAfterUtf8Normalization)
 
-		content := string(bytes.Repeat([]byte{0xff, 'a'}, staveinput.DefaultMaxPasteBytes/2))
-		err := b.paste(content)
-		if err == nil || !strings.Contains(err.Error(), "pasted command exceeds") {
-			t.Fatalf("paste truncation error = %v", err)
-		}
-		if sends != 0 {
-			t.Fatalf("paste sent %d events before truncation", sends)
-		}
-	})
+	t.Run("plus key hits fallback parse error", checkStaveTerminalPlusKeyHitsFallbackParseError)
 
-	t.Run("plus key hits fallback parse error", func(t *testing.T) {
-		b := &staveTerminal{
-			ctx:       context.Background(),
-			prepared:  struct{}{},
-			sendEvent: func(context.Context, any, event.Event) error { return nil },
-		}
+	t.Run("session snapshot and run surface clone failure", checkStaveTerminalSessionSnapshotAndRunSurfaceCloneFailure)
 
-		err := b.key(tea.KeyPressMsg{Text: "+"})
-		if err == nil || !strings.Contains(err.Error(), "empty key") {
-			t.Fatalf("key fallback error = %v", err)
-		}
-	})
+	t.Run("runStaveTerminal executes typed refresh action", checkStaveTerminalRunstaveterminalExecutesTypedRefreshAction)
+}
 
-	t.Run("session snapshot and run surface clone failure", func(t *testing.T) {
-		preview, opts, view, state, prepared := finalCoverageSnapshotFailurePrepared(t)
-		defer prepared.Session.Close()
+func checkStaveTerminalPasteRejectsTruncationAfterUtf8Normalization(t *testing.T) {
+	t.Helper()
+	var sends int
+	b := &staveTerminal{
+		ctx:      context.Background(),
+		prepared: struct{}{},
+		sendEvent: func(context.Context, any, event.Event) error {
+			sends++
+			return nil
+		},
+		snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
+			return staveTerminalSnapshot{model: staveSummaryModel{interaction: staveSummaryInteraction{commandMode: true}}}, nil
+		},
+	}
 
-		b := &staveTerminal{ctx: context.Background(), prepared: prepared}
-		_, err := b.sessionSnapshot()
-		if err == nil || !strings.Contains(err.Error(), "clone boom") {
-			t.Fatalf("sessionSnapshot error = %v", err)
-		}
+	content := string(bytes.Repeat([]byte{0xff, 'a'}, staveinput.DefaultMaxPasteBytes/2))
+	err := b.paste(content)
+	if err == nil || !strings.Contains(err.Error(), "pasted command exceeds") {
+		t.Fatalf("paste truncation error = %v", err)
+	}
+	if sends != 0 {
+		t.Fatalf("paste sent %d events before truncation", sends)
+	}
+}
 
-		err = preview.runStaveTerminal(context.Background(), opts, *view, *state, prepared, strings.NewReader(""), io.Discard, false)
-		if err == nil || !strings.Contains(err.Error(), "clone boom") {
-			t.Fatalf("runStaveTerminal clone failure = %v", err)
-		}
-	})
+func checkStaveTerminalPlusKeyHitsFallbackParseError(t *testing.T) {
+	t.Helper()
+	b := &staveTerminal{
+		ctx:       context.Background(),
+		prepared:  struct{}{},
+		sendEvent: func(context.Context, any, event.Event) error { return nil },
+	}
 
-	t.Run("runStaveTerminal executes typed refresh action", func(t *testing.T) {
-		preview, opts, view, state, prepared := finalCoveragePreparedSession(t, io.Discard, nil)
-		defer prepared.Session.Close()
+	err := b.key(tea.KeyPressMsg{Text: "+"})
+	if err == nil || !strings.Contains(err.Error(), "empty key") {
+		t.Fatalf("key fallback error = %v", err)
+	}
+}
 
-		input := &finalCoverageRefreshThenQuitReader{prepared: prepared}
-		if err := preview.runStaveTerminal(context.Background(), opts, *view, *state, prepared, input, io.Discard, false); err != nil {
-			t.Fatalf("runStaveTerminal: %v", err)
-		}
+func checkStaveTerminalSessionSnapshotAndRunSurfaceCloneFailure(t *testing.T) {
+	t.Helper()
+	preview, opts, _, _, prepared := finalCoverageSnapshotFailurePrepared(t)
+	defer prepared.Session.Close()
 
-		snap, err := prepared.Session.Snapshot()
-		if err != nil {
-			t.Fatalf("Session.Snapshot: %v", err)
-		}
-		if !snap.Model.interaction.quit || snap.Model.interaction.status != "Refreshed" {
-			t.Fatalf("terminal action state = %+v", snap.Model.interaction)
-		}
-	})
+	b := &staveTerminal{ctx: context.Background(), prepared: prepared}
+	_, err := b.sessionSnapshot()
+	if err == nil || !strings.Contains(err.Error(), "clone boom") {
+		t.Fatalf("sessionSnapshot error = %v", err)
+	}
+
+	err = preview.runStaveTerminal(context.Background(), opts, prepared, strings.NewReader(""), io.Discard, false)
+	if err == nil || !strings.Contains(err.Error(), "clone boom") {
+		t.Fatalf("runStaveTerminal clone failure = %v", err)
+	}
+}
+
+func checkStaveTerminalRunstaveterminalExecutesTypedRefreshAction(t *testing.T) {
+	t.Helper()
+	preview, opts, _, _, prepared := finalCoveragePreparedSession(t, io.Discard, nil)
+	defer prepared.Session.Close()
+
+	input := &finalCoverageRefreshThenQuitReader{prepared: prepared}
+	if err := preview.runStaveTerminal(context.Background(), opts, prepared, input, io.Discard, false); err != nil {
+		t.Fatalf("runStaveTerminal: %v", err)
+	}
+
+	snap, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatalf("Session.Snapshot: %v", err)
+	}
+	if !snap.Model.interaction.quit || snap.Model.interaction.status != "Refreshed" {
+		t.Fatalf("terminal action state = %+v", snap.Model.interaction)
+	}
 }

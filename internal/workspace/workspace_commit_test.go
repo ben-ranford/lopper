@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,21 +125,28 @@ func TestCurrentCommitSHASupportsSHA256References(t *testing.T) {
 }
 
 func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
+	assertCurrentCommitSHASupportsSHA256Repository(t)
+}
+
+func TestCurrentCommitSHASupportsSHA256RepositoryIgnoresInheritedSHA1Index(t *testing.T) {
+	t.Setenv("GIT_INDEX_FILE", inheritedSHA1IndexFile(t))
+	assertCurrentCommitSHASupportsSHA256Repository(t)
+}
+
+func assertCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
+	t.Helper()
+
 	repo := t.TempDir()
-	gitPath, err := resolveGitBinaryPath()
-	if err != nil {
-		t.Skipf("Git is unavailable: %v", err)
-	}
-	if _, err := runGit(gitPath, repo, "init", "--object-format=sha256", "."); err != nil {
-		t.Skipf("Git does not support SHA-256 repositories: %v", err)
+	if output, err := runTestGit("init", "--object-format=sha256", repo); err != nil {
+		t.Skipf("Git does not support SHA-256 repositories: %v\n%s", err, output)
 	}
 	for _, args := range [][]string{
-		{"config", "user.email", "test@example.com"},
-		{"config", "user.name", "Lopper Test"},
-		{"commit", "--allow-empty", "-m", "initial"},
+		{"-C", repo, "config", "user.email", "test@example.com"},
+		{"-C", repo, "config", "user.name", "Lopper Test"},
+		{"-C", repo, "commit", "--allow-empty", "-m", "initial"},
 	} {
-		if _, err := runGit(gitPath, repo, args...); err != nil {
-			t.Fatalf("git %v: %v", args, err)
+		if output, err := runTestGit(args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
 
@@ -149,6 +157,26 @@ func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
 	if len(sha) != 64 || !validSHA(sha) {
 		t.Fatalf("SHA-256 repository commit = %q, want valid 64-character object ID", sha)
 	}
+}
+
+func inheritedSHA1IndexFile(t *testing.T) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	if output, err := runTestGit("init", repo); err != nil {
+		t.Fatalf("create SHA-1 repository for inherited index: %v\n%s", err, output)
+	}
+	mustWrite(t, filepath.Join(repo, "fixture.txt"), "fixture\n")
+	if output, err := runTestGit("-C", repo, "add", "fixture.txt"); err != nil {
+		t.Fatalf("populate inherited SHA-1 index: %v\n%s", err, output)
+	}
+	return filepath.Join(repo, ".git", "index")
+}
+
+func runTestGit(args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Env = sanitizedGitEnv()
+	return cmd.CombinedOutput()
 }
 
 func TestCurrentCommitSHAInvalidHeadCases(t *testing.T) {

@@ -1,5 +1,4 @@
 import * as assert from "node:assert/strict";
-import { suite, test } from "mocha";
 
 import { RefreshSessionStore } from "../../refreshSession";
 

@@ -229,7 +229,7 @@ func hasBytesPrefix(line []byte, prefix string) bool {
 
 func isSpaceByte(ch byte) bool {
 	switch ch {
-	case ' ', '\t', '\r', '\n':
+	case ' ', '\t', '\r', '\n', '\f':
 		return true
 	default:
 		return false

@@ -44,25 +44,19 @@ func TestDetailAndSummaryReportWritersPropagateEveryWriteFailure(t *testing.T) {
 	errWant := errors.New("writer failed")
 	apply := &report.CodemodApplyReport{AppliedFiles: 1, AppliedPatches: 2, BackupPath: "/tmp/backup", Results: []report.CodemodApplyResult{{Status: "applied", File: "x.go", PatchCount: 1, Message: "ok"}}}
 	for failAt := 0; failAt < 12; failAt++ {
-		if err := printDetailCodemodApply(&failAfterWriter{failAt: failAt, err: errWant}, apply); err == nil {
-			if failAt < 6 {
-				t.Fatalf("printDetailCodemodApply swallowed failure at write %d", failAt)
-			}
+		if err := printDetailCodemodApply(&failAfterWriter{failAt: failAt, err: errWant}, apply); err == nil && failAt < 6 {
+			t.Fatalf("printDetailCodemodApply swallowed failure at write %d", failAt)
 		}
 	}
 	for failAt := 0; failAt < 12; failAt++ {
-		if err := writeCodemodApplyReport(&failAfterWriter{failAt: failAt, err: errWant}, "go:dep", apply); err == nil {
-			if failAt < 7 {
-				t.Fatalf("writeCodemodApplyReport swallowed failure at write %d", failAt)
-			}
+		if err := writeCodemodApplyReport(&failAfterWriter{failAt: failAt, err: errWant}, "go:dep", apply); err == nil && failAt < 7 {
+			t.Fatalf("writeCodemodApplyReport swallowed failure at write %d", failAt)
 		}
 	}
 	comparison := &report.BaselineComparison{Dependencies: []report.DependencyDelta{{}}, Regressions: []report.DependencyDelta{{}}, Progressions: []report.DependencyDelta{{}}, Added: []report.DependencyDelta{{}}, Removed: []report.DependencyDelta{{}}}
 	for failAt := 0; failAt < 5; failAt++ {
-		if err := writeBaselineCompareResult(&failAfterWriter{failAt: failAt, err: errWant}, "nightly", comparison); err == nil {
-			if failAt < 3 {
-				t.Fatalf("writeBaselineCompareResult swallowed failure at write %d", failAt)
-			}
+		if err := writeBaselineCompareResult(&failAfterWriter{failAt: failAt, err: errWant}, "nightly", comparison); err == nil && failAt < 3 {
+			t.Fatalf("writeBaselineCompareResult swallowed failure at write %d", failAt)
 		}
 	}
 }

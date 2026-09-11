@@ -74,6 +74,7 @@ type workflowConfig struct {
 type workflowJobConfig struct {
 	ContinueOnError bool                 `yaml:"continue-on-error"`
 	If              string               `yaml:"if"`
+	Name            string               `yaml:"name"`
 	Env             map[string]string    `yaml:"env"`
 	Needs           workflowJobNeeds     `yaml:"needs"`
 	Outputs         map[string]string    `yaml:"outputs"`
@@ -193,8 +194,8 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
 	checkout := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release-please PR")
 	trustedTooling := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout trusted release-notes tooling")
-	refresh := workflowStepByName(t, workflow.Jobs, "prepare-release", "Refresh VS Code extension release notes")
-	push := workflowStepByName(t, workflow.Jobs, "prepare-release", "Push refreshed VS Code extension release notes")
+	refresh := workflowStepByName(t, workflow.Jobs, "prepare-release", "Refresh release notes")
+	push := workflowStepByName(t, workflow.Jobs, "prepare-release", "Push refreshed release notes")
 
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "release notes checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
@@ -215,9 +216,10 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 		`grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'`,
 		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}" --date "$(date -u +%F)"`,
 		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --check`,
-		`git diff --quiet -- extensions/vscode-lopper/CHANGELOG.md`,
-		`git add extensions/vscode-lopper/CHANGELOG.md`,
-		`git commit -m "docs(vscode): refresh release notes"`,
+		`python3 .trusted-release-notes-tooling/scripts/release_build_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}"`,
+		`git diff --quiet -- CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md`,
+		`git add CHANGELOG.md extensions/vscode-lopper/CHANGELOG.md`,
+		`git commit -m "docs(release): refresh release notes"`,
 	})
 	assertWorkflowStepEnv(t, push, "release notes push", map[string]string{"PUSH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}", "RELEASE_PLEASE_PRS": "${{ steps.release.outputs.prs }}"})
 	assertWorkflowStepRunContainsAll(t, push, "release notes push", []string{
@@ -234,7 +236,7 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 	if strings.Contains(push.Run, `GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \\`) {
 		t.Fatal("release notes push must not pass its authorization header through env argv")
 	}
-	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh VS Code extension release notes", "Push refreshed VS Code extension release notes", "Checkout release metadata")
+	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh release notes", "Push refreshed release notes", "Checkout release metadata")
 }
 
 func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangelogSection) {
@@ -1274,7 +1276,7 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 	want := []string{
 		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release-please PR#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
-		"jobs.prepare-release.steps.Push refreshed VS Code extension release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Push refreshed release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",
@@ -2829,6 +2831,59 @@ func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
 	t.Fatal("Go module updates must run gomodTidy before CI and automerge")
 }
 
+func TestRenovatePRsSatisfyMetadataRequirements(t *testing.T) {
+	t.Parallel()
+
+	const regressionProofTemplate = "{{#if (equals semanticCommitType 'fix')}}\nRegression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements\n{{/if}}"
+	const regressionProof = "Regression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements"
+
+	var config struct {
+		Labels         []string `json:"labels"`
+		PRBodyTemplate string   `json:"prBodyTemplate"`
+	}
+	readJSONConfig(t, "renovate.json", &config)
+
+	if !slices.Contains(config.Labels, "dependencies") {
+		t.Fatalf("Renovate PR labels = %v, want dependencies", config.Labels)
+	}
+	if !strings.Contains(config.PRBodyTemplate, regressionProofTemplate) {
+		t.Fatal("Renovate PR body must declare a regression test only for fix semantic titles")
+	}
+
+	for _, test := range []struct {
+		name  string
+		title string
+		body  string
+	}{
+		{
+			name:  "chore title omits regression proof",
+			title: "chore(deps): update dependencies",
+			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, "", 1),
+		},
+		{
+			name:  "fix title includes regression proof",
+			title: "fix(deps): update dependencies",
+			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, regressionProof, 1),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bodyPath := filepath.Join(t.TempDir(), "renovate-pr-body.md")
+			if err := os.WriteFile(bodyPath, []byte(test.body), 0o600); err != nil {
+				t.Fatalf("write Renovate PR body template: %v", err)
+			}
+			command := exec.Command("go", "run", "./tools/prcheck",
+				"--title", test.title,
+				"--head-ref", "renovate/example-dependency",
+				"--body-file", bodyPath,
+			)
+			command.Dir = filepath.Dir(repoPath(t, "renovate.json"))
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("Renovate PR body must satisfy metadata validation: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	t.Parallel()
 
@@ -3160,9 +3215,21 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`write_memory_bench_status() { \`,
 		`write_invalid_memory_summary() { \`,
+		`write_harness_change_requires_approval_summary() { \`,
 		`fail_invalid_memory_gate() { \`,
-		`printf "2\n" > "$(MEMORY_BENCH_STATUS)"`,
+		`report_harness_change_requires_approval() { \`,
+		`status_code="$1";`,
+		`printf "%s\n" "$status_code" > "$(MEMORY_BENCH_STATUS)"`,
+		`summary_error="$diagnostic";`,
+		`summary_error="$2";`,
+		`write_invalid_memory_summary "$summary_error";`,
+		`write_harness_change_requires_approval_summary "$summary_error";`,
+		`write_memory_bench_status "2";`,
+		`write_memory_bench_status "1";`,
+		`Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.`,
+		`printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;`,
 		`requested_go_bin="$(GO_BIN)"`,
 		`requested_go_toolchain="$(GO_TOOLCHAIN)"`,
 		`if [ "${GO_TEST_LDFLAGS+x}" != x ]; then`,
@@ -3181,19 +3248,26 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark GO_BIN: $$go_bin_path"`,
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
-		`requested base ref '$$base_ref' is not related to HEAD`,
+		`requested base ref '$$base_ref' is not an ancestor of HEAD`,
+		`benchmark_harness_selector_bin="$$bench_dir/benchharness"`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
-		`git merge-base -- "$$base_ref" HEAD`,
+		`base_commit=$(git rev-parse --verify -q --end-of-options "$$base_ref^{commit}")`,
+		`git merge-base --is-ancestor "$$base_commit" HEAD`,
+		`base_ref="$$base_commit";`,
+		`list -test -f '{{range .TestGoFiles}}`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
+		`"$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind"`,
 		`-list '^Benchmark' "$$bench_pkg"`,
 		`configured head benchmark package target '$$bench_pkg' resolved zero selected benchmarks.`,
 		`echo "Resolved head benchmark definitions:"`,
-		`harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s`,
+		`harness-files=benchmark-test-go-files,benchmark-test-embed-files harness-fingerprint=%s`,
 		`base_harness_fingerprint=$$(cd "$$base_tree" && benchmark_harness_fingerprint "$$bench_pkg")`,
+		`if [ "$$MEMORY_BENCH_ENFORCE" = "0" ]; then`,
+		`report_harness_change_requires_approval "base benchmark definition for package '$$bench_pkg' does not match the resolved head harness fingerprint.";`,
 		`does not match the resolved head harness fingerprint.`,
 		`printf "Applied base benchmark definition: %s\n" "$$definition_metadata" >> "$$base_output_tmp"`,
 		`printf "Applied head benchmark definition: %s\n" "$$definition_metadata" >> "$$head_output_tmp"`,
@@ -3232,7 +3306,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	assertTextAppearsBefore(t, benchGateScript, `if [ "$base_harness_fingerprint" != "$harness_fingerprint" ]; then`, `printf "Applied base benchmark definition: %s\n" "$definition_metadata"`, "bench-gate must verify every base harness fingerprint before executing benchmarks")
-	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}"`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
+	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}"); then`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
 }
 
 func TestMakefileBenchGateRejectsMissingOrNonExecutableGoBin(t *testing.T) {
@@ -3439,7 +3513,7 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *test
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			writeFile(t, filepath.Join(repo, "bench_test.go"), benchmarkTestSource("lopper", "BenchmarkRootConfiguration"))
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkConfiguration"))
-			runGitCommand(t, repo, "add", "go.mod", "bench_test.go", "benchpkg/bench_test.go")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "bench_test.go", "benchpkg/bench_test.go")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
 			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
@@ -3516,15 +3590,58 @@ func TestMakefileBenchGateUsesDefaultEnforcementOnlyWhenUnset(t *testing.T) {
 	}
 }
 
+func TestGoToolchainPinsAvoidKnownVulnerableRelease(t *testing.T) {
+	t.Parallel()
+
+	const minimumGoPatch = 6
+	type toolchainPin struct {
+		name    string
+		content string
+		pattern string
+	}
+	pins := []toolchainPin{
+		{name: "go.mod", content: readConfig(t, "go.mod"), pattern: `(?m)^go (\d+)\.(\d+)\.(\d+)$`},
+		{name: "Makefile", content: readConfig(t, "Makefile"), pattern: `(?m)^GO_TOOLCHAIN \?= go(\d+)\.(\d+)\.(\d+)$`},
+		{name: "bench-gate", content: readConfig(t, "scripts/bench-gate.sh"), pattern: `(?m)^\s*GO_TOOLCHAIN="go(\d+)\.(\d+)\.(\d+)"$`},
+	}
+
+	var expected [3]int
+	for index, pin := range pins {
+		matches := regexp.MustCompile(pin.pattern).FindStringSubmatch(pin.content)
+		if len(matches) == 0 {
+			t.Fatalf("%s must declare a Go toolchain patch version", pin.name)
+		}
+
+		var version [3]int
+		for component := range version {
+			value, err := strconv.Atoi(matches[component+1])
+			if err != nil {
+				t.Fatalf("parse %s Go version component %q: %v", pin.name, matches[component+1], err)
+			}
+			version[component] = value
+		}
+		if version[0] < 1 || version[0] == 1 && (version[1] < 26 || version[1] == 26 && version[2] < minimumGoPatch) {
+			t.Fatalf("%s Go version %d.%d.%d is below the 1.26.6 security baseline", pin.name, version[0], version[1], version[2])
+		}
+		if index == 0 {
+			expected = version
+			continue
+		}
+		if version != expected {
+			t.Fatalf("%s Go version %d.%d.%d does not match go.mod version %d.%d.%d", pin.name, version[0], version[1], version[2], expected[0], expected[1], expected[2])
+		}
+	}
+}
+
 func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *testing.T) {
 	t.Parallel()
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeBenchGateSafeioStub(t, repo)
 	writeFile(t, filepath.Join(repo, "internal", "lang", "shared", "bench_test.go"), benchmarkTestSource("shared", "BenchmarkDefaultConfiguration"))
 	writeFile(t, filepath.Join(repo, "internal", "report", "bench_test.go"), benchmarkTestSource("report", "BenchmarkDefaultConfiguration"))
-	runGitCommand(t, repo, "add", "go.mod", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
 	runGitCommand(t, repo, "commit", "-m", "add default benchmark packages")
 	benchVars["MEMORY_BENCH_BASE"] = "HEAD"
 	delete(benchVars, "BENCH_COUNT")
@@ -3539,6 +3656,37 @@ func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *t
 		if !strings.Contains(output, want) {
 			t.Fatalf("bench-gate output missing default configuration %q:\n%s", want, output)
 		}
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
+func TestMakefileBenchGatePinsRequestedBaseRefToResolvedCommit(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkPinnedBase"))
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add base benchmark")
+	baseSHA := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
+	runGitCommand(t, repo, "branch", "rolling-base", baseSHA)
+
+	writeFile(t, filepath.Join(repo, "README.md"), "head\n")
+	runGitCommand(t, repo, "add", "README.md")
+	runGitCommand(t, repo, "commit", "-m", "advance head")
+
+	benchVars["MEMORY_BENCH_BASE"] = "rolling-base"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(output, "Running memory benchmark delta against "+baseSHA+".") {
+		t.Fatalf("bench-gate output did not pin the requested base ref to %s:\n%s", baseSHA, output)
+	}
+	if strings.Contains(output, "rolling-base") {
+		t.Fatalf("bench-gate output leaked the mutable requested base ref after pinning:\n%s", output)
 	}
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
@@ -3731,12 +3879,55 @@ func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
 		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
 	}
 	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
-	if !strings.Contains(output, "not related to HEAD; failing closed") {
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
 		t.Fatalf("expected unrelated base failure output, got:\n%s", output)
 	}
 	wantContains := []string{
 		"Comparison status: invalid",
-		"base benchmark input could not be read: requested base ref 'unrelated-base' is not related to HEAD.",
+		"base benchmark input could not be read: requested base ref 'unrelated-base' is not an ancestor of HEAD.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+}
+
+func TestMakefileBenchGateFailsClosedForRelatedNonAncestorRequestedBase(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve go binary: %v", err)
+	}
+	runGitCommand(t, repo, "checkout", "-b", "side-base")
+	writeFile(t, filepath.Join(repo, "side.txt"), "side\n")
+	runGitCommand(t, repo, "add", "side.txt")
+	runGitCommand(t, repo, "commit", "-m", "side history")
+	runGitCommand(t, repo, "checkout", "main")
+	writeFile(t, filepath.Join(repo, "head.txt"), "head\n")
+	runGitCommand(t, repo, "add", "head.txt")
+	runGitCommand(t, repo, "commit", "-m", "head history")
+
+	vars := map[string]string{
+		"GO":                   goPath,
+		"GO_BIN":               goPath,
+		"GO_TOOLCHAIN":         "local",
+		"MEMORY_BENCH_BASE":    "side-base",
+		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
+		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
+		t.Fatalf("expected non-ancestor base failure output, got:\n%s", output)
+	}
+	if strings.Contains(output, "Running memory benchmark delta against") {
+		t.Fatalf("bench-gate must reject non-ancestor base before benchmarking:\n%s", output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark input could not be read: requested base ref 'side-base' is not an ancestor of HEAD.",
 	}
 	wantOmit := []string{
 		"Result: memory benchmark gate passed.",
@@ -3770,12 +3961,12 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 	expectedGoVersion := strings.TrimSpace(string(versionOutput))
 	benchVars["GO_BIN"] = filepath.Join("toolchain", "go-wrapper")
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeBenchGateSafeioStub(t, repo)
 	basePkgOneSource := "package benchpkgone\n\nfunc benchmarkInput() int { return 1 }\n"
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), benchmarkTestSource("benchpkgone", "BenchmarkPkgOneOnly", "BenchmarkShared"))
 	writeFile(t, filepath.Join(repo, "benchpkgone", "work.go"), basePkgOneSource)
 	writeFile(t, filepath.Join(repo, "benchpkgtwo", "bench_test.go"), benchmarkTestSource("benchpkgtwo", "BenchmarkPkgTwoOnly", "BenchmarkShared"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkgone/bench_test.go", "benchpkgone/work.go", "benchpkgtwo/bench_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkgone/bench_test.go", "benchpkgone/work.go", "benchpkgtwo/bench_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add base benchmarks")
 
 	headPkgOneSource := "package benchpkgone\n\nfunc benchmarkInput() int { return 2 }\n"
@@ -3796,7 +3987,7 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 		"-run '^$'",
 		"GO_TEST_LDFLAGS_ARGS=",
 		"-benchmem -count=1 -benchtime=1x",
-		"harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles",
+		"harness-files=benchmark-test-go-files,benchmark-test-embed-files",
 		"harness-fingerprint=git-hash-object:",
 		"Applied base benchmark definition:",
 		"Applied head benchmark definition:",
@@ -3840,6 +4031,433 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 	assertPinnedGoBinInvocations(t, goBinLog, resolvedGoBin)
 }
 
+func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), "package benchpkg\n\nimport \"testing\"\n\nfunc TestOrdinary(t *testing.T) {}\n")
+	runGitCommand(t, repo, "add", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "add ordinary test")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0", exitCode)
+	}
+	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("bench-gate treated an ordinary test as benchmark harness drift:\n%s", output)
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
+func TestMakefileBenchGateRejectsChangedSimpleModuleImportHarness(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	writeFile(t, filepath.Join(repo, "go.mod"), "module m\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(repo, "setup.go"), "package m\n\nvar Value = 1\n\nfunc init() {}\n")
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), `package benchpkg
+
+import (
+	"m"
+	"testing"
+)
+
+func TestOrdinary(t *testing.T) {
+	_ = m.Value
+}
+`)
+	runGitCommand(t, repo, "add", "go.mod", "setup.go", "benchpkg/bench_test.go", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "add benchmark with local module import setup")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), `package benchpkg
+
+import "testing"
+
+func TestOrdinary(t *testing.T) {}
+`)
+	runGitCommand(t, repo, "add", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "change local module import setup")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(output, "package=m/benchpkg selection=^(BenchmarkShared)$") ||
+		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
+		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
+	}
+	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
+		if strings.Contains(output, omit) {
+			t.Fatalf("bench-gate must reject changed local module import harness before execution, found %q:\n%s", omit, output)
+		}
+	}
+
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark definition for package 'm/benchpkg' does not match the resolved head harness fingerprint.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+		"BenchmarkShared-",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
+}
+
+func TestMakefileBenchGateIgnoresChangedOrdinaryTestOnlyEmbeddedFixtures(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	files := []benchmarkFixtureFile{
+		{path: "benchpkg/bench_test.go", content: benchmarkTestSource("benchpkg", "BenchmarkShared")},
+		{path: "benchpkg/ordinary_test.go", content: `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/ordinary.txt
+var ordinaryTestInput string
+
+func TestOrdinaryEmbeddedFixture(t *testing.T) {
+	if ordinaryTestInput == "" {
+		t.Fatal("missing ordinary test fixture")
+	}
+}
+`},
+		{path: "benchpkg/testdata/ordinary.txt", content: "base ordinary fixture\n"},
+	}
+	paths := []string{"go.mod", "tools/benchdelta", "internal/safeio"}
+	for _, file := range files {
+		writeFile(t, filepath.Join(repo, file.path), file.content)
+		paths = append(paths, file.path)
+	}
+	slices.Sort(paths)
+	runGitCommand(t, repo, append([]string{"add"}, paths...)...)
+	runGitCommand(t, repo, "commit", "-m", "add ordinary embedded fixture")
+
+	writeFile(t, filepath.Join(repo, "benchpkg/testdata/ordinary.txt"), "head ordinary fixture\n")
+	runGitCommand(t, repo, "add", "benchpkg/testdata/ordinary.txt")
+	runGitCommand(t, repo, "commit", "-m", "change ordinary embedded fixture")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("bench-gate treated an ordinary test-only fixture as benchmark harness drift:\n%s", output)
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
+type benchmarkFixtureFile struct {
+	path    string
+	content string
+}
+
+type changedBenchmarkFixtureCase struct {
+	name          string
+	files         []benchmarkFixtureFile
+	changePath    string
+	headContent   string
+	selectionName string
+	benchName     string
+}
+
+func TestMakefileBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	assertBenchGateRejectsChangedBenchmarkHarnessInputBeforeExecution(t, changedBenchmarkFixtureCase{
+		name: "direct file",
+		files: []benchmarkFixtureFile{
+			{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/input.txt
+var embeddedBenchmarkInput string
+
+var embeddedBenchmarkSink int
+
+func BenchmarkEmbeddedFixture(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		embeddedBenchmarkSink += len(embeddedBenchmarkInput)
+	}
+}
+`},
+			{path: "benchpkg/testdata/input.txt", content: "base fixture\n"},
+		},
+		changePath:    "benchpkg/testdata/input.txt",
+		headContent:   "head fixture\n",
+		selectionName: "BenchmarkEmbeddedFixture",
+		benchName:     "BenchmarkEmbeddedFixture-",
+	})
+}
+
+func TestMakefileBenchGateRejectsChangedEmbeddedBenchmarkHarnessInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []changedBenchmarkFixtureCase{
+		{
+			name: "recursive directory",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed testdata
+var benchmarkFixtures embed.FS
+
+var benchmarkDirectorySink int
+
+func BenchmarkEmbeddedDirectory(b *testing.B) {
+	data, err := benchmarkFixtures.ReadFile("testdata/nested/input.txt")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		benchmarkDirectorySink += len(data)
+	}
+}
+`},
+				{path: "benchpkg/testdata/nested/input.txt", content: "base nested fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/nested/input.txt",
+			headContent:   "head nested fixture\n",
+			selectionName: "BenchmarkEmbeddedDirectory",
+			benchName:     "BenchmarkEmbeddedDirectory-",
+		},
+		{
+			name: "ordinary test helper used by benchmark",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import "testing"
+
+var helperSink int
+
+func BenchmarkOrdinaryTestHelper(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		helperSink += len(sharedFixtureInput)
+	}
+}
+`},
+				{path: "benchpkg/helper_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/helper.txt
+var sharedFixtureInput string
+
+func TestHelperFixture(t *testing.T) {
+	if sharedFixtureInput == "" {
+		t.Fatal("missing helper fixture")
+	}
+}
+`},
+				{path: "benchpkg/testdata/helper.txt", content: "base helper fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/helper.txt",
+			headContent:   "head helper fixture\n",
+			selectionName: "BenchmarkOrdinaryTestHelper",
+			benchName:     "BenchmarkOrdinaryTestHelper-",
+		},
+		{
+			name: "quoted file with spaces",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed "testdata/input file.txt"
+var benchmarkQuotedInput string
+
+var benchmarkQuotedSink int
+
+func BenchmarkEmbeddedQuotedFile(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkQuotedSink += len(benchmarkQuotedInput)
+	}
+}
+`},
+				{path: "benchpkg/testdata/input file.txt", content: "base quoted fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/input file.txt",
+			headContent:   "head quoted fixture\n",
+			selectionName: "BenchmarkEmbeddedQuotedFile",
+			benchName:     "BenchmarkEmbeddedQuotedFile-",
+		},
+		{
+			name: "quoted file with escaped space",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed "test\x20data/input.txt"
+var benchmarkEscapedQuotedInput string
+
+var benchmarkEscapedQuotedSink int
+
+func BenchmarkEmbeddedEscapedQuotedFile(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkEscapedQuotedSink += len(benchmarkEscapedQuotedInput)
+	}
+}
+`},
+				{path: "benchpkg/test data/input.txt", content: "base escaped quoted fixture\n"},
+			},
+			changePath:    "benchpkg/test data/input.txt",
+			headContent:   "head escaped quoted fixture\n",
+			selectionName: "BenchmarkEmbeddedEscapedQuotedFile",
+			benchName:     "BenchmarkEmbeddedEscapedQuotedFile-",
+		},
+		{
+			name: "glob includes dotfile",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed testdata/*
+var benchmarkGlobFixtures embed.FS
+
+var benchmarkGlobSink int
+
+func BenchmarkEmbeddedGlobDotfile(b *testing.B) {
+	data, err := benchmarkGlobFixtures.ReadFile("testdata/.fixture")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		benchmarkGlobSink += len(data)
+	}
+}
+`},
+				{path: "benchpkg/testdata/.fixture", content: "base dot fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/.fixture",
+			headContent:   "head dot fixture\n",
+			selectionName: "BenchmarkEmbeddedGlobDotfile",
+			benchName:     "BenchmarkEmbeddedGlobDotfile-",
+		},
+		{
+			name: "all directory includes hidden",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed all:testdata
+var benchmarkAllFixtures embed.FS
+
+var benchmarkAllSink int
+
+func BenchmarkEmbeddedAllDirectory(b *testing.B) {
+	data, err := benchmarkAllFixtures.ReadFile("testdata/.hidden.txt")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		benchmarkAllSink += len(data)
+	}
+}
+`},
+				{path: "benchpkg/testdata/.hidden.txt", content: "base hidden fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/.hidden.txt",
+			headContent:   "head hidden fixture\n",
+			selectionName: "BenchmarkEmbeddedAllDirectory",
+			benchName:     "BenchmarkEmbeddedAllDirectory-",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertBenchGateRejectsChangedBenchmarkHarnessInputBeforeExecution(t, tc)
+		})
+	}
+}
+
+func assertBenchGateRejectsChangedBenchmarkHarnessInputBeforeExecution(t *testing.T, tc changedBenchmarkFixtureCase) {
+	t.Helper()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	paths := []string{"go.mod"}
+	for _, file := range tc.files {
+		writeFile(t, filepath.Join(repo, file.path), file.content)
+		paths = append(paths, file.path)
+	}
+	slices.Sort(paths)
+	runGitCommand(t, repo, append([]string{"add"}, paths...)...)
+	runGitCommand(t, repo, "commit", "-m", "add embedded benchmark fixture")
+
+	writeFile(t, filepath.Join(repo, tc.changePath), tc.headContent)
+	runGitCommand(t, repo, "add", tc.changePath)
+	runGitCommand(t, repo, "commit", "-m", "change embedded benchmark fixture")
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^("+tc.selectionName+")$") ||
+		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
+		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
+	}
+	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
+		if strings.Contains(output, omit) {
+			t.Fatalf("bench-gate must reject changed embedded fixtures before execution, found %q:\n%s", omit, output)
+		}
+	}
+
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+		tc.benchName,
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
+}
+
 func TestMakefileBenchGateApplicationFailuresExitInvalid(t *testing.T) {
 	t.Parallel()
 
@@ -3871,7 +4489,7 @@ func BenchmarkConditional(b *testing.B) {
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
 			writeFile(t, filepath.Join(repo, "benchpkg", "work.go"), "package benchpkg\n\nfunc benchmarkShouldFail() bool { return "+strconv.FormatBool(tc.baseFails)+" }\n")
-			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/work.go")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "benchpkg/work.go")
 			runGitCommand(t, repo, "commit", "-m", "add conditional benchmark")
 
 			writeFile(t, filepath.Join(repo, "benchpkg", "work.go"), "package benchpkg\n\nfunc benchmarkShouldFail() bool { return "+strconv.FormatBool(tc.headFails)+" }\n")
@@ -3919,9 +4537,9 @@ func TestMakefileBenchGatePreservesInvalidHelperThresholdExitWhenEnforcementDisa
 
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-			copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+			writeBenchGateSafeioStub(t, repo)
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkThresholdValidation"))
-			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 			benchVars["MEMORY_BENCH_ENFORCE"] = "0"
 			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
@@ -3947,7 +4565,7 @@ func TestMakefileBenchGateFailsClosedWhenConfiguredPackageLosesAllHeadBenchmarks
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), benchmarkTestSource("benchpkgone", "BenchmarkRemovedFromHead"))
 	writeFile(t, filepath.Join(repo, "benchpkgtwo", "bench_test.go"), benchmarkTestSource("benchpkgtwo", "BenchmarkStillPresent"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkgone/bench_test.go", "benchpkgtwo/bench_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkgone/bench_test.go", "benchpkgtwo/bench_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add configured benchmark packages")
 
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), "package benchpkgone\n")
@@ -3983,49 +4601,119 @@ func TestMakefileBenchGateFailsClosedWhenConfiguredPackageLosesAllHeadBenchmarks
 	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
 }
 
+type changedBenchmarkHarnessExpectation struct {
+	enforce             string
+	wantExit            int
+	wantStatus          string
+	wantOutput          string
+	wantSummary         string
+	wantOmitFromSummary []string
+}
+
 func TestMakefileBenchGateRejectsChangedBenchmarkHarnessBeforeExecution(t *testing.T) {
 	t.Parallel()
 
+	t.Run("enforced mode fails closed", func(t *testing.T) {
+		t.Parallel()
+		assertChangedBenchmarkHarnessBehavior(t, changedBenchmarkHarnessExpectation{
+			enforce:             "1",
+			wantExit:            2,
+			wantStatus:          "2\n",
+			wantOutput:          "Memory benchmark gate invalid: base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+			wantSummary:         "Result: benchmark input could not be read for a safe memory comparison.",
+			wantOmitFromSummary: []string{"Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition."},
+		})
+	})
+
+	t.Run("report-only mode requires approval", func(t *testing.T) {
+		t.Parallel()
+		assertChangedBenchmarkHarnessBehavior(t, changedBenchmarkHarnessExpectation{
+			enforce:             "0",
+			wantExit:            0,
+			wantStatus:          "1\n",
+			wantOutput:          "Memory benchmark approval required: base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+			wantSummary:         "Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.",
+			wantOmitFromSummary: []string{"Result: benchmark input could not be read for a safe memory comparison."},
+		})
+	})
+}
+
+func assertChangedBenchmarkHarnessBehavior(t *testing.T, want changedBenchmarkHarnessExpectation) {
+	t.Helper()
+
 	repo, benchVars := newTempBenchGateGoRepo(t)
+	writeChangedBenchmarkHarnessRepo(t, repo)
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	benchVars["MEMORY_BENCH_ENFORCE"] = want.enforce
+
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, want.wantExit)
+	if exitCode != want.wantExit {
+		t.Fatalf("bench-gate exit code = %d, want %d", exitCode, want.wantExit)
+	}
+
+	assertChangedBenchmarkHarnessOutput(t, output, want.wantOutput)
+
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+		want.wantSummary,
+	}
+	wantOmit := append([]string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+		"BenchmarkShared-",
+	}, want.wantOmitFromSummary...)
+	assertMemoryBenchArtifacts(t, repo, want.wantStatus, wantContains, wantOmit)
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
+}
+
+func writeChangedBenchmarkHarnessRepo(t *testing.T, repo string) {
+	t.Helper()
+
+	benchmarkSource := `package benchpkg
+
+import "testing"
+
+var benchmarkHarnessSink int
+
+func BenchmarkShared(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkHarnessSink += benchmarkHarnessValue()
+	}
+}
+`
 	baseHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n"
-	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), baseHarness)
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
 
 	headHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 2 }\n"
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), headHarness)
 	runGitCommand(t, repo, "add", "benchpkg/harness_test.go")
 	runGitCommand(t, repo, "commit", "-m", "change benchmark harness")
+}
 
-	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
-	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
-	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
-	if exitCode != 2 {
-		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
-	}
-	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkShared)$") ||
-		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
-		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
+func assertChangedBenchmarkHarnessOutput(t *testing.T, output string, wantOutput string) {
+	t.Helper()
+
+	for _, want := range []string{
+		"package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkShared)$",
+		"harness-fingerprint=git-hash-object:",
+		wantOutput,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+		}
 	}
 	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
 		if strings.Contains(output, omit) {
 			t.Fatalf("bench-gate must reject changed harness before execution, found %q:\n%s", omit, output)
 		}
 	}
-
-	wantContains := []string{
-		"Comparison status: invalid",
-		"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
-	}
-	wantOmit := []string{
-		"Result: memory benchmark gate passed.",
-		"Result: memory benchmark regression detected.",
-		"BenchmarkShared-",
-	}
-	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
-	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
-	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
 }
 
 func TestMakefileLockfiledriftHeadContract(t *testing.T) {
@@ -4084,9 +4772,8 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 		`mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")`,
 		`-coverprofile="$(COVERAGE_DEFAULT_FILE)"`,
 		`mkdir -p $$(dirname "$(COVERAGE_FILE)")`,
-		`sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"`,
-		`sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"`,
-		`sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
+		`awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"`,
+		`awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
 		`} > "$(COVERAGE_FILE)"`,
 		`mkdir -p .artifacts`,
 		`-coverprofile="$(COVERAGE_FILE)"`,
@@ -5029,6 +5716,94 @@ func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing
 	}
 }
 
+func TestHomebrewTapValidationCommitsCandidateFormulaBeforeFileRemoteClone(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range homebrewTapWorkflowCases() {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow struct {
+				Jobs map[string]workflowJobConfig `yaml:"jobs"`
+			}
+			readYAMLConfig(t, tc.workflowPath, &workflow)
+
+			regenerateStep := workflowStepByName(t, workflow.Jobs, tc.validationJobName, tc.regenerateStepName)
+			for _, candidate := range []struct {
+				name     string
+				contents string
+			}{
+				{name: "changed formula", contents: "generated candidate formula\n"},
+				{name: "unchanged formula", contents: "committed formula\n"},
+			} {
+				candidate := candidate
+				t.Run(candidate.name, func(t *testing.T) {
+					assertFileRemoteCloneUsesValidationCommit(t, tc.formulaPath, candidate.contents, validationFormulaCommitSnippet(t, regenerateStep, tc.formulaPath))
+				})
+			}
+		})
+	}
+}
+
+func validationFormulaCommitSnippet(t *testing.T, step workflowStepConfig, formulaPath string) string {
+	t.Helper()
+
+	start := strings.Index(step.Run, "git add "+formulaPath)
+	if start < 0 {
+		return ""
+	}
+	return strings.TrimSpace(step.Run[start:])
+}
+
+func assertFileRemoteCloneUsesValidationCommit(t *testing.T, formulaPath string, candidateFormula string, validationCommit string) {
+	t.Helper()
+
+	repoPath := filepath.Join(t.TempDir(), "homebrew-tap")
+	formulaFilePath := filepath.Join(repoPath, filepath.FromSlash(formulaPath))
+	readmePath := filepath.Join(repoPath, "README.md")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("create tap directory: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.name", "Homebrew tap validation"},
+		{"config", "user.email", "homebrew-tap-validation@users.noreply.github.com"},
+	} {
+		runGitCommand(t, repoPath, args...)
+	}
+	writeFile(t, formulaFilePath, "committed formula\n")
+	writeFile(t, readmePath, "committed readme\n")
+	runGitCommand(t, repoPath, "add", formulaPath, "README.md")
+	runGitCommand(t, repoPath, "commit", "--no-verify", "-m", "committed formula")
+
+	writeFile(t, formulaFilePath, candidateFormula)
+	writeFile(t, readmePath, "uncommitted readme\n")
+	runGitCommand(t, repoPath, "add", "README.md")
+	firstClonePath := filepath.Join(t.TempDir(), "first-clone")
+	runGitCommand(t, t.TempDir(), "clone", "file://"+repoPath, firstClonePath)
+	if got := readFile(t, filepath.Join(firstClonePath, filepath.FromSlash(formulaPath))); got != "committed formula\n" {
+		t.Fatalf("file remote clone formula = %q, want committed formula", got)
+	}
+
+	if validationCommit != "" {
+		validationCommand := exec.Command("bash", "-c", validationCommit)
+		validationCommand.Dir = repoPath
+		validationCommand.Env = gitexec.SanitizedEnv()
+		if output, err := validationCommand.CombinedOutput(); err != nil {
+			t.Fatalf("run validation formula commit: %v\n%s", err, output)
+		}
+	}
+	secondClonePath := filepath.Join(t.TempDir(), "second-clone")
+	runGitCommand(t, t.TempDir(), "clone", "file://"+repoPath, secondClonePath)
+	if got := readFile(t, filepath.Join(secondClonePath, filepath.FromSlash(formulaPath))); got != candidateFormula {
+		t.Fatalf("file remote clone formula after local commit = %q, want %q", got, candidateFormula)
+	}
+	if got := readFile(t, filepath.Join(secondClonePath, "README.md")); got != "committed readme\n" {
+		t.Fatalf("file remote clone readme = %q, want unchanged committed readme", got)
+	}
+}
+
 func TestHomebrewTapWorkflowsSkipAllTapJobsWithoutToken(t *testing.T) {
 	t.Parallel()
 
@@ -5857,12 +6632,12 @@ func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) s
 	return value
 }
 
-func TestAnalysisCacheSchemaInvalidatesV3TopNEntries(t *testing.T) {
-	const expectedDeclaration = `const analysisCacheSchemaVersion = "v4"`
+func TestAnalysisCacheSchemaInvalidatesPreV6Entries(t *testing.T) {
+	const expectedDeclaration = `const analysisCacheSchemaVersion = "v6"`
 
 	source := readConfig(t, "internal/analysis/cache_entry.go")
 	if !strings.Contains(source, expectedDeclaration) {
-		t.Fatalf("analysis cache schema must invalidate v3 top-N entries; expected %q", expectedDeclaration)
+		t.Fatalf("analysis cache schema must invalidate pre-v6 entries; expected %q", expectedDeclaration)
 	}
 }
 
@@ -5996,23 +6771,115 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
+	moduleCacheDir := currentGoModuleCache(t, goPath)
+	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
 	for _, dir := range []string{homeDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
-	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire "+currentGoModRequirement(t, "golang.org/x/sys")+"\n")
+	writeFile(t, filepath.Join(repo, "go.sum"), currentGoSumEntries(t, "golang.org/x/sys"))
+	runGitCommand(t, repo, "add", "go.mod", "go.sum")
+	runGitCommand(t, repo, "commit", "-m", "add Go module")
 	return repo, map[string]string{
-		"GO":                          goPath,
-		"GO_BIN":                      goPath,
-		"GO_TOOLCHAIN":                "local",
-		"HOME":                        homeDir,
-		"GOCACHE":                     cacheDir,
-		"BENCH_COUNT":                 "1",
-		"BENCH_TIME":                  "1x",
+		"GO":           goPath,
+		"GO_BIN":       goPath,
+		"GO_TOOLCHAIN": "local",
+		"HOME":         homeDir,
+		"GOCACHE":      cacheDir,
+		"GOMODCACHE":   moduleCacheDir,
+		"BENCH_COUNT":  "1",
+		"BENCH_TIME":   "1x",
+		// Passed as a make command-line argument rather than left to the
+		// Makefile's own "MEMORY_BENCH_ENFORCE ?= 1" default: make command-line
+		// arguments override both defaults and inherited environment
+		// variables, but a bare default would not -- and this test's own CI
+		// job exports MEMORY_BENCH_ENFORCE=0 for its own top-level bench-gate
+		// run (pull_request events get the softer "approval required" mode),
+		// which subprocess.Environ() then inherits into every test in this
+		// process unless overridden here.
+		"MEMORY_BENCH_ENFORCE":        "1",
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
+		// This test process's own CI job runs under a real pull_request
+		// event, so the outer environment already has GITHUB_REF pointing at
+		// a refs/pull/*/merge ref and GITHUB_EVENT_NAME=pull_request set.
+		// gitexec.SanitizedEnv() does not strip GITHUB_*/GH_* keys, so
+		// without overriding them here that outer context would leak into
+		// every nested bench-gate run and make bench-gate-pr-base.sh treat
+		// an ordinary test-fixture merge commit as a checked-out PR merge
+		// ref. Tests that want that behavior set these explicitly.
+		"GITHUB_REF":        "",
+		"GITHUB_EVENT_NAME": "",
+		"GH_EVENT_NAME":     "",
 	}
+}
+
+func writeBenchGateSafeioStub(t *testing.T, repo string) {
+	t.Helper()
+
+	writeFile(t, filepath.Join(repo, "internal", "safeio", "openfile.go"), `package safeio
+
+import "os"
+
+func OpenFile(name string) (*os.File, error) {
+	return os.Open(name)
+}
+`)
+}
+
+func currentGoModuleCache(t *testing.T, goPath string) string {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "env", "GOMODCACHE")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve current GOMODCACHE: %v", err)
+	}
+	moduleCacheDir := strings.TrimSpace(string(output))
+	if moduleCacheDir == "" {
+		t.Fatal("go env GOMODCACHE returned an empty path")
+	}
+	return moduleCacheDir
+}
+
+func ensureCurrentGoModuleCached(t *testing.T, goPath, moduleCacheDir, modulePath string) {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "mod", "download", modulePath)
+	cmd.Dir = repoPath(t, ".")
+	cmd.Env = append(gitexec.SanitizedEnv(), "GOMODCACHE="+moduleCacheDir, "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("populate reused module cache for %s: %v\n%s", modulePath, err, output)
+	}
+}
+
+func currentGoModRequirement(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(modulePath) + `\s+([^\s]+)`)
+	matches := pattern.FindStringSubmatch(readConfig(t, "go.mod"))
+	if len(matches) != 2 {
+		t.Fatalf("go.mod missing required module %s", modulePath)
+	}
+	return modulePath + " " + matches[1]
+}
+
+func currentGoSumEntries(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	var entries []string
+	for _, line := range strings.Split(readConfig(t, "go.sum"), "\n") {
+		if strings.HasPrefix(line, modulePath+" ") || strings.HasPrefix(line, modulePath+"/go.mod ") {
+			entries = append(entries, line)
+		}
+	}
+	if len(entries) == 0 {
+		t.Fatalf("go.sum missing checksum entries for %s", modulePath)
+	}
+	return strings.Join(entries, "\n") + "\n"
 }
 
 func writeExecutableFile(t *testing.T, path string, contents string) {

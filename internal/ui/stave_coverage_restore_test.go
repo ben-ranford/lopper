@@ -47,24 +47,34 @@ func TestStaveReducerRejectsMalformedEffectResultEnvelopes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := reduceCoverageEffect(t, staveActionRefresh, tc.value, "completed", "")
-			if tc.name == "wrong call" {
-				// A call ID mismatch is intentionally ignored, preserving the pending action.
-				m = staveSummaryModel{interaction: staveSummaryInteraction{pendingCallID: "other"}}
-				var err error
-				m, _, err = reduceStaveSummary(stave.ReduceContext{}, m, event.Event{Kind: event.EffectResult, Payload: event.EffectResultPayload{CallID: "call-1", Value: tc.value}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if m.interaction.pendingCallID != "other" {
-					t.Fatal("stale effect result mutated pending state")
-				}
-				return
-			}
-			if tc.want != "" && !strings.Contains(m.interaction.error, tc.want) {
-				t.Fatalf("error = %q, want substring %q", m.interaction.error, tc.want)
-			}
+			assertMalformedEffectResult(t, tc.name, tc.value, tc.want)
 		})
+	}
+}
+
+func assertMalformedEffectResult(t *testing.T, name string, value any, want string) {
+	t.Helper()
+	if name == "wrong call" {
+		assertStaleEffectResultIgnored(t, value)
+		return
+	}
+	m := reduceCoverageEffect(t, staveActionRefresh, value, "completed", "")
+	if want != "" && !strings.Contains(m.interaction.error, want) {
+		t.Fatalf("error = %q, want substring %q", m.interaction.error, want)
+	}
+}
+
+func assertStaleEffectResultIgnored(t *testing.T, value any) {
+	t.Helper()
+	// A call ID mismatch is intentionally ignored, preserving the pending action.
+	m := staveSummaryModel{interaction: staveSummaryInteraction{pendingCallID: "other"}}
+	var err error
+	m, _, err = reduceStaveSummary(stave.ReduceContext{}, m, event.Event{Kind: event.EffectResult, Payload: event.EffectResultPayload{CallID: "call-1", Value: value}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.interaction.pendingCallID != "other" {
+		t.Fatal("stale effect result mutated pending state")
 	}
 }
 
@@ -413,6 +423,13 @@ func TestStaveModelRareErrorAndDiagnosticBranches(t *testing.T) {
 }
 
 func TestStaveTerminalAdditionalAsyncGuards(t *testing.T) {
+	t.Run("snapshot and publication guards", checkStaveAsyncSnapshotAndPublicationGuards)
+	t.Run("input and completion guards", checkStaveAsyncInputAndCompletionGuards)
+	t.Run("diagnostic and cancellation guards", checkStaveAsyncDiagnosticAndCancellationGuards)
+}
+
+func checkStaveAsyncSnapshotAndPublicationGuards(t *testing.T) {
+	t.Helper()
 	snapshotErr := errors.New("snapshot failed")
 	b := &staveTerminal{prepared: struct{}{}, snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{}, snapshotErr
@@ -438,8 +455,12 @@ func TestStaveTerminalAdditionalAsyncGuards(t *testing.T) {
 		t.Fatalf("action publication failure = %#v inflight=%v", msg, b.inflight)
 	}
 
+}
+
+func checkStaveAsyncInputAndCompletionGuards(t *testing.T) {
+	t.Helper()
 	var rejected event.Event
-	b = &staveTerminal{prepared: struct{}{}, snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
+	b := &staveTerminal{prepared: struct{}{}, snapshot: func(context.Context, any) (staveTerminalSnapshot, error) {
 		return staveTerminalSnapshot{model: staveSummaryModel{}}, nil
 	}, sendEvent: func(_ context.Context, _ any, ev event.Event) error { rejected = ev; return nil }}
 	if msg := b.beginCommand(string([]byte{0xff}))(); msg.(staveTextCompletion).err != nil {
@@ -450,7 +471,7 @@ func TestStaveTerminalAdditionalAsyncGuards(t *testing.T) {
 		t.Fatalf("invalid command event = %#v", rejected)
 	}
 	b.inflight = true
-	if cmd := b.beginAction(action.ID(staveActionOpen), map[string]any{"dependency": "go:x"}, false); cmd != nil {
+	if b.beginAction(action.ID(staveActionOpen), map[string]any{"dependency": "go:x"}, false) != nil {
 		t.Fatal("second action was scheduled while one was in flight")
 	}
 	b.inflight = false
@@ -479,7 +500,11 @@ func TestStaveTerminalAdditionalAsyncGuards(t *testing.T) {
 		t.Fatal("command-mode r incorrectly scheduled refresh")
 	}
 
-	b = &staveTerminal{}
+}
+
+func checkStaveAsyncDiagnosticAndCancellationGuards(t *testing.T) {
+	t.Helper()
+	b := &staveTerminal{}
 	want := errors.New("not ready")
 	b.reportError(want)
 	if !errors.Is(b.err, want) {

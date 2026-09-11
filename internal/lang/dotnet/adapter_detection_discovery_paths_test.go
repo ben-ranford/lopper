@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package dotnet
 
 import (
@@ -107,7 +109,7 @@ func TestDotNetCollectorAndScannerReturnWalkErrors(t *testing.T) {
 		t.Fatalf("expected collector walkErr to be returned")
 	}
 
-	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{})
+	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{}, nil)
 	if discoverer.walk("", nil, context.Canceled) == nil {
 		t.Fatalf("expected source discoverer walkErr to be returned")
 	}
@@ -121,7 +123,7 @@ func TestDotNetScannerSkipsObjDirAndMissingSource(t *testing.T) {
 	}
 	objEntry := mustReadDirEntry(t, repo, "obj")
 
-	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{})
+	discoverer := newSourceDiscoverer(repo, &sourceDiscovery{}, nil)
 	if err := discoverer.walk(repoEntryPath, objEntry, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected source discoverer to skip obj dir, got %v", err)
 	}
@@ -147,7 +149,10 @@ func TestDotNetSourceDiscovererWalkCoversDirectoryAndFile(t *testing.T) {
 	dirEntry := mustReadDirEntry(t, repo, "src")
 
 	discovery := sourceDiscovery{}
-	discoverer := newSourceDiscoverer(repo, &discovery)
+	var processed []sourceDocument
+	discoverer := newSourceDiscoverer(repo, &discovery, func(source sourceDocument) {
+		processed = append(processed, source)
+	})
 	if err := discoverer.walk(srcDir, dirEntry, nil); err != nil {
 		t.Fatalf("walk src dir: %v", err)
 	}
@@ -160,55 +165,59 @@ func TestDotNetSourceDiscovererWalkCoversDirectoryAndFile(t *testing.T) {
 	if err := discoverer.walk(sourcePath, sourceEntry, nil); err != nil {
 		t.Fatalf("walk source file: %v", err)
 	}
-	if len(discovery.Files) != 1 || discovery.Files[0].RelativePath != filepath.Join("src", dotNetProgramSource) {
-		t.Fatalf("unexpected source discovery: %#v", discovery.Files)
+	if len(processed) != 1 || processed[0].RelativePath != filepath.Join("src", dotNetProgramSource) {
+		t.Fatalf("unexpected source processing: %#v", processed)
 	}
 }
 
-func TestDotNetScanInputDiscovererBranches(t *testing.T) {
+func TestDotNetDiscoverSourceFilesSkipsObjDir(t *testing.T) {
 	repo := t.TempDir()
 	objDir := filepath.Join(repo, "obj")
 	if err := os.Mkdir(objDir, 0o755); err != nil {
 		t.Fatalf(dotNetMkdirObjDirErrFmt, err)
 	}
-	objEntry := mustReadDirEntry(t, repo, "obj")
-
 	discovery := sourceDiscovery{}
-	discoverer := newScanInputDiscoverer(repo, &discovery)
-	if err := discoverer.walk(objDir, objEntry, nil); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected scan input discoverer to skip obj dir, got %v", err)
+	if err := discoverSourceFiles(context.Background(), repo, &discovery, nil); err != nil {
+		t.Fatalf("discover source files: %v", err)
 	}
+	if discovery.DiscoveredSourceFiles != 0 {
+		t.Fatalf("expected obj directory to be skipped, got %#v", discovery)
+	}
+}
 
-	manifestPath := filepath.Join(repo, "App.csproj")
-	testutil.MustWriteFile(t, manifestPath, `<Project><ItemGroup><PackageReference Include="Vendor.Pkg" /></ItemGroup></Project>`)
-	manifestEntry := mustReadDirEntry(t, repo, "App.csproj")
-	if err := discoverer.walk(manifestPath, manifestEntry, nil); err != nil {
-		t.Fatalf("walk manifest: %v", err)
-	}
-	if _, ok := discoverer.dependencySet["vendor.pkg"]; !ok {
-		t.Fatalf("expected manifest dependency, got %#v", discoverer.dependencySet)
-	}
+func TestDotNetDiscoverSourceFilesHonorsCancellationAndCap(t *testing.T) {
+	t.Run("canceled", func(t *testing.T) {
+		discovery := sourceDiscovery{}
+		if err := discoverSourceFiles(testutil.CanceledContext(), t.TempDir(), &discovery, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled source discovery, got %v", err)
+		}
+	})
 
-	badManifestPath := filepath.Join(repo, "Bad.csproj")
-	testutil.MustWriteFile(t, badManifestPath, `<Project />`)
-	badManifestEntry := mustReadDirEntry(t, repo, "Bad.csproj")
-	if err := os.Remove(badManifestPath); err != nil {
-		t.Fatalf("remove bad manifest: %v", err)
-	}
-	if err := discoverer.walk(badManifestPath, badManifestEntry, nil); err == nil {
-		t.Fatalf("expected removed manifest to fail scan input discovery")
-	}
+	t.Run("missing root", func(t *testing.T) {
+		discovery := sourceDiscovery{}
+		missing := filepath.Join(t.TempDir(), "missing")
+		if err := discoverSourceFiles(context.Background(), missing, &discovery, nil); err == nil {
+			t.Fatal("expected missing source root to fail discovery")
+		}
+	})
 
-	discoverer.sourceScanLimited = true
-	sourcePath := filepath.Join(repo, dotNetProgramSource)
-	testutil.MustWriteFile(t, sourcePath, "using Vendor.Pkg;\n")
-	sourceEntry := mustReadDirEntry(t, repo, dotNetProgramSource)
-	if err := discoverer.walk(sourcePath, sourceEntry, nil); err != nil {
-		t.Fatalf("walk source while limited: %v", err)
-	}
-	if len(discovery.Files) != 0 {
-		t.Fatalf("expected limited source scan to skip new source files, got %#v", discovery.Files)
-	}
+	t.Run("cap", func(t *testing.T) {
+		repo := t.TempDir()
+		for index := 0; index < maxScanFiles+1; index++ {
+			testutil.MustWriteFile(t, filepath.Join(repo, "src", "File"+strconv.Itoa(index)+".cs"), "using Acme.Foo;\n")
+		}
+
+		discovery := sourceDiscovery{}
+		processed := 0
+		if err := discoverSourceFiles(context.Background(), repo, &discovery, func(source sourceDocument) {
+			processed++
+		}); err != nil {
+			t.Fatalf("discover capped source files: %v", err)
+		}
+		if !discovery.SkippedFileLimit || discovery.DiscoveredSourceFiles != maxScanFiles || processed != maxScanFiles {
+			t.Fatalf("unexpected capped source discovery: %#v, processed=%d", discovery, processed)
+		}
+	})
 }
 
 func TestDotNetAddMappingMetaAccumulates(t *testing.T) {
@@ -376,24 +385,23 @@ func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
 		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("discover scan inputs: %v", err)
+		t.Fatalf("scan repo: %v", err)
 	}
-	if !slices.Equal(inputs.DeclaredDependencies, []string{"newtonsoft.json"}) {
-		t.Fatalf("unexpected declared dependencies: %#v", inputs.DeclaredDependencies)
+	if !slices.Equal(scan.DeclaredDependencies, []string{"newtonsoft.json"}) {
+		t.Fatalf("unexpected declared dependencies: %#v", scan.DeclaredDependencies)
 	}
-	if len(inputs.SourceFiles) != 1 || inputs.SourceFiles[0].RelativePath != dotNetProgramSource {
-		t.Fatalf("unexpected discovered source files: %#v", inputs.SourceFiles)
+	if len(scan.Files) != 1 || scan.Files[0].Path != dotNetProgramSource {
+		t.Fatalf("unexpected scanned source files: %#v", scan.Files)
 	}
+	if len(scan.Files[0].Imports) != 1 || scan.Files[0].Imports[0].Dependency != "newtonsoft.json" {
+		t.Fatalf("unexpected parsed imports: %#v", scan.Files[0].Imports)
+	}
+}
 
-	parsed := parseSourceDocument(inputs.SourceFiles[0], newDependencyMapper(inputs.DeclaredDependencies))
-	if len(parsed.File.Imports) != 1 || parsed.File.Imports[0].Dependency != "newtonsoft.json" {
-		t.Fatalf("unexpected parsed imports: %#v", parsed.File.Imports)
-	}
-	if parsed.File.Path != dotNetProgramSource {
-		t.Fatalf("unexpected parsed file path: %#v", parsed.File)
-	}
+func TestDotNetDiscoverScanInputsDoesNotRetainSourceDocuments(t *testing.T) {
+	assertDotNetScanDoesNotRetainSourceDocuments(t)
 }
 
 func TestDotNetDiscoverScanInputsPreservesMixedRepoOutputs(t *testing.T) {
@@ -421,27 +429,27 @@ func TestDotNetDiscoverScanInputsPreservesMixedRepoOutputs(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Lib", "Module.fs"), "open Acme.Logging\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Generated.g.cs"), "using Generated;\n")
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("discover scan inputs: %v", err)
+		t.Fatalf("scan repo: %v", err)
 	}
 
-	if !slices.Equal(inputs.DeclaredDependencies, []string{"acme.logging", "fsharp.core", "newtonsoft.json"}) {
-		t.Fatalf("unexpected declared dependencies: %#v", inputs.DeclaredDependencies)
+	if !slices.Equal(scan.DeclaredDependencies, []string{"acme.logging", "fsharp.core", "newtonsoft.json"}) {
+		t.Fatalf("unexpected declared dependencies: %#v", scan.DeclaredDependencies)
 	}
-	if inputs.SkippedGenerated != 1 {
-		t.Fatalf("expected one generated source file skip, got %d", inputs.SkippedGenerated)
+	if scan.SkippedGeneratedFiles != 1 {
+		t.Fatalf("expected one generated source file skip, got %d", scan.SkippedGeneratedFiles)
 	}
-	if !slices.Contains(inputs.Warnings, "skipped 1 generated source file(s)") {
-		t.Fatalf("expected generated source warning, got %#v", inputs.Warnings)
+	if !slices.Contains(scan.Warnings, "skipped 1 generated source file(s)") {
+		t.Fatalf("expected generated source warning, got %#v", scan.Warnings)
 	}
-	if len(inputs.SourceFiles) != 2 {
-		t.Fatalf("expected two source files, got %#v", inputs.SourceFiles)
+	if len(scan.Files) != 2 {
+		t.Fatalf("expected two source files, got %#v", scan.Files)
 	}
 
-	paths := make([]string, 0, len(inputs.SourceFiles))
-	for _, file := range inputs.SourceFiles {
-		paths = append(paths, file.RelativePath)
+	paths := make([]string, 0, len(scan.Files))
+	for _, file := range scan.Files {
+		paths = append(paths, file.Path)
 	}
 	if !slices.Contains(paths, filepath.Join("src", "App", "Program.cs")) {
 		t.Fatalf("expected Program.cs source document, got %#v", paths)
@@ -463,23 +471,23 @@ func TestDotNetDiscoverScanInputsKeepsManifestDiscoveryAfterSourceCap(t *testing
   </ItemGroup>
 </Project>`)
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	scan, err := scanRepo(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("discover scan inputs with cap: %v", err)
+		t.Fatalf("scan repo with cap: %v", err)
 	}
 
-	if !inputs.SkippedFileLimit {
+	if !scan.SkippedFileLimit {
 		t.Fatalf("expected source scan cap to be triggered")
 	}
-	if len(inputs.SourceFiles) != maxScanFiles {
-		t.Fatalf("expected capped source file count %d, got %d", maxScanFiles, len(inputs.SourceFiles))
+	if len(scan.Files) != maxScanFiles {
+		t.Fatalf("expected capped source file count %d, got %d", maxScanFiles, len(scan.Files))
 	}
-	if !slices.Contains(inputs.DeclaredDependencies, "late.manifest") {
-		t.Fatalf("expected dependencies discovered after source cap, got %#v", inputs.DeclaredDependencies)
+	if !slices.Contains(scan.DeclaredDependencies, "late.manifest") {
+		t.Fatalf("expected dependencies discovered after source cap, got %#v", scan.DeclaredDependencies)
 	}
 	expectedWarning := fmt.Sprintf("source scan capped at %d files", maxScanFiles)
-	if !slices.Contains(inputs.Warnings, expectedWarning) {
-		t.Fatalf("expected source cap warning, got %#v", inputs.Warnings)
+	if !slices.Contains(scan.Warnings, expectedWarning) {
+		t.Fatalf("expected source cap warning, got %#v", scan.Warnings)
 	}
 }
 

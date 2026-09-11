@@ -26,9 +26,11 @@ Omitting `--enable-feature stave-tui-preview`, or disabling the feature,
 selects the existing Summary implementation. No report, baseline, or action
 state is shared with a previous preview process.
 
-The preview uses `github.com/ben-ranford/stave v1.0.0-rc.1`. This proving client
+The preview uses `github.com/ben-ranford/stave v1.0.0-rc.2`. This proving client
 is deliberately Lopper-owned; it does not require a local Stave checkout or a
-module replacement.
+module replacement. The root module is published through the public Go proxy
+and checksum database. Lopper retains its terminal bridge; Stave's nested
+adapter modules are not part of this dependency.
 
 ## Terminal interaction
 
@@ -118,14 +120,16 @@ New UI changes must add evidence at the layer they affect:
 `make stave-ui-check` runs the focused reducer, semantic, golden, parity, and
 PTY/E2E suites. It is part of `make smoke`; repository CI additionally keeps
 the existing full `test`, race, leak, 98% total/package coverage, lint, and
-static-analysis gates. The completed spike passes those repository-wide gates:
-98.2% total coverage, every measured package at or above 98%, and 98.0% for
-`internal/ui`. Focused tests are intentionally bounded and do not replace the
-repository-wide gates.
+static-analysis gates. Coverage is checked against the repository's current
+total and per-package thresholds on each change. Focused tests are
+intentionally bounded and do not replace the repository-wide gates.
 
-The preview is still a proving spike. Automated evidence now covers async
-action lifecycle, value isolation, strict result schemas, Diagnostic input
-rejection, responsive line/full-screen rendering, and in-flight process
-signals. The remaining explicit gaps are a full dirty-worktree codemod through
-the PTY UI (U06/U14) and a manual screen-reader/emulator audit (U18). Graduation
-requires either closing those gaps or recording an explicit release decision.
+The preview is still a proving client. Automated evidence covers async action
+lifecycle, value isolation, strict result schemas, Diagnostic input rejection,
+responsive line/full-screen rendering, and in-flight process signals.
+[Issue #1492](https://github.com/ben-ranford/lopper/issues/1492) tracks the separate
+graduation backlog: full report/detail parity, consequential codemod interruption
+through an external PTY, manual screen-reader/emulator review, and comparative
+visual/usability evidence. Merging this preview does not close that backlog or
+graduate the feature. Immutable published Lopper parity and rollback evidence
+remain a separate release requirement.

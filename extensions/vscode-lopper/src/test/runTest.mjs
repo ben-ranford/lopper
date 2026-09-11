@@ -3,10 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runTests } from "@vscode/test-electron";
+import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
+
+import { isBackgroundMacOSTestRun } from "./macOSBackgroundLauncherSupport.mjs";
 
 async function main() {
-  const vscodeVersion = process.env.LOPPER_VSCODE_TEST_VERSION ?? "1.90.0";
+  const vscodeVersion = process.env.LOPPER_VSCODE_TEST_VERSION ?? "1.101.0";
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const extensionDevelopmentPath = path.resolve(currentDir, "..", "..");
   const extensionTestsPath = path.resolve(extensionDevelopmentPath, "out", "test", "suite", "index");
@@ -19,6 +21,10 @@ async function main() {
   const fixtureBinaryCopyPath = path.join(tempRoot, "lopper-smoke-binary.mjs");
   const userDataDir = path.join(tempRoot, "userdata");
   const extensionsDir = path.join(tempRoot, "extensions");
+  const resultPath = path.join(tempRoot, "test-result.json");
+  const stdoutPath = path.join(tempRoot, "vscode.stdout.log");
+  const stderrPath = path.join(tempRoot, "vscode.stderr.log");
+  const backgroundLauncherPath = path.join(currentDir, "macOSBackgroundLauncher.mjs");
 
   try {
     await cp(workspaceTemplatePath, workspacePath, { recursive: true });
@@ -59,24 +65,43 @@ async function main() {
     await writeFile(path.join(outsideLocationPath, "escape.ts"), 'export const escaped = "outside";\n', "utf8");
     await symlink(outsideLocationPath, path.join(workspacePath, "linked-outside"));
 
-    await runTests({
+    const extensionTestsEnv = {
+      ...process.env,
+      LOPPER_BINARY_PATH: process.env.LOPPER_BINARY_PATH ?? fixtureBinaryCopyPath,
+    };
+    const useBackgroundLauncher = isBackgroundMacOSTestRun(process.env);
+    const testOptions = {
       version: vscodeVersion,
       extensionDevelopmentPath,
       extensionTestsPath,
       launchArgs: [
         workspacePath,
         workspacePathTwo,
+        "--new-window",
         "--disable-extensions",
         "--user-data-dir",
         userDataDir,
         "--extensions-dir",
         extensionsDir,
       ],
-      extensionTestsEnv: {
-        ...process.env,
-        LOPPER_BINARY_PATH: process.env.LOPPER_BINARY_PATH ?? fixtureBinaryCopyPath,
-      },
-    });
+      extensionTestsEnv,
+    };
+
+    if (useBackgroundLauncher) {
+      const vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
+      await chmod(backgroundLauncherPath, 0o755);
+      testOptions.vscodeExecutablePath = backgroundLauncherPath;
+      testOptions.extensionTestsEnv = {
+        ...extensionTestsEnv,
+        LOPPER_VSCODE_TEST_EXECUTABLE: vscodeExecutablePath,
+        LOPPER_VSCODE_TEST_RESULT_PATH: resultPath,
+        LOPPER_VSCODE_TEST_USER_DATA_DIR: userDataDir,
+        LOPPER_VSCODE_TEST_STDOUT_PATH: stdoutPath,
+        LOPPER_VSCODE_TEST_STDERR_PATH: stderrPath,
+      };
+    }
+
+    await runTests(testOptions);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -6,9 +6,11 @@ Thanks for contributing to Lopper.
 
 Requirements:
 
-- Go `1.26.x`
+- Go `1.27.1` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
 - `zig` (required for cross-CGO release builds)
 - `shellcheck` (required for `make ci` and git hooks)
+- Ruby (required for automation integrity YAML/JSON checks in `make ci`)
+- Node.js 22.12 or newer (required for automation integrity and VS Code extension tests)
 - `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
 - `gostyle` (optional for faster local runs; `make lint` auto-runs a pinned version)
 - `actionlint` (optional for faster local runs; `make actionlint` auto-runs a pinned version)
@@ -22,8 +24,10 @@ make ci
 make demos-check
 ```
 
-`make ci` includes goroutine leak detection and the curated memory benchmark delta gate against `origin/main`.
-It also blocks newly introduced inline suppression markers in source files, so fix the underlying finding instead of adding `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, or coverage-bypass comments.
+`make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
+The automation integrity gate requires Linux or macOS tooling with Ruby, Node.js, Python 3, and POSIX shell syntax support; Docker-based `act` runs should target Linux-backed jobs because hosted macOS runners are not available locally.
+It also tracks newly introduced inline suppression markers in source files, so fix the underlying finding instead of adding `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, or coverage-bypass comments.
+If an inline suppression is unavoidable, the same added line must include `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`, and CI must be able to create or update the linked GitHub tracking issue.
 If a change intentionally increases the tracked memory benchmarks beyond the configured thresholds, note that in the PR and ask a maintainer to apply the `memory-approved` label.
 
 ## VS Code Extension
@@ -117,6 +121,8 @@ Good scopes include `release`, `ci`, `vscode`, `js`, `jvm`, `go`, `report`, `ui`
 PR descriptions are also validated before merge.
 Keep every heading from `.github/PULL_REQUEST_TEMPLATE.md`, fill every risk field with a concrete value such as `None` or `N/A`, and check every checklist item once it has been considered.
 Generated release-please PRs keep their release-generated changelog body, but their title still has to use `chore(main): release x.y.z`.
+
+Release preparation automatically documents changes to the minimum Go version in `go.mod` and the VS Code engine requirement against the previous stable tag, including changes introduced by `chore` commits.
 
 Before merging a generated release PR, audit every shipped component against the previous stable tag rather than relying only on the generated root changelog. For the VS Code extension:
 

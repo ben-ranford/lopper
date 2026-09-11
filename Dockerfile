@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:1.26
-FROM golang:1.26-alpine AS build
+# syntax=docker/dockerfile:1.27
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 
 ARG VERSION=dev

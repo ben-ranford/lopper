@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,25 @@ func TestScopeCopyFileAndRelativePathGuards(t *testing.T) {
 	}
 	if copyFile(repo, blockedRoot, filepath.Join("src", "keep.js")) == nil {
 		t.Fatalf("expected blocked scoped root to fail copy")
+	}
+
+	if err := copyFileWithContext(t.Context(), repo, t.TempDir(), filepath.Join("src", "keep.js"), 1); err == nil {
+		t.Fatalf("expected source size guard to reject copy above expected size")
+	}
+}
+
+func TestScopeContextReaderPassesThroughSourceReads(t *testing.T) {
+	reader := scopeContextReader{
+		check:  func() error { return nil },
+		source: strings.NewReader("ok"),
+	}
+	buf := make([]byte, 2)
+	n, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("expected source read success, got %v", err)
+	}
+	if n != 2 || string(buf) != "ok" {
+		t.Fatalf("expected source bytes to pass through, n=%d buf=%q", n, buf)
 	}
 }
 

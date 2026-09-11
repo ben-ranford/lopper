@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestAnalysisCacheComputeInputDigestMatchesLegacyEncoding(t *testing.T) {
+func TestAnalysisCacheComputeInputDigestMatchesExpectedEncoding(t *testing.T) {
 	repo := t.TempDir()
 	mustWriteBenchmarkFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"cache-bench\"\n}\n")
 	mustWriteBenchmarkFile(t, filepath.Join(repo, "src", "b.ts"), "export const beta = 2;\n")
@@ -32,7 +32,11 @@ func TestAnalysisCacheComputeInputDigestMatchesLegacyEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect relevant files: %v", err)
 	}
-	want := legacyInputDigest(t, files, configPath)
+	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(repo, cacheAnalysisExclusions{})
+	if err != nil {
+		t.Fatalf("collect PHP short_open_tag traversal entries: %v", err)
+	}
+	want := expectedInputDigest(t, files, traversalEntries, configPath)
 	if got != want {
 		t.Fatalf("expected digest %q, got %q", want, got)
 	}
@@ -59,7 +63,7 @@ func BenchmarkCacheComputeInputDigest(b *testing.B) {
 	}
 }
 
-func legacyInputDigest(t testing.TB, files []cacheRelevantFile, configPath string) string {
+func expectedInputDigest(t testing.TB, files []cacheRelevantFile, traversalEntries []cacheTraversalEntry, configPath string) string {
 	t.Helper()
 
 	records := make([]string, 0, len(files)+1)
@@ -69,6 +73,9 @@ func legacyInputDigest(t testing.TB, files []cacheRelevantFile, configPath strin
 			t.Fatalf("hash file %s: %v", file.absolutePath, err)
 		}
 		records = append(records, file.relativePath+"\x00"+digest)
+	}
+	for _, entry := range traversalEntries {
+		records = append(records, "php-short-open-tag-traversal\x00"+entry.relativePath+"\x00"+entry.kind)
 	}
 	if strings.TrimSpace(configPath) != "" {
 		digest, err := hashFileOrMissing(strings.TrimSpace(configPath))

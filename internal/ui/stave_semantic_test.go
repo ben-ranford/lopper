@@ -19,15 +19,7 @@ func TestStaveSemanticTreeRolesLabelsAndActions(t *testing.T) {
 	if root.Role() != semantic.Role("application") || root.Name() != "Lopper" {
 		t.Fatalf("root semantics: role=%q name=%q", root.Role(), root.Name())
 	}
-	rootActions := map[string]bool{}
-	for _, a := range root.Actions() {
-		rootActions[string(a.ID)] = true
-	}
-	for _, want := range []string{staveActionQuit, staveActionRefresh, staveActionSaveBaseline, staveActionCompareBaseline} {
-		if !rootActions[want] {
-			t.Fatalf("root action %q missing", want)
-		}
-	}
+	assertStaveNodeActions(t, root, []string{staveActionQuit, staveActionRefresh, staveActionSaveBaseline, staveActionCompareBaseline})
 	var row, alert bool
 	for _, child := range root.Children() {
 		switch child.Role() {
@@ -36,21 +28,26 @@ func TestStaveSemanticTreeRolesLabelsAndActions(t *testing.T) {
 			if child.Name() != "alpha" || !strings.Contains(child.Description(), "go") {
 				t.Fatalf("row label/content drift: %q %q", child.Name(), child.Description())
 			}
-			ids := map[string]bool{}
-			for _, a := range child.Actions() {
-				ids[string(a.ID)] = true
-			}
-			for _, want := range []string{staveActionOpen, staveActionApplyCodemod} {
-				if !ids[want] {
-					t.Fatalf("row action %q missing", want)
-				}
-			}
+			assertStaveNodeActions(t, child, []string{staveActionOpen, staveActionApplyCodemod})
 		case semantic.Role("alert"):
 			alert = true
 		}
 	}
 	if !row || !alert {
 		t.Fatalf("expected row and alert roles: row=%t alert=%t", row, alert)
+	}
+}
+
+func assertStaveNodeActions(t *testing.T, node semantic.Node, expected []string) {
+	t.Helper()
+	ids := map[string]bool{}
+	for _, a := range node.Actions() {
+		ids[string(a.ID)] = true
+	}
+	for _, want := range expected {
+		if !ids[want] {
+			t.Fatalf("%s action %q missing", node.Role(), want)
+		}
 	}
 }
 

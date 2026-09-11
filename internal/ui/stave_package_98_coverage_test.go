@@ -56,11 +56,18 @@ func TestFinalSummaryDetailWriterError(t *testing.T) {
 }
 
 func TestStaveHelperBranches(t *testing.T) {
+	testStaveHelpAndFeedbackBranches(t)
+	testStaveTreeAndSelectionBranches(t)
+	testStavePagingHelperBranches()
+}
+
+func testStaveHelpAndFeedbackBranches(t *testing.T) {
+	t.Helper()
 	for _, width := range []int{20, 50, 90} {
 		if n, err := staveHelpNodes(width, width < 40); err != nil || len(n) == 0 {
 			t.Fatalf("help %d: %v", width, err)
 		}
-		if got := staveKeyHint(width); got == "" {
+		if staveKeyHint(width) == "" {
 			t.Fatal("empty key hint")
 		}
 	}
@@ -69,6 +76,10 @@ func TestStaveHelperBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func testStaveTreeAndSelectionBranches(t *testing.T) {
+	t.Helper()
 	if _, err := staveApplicationTree(nil, "summary"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +89,9 @@ func TestStaveHelperBranches(t *testing.T) {
 	if got, ok := staveSelectedDetail(summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "a"}}}, "go:a"); !ok || got.Name != "a" {
 		t.Fatal("detail lookup")
 	}
+}
+
+func testStavePagingHelperBranches() {
 	for _, tc := range [][3]int{{0, 0, 5}, {9, 2, 2}, {-1, 2, 1}} {
 		_ = clampStaveRow(tc[0], tc[1])
 	}

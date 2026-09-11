@@ -29,18 +29,37 @@ jobs:
             if (!expectedHeadRepository) {
               throw new Error('workflow_run did not provide a head repository');
             }
-            const matchesRun = (pull) =>
-              pull.state === 'open' &&
+            const matchesRunSource = (pull) =>
               pull.base.repo.full_name.toLowerCase() === expectedRepository &&
               pull.head.sha === run.head_sha &&
               pull.head.ref === run.head_branch &&
               pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository;
+            const matchesPublishableRun = (pull) =>
+              pull.state === 'open' && matchesRunSource(pull);
+            const isMergedPull = (pull) =>
+              pull.merged === true || pull.merged_at != null;
+            const matchesMergedRun = (pull) =>
+              pull.state === 'closed' &&
+              isMergedPull(pull) &&
+              matchesRunSource(pull);
+            const uniqueCandidateNumbers = (pulls) => [
+              ...new Set(pulls.map((candidate) => candidate.number)),
+            ];
+            const uniqueAssociatedCandidateNumbers = (associatedPulls) => {
+              const openCandidates = uniqueCandidateNumbers(
+                associatedPulls.filter((candidate) => matchesPublishableRun(candidate)),
+              );
+              if (openCandidates.length > 0) {
+                return openCandidates;
+              }
+              return uniqueCandidateNumbers(
+                associatedPulls.filter((candidate) => matchesMergedRun(candidate)),
+              );
+            };
 
             let candidateNumbers;
             if ((run.pull_requests ?? []).length > 0) {
-              candidateNumbers = [
-                ...new Set(run.pull_requests.map((candidate) => candidate.number)),
-              ];
+              candidateNumbers = uniqueCandidateNumbers(run.pull_requests);
             } else {
               const associatedPulls = await github.paginate(
                 github.rest.repos.listPullRequestsAssociatedWithCommit,
@@ -51,13 +70,7 @@ jobs:
                   per_page: 100,
                 },
               );
-              candidateNumbers = [
-                ...new Set(
-                  associatedPulls
-                    .filter(matchesRun)
-                    .map((candidate) => candidate.number),
-                ),
-              ];
+              candidateNumbers = uniqueAssociatedCandidateNumbers(associatedPulls);
             }
             if (
               candidateNumbers.length !== 1 ||
@@ -75,7 +88,13 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber,
             });
-            if (!matchesRun(pull)) {
+            if (matchesMergedRun(pull)) {
+              core.info(`Pull request #${prNumber} was already merged; skipping feature flag comments.`);
+              core.setOutput('skip-comments', 'true');
+              core.exportVariable('PR_NUMBER', String(prNumber));
+              return;
+            }
+            if (!matchesPublishableRun(pull)) {
               throw new Error('resolved pull request does not match the triggering workflow');
             }
 
@@ -139,6 +158,7 @@ jobs:
 
             core.setOutput('artifact-id', String(artifact.id));
             core.setOutput('artifact-size', String(artifact.size_in_bytes));
+            core.setOutput('skip-comments', 'false');
             core.exportVariable('PR_NUMBER', String(prNumber));
             core.exportVariable(
               'ENFORCEMENT_FAILED',
@@ -154,6 +174,7 @@ jobs:
             );
 
       - name: Download bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           artifact-ids: ${{ steps.resolve_pr.outputs.artifact-id }}
@@ -164,6 +185,7 @@ jobs:
           skip-decompress: "true"
 
       - name: Extract bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           ARCHIVE_DIR: ${{ runner.temp }}/feature-flag-comment-archive
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
@@ -243,6 +265,7 @@ jobs:
           PY
 
       - name: Validate bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
           PATH: /usr/bin:/bin
@@ -311,6 +334,7 @@ jobs:
           : "${payload_version:?missing comment payload version}"
 
       - name: Render inert comment bodies
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
           RENDERED_DIR: ${{ runner.temp }}/feature-flag-comment-bodies
@@ -400,6 +424,7 @@ jobs:
           PY
 
       - name: Sync feature flag enforcement comment on PR
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         continue-on-error: true
         env:
           FEATURE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/feature-flag-enforcement.md
@@ -422,6 +447,22 @@ jobs:
               '',
               'See the workflow logs for the failure details.',
             ].join('\n');
+            const ensurePullStillOpen = async () => {
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pull.state === 'open') {
+                return true;
+              }
+              if (pull.merged === true || pull.merged_at != null) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+              } else {
+                core.info(`Pull request #${prNumber} was not open before comment mutation; skipping.`);
+              }
+              return false;
+            };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -442,6 +483,9 @@ jobs:
               process.env.ENFORCEMENT_FAILED === 'true';
             if (!shouldComment) {
               for (const duplicate of existing) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -456,6 +500,9 @@ jobs:
                 ? fs.readFileSync(bodyPath, 'utf8').trim()
                 : fallbackBody;
             if (existing.length > 0) {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -463,6 +510,9 @@ jobs:
                 body,
               });
               for (const duplicate of existing.slice(1)) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -470,6 +520,9 @@ jobs:
                 });
               }
             } else {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -479,6 +532,7 @@ jobs:
             }
 
       - name: Sync release feature guidance comment on PR
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         continue-on-error: true
         env:
           RELEASE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/release-feature-flag-comment.md
@@ -501,6 +555,22 @@ jobs:
               '',
               'See the workflow logs for the failure details.',
             ].join('\n');
+            const ensurePullStillOpen = async () => {
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pull.state === 'open') {
+                return true;
+              }
+              if (pull.merged === true || pull.merged_at != null) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+              } else {
+                core.info(`Pull request #${prNumber} was not open before comment mutation; skipping.`);
+              }
+              return false;
+            };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -518,6 +588,9 @@ jobs:
 
             if (process.env.RELEASE_PR !== 'true') {
               for (const duplicate of existing) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -533,6 +606,9 @@ jobs:
                 : fallbackBody;
 
             if (existing.length > 0) {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -540,6 +616,9 @@ jobs:
                 body,
               });
               for (const duplicate of existing.slice(1)) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -547,6 +626,9 @@ jobs:
                 });
               }
             } else {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

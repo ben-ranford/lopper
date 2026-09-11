@@ -21,3 +21,11 @@ func LastModuleSegment(module string) string {
 	parts := strings.Split(module, ".")
 	return strings.TrimSpace(parts[len(parts)-1])
 }
+
+func NormalizeEscapedModuleSegments(module string) string {
+	parts := strings.Split(strings.TrimSpace(module), ".")
+	for index, part := range parts {
+		parts[index] = strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(part), "`"), "`")
+	}
+	return strings.Join(parts, ".")
+}

@@ -132,6 +132,71 @@ class Main {
 	requireWarningContains(t, reportData.Warnings, "gradle.lockfile not found")
 }
 
+func TestAdapterAnalyseDependencyNormalizesEscapedKotlinAndroidPackageLookup(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFiles(t, repo, map[string]string{
+		filepath.Join("app", "build.gradle.kts"): `
+plugins {
+  id("com.android.application")
+}
+
+dependencies {
+  implementation("com.example.when:widgets:1.0.0")
+}
+`,
+		filepath.Join("app", "src", "main", "AndroidManifest.xml"): testAppManifest,
+		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): `
+package app.consumer
+
+import com.example.` + "`when`" + `.Widget
+
+fun run() {
+  Widget()
+}
+`,
+	})
+
+	reportData := mustAnalyse(t, language.Request{RepoPath: repo, Dependency: "widgets"})
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %#v", reportData.Dependencies)
+	}
+	dependency := reportData.Dependencies[0]
+	if dependency.Name != "widgets" || dependency.UsedExportsCount == 0 {
+		t.Fatalf("expected escaped Kotlin Android package segment to resolve to declared dependency, got %#v", dependency)
+	}
+	if len(dependency.UsedImports) != 1 || dependency.UsedImports[0].Module != "com.example.`when`.Widget" {
+		t.Fatalf("expected report module to preserve source spelling, got %#v", dependency.UsedImports)
+	}
+}
+
+func TestAdapterTopNNormalizesEscapedKotlinAndroidFallbackDependency(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFiles(t, repo, map[string]string{
+		filepath.Join("app", "src", "main", "AndroidManifest.xml"): testAppManifest,
+		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): `
+package app.consumer
+
+import custom.` + "`when`" + `.Widget
+
+fun run() {
+  Widget()
+}
+`,
+	})
+
+	reportData := mustAnalyse(t, language.Request{RepoPath: repo, TopN: 5})
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one fallback dependency report, got %#v", reportData.Dependencies)
+	}
+	dependency := reportData.Dependencies[0]
+	if dependency.Name != "custom.when" || dependency.UsedExportsCount == 0 {
+		t.Fatalf("expected normalized fallback dependency usage, got %#v", dependency)
+	}
+	if len(dependency.UsedImports) != 1 || dependency.UsedImports[0].Module != "custom.`when`.Widget" {
+		t.Fatalf("expected fallback import report to preserve source spelling, got %#v", dependency.UsedImports)
+	}
+}
+
 func TestAdapterAnalyseTopNIncludesDeclaredDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoFiles(t, repo, map[string]string{

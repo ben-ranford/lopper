@@ -81,7 +81,7 @@ func TestStaveTerminalSessionSnapshotUsesInjectedReader(t *testing.T) {
 
 func TestStaveTerminalDispatchRejectsMissingSession(t *testing.T) {
 	bridge := &staveTerminal{}
-	if cmd := bridge.beginCommand("refresh"); cmd == nil {
+	if bridge.beginCommand("refresh") == nil {
 		t.Fatal("command without session returned nil")
 	}
 }

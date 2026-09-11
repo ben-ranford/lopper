@@ -2,6 +2,8 @@ package analysis
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
@@ -10,14 +12,17 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+// ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
+var ErrIncompleteCoverage = errors.New("complete dependency coverage is required")
+
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
+		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache, trueRepoPathOverride...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -38,13 +43,14 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
 	rootSeen := make(map[string]struct{})
 	roots, rootWarnings := scopedCandidateRootsForRequest(req, candidate.Detection.Roots, repoPath)
 	warnings = append(warnings, rootWarnings...)
+	isolationRoots := normalizedIsolationRoots(repoPath, roots, req.ScopeMode)
 	for _, root := range roots {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
 		if normalizedRoot == "" {
@@ -56,16 +62,25 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), normalizedRoot, isolationRoots, trueRepoPathOverride...)
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			adjustRelativeCoverageGaps(repoPath, normalizedRoot, cachedReport.CoverageGaps)
+			if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, cachedReport); err != nil {
+				return nil, nil, nil, err
+			}
 			reports = append(reports, cachedReport)
 			continue
 		}
 
+		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
+			ScopeMode:                         req.ScopeMode,
+			IsolatedProjectRoots:              isolationRoots,
+			ExcludedPaths:                     exclusions.directories,
+			ExcludedFiles:                     exclusions.files,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
 			SuggestOnly:                       req.SuggestOnly,
@@ -76,6 +91,9 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
 		if err != nil {
+			if shouldFailAdapterError(req) {
+				return nil, nil, nil, err
+			}
 			if isMultiLanguage(req.Language) {
 				warnings = append(warnings, err.Error())
 				continue
@@ -85,9 +103,69 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		adjustRelativeCoverageGaps(repoPath, normalizedRoot, current.CoverageGaps)
+		if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, current); err != nil {
+			return nil, nil, nil, err
+		}
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
+}
+
+func shouldFailAdapterError(req Request) bool {
+	return req.RequireCompleteCoverage
+}
+
+func incompleteCoverageReportError(req Request, adapterID, root string, reportData report.Report) error {
+	if !req.RequireCompleteCoverage {
+		return nil
+	}
+	if !req.DeferCoverageGapEnforcement {
+		if paths := coverageGapPaths(reportData.CoverageGaps); len(paths) > 0 {
+			return fmt.Errorf("%w: adapter %s at %s reported coverage gaps: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(paths, ", "))
+		}
+	}
+	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
+	if len(dependencies) == 0 {
+		if reportData.UsageIncomplete {
+			return fmt.Errorf("%w: adapter %s at %s reported incomplete usage coverage", ErrIncompleteCoverage, adapterID, root)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func coverageGapPaths(gaps []report.CoverageGap) []string {
+	paths := make([]string, 0, len(gaps))
+	for _, gap := range gaps {
+		path := strings.TrimSpace(gap.Path)
+		if path == "" {
+			path = strings.TrimSpace(gap.Code)
+		}
+		if path == "" {
+			path = "<unknown>"
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
+	incomplete := make([]string, 0)
+	for _, dependency := range dependencies {
+		if !dependency.UsageIncomplete {
+			continue
+		}
+		name := strings.TrimSpace(dependency.Name)
+		if name == "" {
+			name = "<unknown>"
+		}
+		if languageID := strings.TrimSpace(dependency.Language); languageID != "" {
+			name = languageID + ":" + name
+		}
+		incomplete = append(incomplete, name)
+	}
+	return incomplete
 }
 
 func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
@@ -98,8 +176,12 @@ func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
 	return false
 }
 
-func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string) (cacheEntryDescriptor, report.Report, bool) {
-	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot)
+func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
+	return prepareAndLoadCachedReportWithIsolationRoots(req, cache, adapterID, normalizedRoot, nil, trueRepoPathOverride...)
+}
+
+func prepareAndLoadCachedReportWithIsolationRoots(req Request, cache *analysisCache, adapterID, normalizedRoot string, isolationRoots []string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntryWithIsolationRoots(req, adapterID, normalizedRoot, isolationRoots, trueRepoPathOverride...)
 	if err != nil {
 		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
 		return cacheEntryDescriptor{}, report.Report{}, false
@@ -144,6 +226,25 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 	}
 }
 
+func adjustRelativeCoverageGaps(repoPath string, analyzedRoot string, gaps []report.CoverageGap) {
+	prefix, err := filepath.Rel(repoPath, analyzedRoot)
+	if err != nil || prefix == "." || prefix == "" {
+		return
+	}
+	normalizedPrefix := normalizeCoverageGapLocationPath(prefix)
+	for i := range gaps {
+		if gaps[i].Path == "" {
+			continue
+		}
+		normalizedPath := normalizeCoverageGapLocationPath(gaps[i].Path)
+		if isAbsoluteCoverageGapLocationPath(gaps[i].Path) {
+			gaps[i].Path = normalizedPath
+			continue
+		}
+		gaps[i].Path = path.Clean(path.Join(normalizedPrefix, normalizedPath))
+	}
+}
+
 func adjustImportLocations(prefix string, imports []report.ImportUse) {
 	normalizedPrefix := normalizeLocationPath(prefix)
 	for j := range imports {
@@ -163,6 +264,14 @@ func normalizeLocationPath(value string) string {
 	return path.Clean(strings.ReplaceAll(value, "\\", "/"))
 }
 
+func normalizeCoverageGapLocationPath(value string) string {
+	return filepath.ToSlash(value)
+}
+
+func isAbsoluteCoverageGapLocationPath(value string) bool {
+	return value != "" && filepath.IsAbs(value)
+}
+
 func isAbsoluteLocationPath(value string) bool {
 	if value == "" {
 		return false
@@ -175,4 +284,18 @@ func isAbsoluteLocationPath(value string) bool {
 		return (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
 	}
 	return false
+}
+
+func normalizedIsolationRoots(repoPath string, roots []string, scopeMode string) []string {
+	if normalizeScopeMode(scopeMode) == ScopeModeRepo {
+		return nil
+	}
+	isolated := make([]string, 0, len(roots))
+	for _, root := range roots {
+		normalized := normalizeCandidateRoot(repoPath, root)
+		if normalized != "" {
+			isolated = append(isolated, normalized)
+		}
+	}
+	return uniqueSorted(isolated)
 }

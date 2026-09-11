@@ -180,6 +180,67 @@ void main() {
 	}
 }
 
+func TestDartAdapterDoesNotCountMultilineDirectiveDeclarationsAsUsage(t *testing.T) {
+	testCases := map[string]string{
+		"alias": `import 'package:http/http.dart'
+    as clientLib;
+
+void main() {}
+`,
+		"show": `import 'package:http/http.dart'
+    show Client;
+
+void main() {}
+`,
+		"alias split after as": `import 'package:http/http.dart' deferred as
+    http;
+
+void main() {}
+`,
+		"show token in import URI": `import 'package:http/show/client.dart'
+    show client;
+
+void main() {}
+`,
+		"show entry after continuation": `import 'package:http/http.dart'
+    show Client,
+        Request;
+
+void main() {}
+`,
+		"show list stops at hidden symbols": `import 'package:http/http.dart'
+    show Client
+    hide Request;
+
+void main() {}
+`,
+		"alias before continuation comment": `import 'package:http/http.dart' as http
+    show Client; // http
+
+void main() {}
+`,
+	}
+
+	for name, source := range testCases {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
+			writeFile(t, filepath.Join(repo, "lib", mainDartFileName), source)
+
+			depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "http"})
+			if err != nil {
+				t.Fatalf("analyse multiline %s directive: %v", name, err)
+			}
+			if len(depReport.Dependencies) != 1 {
+				t.Fatalf(expectedOneDependencyReport, len(depReport.Dependencies))
+			}
+			if got := depReport.Dependencies[0].UsedExportsCount; got != 0 {
+				t.Fatalf("expected multiline %s declaration-only import usage to be zero, got %d", name, got)
+			}
+		})
+	}
+}
+
 func TestDartAdapterUndeclaredImportRisk(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)

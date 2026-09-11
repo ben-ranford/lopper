@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 const (
@@ -21,7 +23,16 @@ const (
 	dashboardRepoCacheEnv              = "LOPPER_DASHBOARD_REPO_CACHE"
 	dashboardRepoCacheHashLength       = 16
 	dashboardGitShallowDepthArg        = "--depth=1"
+	dashboardGitCommandWaitDelay       = time.Second
 )
+
+// dashboardRepoMaterializeTimeout bounds every git invocation for a single
+// repoUrl's clone/fetch/checkout/reset/clean sequence. The CLI supplies
+// context.Background() with no deadline, and materialization is sequential,
+// so without this an unresponsive remote would block the entire dashboard
+// run indefinitely instead of failing just that one repo. A var (not a
+// const) so tests can shrink it instead of waiting out a real deadline.
+var dashboardRepoMaterializeTimeout = 5 * time.Minute
 
 type dashboardRepoURLSpec struct {
 	normalized string
@@ -113,6 +124,9 @@ func dashboardRemoteCacheRoot() (string, error) {
 }
 
 func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL string, revision dashboard.RepoRevision) (dashboardMaterializedRepo, error) {
+	ctx, cancel := context.WithTimeout(ctx, dashboardRepoMaterializeTimeout)
+	defer cancel()
+
 	spec, err := parseDashboardRepoURL(repoURL)
 	if err != nil {
 		return dashboardMaterializedRepo{}, err
@@ -134,6 +148,11 @@ func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL str
 		resolvedCommit, err := m.refreshCheckout(ctx, checkoutPath, spec, normalizedRevision)
 		materialized.ResolvedCommit = resolvedCommit
 		if err != nil {
+			if ctx.Err() != nil {
+				if cleanupErr := dashboardRemoveAllFn(checkoutPath); cleanupErr != nil {
+					return materialized, fmt.Errorf("%w; cleanup failed: %w", err, cleanupErr)
+				}
+			}
 			return materialized, err
 		}
 		return materialized, nil
@@ -234,13 +253,32 @@ func (m *dashboardRepoMaterializer) runGit(ctx context.Context, args ...string) 
 		return nil, err
 	}
 	command.Env = append(gitexec.SanitizedEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+	runtime.ConfigureCommandCancellation(command)
+	// CommandContext stops git when the materialization deadline expires, but a
+	// transport helper can retain the stderr pipe after git exits. Bound that
+	// post-cancellation wait so one unresponsive remote cannot hold the whole
+	// dashboard run beyond its materialization deadline.
+	command.WaitDelay = dashboardGitCommandWaitDelay
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
-	output, err := command.Output()
+	cleanup, err := runtime.StartCommand(command)
 	if err != nil {
+		return nil, err
+	}
+	err = command.Wait()
+	cleanupErr := cleanup()
+	if err != nil {
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w: %s; cleanup failed: %w", err, strings.TrimSpace(stderr.String()), cleanupErr)
+		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return output, nil
+	if cleanupErr != nil {
+		return nil, fmt.Errorf("cleanup git command: %w", cleanupErr)
+	}
+	return stdout.Bytes(), nil
 }
 
 func gitConfigArgsForURL(repoURL string) []string {

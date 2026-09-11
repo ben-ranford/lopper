@@ -1,6 +1,7 @@
 name: ci
 
 on:
+  workflow_dispatch:
   pull_request:
     types:
       - opened
@@ -11,32 +12,18 @@ on:
       - labeled
       - unlabeled
 
+# PR metadata changes affect approval gates, so keep their triggers while
+# replacing superseded verification runs. Manual dispatches remain independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
-  extension-changes:
+  verify-checks:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-    outputs:
-      vscode_extension: ${{ steps.filter.outputs.vscode_extension }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Detect VS Code extension changes
-        id: filter
-        uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
-        with:
-          filters: |
-            vscode_extension:
-              - 'extensions/vscode-lopper/**'
-
-  verify:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+      issues: read
     outputs:
       pr_report_artifact_id: ${{ steps.upload_pr_report_inputs.outputs.artifact-id }}
     steps:
@@ -44,6 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Go
@@ -51,6 +39,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
 
       - name: Setup Go (act)
         if: ${{ env.ACT }}
@@ -63,13 +55,33 @@ jobs:
             apt-get update
             apt-get install -y shellcheck
           fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then
+            apt-get update
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /usr/share/keyrings
+            curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
+          fi
           go version
 
       - name: Install shellcheck
         if: ${{ !env.ACT }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
 
       - name: Resolve gosec version
         id: gosec_version
@@ -89,10 +101,14 @@ jobs:
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
-          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+          {
+            printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"
+            printf 'BASE_REF=%s\n' "${base_ref}"
+            printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"
+          } >> "$GITHUB_ENV"
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -108,26 +124,82 @@ jobs:
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
-          if [ -n "${base_sha}" ]; then
-            git fetch --no-tags --depth=1 origin "${base_sha}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
           fi
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
+          checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+          current_head_sha="$(git rev-parse --verify -q HEAD 2>/dev/null || true)"
+          # A two-parent HEAD is only trustworthy as GitHub's synthetic PR
+          # merge checkout when HEAD^2 matches the PR's real head SHA and
+          # HEAD itself does not -- an ordinary merge commit that happens to
+          # live on the PR branch (e.g. a "merge main into feature" commit)
+          # can also satisfy a bare ancestor check on HEAD^1, silently
+          # narrowing the memory-benchmark comparison to just that commit's
+          # own delta instead of the whole PR.
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && [ -n "${PR_HEAD_SHA:-}" ] && [ "${current_head_sha}" != "${PR_HEAD_SHA}" ] && [ "${checkout_head_sha}" = "${PR_HEAD_SHA}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+            base_sha="${checkout_base_sha}"
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
+          SUPPRESSION_TRACKING_OUTPUT: .artifacts/inline-suppressions.json
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci
+            PATH="$(go env GOPATH)/bin:$PATH" make ci-checks
           else
-            make ci
+            make ci-checks
           fi
 
       - name: Prove regression tests for fix PRs
@@ -159,9 +231,9 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_ref="${BASE_REF:-main}"
+          base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
           mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
@@ -243,6 +315,7 @@ jobs:
             coverage-package-failures.txt \
             coverage-status.txt \
             coverage-total.txt \
+            inline-suppressions.json \
             lopper-pr-comment.md \
             memory-bench-status.txt \
             memory-bench-summary.md
@@ -252,6 +325,9 @@ jobs:
               limit_bytes=1048576
               case "${report}" in
                 coverage-package-failures.txt)
+                  limit_bytes=131072
+                  ;;
+                inline-suppressions.json)
                   limit_bytes=131072
                   ;;
                 coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
@@ -267,7 +343,16 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && always() && !env.ACT }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr-report-inputs
+          # Named with this run's own PR number -- which GitHub sets from
+          # the pull_request event payload, not from anything this
+          # PR-controlled workflow file or its code can forge -- so the
+          # trusted suppression-verify workflow can select the artifact
+          # that genuinely belongs to a specific PR even when its head SHA
+          # is shared with another open PR (same branch, different base;
+          # or, for forks, the same fork branch/commit reused across PRs
+          # with different bases, where GitHub does not otherwise expose
+          # which PR a run belongs to).
+          name: pr-report-inputs-${{ github.event.pull_request.number }}
           path: ${{ runner.temp }}/pr-report-inputs
           if-no-files-found: error
 
@@ -329,6 +414,7 @@ jobs:
             coverage-package-failures.txt
             coverage-status.txt
             coverage-total.txt
+            inline-suppressions.json
             lopper-base-outcome.txt
             lopper-delta-outcome.txt
             lopper-pr-comment.md
@@ -361,6 +447,20 @@ jobs:
               echo "PR report input exceeds the 1 MiB publication limit: ${name}" >&2
               exit 1
             fi
+            case "${name}" in
+              coverage-package-failures.txt|inline-suppressions.json)
+                if [ "$(stat --format=%s "${path}")" -gt 131072 ]; then
+                  echo "PR report input exceeds the 128 KiB publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+              coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
+                if [ "$(stat --format=%s "${path}")" -gt 64 ]; then
+                  echo "PR report input exceeds the 64-byte publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+            esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
 
       - name: Comment memory benchmark report on PR
@@ -491,164 +591,6 @@ jobs:
               });
             }
 
-      - name: Post SonarQube review comments (PR)
-        if: ${{ !env.ACT && env.SONAR_TOKEN != '' }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ben-ranford_lopper
-          SONAR_HOST_URL: https://sonarcloud.io
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        with:
-          script: |
-            const marker = '<!-- lopper-sonar-review -->';
-            const token = process.env.SONAR_TOKEN || '';
-            const projectKey = process.env.SONAR_PROJECT_KEY || '';
-            const host = (process.env.SONAR_HOST_URL || 'https://sonarcloud.io').replace(/\/+$/, '');
-            const prNumber = context.payload.pull_request?.number;
-
-            if (!prNumber) {
-              core.info('No pull request context available, skipping Sonar comment.');
-              return;
-            }
-
-            if (!token || !projectKey) {
-              core.info('SONAR_TOKEN or project key is missing, skipping Sonar comment.');
-              return;
-            }
-
-            const params = new URLSearchParams({
-              componentKeys: projectKey,
-              pullRequest: String(prNumber),
-              resolved: 'false',
-              p: '1',
-              ps: '20',
-            });
-            const auth = `Basic ${Buffer.from(`${token}:`).toString('base64')}`;
-            const jsonHeaders = {
-              Authorization: auth,
-              Accept: 'application/json',
-            };
-            const fetchJSON = async (path, searchParams) => {
-              const endpoint = `${host}${path}?${searchParams.toString()}`;
-              const response = await fetch(endpoint, { headers: jsonHeaders });
-              if (!response.ok) {
-                throw new Error(`Sonar API request failed (${response.status}): ${await response.text()}`);
-              }
-              return response.json();
-            };
-
-            const payload = await fetchJSON('/api/issues/search', params);
-            const issues = Array.isArray(payload.issues) ? payload.issues : [];
-            const total = Number.isFinite(payload.total) ? payload.total : issues.length;
-            const extractPath = (component) => {
-              const raw = String(component || '');
-              return raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw;
-            };
-            const isMockOrFixtureIssue = (issue) => {
-              const path = extractPath(issue.component);
-              return /(^|\/)(mock|mocks|testdata)(\/|$)/.test(path) || /(^|\/)[^/]+_mock\.go$/.test(path);
-            };
-            const actionableIssues = issues.filter((issue) => !isMockOrFixtureIssue(issue));
-            const excludedCount = issues.length - actionableIssues.length;
-            const list = actionableIssues;
-
-            let duplicationSummary = '_Duplication metrics unavailable for this PR._';
-            try {
-              const measureParams = new URLSearchParams({
-                component: projectKey,
-                pullRequest: String(prNumber),
-                metricKeys: 'duplicated_lines,duplicated_lines_density,new_duplicated_lines,new_duplicated_lines_density',
-              });
-              const measurePayload = await fetchJSON('/api/measures/component', measureParams);
-              const measures = Array.isArray(measurePayload?.component?.measures) ? measurePayload.component.measures : [];
-              const getMeasure = (metric) => measures.find((m) => m?.metric === metric)?.value;
-              const fmtPercent = (value) => {
-                const n = Number(value);
-                return Number.isFinite(n) ? `${n.toFixed(2)}%` : 'n/a';
-              };
-              const fmtInt = (value) => {
-                const n = Number(value);
-                return Number.isFinite(n) ? `${Math.round(n)}` : 'n/a';
-              };
-              duplicationSummary = [
-                `- Overall duplicated lines: **${fmtInt(getMeasure('duplicated_lines'))}**`,
-                `- Overall duplication density: **${fmtPercent(getMeasure('duplicated_lines_density'))}**`,
-                `- New duplicated lines: **${fmtInt(getMeasure('new_duplicated_lines'))}**`,
-                `- New duplication density: **${fmtPercent(getMeasure('new_duplicated_lines_density'))}**`,
-              ].join('\n');
-            } catch (error) {
-              core.warning(`Failed to fetch Sonar duplication measures: ${error.message}`);
-            }
-
-            const issueRows =
-              list.length > 0
-                ? list
-                    .map((issue, idx) => {
-                      const severity = String(issue.severity || 'UNKNOWN');
-                      const rule = String(issue.rule || 'n/a');
-                      const component = String(issue.component || '').split(':').slice(1).join(':') || 'n/a';
-                      const line = issue.line ? `:${issue.line}` : '';
-                      const message = String(issue.message || '').replace(/\|/g, '\\|').replace(/\n+/g, ' ');
-                      return `| ${idx + 1} | ${severity} | \`${rule}\` | \`${component}${line}\` | ${message} |`;
-                    })
-                    .join('\n')
-                : '| - | - | - | - | No open Sonar issues for this PR. |';
-
-            const body = [
-              marker,
-              '## SonarQube (PR)',
-              '',
-              `Open issues: **${total}**`,
-              `Actionable issues shown (excluding mock/fixture files): **${actionableIssues.length}**`,
-              excludedCount > 0 ? `Excluded mock/fixture issues: **${excludedCount}**` : '',
-              '',
-              '### Duplication',
-              duplicationSummary,
-              '',
-              '### Issues',
-              '',
-              '<details>',
-              `<summary>Open Sonar issues (${actionableIssues.length})</summary>`,
-              '',
-              '| # | Severity | Rule | Location | Message |',
-              '| --- | --- | --- | --- | --- |',
-              issueRows,
-              '',
-              '</details>',
-              '',
-              `Source: [SonarCloud PR view](${host}/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${prNumber}&resolved=false)`,
-            ].join('\n');
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-            const existing = comments.find(
-              (comment) =>
-                comment.user?.type === 'Bot' &&
-                typeof comment.body === 'string' &&
-                comment.body.includes(marker),
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
-
       - name: Comment on coverage failure
         if: ${{ !env.ACT }}
         continue-on-error: true
@@ -718,22 +660,27 @@ jobs:
               });
             }
 
-  verify-rolling:
-    name: verify (rolling)
+  verify-rolling-checks:
+    name: verification checks (rolling)
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Setup Go
         if: ${{ !env.ACT }}
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
 
       - name: Setup Go (act)
         if: ${{ env.ACT }}
@@ -746,13 +693,33 @@ jobs:
             apt-get update
             apt-get install -y shellcheck
           fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then
+            apt-get update
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /usr/share/keyrings
+            curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
+          fi
           go version
 
       - name: Install shellcheck
         if: ${{ !env.ACT }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
 
       - name: Install Go tooling
         run: |
@@ -761,30 +728,145 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Fetch PR base
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          {
+            printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"
+            printf 'BASE_REF=%s\n' "${base_ref}"
+            printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
+          fi
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
+          checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+          current_head_sha="$(git rev-parse --verify -q HEAD 2>/dev/null || true)"
+          # A two-parent HEAD is only trustworthy as GitHub's synthetic PR
+          # merge checkout when HEAD^2 matches the PR's real head SHA and
+          # HEAD itself does not -- an ordinary merge commit that happens to
+          # live on the PR branch (e.g. a "merge main into feature" commit)
+          # can also satisfy a bare ancestor check on HEAD^1, silently
+          # narrowing the memory-benchmark comparison to just that commit's
+          # own delta instead of the whole PR.
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && [ -n "${PR_HEAD_SHA:-}" ] && [ "${current_head_sha}" != "${PR_HEAD_SHA}" ] && [ "${checkout_head_sha}" = "${PR_HEAD_SHA}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+            base_sha="${checkout_base_sha}"
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+            PATH="$(go env GOPATH)/bin:$PATH" make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"
           else
-            make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+            make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"
           fi
+
+  verify-tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      source_sha: ${{ github.sha }}
+      build_channel: dev
+
+  verify-rolling-tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      source_sha: ${{ github.sha }}
+      build_channel: rolling
+
+  verify:
+    if: ${{ always() }}
+    needs: [verify-checks, verify-tests]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      pr_report_artifact_id: ${{ needs.verify-checks.outputs.pr_report_artifact_id }}
+    steps:
+      - name: Require every verification job
+        env:
+          CHECKS_RESULT: ${{ needs.verify-checks.result }}
+          TESTS_RESULT: ${{ needs.verify-tests.result }}
+        run: |
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
+
+  verify-rolling:
+    name: verify (rolling)
+    if: ${{ always() }}
+    needs: [verify-rolling-checks, verify-rolling-tests]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every verification job
+        env:
+          CHECKS_RESULT: ${{ needs.verify-rolling-checks.result }}
+          TESTS_RESULT: ${{ needs.verify-rolling-tests.result }}
+        run: |
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})
@@ -793,18 +875,18 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-26
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
       - &ci_smoke_checkout
         name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - &ci_smoke_setup_go
         name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
 
@@ -813,15 +895,13 @@ jobs:
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})
-    needs: extension-changes
-    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-26
     permissions:
       contents: read
     steps:
@@ -830,7 +910,7 @@ jobs:
       - *ci_smoke_setup_go
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
           cache: npm
@@ -875,7 +955,7 @@ jobs:
 
       - name: Checkout tap formula
         if: ${{ steps.tap.outputs.exists == 'true' }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ben-ranford/homebrew-tap
           path: homebrew-tap

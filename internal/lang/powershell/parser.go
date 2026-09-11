@@ -199,12 +199,27 @@ func expressionComplete(expr string) bool {
 	return scanner.complete()
 }
 
+// Bound repeated splitting and recursion when reading untrusted manifest arrays.
+const maxModuleArrayDepth = 32
+
+func moduleArrayDepthWarning() string {
+	return fmt.Sprintf("array nesting exceeds limit of %d", maxModuleArrayDepth)
+}
+
 func parseModuleExpression(expr string) ([]string, []string) {
+	return parseModuleExpressionAtDepth(expr, 0)
+}
+
+func parseModuleExpressionAtDepth(expr string, depth int) ([]string, []string) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return nil, nil
 	}
 	if inner, ok := unwrapArrayExpression(expr); ok {
+		if depth >= maxModuleArrayDepth {
+			return nil, []string{moduleArrayDepthWarning()}
+		}
+		depth++
 		expr = inner
 	}
 
@@ -216,7 +231,7 @@ func parseModuleExpression(expr string) ([]string, []string) {
 		if item == "" {
 			continue
 		}
-		parsed, dynamic, warning := parseModuleExpressionItem(item)
+		parsed, dynamic, warning := parseModuleExpressionItemAtDepth(item, depth)
 		if warning != "" {
 			warnings = append(warnings, warning)
 		}
@@ -233,17 +248,24 @@ func parseModuleExpression(expr string) ([]string, []string) {
 }
 
 func parseModuleExpressionItem(item string) (string, bool, string) {
+	return parseModuleExpressionItemAtDepth(item, 0)
+}
+
+func parseModuleExpressionItemAtDepth(item string, depth int) (string, bool, string) {
 	item = strings.TrimSpace(item)
 	if item == "" {
 		return "", false, ""
 	}
 	if inner, ok := unwrapArrayExpression(item); ok {
-		modules, warnings := parseModuleExpression(inner)
+		if depth >= maxModuleArrayDepth {
+			return "", false, moduleArrayDepthWarning()
+		}
+		modules, warnings := parseModuleExpressionAtDepth(inner, depth+1)
+		if len(modules) == 1 {
+			return modules[0], false, strings.Join(warnings, "; ")
+		}
 		if len(warnings) > 0 {
 			return "", false, strings.Join(warnings, "; ")
-		}
-		if len(modules) == 1 {
-			return modules[0], false, ""
 		}
 		if len(modules) > 1 {
 			return "", false, "nested module list produced multiple values"

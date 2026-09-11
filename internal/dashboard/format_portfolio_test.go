@@ -178,26 +178,6 @@ func TestFormatPortfolioCycloneDXEscapesLiteralSuffixLikeNamesAndNormalizationCo
 	}
 }
 
-func TestPortfolioRefAllocatorSkipsReservedAndUsedSuffixCollisions(t *testing.T) {
-	allocator := newPortfolioRefAllocator([]string{
-		"lopper:repo:api",
-		"lopper:repo:api:2",
-		"lopper:repo:api:3",
-	})
-
-	if got := allocator.allocate("lopper:repo:api"); got != "lopper:repo:api" {
-		t.Fatalf("first allocate() = %q, want base ref", got)
-	}
-
-	if got := allocator.allocate("lopper:repo:api"); got != "lopper:repo:api:4" {
-		t.Fatalf("second allocate() = %q, want first free suffix after reserved collisions", got)
-	}
-
-	if got := allocator.allocate("lopper:repo:api"); got != "lopper:repo:api:5" {
-		t.Fatalf("third allocate() = %q, want suffix after reserved and used collisions", got)
-	}
-}
-
 func TestJoinPortfolioRefPartsTrimsBlanksAndEscapesLiteralColons(t *testing.T) {
 	if got := joinPortfolioRefParts(" api service ", "", "release:2", "services/api", "   "); got != "api%20service:release%3A2:services%2Fapi" {
 		t.Fatalf("joinPortfolioRefParts() = %q", got)

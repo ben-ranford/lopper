@@ -16,6 +16,7 @@ import (
 )
 
 const coverageDepPath = "github.com/x/y"
+const goModFallbackFormerLineLimitForRegressionTest = 8192
 
 func TestGoAdapterCoverageHelpers(t *testing.T) {
 	assertGoFinalizeDetection(t)
@@ -139,6 +140,10 @@ func assertGoModHelpers(t *testing.T) {
 	assertParseGoModStandardFile(t)
 	assertParseGoModInlineRequireBlock(t)
 	assertParseGoModCommentedInlineRequireBlock(t)
+	assertParseGoModInlineRequireAtFormerLineLimitWithTrailingNewline(t)
+	assertParseGoModInlineRequireAtFormerLineLimitWithoutTrailingNewline(t)
+	assertParseGoModInlineRequireBeyondFormerLineLimit(t)
+	assertParseGoModSkipsFallbackForOversizedMalformedInput(t)
 	assertNormalizeInlineGoModRequireLineWithComment(t)
 	assertNormalizeInlineGoModRequireLineEmpty(t)
 	assertParseGoModMalformedInput(t)
@@ -198,6 +203,79 @@ func assertParseGoModCommentedInlineRequireBlock(t *testing.T) {
 		moduleMessage:      "expected commented inline require block module path",
 		dependencyMessage:  "expected commented inline require block dependency",
 		replacementMessage: "expected no replacements from commented inline require block",
+	})
+}
+
+func assertParseGoModInlineRequireAtFormerLineLimitWithTrailingNewline(t *testing.T) {
+	t.Helper()
+	assertParsedGoMod(t, inlineRequireGoModAtFormerLineLimit()+"\n", successfulInlineRequireExpectation(
+		"expected max-line trailing-newline go.mod module path",
+		"expected max-line trailing-newline inline dependency",
+		"expected no replacements from max-line trailing-newline go.mod",
+	))
+}
+
+func assertParseGoModInlineRequireAtFormerLineLimitWithoutTrailingNewline(t *testing.T) {
+	t.Helper()
+	assertParsedGoMod(t, inlineRequireGoModAtFormerLineLimit(), successfulInlineRequireExpectation(
+		"expected max-line go.mod without trailing newline module path",
+		"expected max-line go.mod without trailing newline dependency",
+		"expected no replacements from max-line go.mod without trailing newline",
+	))
+}
+
+func inlineRequireGoModAtFormerLineLimit() string {
+	lines := make([]string, goModFallbackFormerLineLimitForRegressionTest)
+	lines[0] = "module example.com/root"
+	for i := 1; i < goModFallbackFormerLineLimitForRegressionTest-1; i++ {
+		lines[i] = "// filler"
+	}
+	lines[goModFallbackFormerLineLimitForRegressionTest-1] = "require ( github.com/acme/dep v1.2.3 )"
+	return strings.Join(lines, "\n")
+}
+
+func successfulInlineRequireExpectation(moduleMessage, dependencyMessage, replacementMessage string) parsedGoModExpectation {
+	return parsedGoModExpectation{
+		modulePath:         "example.com/root",
+		dependencies:       []string{"github.com/acme/dep"},
+		replacements:       map[string]string{},
+		moduleMessage:      moduleMessage,
+		dependencyMessage:  dependencyMessage,
+		replacementMessage: replacementMessage,
+	}
+}
+
+func assertParseGoModInlineRequireBeyondFormerLineLimit(t *testing.T) {
+	t.Helper()
+	lines := make([]string, goModFallbackFormerLineLimitForRegressionTest+1)
+	lines[0] = "module example.com/root"
+	for i := 1; i < len(lines)-1; i++ {
+		lines[i] = "// filler"
+	}
+	lines[len(lines)-1] = "require ( github.com/acme/dep v1.2.3 )"
+
+	assertParsedGoMod(t, strings.Join(lines, "\n"), successfulInlineRequireExpectation(
+		"expected post-former-line-limit go.mod module path",
+		"expected post-former-line-limit inline dependency",
+		"expected no replacements from post-former-line-limit go.mod",
+	))
+}
+
+func assertParseGoModSkipsFallbackForOversizedMalformedInput(t *testing.T) {
+	t.Helper()
+	goMod := strings.Join([]string{
+		"module example.com/root",
+		"require ( github.com/acme/dep v1.2.3 )",
+		strings.Repeat("x", goModSizeLimitTest),
+		"",
+	}, "\n")
+	assertParsedGoMod(t, goMod, parsedGoModExpectation{
+		modulePath:         "",
+		dependencies:       nil,
+		replacements:       map[string]string{},
+		moduleMessage:      "expected oversized malformed go.mod to skip fallback parsing",
+		dependencyMessage:  "expected oversized malformed go.mod to skip fallback dependencies",
+		replacementMessage: "expected oversized malformed go.mod to skip fallback replacements",
 	})
 }
 

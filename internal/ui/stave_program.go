@@ -20,6 +20,8 @@ type staveSummaryShared struct {
 	opts    Options
 }
 
+const staveActionResultVersion = "lopper.action-result/v1"
+
 // staveActionOutcome is the serializable boundary between domain action
 // execution and UI reduction. UI code must not infer success from text.
 type staveActionOutcome struct {
@@ -95,110 +97,28 @@ func newLopperStaveProgram(summary *Summary, opts *Options, view *summaryReportV
 
 func lopperSummaryActions(shared *staveSummaryShared) (*action.Registry, error) {
 	r := action.NewRegistry()
-	obj := func(id string, props string, required string) action.Schema {
-		return action.Schema{ID: id, JSON: json.RawMessage(fmt.Sprintf(`{"type":"object","additionalProperties":false%s%s}`, props, required))}
-	}
-	currentOptionsProperties := `,"currentBaselinePath":{"type":"string"},"currentBaselineStore":{"type":"string"},"currentBaselineKey":{"type":"string"}`
-	currentOptionsRequired := `,"currentBaselinePath","currentBaselineStore","currentBaselineKey"`
-	empty := obj("lopper.empty.input", "", "")
-	refreshInput := obj("lopper.refresh.input", `,"properties":{`+strings.TrimPrefix(currentOptionsProperties, ",")+`}`, `,"required":[`+strings.TrimPrefix(currentOptionsRequired, ",")+`]`)
-	out := func(id string) action.Schema {
-		fields := `"version":{"enum":["lopper.action-result/v1"]},"action":{"enum":["` + id + `"]}`
-		required := `"version","action"`
-		switch id {
-		case staveActionRefresh:
-			fields += `,"refreshed":{"type":"boolean"},"report":{"type":"object"}`
-			required += `,"refreshed","report"`
-		case staveActionOpen:
-			fields += `,"dependency":{"type":"string","minLength":1}`
-			required += `,"dependency"`
-		case staveActionApplyCodemod:
-			fields += `,"dependency":{"type":"string"},"applied":{"type":"boolean"},"report":{"type":"object"}`
-			required += `,"dependency","applied","report"`
-		case staveActionSaveBaseline:
-			fields += `,"ok":{"type":"boolean"},"report":{"type":"object"},"path":{"type":"string"},"key":{"type":"string"},"options":{"type":"object","additionalProperties":false,"properties":{"baselinePath":{"type":"string"},"baselineStorePath":{"type":"string"},"baselineKey":{"type":"string"}},"required":["baselinePath","baselineStorePath","baselineKey"]}`
-			required += `,"ok","report","path","key","options"`
-		case staveActionCompareBaseline:
-			fields += `,"ok":{"type":"boolean"},"report":{"type":"object"},"target":{"type":"string"},"options":{"type":"object","additionalProperties":false,"properties":{"baselinePath":{"type":"string"},"baselineStorePath":{"type":"string"},"baselineKey":{"type":"string"}},"required":["baselinePath","baselineStorePath","baselineKey"]}`
-			required += `,"ok","report","target","options"`
-		case "lopper.summary.filter.v1", "lopper.summary.sort.v1", "lopper.summary.page.v1", "lopper.summary.size.v1":
-			fields += `,"value":{"type":"string"}`
-			required += `,"value"`
-		}
-		return action.Schema{ID: "lopper.action.output", JSON: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{` + fields + `},"required":[` + required + `]}`)}
-	}
-	base := func(id, title string, in action.Schema, safety action.Safety, idem action.Idempotency) action.Definition {
-		return action.Definition{ID: action.ID(id), Version: "1", Title: title, InputSchema: in, OutputSchema: out(id), Safety: safety, Idempotency: idem, Cancellable: id != staveActionQuit}
-	}
+	empty := staveObjectSchema("lopper.empty.input", "", "")
+	refreshInput := staveObjectSchema("lopper.refresh.input", `,"properties":{`+strings.TrimPrefix(staveCurrentOptionsProperties, ",")+`}`, `,"required":[`+strings.TrimPrefix(staveCurrentOptionsRequired, ",")+`]`)
 	for _, item := range []struct {
 		id, title string
 		input     action.Schema
 	}{{staveActionQuit, "Quit", empty}, {staveActionRefresh, "Refresh", refreshInput}} {
-		if err := r.Register(base(item.id, item.title, item.input, action.ReadOnly, action.Idempotent), func(ctx context.Context, _ action.Call, raw any) (any, error) {
-			// Refresh is a domain action, not merely a status update: rerun the
-			// analyzer and replace the live report while retaining interaction
-			// state (filter, sort, page, and page size).
-			if item.id == staveActionRefresh {
-				if shared.summary == nil {
-					return nil, fmt.Errorf("refresh action is unavailable")
-				}
-				input, ok := raw.(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("invalid refresh action input")
-				}
-				workingOpts, err := staveActionOptions(shared.opts, input)
-				if err != nil {
-					return nil, err
-				}
-				refreshed, err := shared.summary.analyseSummaryView(ctx, workingOpts)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]any{"version": "lopper.action-result/v1", "action": item.id, "refreshed": true, "report": summaryViewToReport(refreshed)}, nil
-			}
-			return map[string]any{"version": "lopper.action-result/v1", "action": item.id}, nil
+		if err := r.Register(staveActionDefinition(item.id, item.title, item.input, action.ReadOnly, action.Idempotent), func(ctx context.Context, _ action.Call, raw any) (any, error) {
+			return shared.refreshOrQuitAction(ctx, item.id, raw)
 		}); err != nil {
 			return nil, err
 		}
 	}
-	open := base(staveActionOpen, "Open dependency", obj("lopper.open.input", `,"properties":{"dependency":{"type":"string","minLength":1}}`, `,"required":["dependency"]`), action.ReadOnly, action.Idempotent)
-	if err := r.Register(open, func(ctx context.Context, _ action.Call, raw any) (any, error) {
-		in, ok := raw.(map[string]any)
-		if !ok || shared.summary == nil {
-			return nil, fmt.Errorf("invalid open action input")
-		}
-		dep, _ := in["dependency"].(string)
-		return map[string]any{"version": "lopper.action-result/v1", "action": string(staveActionOpen), "dependency": dep}, nil
+	open := staveActionDefinition(staveActionOpen, "Open dependency", staveObjectSchema("lopper.open.input", `,"properties":{"dependency":{"type":"string","minLength":1}}`, `,"required":["dependency"]`), action.ReadOnly, action.Idempotent)
+	if err := r.Register(open, func(_ context.Context, _ action.Call, raw any) (any, error) {
+		return shared.openAction(raw)
 	}); err != nil {
 		return nil, err
 	}
-	codemod := base(staveActionApplyCodemod, "Apply codemod", obj("lopper.codemod.input", `,"properties":{"dependency":{"type":"string","minLength":1},"confirm":{"type":"boolean"},"allowDirty":{"type":"boolean"}}`, `,"required":["dependency","confirm","allowDirty"]`), action.Consequential, action.NonIdempotent)
+	codemod := staveActionDefinition(staveActionApplyCodemod, "Apply codemod", staveObjectSchema("lopper.codemod.input", `,"properties":{"dependency":{"type":"string","minLength":1},"confirm":{"type":"boolean"},"allowDirty":{"type":"boolean"}}`, `,"required":["dependency","confirm","allowDirty"]`), action.Consequential, action.NonIdempotent)
 	codemod.Confirmation = action.ConfirmationPolicy{Required: true, SingleUse: true}
 	if err := r.Register(codemod, func(ctx context.Context, _ action.Call, raw any) (any, error) {
-		in, ok := raw.(map[string]any)
-		if !ok || shared.summary == nil {
-			return nil, fmt.Errorf("invalid codemod action input")
-		}
-		dep, _ := in["dependency"].(string)
-		confirm, _ := in["confirm"].(bool)
-		dirty, _ := in["allowDirty"].(bool)
-		if !confirm {
-			return nil, fmt.Errorf("codemod apply requires --confirm")
-		}
-		if shared.summary.Actions == nil {
-			return nil, fmt.Errorf("codemod apply is unavailable")
-		}
-		languageID, dependencyName := parseDependencyLanguage(shared.opts.Language, dep)
-		result, err := shared.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: shared.opts.RepoPath, Dependency: dependencyName, TopN: shared.opts.TopN, Language: languageID, AllowDirty: dirty})
-		if err != nil {
-			return nil, err
-		}
-		applyReport := findCodemodApplyReport(result, dep)
-		if applyReport == nil {
-			return nil, fmt.Errorf("no safe codemod apply results for %s", dep)
-		}
-		applied := applyReport.AppliedFiles > 0 || applyReport.AppliedPatches > 0
-		return map[string]any{"version": "lopper.action-result/v1", "action": string(staveActionApplyCodemod), "dependency": dep, "applied": applied, "report": result}, nil
+		return shared.codemodAction(ctx, raw)
 	}); err != nil {
 		return nil, err
 	}
@@ -206,68 +126,174 @@ func lopperSummaryActions(shared *staveSummaryShared) (*action.Registry, error) 
 		id, title string
 		kind      summaryActionKind
 	}{{staveActionSaveBaseline, "Save baseline", summaryActionSaveBaseline}, {staveActionCompareBaseline, "Compare baseline", summaryActionCompareBaseline}} {
-		in := obj(item.id+".input", `,"properties":{"label":{"type":"string"},"key":{"type":"string"},"store":{"type":"string"},"file":{"type":"string"},"target":{"type":"string"}`+currentOptionsProperties+`}`, `,"required":[`+strings.TrimPrefix(currentOptionsRequired, ",")+`]`)
+		in := staveObjectSchema(item.id+".input", `,"properties":{"label":{"type":"string"},"key":{"type":"string"},"store":{"type":"string"},"file":{"type":"string"},"target":{"type":"string"}`+staveCurrentOptionsProperties+`}`, `,"required":[`+strings.TrimPrefix(staveCurrentOptionsRequired, ",")+`]`)
 		kind := item.kind
-		if err := r.Register(base(item.id, item.title, in, action.Reversible, action.Idempotent), func(ctx context.Context, _ action.Call, raw any) (any, error) {
-			m, ok := raw.(map[string]any)
-			if !ok || shared.summary == nil {
-				return nil, fmt.Errorf("invalid %s action input", item.title)
-			}
-			if kind == summaryActionSaveBaseline && shared.summary.Actions == nil {
-				return nil, fmt.Errorf("%s action is unavailable", strings.ToLower(item.title))
-			}
-			a := summaryAction{kind: kind}
-			a.baselineLabel, _ = m["label"].(string)
-			a.baselineKey, _ = m["key"].(string)
-			a.baselineStorePath, _ = m["store"].(string)
-			a.baselinePath, _ = m["file"].(string)
-			a.baselineTarget, _ = m["target"].(string)
-			workingOpts, optionsErr := staveActionOptions(shared.opts, m)
-			if optionsErr != nil {
-				return nil, optionsErr
-			}
-			if kind == summaryActionSaveBaseline {
-				req, displayKey, buildErr := buildSummaryBaselineSaveRequest(workingOpts, a)
-				if buildErr != nil {
-					return nil, buildErr
-				}
-				result, path, runErr := shared.summary.Actions.SaveBaseline(ctx, req)
-				if runErr != nil {
-					return nil, runErr
-				}
-				return map[string]any{"version": "lopper.action-result/v1", "action": string(item.id), "ok": true, "report": result, "path": path, "key": displayKey, "options": map[string]any{"baselinePath": workingOpts.BaselinePath, "baselineStorePath": req.BaselineStorePath, "baselineKey": workingOpts.BaselineKey}}, nil
-			}
-			nextOpts, target, buildErr := buildSummaryBaselineCompareOptions(workingOpts, a)
-			if buildErr != nil {
-				return nil, buildErr
-			}
-			reportView, runErr := shared.summary.analyseSummaryView(ctx, nextOpts)
-			if runErr != nil {
-				return nil, runErr
-			}
-			return map[string]any{"version": "lopper.action-result/v1", "action": string(item.id), "ok": true, "report": summaryViewToReport(reportView), "target": target, "options": map[string]any{"baselinePath": nextOpts.BaselinePath, "baselineStorePath": nextOpts.BaselineStorePath, "baselineKey": nextOpts.BaselineKey}}, nil
+		if err := r.Register(staveActionDefinition(item.id, item.title, in, action.Reversible, action.Idempotent), func(ctx context.Context, _ action.Call, raw any) (any, error) {
+			return shared.baselineAction(ctx, raw, kind, item.title, item.id)
 		}); err != nil {
 			return nil, err
 		}
 	}
 	for _, item := range []struct{ id, title, command string }{{"lopper.summary.filter.v1", "Filter", "filter"}, {"lopper.summary.sort.v1", "Sort", "sort"}, {"lopper.summary.page.v1", "Page", "page"}, {"lopper.summary.size.v1", "Page size", "size"}} {
 		id, title := item.id, item.title
-		if err := r.Register(base(id, title, obj(id+".input", `,"properties":{"value":{"type":"string","minLength":1}}`, `,"required":["value"]`), action.Reversible, action.Idempotent), func(_ context.Context, _ action.Call, raw any) (any, error) {
-			input, ok := raw.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("invalid %s action input", title)
-			}
-			value, _ := input["value"].(string)
-			probe := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
-			if !applySummaryCommand(&probe, item.command+" "+value, io.Discard) {
-				return nil, fmt.Errorf("invalid %s value", title)
-			}
-			return map[string]any{"version": "lopper.action-result/v1", "action": id, "value": value}, nil
+		if err := r.Register(staveActionDefinition(id, title, staveObjectSchema(id+".input", `,"properties":{"value":{"type":"string","minLength":1}}`, `,"required":["value"]`), action.Reversible, action.Idempotent), func(_ context.Context, _ action.Call, raw any) (any, error) {
+			return staveCommandAction(raw, id, title, item.command)
 		}); err != nil {
 			return nil, err
 		}
 	}
 	return r, nil
+}
+
+func (s *staveSummaryShared) refreshOrQuitAction(ctx context.Context, id string, raw any) (any, error) {
+	// Refresh is a domain action, not merely a status update: rerun the
+	// analyzer and replace the live report while retaining interaction
+	// state (filter, sort, page, and page size).
+	if id == staveActionRefresh {
+		if s.summary == nil {
+			return nil, fmt.Errorf("refresh action is unavailable")
+		}
+		input, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid refresh action input")
+		}
+		workingOpts, err := staveActionOptions(s.opts, input)
+		if err != nil {
+			return nil, err
+		}
+		refreshed, err := s.summary.analyseSummaryView(ctx, workingOpts)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"version": staveActionResultVersion, "action": id, "refreshed": true, "report": summaryViewToReport(refreshed)}, nil
+	}
+	return map[string]any{"version": staveActionResultVersion, "action": id}, nil
+}
+
+func (s *staveSummaryShared) openAction(raw any) (any, error) {
+	in, ok := raw.(map[string]any)
+	if !ok || s.summary == nil {
+		return nil, fmt.Errorf("invalid open action input")
+	}
+	dep, _ := in["dependency"].(string)
+	return map[string]any{"version": staveActionResultVersion, "action": string(staveActionOpen), "dependency": dep}, nil
+}
+
+func (s *staveSummaryShared) codemodAction(ctx context.Context, raw any) (any, error) {
+	in, ok := raw.(map[string]any)
+	if !ok || s.summary == nil {
+		return nil, fmt.Errorf("invalid codemod action input")
+	}
+	dep, _ := in["dependency"].(string)
+	confirm, _ := in["confirm"].(bool)
+	dirty, _ := in["allowDirty"].(bool)
+	if !confirm {
+		return nil, fmt.Errorf("codemod apply requires --confirm")
+	}
+	if s.summary.Actions == nil {
+		return nil, fmt.Errorf("codemod apply is unavailable")
+	}
+	languageID, dependencyName := parseDependencyLanguage(s.opts.Language, dep)
+	result, err := s.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: s.opts.RepoPath, Dependency: dependencyName, TopN: s.opts.TopN, Language: languageID, AllowDirty: dirty})
+	if err != nil {
+		return nil, err
+	}
+	applyReport := findCodemodApplyReport(result, dep)
+	if applyReport == nil {
+		return nil, fmt.Errorf("no safe codemod apply results for %s", dep)
+	}
+	applied := applyReport.AppliedFiles > 0 || applyReport.AppliedPatches > 0
+	return map[string]any{"version": staveActionResultVersion, "action": string(staveActionApplyCodemod), "dependency": dep, "applied": applied, "report": result}, nil
+}
+
+func (s *staveSummaryShared) baselineAction(ctx context.Context, raw any, kind summaryActionKind, title, id string) (any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok || s.summary == nil {
+		return nil, fmt.Errorf("invalid %s action input", title)
+	}
+	if kind == summaryActionSaveBaseline && s.summary.Actions == nil {
+		return nil, fmt.Errorf("%s action is unavailable", strings.ToLower(title))
+	}
+	a := summaryAction{kind: kind}
+	a.baselineLabel, _ = m["label"].(string)
+	a.baselineKey, _ = m["key"].(string)
+	a.baselineStorePath, _ = m["store"].(string)
+	a.baselinePath, _ = m["file"].(string)
+	a.baselineTarget, _ = m["target"].(string)
+	workingOpts, optionsErr := staveActionOptions(s.opts, m)
+	if optionsErr != nil {
+		return nil, optionsErr
+	}
+	if kind == summaryActionSaveBaseline {
+		req, displayKey, buildErr := buildSummaryBaselineSaveRequest(workingOpts, a)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		result, path, runErr := s.summary.Actions.SaveBaseline(ctx, req)
+		if runErr != nil {
+			return nil, runErr
+		}
+		return map[string]any{"version": staveActionResultVersion, "action": string(id), "ok": true, "report": result, "path": path, "key": displayKey, "options": map[string]any{"baselinePath": workingOpts.BaselinePath, "baselineStorePath": req.BaselineStorePath, "baselineKey": workingOpts.BaselineKey}}, nil
+	}
+	nextOpts, target, buildErr := buildSummaryBaselineCompareOptions(workingOpts, a)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	reportView, runErr := s.summary.analyseSummaryView(ctx, nextOpts)
+	if runErr != nil {
+		return nil, runErr
+	}
+	return map[string]any{"version": staveActionResultVersion, "action": string(id), "ok": true, "report": summaryViewToReport(reportView), "target": target, "options": map[string]any{"baselinePath": nextOpts.BaselinePath, "baselineStorePath": nextOpts.BaselineStorePath, "baselineKey": nextOpts.BaselineKey}}, nil
+}
+
+func staveCommandAction(raw any, id, title, command string) (any, error) {
+	input, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s action input", title)
+	}
+	value, _ := input["value"].(string)
+	probe := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
+	if !applySummaryCommand(&probe, command+" "+value, io.Discard) {
+		return nil, fmt.Errorf("invalid %s value", title)
+	}
+	return map[string]any{"version": staveActionResultVersion, "action": id, "value": value}, nil
+}
+
+func staveObjectSchema(id, props, required string) action.Schema {
+	return action.Schema{ID: id, JSON: json.RawMessage(fmt.Sprintf(`{"type":"object","additionalProperties":false%s%s}`, props, required))}
+}
+
+const staveCurrentOptionsProperties = `,"currentBaselinePath":{"type":"string"},"currentBaselineStore":{"type":"string"},"currentBaselineKey":{"type":"string"}`
+const staveCurrentOptionsRequired = `,"currentBaselinePath","currentBaselineStore","currentBaselineKey"`
+
+func staveOutputSchema(id string) action.Schema {
+	fields := `"version":{"enum":["` + staveActionResultVersion + `"]},"action":{"enum":["` + id + `"]}`
+	required := `"version","action"`
+	switch id {
+	case staveActionRefresh:
+		fields += `,"refreshed":{"type":"boolean"},"report":{"type":"object"}`
+		required += `,"refreshed","report"`
+	case staveActionOpen:
+		fields += `,"dependency":{"type":"string","minLength":1}`
+		required += `,"dependency"`
+	case staveActionApplyCodemod:
+		fields += `,"dependency":{"type":"string"},"applied":{"type":"boolean"},"report":{"type":"object"}`
+		required += `,"dependency","applied","report"`
+	case staveActionSaveBaseline:
+		fields += `,"ok":{"type":"boolean"},"report":{"type":"object"},"path":{"type":"string"},"key":{"type":"string"},"options":{"type":"object","additionalProperties":false,"properties":{"baselinePath":{"type":"string"},"baselineStorePath":{"type":"string"},"baselineKey":{"type":"string"}},"required":["baselinePath","baselineStorePath","baselineKey"]}`
+		required += `,"ok","report","path","key","options"`
+	case staveActionCompareBaseline:
+		fields += `,"ok":{"type":"boolean"},"report":{"type":"object"},"target":{"type":"string"},"options":{"type":"object","additionalProperties":false,"properties":{"baselinePath":{"type":"string"},"baselineStorePath":{"type":"string"},"baselineKey":{"type":"string"}},"required":["baselinePath","baselineStorePath","baselineKey"]}`
+		required += `,"ok","report","target","options"`
+	case "lopper.summary.filter.v1", "lopper.summary.sort.v1", "lopper.summary.page.v1", "lopper.summary.size.v1":
+		fields += `,"value":{"type":"string"}`
+		required += `,"value"`
+	}
+	return action.Schema{ID: "lopper.action.output", JSON: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{` + fields + `},"required":[` + required + `]}`)}
+}
+
+func staveActionDefinition(id, title string, in action.Schema, safety action.Safety, idem action.Idempotency) action.Definition {
+	return action.Definition{ID: action.ID(id), Version: "1", Title: title, InputSchema: in, OutputSchema: staveOutputSchema(id), Safety: safety, Idempotency: idem, Cancellable: id != staveActionQuit}
 }
 
 func staveActionOptions(base Options, input map[string]any) (Options, error) {
@@ -324,7 +350,7 @@ func invokeLopperActionWithCallID(ctx context.Context, prepared *stave.Prepared[
 	call := action.Call{CallID: callID, ActionID: id, Arguments: raw, SessionID: sessionID}
 	def, ok := prepared.Actions.Definition(id)
 	if !ok {
-		return staveActionResult{Error: &staveActionError{Version: "lopper.action-result/v1", Code: "NOT_REGISTERED", Message: fmt.Sprintf("action %s is not registered", id)}}, fmt.Errorf("action %s is not registered", id)
+		return staveActionResult{Error: &staveActionError{Version: staveActionResultVersion, Code: "NOT_REGISTERED", Message: fmt.Sprintf("action %s is not registered", id)}}, fmt.Errorf("action %s is not registered", id)
 	}
 	if def.Confirmation.Required && confirm {
 		c, err := action.NewConfirmation(sessionID, def, semantic.Target{}, raw, time.Now().Add(time.Minute))
@@ -339,11 +365,15 @@ func invokeLopperActionWithCallID(ctx context.Context, prepared *stave.Prepared[
 	result := prepared.Actions.Invoke(ctx, call)
 	if result.Error != nil {
 		message := fmt.Sprintf("%s %s: %s", id, result.Error.Code, result.Error.Message)
-		return staveActionResult{Error: &staveActionError{Version: "lopper.action-result/v1", Code: string(result.Error.Code), Message: result.Error.Message}}, fmt.Errorf("%s", message)
+		return staveActionResult{Error: &staveActionError{Version: staveActionResultVersion, Code: string(result.Error.Code), Message: result.Error.Message}}, fmt.Errorf("%s", message)
 	}
+	return decodeLopperActionOutcome(id, result.Output)
+}
+
+func decodeLopperActionOutcome(id action.ID, output json.RawMessage) (staveActionResult, error) {
 	var value map[string]any
-	if len(result.Output) > 0 {
-		if err := json.Unmarshal(result.Output, &value); err != nil {
+	if len(output) > 0 {
+		if err := json.Unmarshal(output, &value); err != nil {
 			return staveActionResult{}, fmt.Errorf("decode action %s output: %w", id, err)
 		}
 	}
@@ -355,7 +385,7 @@ func invokeLopperActionWithCallID(ctx context.Context, prepared *stave.Prepared[
 			value["command"] = strings.TrimSuffix(strings.TrimPrefix(string(id), "lopper.summary."), ".v1") + " " + v
 		}
 	}
-	return staveActionResult{Outcome: &staveActionOutcome{Version: "lopper.action-result/v1", Action: string(id), Value: map[string]any{"version": "lopper.action-result/v1", "action": string(id), "value": value}}}, nil
+	return staveActionResult{Outcome: &staveActionOutcome{Version: staveActionResultVersion, Action: string(id), Value: map[string]any{"version": staveActionResultVersion, "action": string(id), "value": value}}}, nil
 }
 
 func startLopperAction(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], id action.ID, args any, sessionID string, confirm bool, callID string) <-chan staveActionExecution {

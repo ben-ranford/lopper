@@ -42,5 +42,11 @@ type Request struct {
 	LicenseDenyList                   []string
 	IncludeRegistryProvenance         bool
 	VulnerabilityExceptions           []report.VulnerabilityException
-	Cache                             *CacheOptions
+	RequireCompleteCoverage           bool
+	// DeferCoverageGapEnforcement skips the RequireCompleteCoverage check
+	// against CoverageGaps specifically (other completeness signals are
+	// unaffected), for a caller -- PR review -- that collects gaps into its
+	// own base/head comparison instead of failing on first sight of one.
+	DeferCoverageGapEnforcement bool
+	Cache                       *CacheOptions
 }

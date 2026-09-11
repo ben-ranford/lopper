@@ -26,6 +26,12 @@ import (
 const staveTUIFeature = "stave-tui-preview"
 
 const (
+	staveStylePrimary  = "domain.primary"
+	staveStyleAdvisory = "status.advisory"
+	staveStyleUnknown  = "status.unknown"
+)
+
+const (
 	staveActionQuit            = "lopper.summary.quit.v1"
 	staveActionRefresh         = "lopper.summary.refresh.v1"
 	staveActionOpen            = "lopper.summary.open.v1"
@@ -88,9 +94,7 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 	if writer == nil {
 		writer = os.Stdout
 	}
-	reader := bufio.NewReader(p.legacy.In)
 	state := buildSummaryState(opts)
-	var lineCallCounter uint64
 	tty := supportsScreenRefresh(writer)
 	if tty {
 		if width, _, ok := staveTerminalDimensions(writer); ok {
@@ -108,119 +112,132 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 	}
 	defer prepared.Session.Close()
 	if supportsStaveFullScreen(sessionOpts.RuntimeDetected) {
-		return p.runStaveTerminal(ctx, opts, view, state, prepared, p.legacy.In, writer, sessionOpts.RuntimeDetected.AlternateScreen)
+		return p.runStaveTerminal(ctx, opts, prepared, p.legacy.In, writer, sessionOpts.RuntimeDetected.AlternateScreen)
 	}
+	line := staveLineSession{prepared: prepared, opts: sessionOpts, reader: bufio.NewReader(p.legacy.In), writer: writer, tty: tty}
+	return line.run(ctx)
+}
+
+type staveLineSession struct {
+	prepared    *stave.Prepared[staveSummaryModel]
+	opts        stave.SessionOptions
+	reader      *bufio.Reader
+	writer      io.Writer
+	tty         bool
+	callCounter uint64
+}
+
+func (s *staveLineSession) run(ctx context.Context) error {
 	for {
-		if tty {
-			if width, height, ok := staveTerminalDimensions(writer); ok && (width != sessionOpts.Viewport.Width || height != sessionOpts.Viewport.Height) {
-				resize, resizeErr := event.New(event.Resize, event.ResizePayload{Width: width, Height: height})
-				if resizeErr != nil {
-					return resizeErr
-				}
-				if resizeErr = sendLopperEvent(ctx, prepared, resize); resizeErr != nil {
-					return resizeErr
-				}
-				sessionOpts.Viewport = layout.Size{Width: width, Height: height}
-			}
-		}
-		snapshot, err := prepared.Session.Snapshot()
-		if err != nil {
+		if err := s.refreshFrame(ctx); err != nil {
 			return err
 		}
-		frame, renderErr := render.Render(render.Request{Context: ctx, Tree: snapshot.Tree, Capabilities: snapshot.Capabilities, Theme: prepared.Theme, Viewport: sessionOpts.Viewport})
-		if renderErr != nil {
-			return renderErr
-		}
-		output := frame.Terminal
-		if err := writeStaveLineFrame(writer, output); err != nil {
-			return err
-		}
-		input, eof, err := readStaveLineInput(reader)
+		input, eof, err := readStaveLineInput(s.reader)
 		if err != nil {
 			return err
 		}
 		if eof && input == "" {
 			return nil
 		}
-		current, snapErr := prepared.Session.Snapshot()
-		if snapErr != nil {
-			return snapErr
-		}
-		actionID, args, confirm, handled := lopperStaveInput(input, current.Model.interaction.summary)
-		if handled {
-			args, err = prepareLopperActionArgs(current.Model, actionID, args)
-			if err != nil {
-				return err
-			}
-			reportedFailure := false
-			lineCallCounter++
-			callID := fmt.Sprintf("lopper-line-%d", lineCallCounter)
-			ev, err := event.New(event.ActionInvoked, event.ActionInvokedPayload{CallID: callID, ActionID: string(actionID), Arguments: args})
-			if err != nil {
-				return err
-			}
-			if err := sendLopperEvent(ctx, prepared, ev); err != nil {
-				return err
-			}
-			// Line-compatible sessions serialize frames, but action execution
-			// still runs off-loop after ActionInvoked has been recorded.
-			completed := <-startLopperAction(ctx, prepared, actionID, args, "lopper-preview", confirm, callID)
-			result, invokeErr := completed.result, completed.err
-			if invokeErr != nil {
-				var reported *summaryActionReportedError
-				if !errors.As(invokeErr, &reported) {
-					done, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: callID, Status: "error", Error: terminal.SanitizeString(invokeErr.Error())})
-					if eventErr != nil {
-						return eventErr
-					}
-					if eventErr = sendLopperEvent(ctx, prepared, done); eventErr != nil {
-						return eventErr
-					}
-				}
-				reportedFailure = true
-			}
-			if !reportedFailure {
-				value := any(nil)
-				if result.Outcome != nil {
-					value = result.Outcome.Value
-				}
-				done, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: callID, Status: "completed", Value: value})
-				if eventErr != nil {
-					return eventErr
-				}
-				if eventErr = sendLopperEvent(ctx, prepared, done); eventErr != nil {
-					return eventErr
-				}
-			}
-			if actionID == action.ID(staveActionQuit) {
-				return nil
-			}
-			// A final unterminated command is valid input. It is processed once,
-			// then EOF terminates the line-compatible session cleanly.
-			if eof {
-				final, renderErr := renderStaveSessionFrame(ctx, prepared, sessionOpts)
-				if renderErr != nil {
-					return renderErr
-				}
-				return writeStaveLineFrame(writer, final)
-			}
-			continue
-		}
-		textEvent, err := staveCommandEvent(input, current.Model)
+		quit, err := s.command(ctx, input)
 		if err != nil {
 			return err
 		}
-		if err := sendLopperEvent(ctx, prepared, textEvent); err != nil {
-			return err
+		if quit {
+			return nil
 		}
+		// Apply a final unterminated command once, then render its result.
 		if eof {
-			final, renderErr := renderStaveSessionFrame(ctx, prepared, sessionOpts)
-			if renderErr != nil {
-				return renderErr
-			}
-			return writeStaveLineFrame(writer, final)
+			return s.writeFrame(ctx)
 		}
 	}
+}
+
+func (s *staveLineSession) refreshFrame(ctx context.Context) error {
+	if err := s.resize(ctx); err != nil {
+		return err
+	}
+	return s.writeFrame(ctx)
+}
+
+func (s *staveLineSession) resize(ctx context.Context) error {
+	if !s.tty {
+		return nil
+	}
+	width, height, ok := staveTerminalDimensions(s.writer)
+	if !ok || (width == s.opts.Viewport.Width && height == s.opts.Viewport.Height) {
+		return nil
+	}
+	resize, err := event.New(event.Resize, event.ResizePayload{Width: width, Height: height})
+	if err != nil {
+		return err
+	}
+	if err := sendLopperEvent(ctx, s.prepared, resize); err != nil {
+		return err
+	}
+	s.opts.Viewport = layout.Size{Width: width, Height: height}
+	return nil
+}
+
+func (s *staveLineSession) writeFrame(ctx context.Context) error {
+	output, err := renderStaveSessionFrame(ctx, s.prepared, s.opts)
+	if err != nil {
+		return err
+	}
+	return writeStaveLineFrame(s.writer, output)
+}
+
+func (s *staveLineSession) command(ctx context.Context, input string) (bool, error) {
+	current, err := s.prepared.Session.Snapshot()
+	if err != nil {
+		return false, err
+	}
+	id, args, confirm, handled := lopperStaveInput(input, current.Model.interaction.summary)
+	if !handled {
+		ev, err := staveCommandEvent(input, current.Model)
+		if err != nil {
+			return false, err
+		}
+		return false, sendLopperEvent(ctx, s.prepared, ev)
+	}
+	args, err = prepareLopperActionArgs(current.Model, id, args)
+	if err != nil {
+		return false, err
+	}
+	s.callCounter++
+	callID := fmt.Sprintf("lopper-s-%d", s.callCounter)
+	ev, err := event.New(event.ActionInvoked, event.ActionInvokedPayload{CallID: callID, ActionID: string(id), Arguments: args})
+	if err != nil {
+		return false, err
+	}
+	if err := sendLopperEvent(ctx, s.prepared, ev); err != nil {
+		return false, err
+	}
+	// Serialize frames while executing the action off-loop after its invocation is recorded.
+	completed := <-startLopperAction(ctx, s.prepared, id, args, "lopper-preview", confirm, callID)
+	if err := completeStaveLineAction(ctx, s.prepared, callID, completed); err != nil {
+		return false, err
+	}
+	return id == action.ID(staveActionQuit), nil
+}
+
+func completeStaveLineAction(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], callID string, completed staveActionExecution) error {
+	payload := event.EffectResultPayload{CallID: callID, Status: "completed"}
+	if completed.err != nil {
+		var reported *summaryActionReportedError
+		if errors.As(completed.err, &reported) {
+			return nil
+		}
+		payload.Status = "error"
+		payload.Error = terminal.SanitizeString(completed.err.Error())
+	} else if completed.result.Outcome != nil {
+		payload.Value = completed.result.Outcome.Value
+	}
+	done, err := event.New(event.EffectResult, payload)
+	if err != nil {
+		return err
+	}
+	return sendLopperEvent(ctx, prepared, done)
 }
 
 func staveTerminalDimensions(writer io.Writer) (width, height int, ok bool) {
@@ -386,7 +403,7 @@ func staveSnapshotTree(view summaryReportView, sorted, deps []summaryDependencyV
 	} else {
 		status += separator + "filter " + safeDisplay(state.filter, ascii)
 	}
-	statusNode, err := staveRecordNode("status", "summary", "status", "heading", "Lopper", status, "domain.primary", nil)
+	statusNode, err := staveRecordNode(semantic.NodeKey{Kind: "status", Entity: "summary", Slot: "status"}, "heading", "Lopper", status, staveStylePrimary, nil)
 	if err != nil {
 		return semantic.Tree{}, err
 	}
@@ -399,14 +416,14 @@ func staveSnapshotTree(view summaryReportView, sorted, deps []summaryDependencyV
 		children = append(children, row)
 	}
 	for i, warning := range view.Warnings {
-		warningNode, err := staveRecordNode("warning", fmt.Sprintf("%d", i), "main", "alert", "Warning", safeDisplay(warning, ascii), "status.advisory", nil)
+		warningNode, err := staveRecordNode(semantic.NodeKey{Kind: "warning", Entity: fmt.Sprintf("%d", i), Slot: "main"}, "alert", "Warning", safeDisplay(warning, ascii), staveStyleAdvisory, nil)
 		if err != nil {
 			return semantic.Tree{}, err
 		}
 		children = append(children, warningNode)
 	}
 	if showHelp {
-		helpNode, err := staveRecordNode("help", "summary", "footer", "status", "Help", "Commands: / filter | : command | arrows navigate | Enter open | r refresh | q quit", "status.advisory", nil)
+		helpNode, err := staveRecordNode(semantic.NodeKey{Kind: "help", Entity: "summary", Slot: "footer"}, "status", "Help", "Commands: / filter | : command | arrows navigate | Enter open | r refresh | q quit", staveStyleAdvisory, nil)
 		if err != nil {
 			return semantic.Tree{}, err
 		}
@@ -416,52 +433,21 @@ func staveSnapshotTree(view summaryReportView, sorted, deps []summaryDependencyV
 }
 
 func staveInteractiveTree(view summaryReportView, sorted, deps []summaryDependencyView, state summaryState, totalPages int, ascii bool, interaction staveSummaryInteraction) (semantic.Tree, error) {
-	width, height := interaction.viewport.Width, interaction.viewport.Height
-	if width <= 0 {
-		width = 80
-	}
-	if height <= 0 {
-		height = 24
-	}
-	separator := staveSeparator(ascii)
+	width, height := staveInteractiveDimensions(interaction.viewport)
 	selected := clampStaveRow(interaction.selectedRow, len(deps))
 	detailDep, hasDetail := staveSelectedDetail(view, state.selectedDependency)
 	if !hasDetail && interaction.focusPane == "detail" {
 		interaction.focusPane = "summary"
 	}
 
-	header := fmt.Sprintf("Stave preview%spage %d/%d%s%d deps%s%d/page", separator, state.page, totalPages, separator, len(sorted), separator, state.pageSize)
-	if state.filter != "" {
-		header += separator + "filter " + safeDisplay(state.filter, ascii)
-	}
-	if len(view.Warnings) > 0 {
-		header += fmt.Sprintf("%s%d warnings", separator, len(view.Warnings))
-	}
-	headerNode, err := staveRecordNode("status", "summary", "status", "heading", "Status", header, "domain.primary", nil)
+	headerNode, err := staveInteractiveHeader(view, state, totalPages, len(sorted), ascii)
 	if err != nil {
 		return semantic.Tree{}, err
 	}
 	children := []semantic.Node{headerNode}
 
 	if interaction.help {
-		if staveHasFeedback(interaction) {
-			feedback, err := staveFeedbackNode(interaction, width, ascii)
-			if err != nil {
-				return semantic.Tree{}, err
-			}
-			// On the smallest supported viewport, feedback is the status row.
-			// Replacing the summary header keeps the complete help map visible.
-			children = []semantic.Node{feedback}
-		}
-		helpNodes, err := staveHelpNodes(width, ascii)
-		if err != nil {
-			return semantic.Tree{}, err
-		}
-		children = append(children, helpNodes...)
-		if len(children) > height {
-			children = children[:height]
-		}
-		return staveApplicationTree(children, "Stave preview")
+		return staveInteractiveHelp(children, interaction, width, height, ascii)
 	}
 
 	feedback, err := staveFeedbackNode(interaction, width, ascii)
@@ -485,26 +471,14 @@ func staveInteractiveTree(view summaryReportView, sorted, deps []summaryDependen
 	if len(deps) > 0 && rowBudget < 1 {
 		rowBudget = 1
 	}
-	start, end := staveVisibleRows(len(deps), selected, rowBudget)
-	for i := start; i < end; i++ {
-		row, err := staveDependencyNode(deps[i], ascii, interaction.focusPane == "summary" && i == selected)
-		if err != nil {
-			return semantic.Tree{}, err
-		}
-		children = append(children, row)
+	children, err = appendStaveDependencyRows(children, deps, selected, rowBudget, ascii, interaction.focusPane == "summary")
+	if err != nil {
+		return semantic.Tree{}, err
 	}
 	children = append(children, detailNodes...)
-	if len(view.Warnings) > 0 {
-		warningName := "Warnings"
-		if width < 32 {
-			warningName = "Warn"
-		}
-		warningText := fmt.Sprintf("%d%s%s", len(view.Warnings), staveSeparator(ascii), safeDisplay(view.Warnings[0], ascii))
-		warningNode, err := staveRecordNode("warning-summary", "summary", "main", "alert", warningName, warningText, "status.advisory", nil)
-		if err != nil {
-			return semantic.Tree{}, err
-		}
-		children = append(children, warningNode)
+	children, err = appendStaveWarningSummary(children, view.Warnings, width, ascii)
+	if err != nil {
+		return semantic.Tree{}, err
 	}
 	if len(children) > height {
 		children = children[:height]
@@ -512,42 +486,114 @@ func staveInteractiveTree(view summaryReportView, sorted, deps []summaryDependen
 	return staveApplicationTree(children, "Stave preview")
 }
 
+func staveInteractiveDimensions(viewport layout.Size) (int, int) {
+	width, height := viewport.Width, viewport.Height
+	if width <= 0 {
+		width = 80
+	}
+	if height <= 0 {
+		height = 24
+	}
+	return width, height
+}
+
+func staveInteractiveHeader(view summaryReportView, state summaryState, totalPages, dependencyCount int, ascii bool) (semantic.Node, error) {
+	separator := staveSeparator(ascii)
+	header := fmt.Sprintf("Stave preview%spage %d/%d%s%d deps%s%d/page", separator, state.page, totalPages, separator, dependencyCount, separator, state.pageSize)
+	if state.filter != "" {
+		header += separator + "filter " + safeDisplay(state.filter, ascii)
+	}
+	if len(view.Warnings) > 0 {
+		header += fmt.Sprintf("%s%d warnings", separator, len(view.Warnings))
+	}
+	return staveRecordNode(semantic.NodeKey{Kind: "status", Entity: "summary", Slot: "status"}, "heading", "Status", header, staveStylePrimary, nil)
+}
+
+func staveInteractiveHelp(children []semantic.Node, interaction staveSummaryInteraction, width, height int, ascii bool) (semantic.Tree, error) {
+	if staveHasFeedback(interaction) {
+		feedback, err := staveFeedbackNode(interaction, width, ascii)
+		if err != nil {
+			return semantic.Tree{}, err
+		}
+		// On the smallest supported viewport, feedback is the status row.
+		// Replacing the summary header keeps the complete help map visible.
+		children = []semantic.Node{feedback}
+	}
+	helpNodes, err := staveHelpNodes(width, ascii)
+	if err != nil {
+		return semantic.Tree{}, err
+	}
+	children = append(children, helpNodes...)
+	if len(children) > height {
+		children = children[:height]
+	}
+	return staveApplicationTree(children, "Stave preview")
+}
+
+func appendStaveDependencyRows(children []semantic.Node, deps []summaryDependencyView, selected, rowBudget int, ascii, focused bool) ([]semantic.Node, error) {
+	start, end := staveVisibleRows(len(deps), selected, rowBudget)
+	for i := start; i < end; i++ {
+		row, err := staveDependencyNode(deps[i], ascii, focused && i == selected)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, row)
+	}
+	return children, nil
+}
+
+func appendStaveWarningSummary(children []semantic.Node, warnings []string, width int, ascii bool) ([]semantic.Node, error) {
+	if len(warnings) > 0 {
+		warningName := "Warnings"
+		if width < 32 {
+			warningName = "Warn"
+		}
+		warningText := fmt.Sprintf("%d%s%s", len(warnings), staveSeparator(ascii), safeDisplay(warnings[0], ascii))
+		warningNode, err := staveRecordNode(semantic.NodeKey{Kind: "warning-summary", Entity: "summary", Slot: "main"}, "alert", warningName, warningText, staveStyleAdvisory, nil)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, warningNode)
+	}
+	return children, nil
+}
+
 func staveDependencyNode(dep summaryDependencyView, ascii, selected bool) (semantic.Node, error) {
 	content := fmt.Sprintf("%s%s%g%% used%s%d bytes waste", safeDisplay(dep.Language, ascii), staveSeparator(ascii), dep.UsedPercent, staveSeparator(ascii), dep.EstimatedUnusedBytes)
 	name, style := safeDisplay(dep.Name, ascii), "status.success"
 	if selected {
-		name, style = "> "+name, "domain.primary"
+		name, style = "> "+name, staveStylePrimary
 	}
 	// Keys are logical identity, not display text. Sanitizing or ASCII-folding
 	// them would make distinct dependencies collide before rendering.
-	return staveRecordNode("dependency", dep.Language+"/"+dep.Name, "main", "row", name, content, style, []semantic.ActionRef{{ID: staveActionOpen, Label: "Open dependency", Default: true}, {ID: staveActionApplyCodemod, Label: "Apply codemod"}})
+	return staveRecordNode(semantic.NodeKey{Kind: "dependency", Entity: dep.Language + "/" + dep.Name, Slot: "main"}, "row", name, content, style, []semantic.ActionRef{{ID: staveActionOpen, Label: "Open dependency", Default: true}, {ID: staveActionApplyCodemod, Label: "Apply codemod"}})
 }
 
 func staveDetailNodes(dep summaryDependencyView, focused, ascii bool) ([]semantic.Node, error) {
 	name := "Detail"
-	style := "status.advisory"
+	style := staveStyleAdvisory
 	if focused {
 		name = "> Detail"
-		style = "domain.primary"
+		style = staveStylePrimary
 	}
 	identity := safeDisplay(dep.Language+":"+dep.Name, ascii)
 	lines := []struct {
 		kind, name, value, style string
 	}{
 		{"detail", name, identity, style},
-		{"detail-exports", "Exports", fmt.Sprintf("%d/%d used (%g%%)", dep.UsedExportsCount, dep.TotalExportsCount, dep.UsedPercent), "status.unknown"},
-		{"detail-waste", "Waste", fmt.Sprintf("%d bytes estimated unused", dep.EstimatedUnusedBytes), "status.unknown"},
+		{"detail-exports", "Exports", fmt.Sprintf("%d/%d used (%g%%)", dep.UsedExportsCount, dep.TotalExportsCount, dep.UsedPercent), staveStyleUnknown},
+		{"detail-waste", "Waste", fmt.Sprintf("%d bytes estimated unused", dep.EstimatedUnusedBytes), staveStyleUnknown},
 	}
-	removalValue, removalStyle := "not a candidate", "status.unknown"
+	removalValue, removalStyle := "not a candidate", staveStyleUnknown
 	if dep.RemovalCandidate != nil {
-		removalValue, removalStyle = fmt.Sprintf("candidate score %g", dep.RemovalCandidate.Score), "status.advisory"
+		removalValue, removalStyle = fmt.Sprintf("candidate score %g", dep.RemovalCandidate.Score), staveStyleAdvisory
 	}
 	lines = append(lines, struct {
 		kind, name, value, style string
 	}{"detail-removal", "Removal", removalValue, removalStyle})
 	nodes := make([]semantic.Node, 0, len(lines))
 	for _, line := range lines {
-		node, err := staveRecordNode(line.kind, dep.Language+"/"+dep.Name, "detail", "status", line.name, line.value, line.style, nil)
+		node, err := staveRecordNode(semantic.NodeKey{Kind: line.kind, Entity: dep.Language + "/" + dep.Name, Slot: "detail"}, "status", line.name, line.value, line.style, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -557,18 +603,18 @@ func staveDetailNodes(dep summaryDependencyView, focused, ascii bool) ([]semanti
 }
 
 func staveFeedbackNode(interaction staveSummaryInteraction, width int, ascii bool) (semantic.Node, error) {
-	name, text, style := "Keys", staveKeyHint(width), "status.unknown"
+	name, text, style := "Keys", staveKeyHint(width), staveStyleUnknown
 	switch {
 	case interaction.error != "":
 		name, text, style = "Error", safeDisplay(interaction.error, ascii), "status.failure"
 	case interaction.pendingConfirm != "":
-		name, text, style = "Confirm", safeDisplay(interaction.pendingConfirm, ascii), "status.advisory"
+		name, text, style = "Confirm", safeDisplay(interaction.pendingConfirm, ascii), staveStyleAdvisory
 	case interaction.commandMode:
-		name, text, style = "Command", safeDisplay(interaction.filterBuffer, ascii), "domain.primary"
+		name, text, style = "Command", safeDisplay(interaction.filterBuffer, ascii), staveStylePrimary
 	case interaction.status != "":
 		name, text, style = "Update", safeDisplay(interaction.status, ascii), "status.success"
 	}
-	return staveRecordNode("feedback", "summary", "footer", "status", name, text, style, nil)
+	return staveRecordNode(semantic.NodeKey{Kind: "feedback", Entity: "summary", Slot: "footer"}, "status", name, text, style, nil)
 }
 
 func staveHelpNodes(width int, ascii bool) ([]semantic.Node, error) {
@@ -584,7 +630,7 @@ func staveHelpNodes(width int, ascii bool) ([]semantic.Node, error) {
 	}
 	nodes := make([]semantic.Node, 0, len(lines))
 	for i, line := range lines {
-		node, err := staveRecordNode("help", fmt.Sprintf("%d", i), "footer", "status", line.name, safeDisplay(line.text, ascii), "status.advisory", nil)
+		node, err := staveRecordNode(semantic.NodeKey{Kind: "help", Entity: fmt.Sprintf("%d", i), Slot: "footer"}, "status", line.name, safeDisplay(line.text, ascii), staveStyleAdvisory, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -593,12 +639,13 @@ func staveHelpNodes(width int, ascii bool) ([]semantic.Node, error) {
 	return nodes, nil
 }
 
-func staveRecordNode(kind, entity, slot, role, name, text, style string, actions []semantic.ActionRef) (semantic.Node, error) {
-	return semantic.NewNode(semantic.NodeSpec{Key: &semantic.NodeKey{AppNamespace: "lopper", View: "summary", Kind: kind, Entity: entity, Slot: slot}, Generation: 1, Role: semantic.Role(role), Name: name, Description: text, Value: semantic.Value{Text: text, HasValue: true}, Style: semantic.StyleIntent{Role: style}, Flags: semantic.Flags{Visible: true}, Actions: actions})
+func staveRecordNode(key semantic.NodeKey, role, name, text, style string, actions []semantic.ActionRef) (semantic.Node, error) {
+	key.AppNamespace, key.View = "lopper", "summary"
+	return semantic.NewNode(semantic.NodeSpec{Key: &key, Generation: 1, Role: semantic.Role(role), Name: name, Description: text, Value: semantic.Value{Text: text, HasValue: true}, Style: semantic.StyleIntent{Role: style}, Flags: semantic.Flags{Visible: true}, Actions: actions})
 }
 
 func staveApplicationTree(children []semantic.Node, description string) (semantic.Tree, error) {
-	root, err := semantic.NewNode(semantic.NodeSpec{Key: &semantic.NodeKey{AppNamespace: "lopper", View: "summary", Kind: "application", Entity: "summary", Slot: "main"}, Generation: 1, Role: "application", Name: "Lopper", Description: description, Style: semantic.StyleIntent{Role: "domain.primary"}, Metadata: map[string]string{"layout.kind": "records"}, Flags: semantic.Flags{Visible: true}, Children: children, Actions: []semantic.ActionRef{{ID: staveActionQuit, Label: "Quit"}, {ID: staveActionRefresh, Label: "Refresh", Default: true}, {ID: staveActionSaveBaseline, Label: "Save baseline"}, {ID: staveActionCompareBaseline, Label: "Compare baseline"}}})
+	root, err := semantic.NewNode(semantic.NodeSpec{Key: &semantic.NodeKey{AppNamespace: "lopper", View: "summary", Kind: "application", Entity: "summary", Slot: "main"}, Generation: 1, Role: "application", Name: "Lopper", Description: description, Style: semantic.StyleIntent{Role: staveStylePrimary}, Metadata: map[string]string{"layout.kind": "records"}, Flags: semantic.Flags{Visible: true}, Children: children, Actions: []semantic.ActionRef{{ID: staveActionQuit, Label: "Quit"}, {ID: staveActionRefresh, Label: "Refresh", Default: true}, {ID: staveActionSaveBaseline, Label: "Save baseline"}, {ID: staveActionCompareBaseline, Label: "Compare baseline"}}})
 	if err != nil {
 		return semantic.Tree{}, err
 	}
@@ -727,56 +774,52 @@ func newStaveRenderer(opts Options, tty bool) (staveRenderer, error) {
 func lopperTheme() theme.Theme {
 	tokens := theme.TokenSet{}
 	for _, role := range theme.RequiredRoleIDs() {
-		name := string(role)
-		value := "#f2f6f8"
-		if strings.Contains(name, "surface") {
-			value = "#101418"
-		}
-		if strings.Contains(name, "border") || strings.Contains(name, "focus") {
-			value = "#aebbc5"
-		}
-		if strings.Contains(name, "link") || strings.Contains(name, "chart") {
-			value = "#88b5ff"
-		}
-		if strings.HasSuffix(name, ".bg") {
-			value = "#24313a"
-		}
-		if name == "domain.primary.bg" || strings.Contains(name, "action.primary.bg") {
-			value = "#35d08f"
-		}
-		if name == "domain.primary.fg" {
-			value = "#000000"
-		}
-		if strings.HasSuffix(name, ".fg") && (strings.Contains(name, "action.") || strings.Contains(name, "status.")) {
-			value = "#000000"
-		}
-		if strings.Contains(name, "action.secondary.bg") || strings.Contains(name, "status.unknown.bg") {
-			value = "#d7dce2"
-		}
-		if strings.Contains(name, "action.destructive.bg") || strings.Contains(name, "status.failure.bg") {
-			value = "#f14c4c"
-		}
-		if strings.Contains(name, "status.success.bg") {
-			value = "#35d08f"
-		}
-		if strings.Contains(name, "status.advisory.bg") {
-			value = "#f2c94c"
-		}
-		if strings.HasPrefix(name, "motion.duration") {
-			tokens[role] = theme.Value{Kind: theme.KindDuration, Literal: "120ms"}
-			continue
-		}
-		if strings.HasPrefix(name, "motion.easing") || strings.HasPrefix(name, "type.") {
-			tokens[role] = theme.Value{Kind: theme.KindString, Literal: "terminal"}
-			continue
-		}
-		if strings.HasPrefix(name, "space.") || strings.HasPrefix(name, "radius.") || strings.HasPrefix(name, "elevation.") {
-			tokens[role] = theme.Value{Kind: theme.KindNumber, Literal: 2}
-			continue
-		}
-		tokens[role] = theme.Value{Kind: theme.KindColor, Literal: value}
+		tokens[role] = lopperThemeToken(string(role))
 	}
 	return theme.Theme{ID: "lopper-sap-ember-blight-loam", Version: "v1", Modes: map[theme.Mode]theme.TokenSet{theme.ModeAuto: tokens, theme.ModeDark: {}}, Densities: map[theme.Density]theme.TokenSet{theme.DensityComfortable: {}}, Glyphs: map[string]theme.GlyphSet{"render": {"truncation": {Unicode: "…", ASCII: "...", Width: 3}}}, Assets: map[string]theme.AssetRef{"brand.mark": {ID: "lopper.mark", Text: "L"}, "brand.mark.ascii": {ID: "lopper.mark.ascii", Text: "L"}, "brand.banner.terminal": {ID: "lopper.banner", Text: "SAP / EMBER / BLIGHT / LOAM"}}}
+}
+
+func lopperThemeToken(name string) theme.Value {
+	switch {
+	case strings.HasPrefix(name, "motion.duration"):
+		return theme.Value{Kind: theme.KindDuration, Literal: "120ms"}
+	case strings.HasPrefix(name, "motion.easing"), strings.HasPrefix(name, "type."):
+		return theme.Value{Kind: theme.KindString, Literal: "terminal"}
+	case strings.HasPrefix(name, "space."), strings.HasPrefix(name, "radius."), strings.HasPrefix(name, "elevation."):
+		return theme.Value{Kind: theme.KindNumber, Literal: 2}
+	default:
+		return theme.Value{Kind: theme.KindColor, Literal: lopperThemeColor(name)}
+	}
+}
+
+func lopperThemeColor(name string) string {
+	// More specific palette rules take precedence over generic role colors.
+	switch {
+	case strings.Contains(name, "status.advisory.bg"):
+		return "#f2c94c"
+	case strings.Contains(name, "status.success.bg"):
+		return "#35d08f"
+	case strings.Contains(name, "action.destructive.bg"), strings.Contains(name, "status.failure.bg"):
+		return "#f14c4c"
+	case strings.Contains(name, "action.secondary.bg"), strings.Contains(name, "status.unknown.bg"):
+		return "#d7dce2"
+	case strings.HasSuffix(name, ".fg") && (strings.Contains(name, "action.") || strings.Contains(name, "status.")):
+		return "#000000"
+	case name == "domain.primary.fg":
+		return "#000000"
+	case name == "domain.primary.bg", strings.Contains(name, "action.primary.bg"):
+		return "#35d08f"
+	case strings.HasSuffix(name, ".bg"):
+		return "#24313a"
+	case strings.Contains(name, "link"), strings.Contains(name, "chart"):
+		return "#88b5ff"
+	case strings.Contains(name, "border"), strings.Contains(name, "focus"):
+		return "#aebbc5"
+	case strings.Contains(name, "surface"):
+		return "#101418"
+	default:
+		return "#f2f6f8"
+	}
 }
 
 func maxInt(a, b int) int {

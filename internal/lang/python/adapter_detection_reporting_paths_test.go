@@ -141,7 +141,7 @@ func testPythonSkipDirHelpersAndDefaultWeights(t *testing.T) {
 	if err := walkPythonDetectionEntry(skipDir, dirEntry, map[string]struct{}{}, &language.Detection{}, new(int), 8); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected python detection walker to skip .venv, got %v", err)
 	}
-	if err := scanPythonRepoEntry(repo, skipDir, dirEntry, &scanResult{}); !errors.Is(err, filepath.SkipDir) {
+	if err := scanPythonRepoEntry(repo, skipDir, dirEntry, &scanResult{}, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected python scanner to skip .venv, got %v", err)
 	}
 	if got := shared.ResolveRemovalCandidateWeights(nil); got != report.DefaultRemovalCandidateWeights() {

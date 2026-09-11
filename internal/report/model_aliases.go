@@ -6,6 +6,7 @@ const SchemaVersion = model.SchemaVersion
 
 type Report = model.Report
 type Result = model.Report
+type CoverageGap = model.CoverageGap
 
 type DependencyReport = model.DependencyReport
 type DependencyIdentity = model.DependencyIdentity

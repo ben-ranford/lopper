@@ -52,6 +52,27 @@ func TestBuildPRReviewArtifactPropagatesRevisionWarningsDeterministically(t *tes
 	}
 }
 
+func TestShortPRReviewRevisionTrimsOnlyLongSHAs(t *testing.T) {
+	tests := []struct {
+		name string
+		sha  string
+		want string
+	}{
+		{name: "empty", sha: "   ", want: ""},
+		{name: "short", sha: " abc123 ", want: "abc123"},
+		{name: "twelve", sha: "123456789abc", want: "123456789abc"},
+		{name: "long", sha: "123456789abcdef", want: "123456789abc"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shortPRReviewRevision(test.sha); got != test.want {
+				t.Fatalf("shortPRReviewRevision(%q) = %q, want %q", test.sha, got, test.want)
+			}
+		})
+	}
+}
+
 func TestRecordPRReviewCleanupErrorPreservesErrorsJoinBehavior(t *testing.T) {
 	primaryErr := errors.New("primary failure")
 	cleanupErr := errors.New("cleanup failed")

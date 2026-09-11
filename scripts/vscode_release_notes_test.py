@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -12,29 +14,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vscode_release_notes
 
 
+def fixture_git_env() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith("GIT_"):
+            del environment[key]
+    return environment
+
+
 class VSCodeReleaseNotesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q", self.repo], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.name", "Test"], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.email", "test@example.com"], check=True)
+        self.git("init", "-q", self.repo)
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.com")
         self.write_release("1.0.0", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n")
         self.commit("initial release")
-        subprocess.run(["git", "-C", self.repo, "tag", "v1.0.0"], check=True)
+        self.git("tag", "v1.0.0")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def write_release(self, version: str, changelog: str, *, production=None, dev=None) -> None:
+    def write_release(self, version: str, changelog: str, *, production=None, dev=None, engines=None) -> None:
         extension = self.repo / "extensions/vscode-lopper"
         extension.mkdir(parents=True, exist_ok=True)
         if production is None:
             production = {"tar": "^1.0.0"}
         if dev is None:
             dev = {"mocha": "^1.0.0"}
-        package = {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev}
-        packages = {"": {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev}}
+        if engines is None:
+            engines = {"vscode": "^1.90.0"}
+        package = {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev, "engines": engines}
+        packages = {"": {"name": "vscode-lopper", "version": version, "dependencies": production, "devDependencies": dev, "engines": engines}}
         for name, constraint in production.items():
             packages[f"node_modules/{name}"] = {"version": constraint.lstrip("^")}
         for name, constraint in dev.items():
@@ -45,9 +57,32 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
         (self.repo / "CHANGELOG.md").write_text("# Changelog\n\n## [1.0.1](x) (2026-02-02)\n\n* **vscode:** show dependency findings ([abcdef0](x))\n", encoding="utf-8")
 
     def commit(self, subject: str) -> str:
-        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", subject], check=True)
-        return subprocess.check_output(["git", "-C", self.repo, "rev-parse", "HEAD"], text=True).strip()
+        self.git("add", ".")
+        self.git("commit", "-qm", subject)
+        return subprocess.check_output(["git", "-C", self.repo, "rev-parse", "HEAD"], text=True, env=fixture_git_env()).strip()
+
+    def git(self, *args) -> None:
+        if args[0] == "init":
+            command = ["git", *args]
+        else:
+            command = ["git", "-C", self.repo, *args]
+        subprocess.run(command, check=True, env=fixture_git_env())
+
+    def test_commit_ignores_inherited_git_index(self) -> None:
+        with tempfile.TemporaryDirectory() as marker_temp:
+            marker_repo = Path(marker_temp)
+            self.git("init", "-q", marker_repo)
+            marker_file = marker_repo / "marker.txt"
+            marker_file.write_text("marker\n", encoding="utf-8")
+            subprocess.run(["git", "-C", marker_repo, "add", "marker.txt"], check=True, env=fixture_git_env())
+            marker_index = marker_repo / ".git" / "index"
+            before = marker_index.read_bytes()
+            (self.repo / "fixture-change.txt").write_text("fixture\n", encoding="utf-8")
+
+            with mock.patch.dict("os.environ", {"GIT_INDEX_FILE": str(marker_index)}):
+                self.commit("ignore inherited index")
+
+            self.assertEqual(marker_index.read_bytes(), before)
 
     def test_generates_user_visible_source_note_from_root_release_changelog(self) -> None:
         source = self.repo / "extensions/vscode-lopper/src/extension.ts"
@@ -115,6 +150,32 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
         output = (self.repo / vscode_release_notes.CHANGELOG_PATH).read_text()
         self.assertIn("bundled `tar` dependency from 1.0.0 to 2.0.0", output)
         self.assertNotIn("mocha", output)
+
+    def test_includes_changed_vscode_compatibility_requirement_and_refreshes_idempotently(self) -> None:
+        compatibility_range = ">=1.101.0 <1.103.0 || ^1.105.0"
+        self.write_release(
+            "1.0.1",
+            "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n",
+            engines={"vscode": compatibility_range},
+        )
+        self.commit("chore(vscode): update compatibility")
+
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        changelog = self.repo / vscode_release_notes.CHANGELOG_PATH
+        output = changelog.read_text(encoding="utf-8")
+        self.assertIn(
+            "Requires VS Code `>=1.101.0 <1.103.0 || ^1.105.0` (previously `^1.90.0`).",
+            output,
+        )
+
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        self.assertEqual(changelog.read_text(encoding="utf-8"), output)
+
+    def test_omits_vscode_compatibility_requirement_when_unchanged(self) -> None:
+        self.write_release("1.0.1", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n")
+        self.commit("chore: release")
+        vscode_release_notes.generate(self.repo, "v1.0.0", "2026-02-02")
+        self.assertNotIn("Requires VS Code", (self.repo / vscode_release_notes.CHANGELOG_PATH).read_text(encoding="utf-8"))
 
     def test_reports_production_dependency_removal(self) -> None:
         self.write_release("1.0.1", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n", production={}, dev={"tar": "^1.0.0"})

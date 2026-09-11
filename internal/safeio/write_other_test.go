@@ -137,10 +137,114 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenRenameDeniedOnNonWin
 	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
-	if removeCalls != 1 {
+	if removeCalls != 4 {
 		t.Fatalf("expected temp cleanup after rename fallback, got %d removes", removeCalls)
 	}
 	assertFallbackTargetData(t, targetData, "after")
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetReturnsRenameErrorWhenFallbackDisabledOnNonWindows(t *testing.T) {
+	removeCalls := 0
+	root, targetFile, targetData := newFallbackRenameRoot(t, func(string) error {
+		removeCalls++
+		return nil
+	})
+
+	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, false)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected rename permission error without pinned overwrite fallback, got %v", err)
+	}
+	if removeCalls != 4 {
+		t.Fatalf("expected temp cleanup after rejected fallback, got %d removes", removeCalls)
+	}
+	assertFallbackTargetData(t, targetData, "before")
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootReturnsLinkErrorAndCleansTempOnNonWindows(t *testing.T) {
+	state := newNonWindowsIfAbsentFailureState(t)
+	err := writeFileAtomicallyIfAbsentAtRoot(state.root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, state.linkErr) {
+		t.Fatalf("expected link error, got %v", err)
+	}
+	if !errors.Is(err, state.cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
+	}
+	if state.linkCalls != 1 {
+		t.Fatalf("expected one hard-link publish attempt, got %d", state.linkCalls)
+	}
+	if state.removeCalls != 2 {
+		t.Fatalf("expected retried temp cleanup, got %d removes", state.removeCalls)
+	}
+	if !state.tempClosed {
+		t.Fatal("expected temp file to close before publish fallback")
+	}
+}
+
+type nonWindowsIfAbsentFailureState struct {
+	t           *testing.T
+	root        *fakeRoot
+	tempInfo    fs.FileInfo
+	linkErr     error
+	cleanupErr  error
+	tempClosed  bool
+	linkCalls   int
+	removeCalls int
+}
+
+func newNonWindowsIfAbsentFailureState(t *testing.T) *nonWindowsIfAbsentFailureState {
+	state := &nonWindowsIfAbsentFailureState{
+		t:          t,
+		tempInfo:   newPinnedTargetInfo(t, "temp"),
+		linkErr:    errors.New("link unavailable"),
+		cleanupErr: errors.New("temp cleanup failure"),
+	}
+	state.root = &fakeRoot{
+		openFile:      state.openFile,
+		lstat:         state.lstat,
+		linkIfMatches: state.linkIfMatches,
+		remove:        state.remove,
+	}
+	return state
+}
+
+func (s *nonWindowsIfAbsentFailureState) openFile(name string, _ int, _ os.FileMode) (File, error) {
+	s.requireTempPath(name, "temp path")
+	return &fakeFile{
+		stat:  func() (fs.FileInfo, error) { return s.tempInfo, nil },
+		write: func(p []byte) (int, error) { return len(p), nil },
+		chmod: chmodWithoutError,
+		close: func() error {
+			s.tempClosed = true
+			return nil
+		},
+	}, nil
+}
+
+func (s *nonWindowsIfAbsentFailureState) lstat(name string) (fs.FileInfo, error) {
+	s.requireTempPath(name, "temp cleanup stat path")
+	return s.tempInfo, nil
+}
+
+func (s *nonWindowsIfAbsentFailureState) linkIfMatches(oldName, newName string, _ fs.FileInfo, message string) error {
+	if message != temporaryFileChangedBeforeCommit {
+		return errIdentityBoundLinkUnavailable
+	}
+	s.linkCalls++
+	s.requireTempPath(oldName, "identity-bound hard-link source")
+	s.requireTempPath(newName, "identity-bound hard-link destination")
+	return s.linkErr
+}
+
+func (s *nonWindowsIfAbsentFailureState) remove(name string) error {
+	s.removeCalls++
+	s.requireTempPath(name, "temp cleanup path")
+	return s.cleanupErr
+}
+
+func (s *nonWindowsIfAbsentFailureState) requireTempPath(name, description string) {
+	if !strings.HasPrefix(name, atomicTempPrefix) {
+		s.t.Fatalf("unexpected %s: %s", description, name)
+	}
 }
 
 func seedReadOnlyTargetFile(t *testing.T, rootDir string, perm os.FileMode) string {
@@ -250,7 +354,13 @@ func newFallbackDeniedWriteRoot(t *testing.T, tempOpenErr error, rename func(str
 			return tempInfo, nil
 		},
 		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempInfo, tempOpenErr),
-		rename:   rename,
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: rename,
 	}
 	return root, targetFile, targetData
 }

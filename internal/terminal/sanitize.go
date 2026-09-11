@@ -19,7 +19,7 @@ func SanitizeString(value string) string {
 		r, size := utf8.DecodeRuneInString(value[i:])
 		if r == utf8.RuneError && size == 1 {
 			b := value[i]
-			writeEscapedByte(&output, b, hex)
+			writeEscapedRune(&output, rune(b), hex)
 			i++
 			continue
 		}
@@ -28,7 +28,7 @@ func SanitizeString(value string) string {
 			i += size
 			continue
 		}
-		writeEscapedByte(&output, byte(r), hex)
+		writeEscapedRune(&output, r, hex)
 		i += size
 	}
 	return output.String()
@@ -63,9 +63,9 @@ func isControlRune(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
-func writeEscapedByte(output *strings.Builder, b byte, hex string) {
+func writeEscapedRune(output *strings.Builder, r rune, hex string) {
 	output.WriteByte('\\')
 	output.WriteByte('x')
-	output.WriteByte(hex[b>>4])
-	output.WriteByte(hex[b&0x0f])
+	output.WriteByte(hex[r>>4])
+	output.WriteByte(hex[r&0x0f])
 }

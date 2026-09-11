@@ -209,6 +209,47 @@ func TestRunAnalyseApplyPythonCodemodExplicitlyDisabledE2E(t *testing.T) {
 	}
 }
 
+func TestRunAnalysePHPTraitUseAfterSameLineHeredocE2E(t *testing.T) {
+	repo := setupPHPTraitUseAfterSameLineHeredocFixture(t)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	args := []string{
+		"analyse", "vendor/package",
+		"--repo", repo,
+		"--language", "php",
+		"--format", "json",
+		"--cache=false",
+	}
+	code := run(args, strings.NewReader(""), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected success exit code, got %d stderr=%q", code, errOut.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", errOut.String())
+	}
+
+	var payload report.Report
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output report: %v", err)
+	}
+	if len(payload.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %#v", payload.Dependencies)
+	}
+	dep := payload.Dependencies[0]
+	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 || dep.UsedPercent != 100 {
+		t.Fatalf("expected PHP trait use to count as active usage, got %#v", dep)
+	}
+	if len(dep.UsedImports) != 1 || dep.UsedImports[0].Module != `Vendor\Package\FeatureTrait` {
+		t.Fatalf("expected trait use in CLI report, got %#v", dep.UsedImports)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect removal-style recommendation for active PHP trait use, got %#v", dep.Recommendations)
+		}
+	}
+}
+
 func setupGitLodashFixture(t *testing.T, source string) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
@@ -238,6 +279,51 @@ func setupGitLodashFixture(t *testing.T, source string) (string, string) {
 	testutil.RunGit(t, repo, "commit", "-m", "fixture")
 
 	return repo, sourcePath
+}
+
+func setupPHPTraitUseAfterSameLineHeredocFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	sourceDir := filepath.Join(repo, "src")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir PHP source dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "composer.json"), []byte(`{"require":{"vendor/package":"^1.0"}}`), 0o644); err != nil {
+		t.Fatalf("write composer.json: %v", err)
+	}
+	lock := `{
+  "packages": [
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
+    }
+  ]
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "composer.lock"), []byte(lock), 0o644); err != nil {
+		t.Fatalf("write composer.lock: %v", err)
+	}
+	source := `<?php
+final class Service
+{
+    public function template(): string
+    {
+        return <<<ONE
+}
+ONE; $second = <<<'TWO'
+}
+TWO;
+    }
+
+    use \Vendor\Package\FeatureTrait {
+        handle as private;
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(sourceDir, "index.php"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write PHP source: %v", err)
+	}
+	return repo
 }
 
 func setupPythonFixture(t *testing.T, gitRepo bool) (string, string) {

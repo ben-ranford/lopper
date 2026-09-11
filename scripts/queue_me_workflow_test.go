@@ -70,9 +70,9 @@ func TestQueueMeControllerContract(t *testing.T) {
 	controller := readConfig(t, "scripts/queue_me_controller.js")
 	for _, fragment := range []string{
 		"compareCommitsWithBasehead",
-		"updatePullRequestBranch",
+		"assertCanonicalCommitIdentity",
+		"Queue identity audit failed",
 		"expectedHeadOid",
-		"updateMethod: REBASE",
 		"enablePullRequestAutoMerge",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
@@ -87,10 +87,35 @@ func TestQueueMeControllerContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"requestReviews",
 		"force-push",
+		"updatePullRequestBranch",
+		"updateMethod: REBASE",
 		"process.env.QUEUE_APP_PRIVATE_KEY",
 	} {
 		if strings.Contains(controller, forbidden) {
 			t.Fatalf("queue-me controller contains forbidden fragment %q", forbidden)
+		}
+	}
+}
+
+func TestQueueMeControllerAdvancesPastConflictingLeaderContract(t *testing.T) {
+	controller := readConfig(t, "scripts/queue_me_controller.js")
+	docs := readConfig(t, "docs/ci-usage.md")
+	for _, fragment := range []string{
+		"function advanceQueuedPull(",
+		"needsCurrentBase",
+		"The queue will continue with the next queued pull request.",
+		"Every queued pull request is waiting for a clean queue identity audit after a base branch update.",
+	} {
+		if !strings.Contains(controller, fragment) {
+			t.Fatalf("queue-me controller conflict handling missing %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"skips to the next queued pull request",
+		"retries the blocked entry only after that branch or",
+	} {
+		if !strings.Contains(docs, fragment) {
+			t.Fatalf("queue-me docs conflict ordering contract missing %q", fragment)
 		}
 	}
 }

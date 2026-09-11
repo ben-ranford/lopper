@@ -104,10 +104,11 @@ func repoPortfolioComponents(analysis RepoAnalysis, repoNameCounts map[string]in
 	components := make([]PortfolioComponent, 0, len(analysis.Report.Dependencies))
 	for _, dep := range analysis.Report.Dependencies {
 		component := PortfolioComponent{
-			Repo:     repoLabel,
-			RepoPath: strings.TrimSpace(analysis.Input.Path),
-			Language: dep.Language,
-			Name:     strings.TrimSpace(dep.Name),
+			Repo:               repoLabel,
+			RepoPath:           strings.TrimSpace(analysis.Input.Path),
+			RepoLabelGenerated: repoLabel != strings.TrimSpace(analysis.Input.Name),
+			Language:           dep.Language,
+			Name:               strings.TrimSpace(dep.Name),
 		}
 		if dep.Identity != nil {
 			component.Version = strings.TrimSpace(dep.Identity.Version)

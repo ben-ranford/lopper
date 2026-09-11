@@ -18,9 +18,16 @@ type scanRepoState struct {
 	parseErrorFiles []string
 	oversizedCount  int
 	oversizedFiles  []string
+	excludedPaths   map[string]struct{}
 }
 
 func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry fs.DirEntry) error {
+	if isExcludedScanPath(state.excludedPaths, path) {
+		if entry.IsDir() {
+			return fs.SkipDir
+		}
+		return nil
+	}
 	if entry.IsDir() {
 		if shared.ShouldSkipDir(entry.Name(), skipDirectories) {
 			return fs.SkipDir
@@ -58,4 +65,11 @@ func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
 	if len(*parseErrorFiles) < 5 {
 		*parseErrorFiles = append(*parseErrorFiles, relPath)
 	}
+}
+
+func isExcludedScanPath(excludedPaths map[string]struct{}, path string) bool {
+	if len(excludedPaths) == 0 {
+		return false
+	}
+	return shared.IsExcludedPath(excludedPaths, path)
 }

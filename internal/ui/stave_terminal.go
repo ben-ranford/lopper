@@ -89,117 +89,15 @@ func (m *staveTerminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		b.quit = true
 		return m, tea.Quit
 	case tea.WindowSizeMsg:
-		if msg.Width > 0 {
-			b.width = msg.Width
-		}
-		if msg.Height > 0 {
-			b.height = msg.Height
-		}
-		if err := b.resize(b.width, b.height); err != nil {
-			b.fail(err)
-			return m, tea.Quit
-		}
-		return m, nil
+		return m.resize(msg)
 	case tea.KeyMsg:
-		if _, release := msg.(tea.KeyReleaseMsg); release {
-			return m, nil
-		}
-		commandMode := false
-		if snap, err := b.sessionSnapshot(); err == nil {
-			commandMode = snap.model.interaction.commandMode
-		}
-		if (msg.Key().Text == "q" && b.inflight && !commandMode) || (msg.Key().Mod == tea.ModCtrl && (msg.Key().Text == "c" || msg.Key().Text == "d")) {
-			b.cancelInflight()
-			b.shutdown()
-			b.quit = true
-			return m, tea.Quit
-		}
-		var command string
-		var selectedAction string
-		var selectedDep string
-		if msg.Key().Code == tea.KeyEnter || msg.Key().Code == tea.KeyKpEnter {
-			if snap, err := b.sessionSnapshot(); err == nil {
-				if snap.model.interaction.commandMode {
-					command = snap.model.interaction.filterBuffer
-				} else if snap.model.interaction.focusPane != "detail" {
-					selectedAction, selectedDep = staveActionOpen, selectedDependencyForRow(snap.model)
-				}
-			}
-		}
-		if msg.Key().Text == "r" && msg.Key().Mod == 0 {
-			if snap, err := b.sessionSnapshot(); err == nil && snap.model.interaction.commandMode {
-				selectedAction = ""
-			} else {
-				selectedAction = staveActionRefresh
-			}
-		}
-		if err := b.key(msg); err != nil {
-			var inputErr *staveInputError
-			if errors.As(err, &inputErr) {
-				b.reportError(inputErr)
-				return m, nil
-			}
-			b.fail(err)
-			return m, tea.Quit
-		}
-		if b.inflight {
-			return m, nil
-		}
-		if snap, err := b.sessionSnapshot(); err == nil && snap.model.interaction.quit {
-			b.shutdown()
-			b.quit = true
-			return m, tea.Quit
-		}
-		if command != "" {
-			return m, b.beginCommand(command)
-		}
-		if selectedAction != "" {
-			args := map[string]any{}
-			if selectedAction == staveActionOpen {
-				args["dependency"] = selectedDep
-			}
-			return m, b.beginAction(action.ID(selectedAction), args, false)
-		}
+		return m.updateKey(msg)
 	case tea.PasteMsg:
 		if err := b.paste(msg.Content); err != nil {
 			b.reportError(err)
 		}
 	case staveActionCompletion:
-		if b.context().Err() != nil {
-			// Signal cleanup publishes the one correlated cancellation result
-			// with a fresh bounded context. Do not race that path by trying to
-			// publish the command completion through the canceled run context.
-			return m, nil
-		}
-		b.inflight = false
-		b.currentCallID = ""
-		b.actionCancel = nil
-		var outcomeValue any
-		if msg.result.Outcome != nil {
-			outcomeValue = msg.result.Outcome.Value
-		}
-		payload := event.EffectResultPayload{CallID: msg.callID, Status: "completed", Value: outcomeValue}
-		if msg.result.Error != nil {
-			payload.Status = "error"
-			payload.Error = msg.result.Error.Message
-		} else if msg.err != nil {
-			payload.Status = "error"
-			payload.Error = terminal.SanitizeString(msg.err.Error())
-		}
-		ev, err := event.New(event.EffectResult, payload)
-		if err != nil {
-			b.fail(err)
-			return m, tea.Quit
-		}
-		if err = b.sendAndWait(ev); err != nil {
-			b.fail(err)
-			return m, tea.Quit
-		}
-		if msg.actionID == action.ID(staveActionQuit) && payload.Status != "error" {
-			b.shutdown()
-			b.quit = true
-			return m, tea.Quit
-		}
+		return m.completeAction(msg)
 	case staveTextCompletion:
 		b.inflight = false
 		if msg.err != nil {
@@ -208,6 +106,140 @@ func (m *staveTerminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *staveTerminalModel) resize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	b := m.bridge
+	if msg.Width > 0 {
+		b.width = msg.Width
+	}
+	if msg.Height > 0 {
+		b.height = msg.Height
+	}
+	if err := b.resize(b.width, b.height); err != nil {
+		b.fail(err)
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *staveTerminalModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	b := m.bridge
+	if _, release := msg.(tea.KeyReleaseMsg); release {
+		return m, nil
+	}
+	if b.interruptKey(msg) {
+		b.cancelInflight()
+		b.shutdown()
+		b.quit = true
+		return m, tea.Quit
+	}
+	command, selectedAction, selectedDep := b.keyAction(msg)
+	if err := b.key(msg); err != nil {
+		var inputErr *staveInputError
+		if errors.As(err, &inputErr) {
+			b.reportError(inputErr)
+			return m, nil
+		}
+		b.fail(err)
+		return m, tea.Quit
+	}
+	if b.inflight {
+		return m, nil
+	}
+	if snap, err := b.sessionSnapshot(); err == nil && snap.model.interaction.quit {
+		b.shutdown()
+		b.quit = true
+		return m, tea.Quit
+	}
+	if command != "" {
+		return m, b.beginCommand(command)
+	}
+	if selectedAction != "" {
+		args := map[string]any{}
+		if selectedAction == staveActionOpen {
+			args["dependency"] = selectedDep
+		}
+		return m, b.beginAction(action.ID(selectedAction), args, false)
+	}
+	return m, nil
+}
+
+func (m *staveTerminalModel) completeAction(msg staveActionCompletion) (tea.Model, tea.Cmd) {
+	b := m.bridge
+	if b.context().Err() != nil {
+		// Signal cleanup publishes the one correlated cancellation result
+		// with a fresh bounded context. Do not race that path by trying to
+		// publish the command completion through the canceled run context.
+		return m, nil
+	}
+	b.inflight = false
+	b.currentCallID = ""
+	b.actionCancel = nil
+	var outcomeValue any
+	if msg.result.Outcome != nil {
+		outcomeValue = msg.result.Outcome.Value
+	}
+	payload := event.EffectResultPayload{CallID: msg.callID, Status: "completed", Value: outcomeValue}
+	if msg.result.Error != nil {
+		payload.Status = "error"
+		payload.Error = msg.result.Error.Message
+	} else if msg.err != nil {
+		payload.Status = "error"
+		payload.Error = terminal.SanitizeString(msg.err.Error())
+	}
+	ev, err := event.New(event.EffectResult, payload)
+	if err != nil {
+		b.fail(err)
+		return m, tea.Quit
+	}
+	if err = b.sendAndWait(ev); err != nil {
+		b.fail(err)
+		return m, tea.Quit
+	}
+	if msg.actionID == action.ID(staveActionQuit) && payload.Status != "error" {
+		b.shutdown()
+		b.quit = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (t *staveTerminal) interruptKey(msg tea.KeyMsg) bool {
+	commandMode := false
+	if snap, err := t.sessionSnapshot(); err == nil {
+		commandMode = snap.model.interaction.commandMode
+	}
+	key := msg.Key()
+	return (key.Text == "q" && t.inflight && !commandMode) || (key.Mod == tea.ModCtrl && (key.Text == "c" || key.Text == "d"))
+}
+
+func (t *staveTerminal) enterAction() (command, selectedAction, selectedDep string) {
+	snap, err := t.sessionSnapshot()
+	if err != nil {
+		return "", "", ""
+	}
+	if snap.model.interaction.commandMode {
+		return snap.model.interaction.filterBuffer, "", ""
+	}
+	if snap.model.interaction.focusPane != "detail" {
+		return "", staveActionOpen, selectedDependencyForRow(snap.model)
+	}
+	return "", "", ""
+}
+
+func (t *staveTerminal) keyAction(msg tea.KeyMsg) (command, selectedAction, selectedDep string) {
+	if msg.Key().Code == tea.KeyEnter || msg.Key().Code == tea.KeyKpEnter {
+		command, selectedAction, selectedDep = t.enterAction()
+	}
+	if msg.Key().Text == "r" && msg.Key().Mod == 0 {
+		if snap, err := t.sessionSnapshot(); err == nil && snap.model.interaction.commandMode {
+			selectedAction = ""
+		} else {
+			selectedAction = staveActionRefresh
+		}
+	}
+	return command, selectedAction, selectedDep
 }
 
 type staveInputError struct{ err error }
@@ -341,19 +373,7 @@ func (t *staveTerminal) key(msg tea.KeyMsg) error {
 	// time so command-mode editors and Unicode filters behave exactly like
 	// interactive typing.
 	if len([]rune(key.Text)) > 1 {
-		for _, r := range key.Text {
-			if unicode.IsControl(r) {
-				return &staveInputError{err: fmt.Errorf("unsupported terminal key text")}
-			}
-			chord, err := staveinput.ParseKey(string(r))
-			if err != nil {
-				return &staveInputError{err: err}
-			}
-			if err := t.sendAndWait(staveinput.KeyEvent(chord)); err != nil {
-				return err
-			}
-		}
-		return nil
+		return t.keyText(key.Text)
 	}
 	chord, err := staveinput.ParseKey(msg.String())
 	if err != nil {
@@ -370,6 +390,22 @@ func (t *staveTerminal) key(msg tea.KeyMsg) error {
 	}
 	ev := staveinput.KeyEvent(chord)
 	return t.sendAndWait(ev)
+}
+
+func (t *staveTerminal) keyText(text string) error {
+	for _, r := range text {
+		if unicode.IsControl(r) {
+			return &staveInputError{err: fmt.Errorf("unsupported terminal key text")}
+		}
+		chord, err := staveinput.ParseKey(string(r))
+		if err != nil {
+			return &staveInputError{err: err}
+		}
+		if err := t.sendAndWait(staveinput.KeyEvent(chord)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *staveTerminalModel) View() tea.View {
@@ -529,7 +565,7 @@ func terminalSafeText(s string) string { return fmt.Sprintf("%s\n", terminal.San
 // runStaveTerminal starts Bubble Tea with explicit streams/context. The
 // generic Stave session is wired here, keeping all type assertions out of the
 // model's input and rendering paths.
-func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, view summaryReportView, state summaryState, prepared any, input io.Reader, output io.Writer, alt bool) error {
+func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepared any, input io.Reader, output io.Writer, alt bool) error {
 	runCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	sendEvent := func(c context.Context, raw any, ev event.Event) error {
@@ -564,25 +600,7 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, view 
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {
 	if runCtx.Err() != nil && ctx.Err() == nil {
-		if bridge.actionCancel != nil {
-			bridge.actionCancel()
-			bridge.actionCancel = nil
-		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		defer cleanupCancel()
-		if bridge.currentCallID != "" {
-			cancelled, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: bridge.currentCallID, Status: "cancelled", Error: "cancellation requested by signal; final action outcome unknown"})
-			if eventErr == nil {
-				if sendErr := sendEvent(cleanupCtx, prepared, cancelled); sendErr != nil && bridge.err == nil {
-					bridge.err = sendErr
-				}
-			}
-		}
-		if shutdown, eventErr := event.New(event.Shutdown, nil); eventErr == nil {
-			if sendErr := sendEvent(cleanupCtx, prepared, shutdown); sendErr != nil && bridge.err == nil {
-				bridge.err = sendErr
-			}
-		}
+		cleanupStaveSignal(ctx, bridge, prepared, sendEvent)
 	}
 	if bridge.err != nil {
 		return bridge.err
@@ -597,4 +615,26 @@ func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, 
 		return runErr
 	}
 	return nil
+}
+
+func cleanupStaveSignal(ctx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error) {
+	if bridge.actionCancel != nil {
+		bridge.actionCancel()
+		bridge.actionCancel = nil
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cleanupCancel()
+	if bridge.currentCallID != "" {
+		cancelled, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: bridge.currentCallID, Status: "cancelled", Error: "cancellation requested by signal; final action outcome unknown"})
+		if eventErr == nil {
+			if sendErr := sendEvent(cleanupCtx, prepared, cancelled); sendErr != nil && bridge.err == nil {
+				bridge.err = sendErr
+			}
+		}
+	}
+	if shutdown, eventErr := event.New(event.Shutdown, nil); eventErr == nil {
+		if sendErr := sendEvent(cleanupCtx, prepared, shutdown); sendErr != nil && bridge.err == nil {
+			bridge.err = sendErr
+		}
+	}
 }

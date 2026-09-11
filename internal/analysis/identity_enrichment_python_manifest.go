@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ben-ranford/lopper/internal/safeio"
+	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -22,6 +22,7 @@ func collectPyprojectManifestEvidence(repoPath, path string, index identityIndex
 	source := relativeIdentitySource(repoPath, path)
 	project := pythonManifestTable(document["project"])
 	addPythonRequirementPins(index, project["dependencies"], source)
+	addPythonOptionalRequirementPins(index, project["optional-dependencies"], source)
 	addPythonRequirementGroupPins(index, document["dependency-groups"], source)
 
 	tool := pythonManifestTable(document["tool"])
@@ -41,7 +42,7 @@ func collectPipfileManifestEvidence(repoPath, path string, index identityIndex, 
 }
 
 func readPythonManifestDocument(repoPath, path string, warnings *identityWarningCollector) (map[string]any, bool) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := pythonlang.ReadManifestFile(repoPath, path)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil, false
@@ -72,6 +73,10 @@ func addPythonRequirementGroupPins(index identityIndex, rawGroups any, source st
 	for _, groupName := range sortedPythonManifestKeys(groups) {
 		addPythonRequirementPins(index, groups[groupName], source)
 	}
+}
+
+func addPythonOptionalRequirementPins(index identityIndex, rawGroups any, source string) {
+	addPythonRequirementGroupPins(index, rawGroups, source)
 }
 
 func addPythonRequirementPins(index identityIndex, rawRequirements any, source string) {

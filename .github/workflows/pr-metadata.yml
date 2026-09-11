@@ -14,22 +14,30 @@ on:
 jobs:
   validate:
     name: pr-metadata
-    if: github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     steps:
+      - name: Require at least one PR label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const labels = context.payload.pull_request?.labels ?? [];
+            if (labels.length === 0) {
+              core.setFailed('Pull requests must have at least one label.');
+            }
+
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
 
       - name: Write PR body
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const fs = require('node:fs');
@@ -39,7 +47,7 @@ jobs:
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
       - name: Read repository merge policy
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const { data: repo } = await github.rest.repos.get({

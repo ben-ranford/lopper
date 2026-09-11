@@ -17,6 +17,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
+	"github.com/ben-ranford/stave"
 	"github.com/ben-ranford/stave/action"
 	"github.com/ben-ranford/stave/capability"
 	"github.com/ben-ranford/stave/event"
@@ -481,6 +482,11 @@ func TestLopperStaveProgramRegistersTypedTreeActionsAndRejectsInvalidSchema(t *t
 	if result.Error == nil || result.Error.Code != action.InvalidArgument {
 		t.Fatalf("unknown typed field was accepted: %+v", result)
 	}
+	checkSingleUseCodemodConfirmation(t, prepared)
+}
+
+func checkSingleUseCodemodConfirmation(t *testing.T, prepared *stave.Prepared[staveSummaryModel]) {
+	t.Helper()
 	def, ok := prepared.Actions.Definition(action.ID(staveActionApplyCodemod))
 	if !ok {
 		t.Fatal("codemod action definition missing")
@@ -519,6 +525,40 @@ func TestLopperStaveActionEventsProduceReplayableTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer prepared.Session.Close()
+	transcript := recordPreviewRefreshTranscript(t, prepared)
+	checkPreviewReplayCheckpoint(t, prepared)
+
+	apply, closeReplay := newPreviewReplayApply(t, summary, &opts, &view, &modelState)
+	replayed, err := replay.Execute(context.Background(), transcript, apply)
+	closeReplay()
+	if err != nil {
+		t.Fatalf("replay execute: %v", err)
+	}
+	if len(replayed.Records) != len(transcript.Records) || replayed.Records[len(replayed.Records)-1].Result.Hashes.Model != transcript.Records[len(transcript.Records)-1].Result.Hashes.Model {
+		t.Fatalf("replay digest diverged")
+	}
+
+	mutated, err := transcript.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutatedReport := report.Report{SchemaVersion: report.SchemaVersion, Dependencies: []report.DependencyReport{{Language: "go", Name: "mutated", UsedExportsCount: 2, TotalExportsCount: 2, UsedPercent: 100}}}
+	mutatedEffect, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: "c1", Status: "done", Value: map[string]any{"version": "lopper.action-result/v1", "action": staveActionRefresh, "value": map[string]any{"refreshed": true, "report": mutatedReport}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated.Records[1].Event = mutatedEffect.WithAccepted(mutated.Records[1].Event.Sequence, mutated.Records[1].Event.Revision)
+	mutatedApply, closeMutatedReplay := newPreviewReplayApply(t, summary, &opts, &view, &modelState)
+	_, err = replay.Execute(context.Background(), mutated, mutatedApply)
+	closeMutatedReplay()
+	var divergence *replay.Divergence
+	if !errors.As(err, &divergence) {
+		t.Fatalf("mutated replay did not diverge: %v", err)
+	}
+}
+
+func recordPreviewRefreshTranscript(t *testing.T, prepared *stave.Prepared[staveSummaryModel]) replay.Transcript {
+	t.Helper()
 	ev, err := event.New(event.ActionInvoked, event.ActionInvokedPayload{CallID: "c1", ActionID: staveActionRefresh, Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
@@ -555,6 +595,11 @@ func TestLopperStaveActionEventsProduceReplayableTranscript(t *testing.T) {
 	if len(transcript.Records) != 2 || transcript.Records[0].Event.Kind != event.ActionInvoked || transcript.Records[1].Event.Kind != event.EffectResult {
 		t.Fatalf("typed event missing from transcript: %+v", transcript)
 	}
+	return transcript
+}
+
+func checkPreviewReplayCheckpoint(t *testing.T, prepared *stave.Prepared[staveSummaryModel]) {
+	t.Helper()
 	checkpoint, err := prepared.Session.Checkpoint()
 	if err != nil {
 		t.Fatal(err)
@@ -575,62 +620,36 @@ func TestLopperStaveActionEventsProduceReplayableTranscript(t *testing.T) {
 	if strings.Contains(string(modelJSON), "summary") && strings.Contains(string(modelJSON), "shared") {
 		t.Fatalf("checkpoint model leaked shared services: %s", modelJSON)
 	}
-	newReplayApply := func() (replay.ApplyFunc, func()) {
-		replayProgram, replayErr := newLopperStaveProgram(summary, &opts, &view, &modelState)
-		if replayErr != nil {
-			t.Fatal(replayErr)
-		}
-		replayPrepared, replayErr := replayProgram.NewSession(context.Background(), staveSessionOptions(opts, false))
-		if replayErr != nil {
-			t.Fatal(replayErr)
-		}
-		apply := func(ctx context.Context, prior state.Checkpoint, replayEvent event.Event) (state.Checkpoint, error) {
-			if err := prior.VerifyChecksum(); err != nil {
-				return state.Checkpoint{}, fmt.Errorf("restore checkpoint checksum: %w", err)
-			}
-			current, err := replayPrepared.Session.Checkpoint()
-			if err != nil {
-				return state.Checkpoint{}, err
-			}
-			if current.Checksum != prior.Checksum {
-				return state.Checkpoint{}, fmt.Errorf("restore checkpoint mismatch: got %s want %s", current.Checksum, prior.Checksum)
-			}
-			if err := replayPrepared.Session.Send(replayEvent); err != nil {
-				return state.Checkpoint{}, err
-			}
-			if err := replayPrepared.Session.Wait(ctx, func(s state.State[staveSummaryModel]) bool { return s.Sequence > prior.Sequence }); err != nil {
-				return state.Checkpoint{}, err
-			}
-			return replayPrepared.Session.Checkpoint()
-		}
-		return apply, func() { replayPrepared.Session.Close() }
-	}
+}
 
-	apply, closeReplay := newReplayApply()
-	replayed, err := replay.Execute(context.Background(), transcript, apply)
-	closeReplay()
-	if err != nil {
-		t.Fatalf("replay execute: %v", err)
+func newPreviewReplayApply(t *testing.T, summary *Summary, opts *Options, view *summaryReportView, modelState *summaryState) (replay.ApplyFunc, func()) {
+	t.Helper()
+	replayProgram, replayErr := newLopperStaveProgram(summary, opts, view, modelState)
+	if replayErr != nil {
+		t.Fatal(replayErr)
 	}
-	if len(replayed.Records) != len(transcript.Records) || replayed.Records[len(replayed.Records)-1].Result.Hashes.Model != transcript.Records[len(transcript.Records)-1].Result.Hashes.Model {
-		t.Fatalf("replay digest diverged")
+	replayPrepared, replayErr := replayProgram.NewSession(context.Background(), staveSessionOptions(*opts, false))
+	if replayErr != nil {
+		t.Fatal(replayErr)
 	}
-
-	mutated, err := transcript.Clone()
-	if err != nil {
-		t.Fatal(err)
+	apply := func(ctx context.Context, prior state.Checkpoint, replayEvent event.Event) (state.Checkpoint, error) {
+		if err := prior.VerifyChecksum(); err != nil {
+			return state.Checkpoint{}, fmt.Errorf("restore checkpoint checksum: %w", err)
+		}
+		current, err := replayPrepared.Session.Checkpoint()
+		if err != nil {
+			return state.Checkpoint{}, err
+		}
+		if current.Checksum != prior.Checksum {
+			return state.Checkpoint{}, fmt.Errorf("restore checkpoint mismatch: got %s want %s", current.Checksum, prior.Checksum)
+		}
+		if err := replayPrepared.Session.Send(replayEvent); err != nil {
+			return state.Checkpoint{}, err
+		}
+		if err := replayPrepared.Session.Wait(ctx, func(s state.State[staveSummaryModel]) bool { return s.Sequence > prior.Sequence }); err != nil {
+			return state.Checkpoint{}, err
+		}
+		return replayPrepared.Session.Checkpoint()
 	}
-	mutatedReport := report.Report{SchemaVersion: report.SchemaVersion, Dependencies: []report.DependencyReport{{Language: "go", Name: "mutated", UsedExportsCount: 2, TotalExportsCount: 2, UsedPercent: 100}}}
-	mutatedEffect, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: "c1", Status: "done", Value: map[string]any{"version": "lopper.action-result/v1", "action": staveActionRefresh, "value": map[string]any{"refreshed": true, "report": mutatedReport}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mutated.Records[1].Event = mutatedEffect.WithAccepted(mutated.Records[1].Event.Sequence, mutated.Records[1].Event.Revision)
-	mutatedApply, closeMutatedReplay := newReplayApply()
-	_, err = replay.Execute(context.Background(), mutated, mutatedApply)
-	closeMutatedReplay()
-	var divergence *replay.Divergence
-	if !errors.As(err, &divergence) {
-		t.Fatalf("mutated replay did not diverge: %v", err)
-	}
+	return apply, func() { replayPrepared.Session.Close() }
 }
