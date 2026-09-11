@@ -264,6 +264,22 @@ func TestSwiftNestedCarthageProbeRejectsReplacedCandidateSymlink(t *testing.T) {
 	}
 }
 
+func TestSwiftNestedCarthageProbeRejectsUntrustedRoots(t *testing.T) {
+	repo := t.TempDir()
+	for _, candidate := range []string{repo, filepath.Dir(repo)} {
+		if relative, ok := nestedCarthageRootRelativePath(repo, candidate); ok {
+			t.Fatalf("untrusted candidate %q was accepted as %q", candidate, relative)
+		}
+	}
+
+	missingRepo := filepath.Join(repo, "missing")
+	err := applyCarthageDetectionRoots(context.Background(), missingRepo, &language.Detection{}, map[string]struct{}{},
+		map[string]int{filepath.Join(missingRepo, "Package"): 10}, map[string]struct{}{})
+	if err == nil {
+		t.Fatal("expected a missing trusted root to reject nested probing")
+	}
+}
+
 func TestSwiftRootCarthageProbeSortsChildrenAcrossReadBatches(t *testing.T) {
 	repo := t.TempDir()
 	candidate := filepath.Join(repo, "parent")
