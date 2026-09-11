@@ -73,6 +73,22 @@ func TestStaveInteractiveTerminalRequiresInputAndOutputTTY(t *testing.T) {
 	}
 }
 
+func TestStaveTerminalChecksRejectClosedFiles(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed-terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if width, height, ok := staveTerminalDimensions(file); ok || width != 0 || height != 0 {
+		t.Fatalf("closed terminal dimensions = (%d, %d, %t)", width, height, ok)
+	}
+	if staveTerminalFile(file) {
+		t.Fatal("closed file was detected as a terminal")
+	}
+}
+
 func TestStavePreviewStartUsesLineModeForPipedInput(t *testing.T) {
 	terminalInput, terminalOutput, err := pty.Open()
 	if err != nil {
@@ -310,6 +326,37 @@ func TestStaveLineSessionIdlePipeHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("idle pipe read remained blocked after cancellation")
+	}
+}
+
+func TestStavePreviewStartIdlePipeHonorsCancellation(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaveTestCloser(t, "Start idle-pipe reader", reader)
+	cleanupStaveTestCloser(t, "Start idle-pipe writer", writer)
+	output := &readyStaveWriter{ready: make(chan struct{})}
+	summary := NewSummary(output, reader, &stubAnalyzer{report: report.Report{}}, report.NewFormatter())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- NewStavePreview(summary).Start(ctx, Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80})
+	}()
+	<-output.ready
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("idle pipe Start cancellation = %v", err)
+		}
+	case <-time.After(time.Second):
+		if err := writer.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			t.Errorf("release idle-pipe writer: %v", err)
+		}
+		<-done
+		t.Fatal("idle pipe Start remained blocked after cancellation")
 	}
 }
 

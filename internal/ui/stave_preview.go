@@ -249,8 +249,14 @@ func staveTerminalDimensions(writer io.Writer) (width, height int, ok bool) {
 	if !ok {
 		return 0, 0, false
 	}
-	width, height, err := charmterm.GetSize(file.Fd())
-	if err != nil || width <= 0 || height <= 0 {
+	conn, err := file.SyscallConn()
+	var sizeErr error
+	if err == nil {
+		err = conn.Control(func(fd uintptr) {
+			width, height, sizeErr = charmterm.GetSize(fd)
+		})
+	}
+	if err != nil || sizeErr != nil || width <= 0 || height <= 0 {
 		return 0, 0, false
 	}
 	return width, height, true
@@ -353,7 +359,18 @@ func supportsStaveInteractiveTerminal(input io.Reader, output io.Writer) bool {
 
 func staveTerminalFile(stream any) bool {
 	file, ok := stream.(*os.File)
-	return ok && charmterm.IsTerminal(file.Fd())
+	if !ok {
+		return false
+	}
+	conn, err := file.SyscallConn()
+	terminal := false
+	if err == nil {
+		err = conn.Control(func(fd uintptr) { terminal = charmterm.IsTerminal(fd) })
+	}
+	if err != nil {
+		return false
+	}
+	return terminal
 }
 
 func sendLopperEvent(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], ev event.Event) error {
