@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -353,6 +354,92 @@ func TestServiceAnalyseSwiftCarthageAutoModeBehindPreviewFlag(t *testing.T) {
 	dep := singleDependencyReport(t, reportData)
 	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
 		t.Fatalf("expected Carthage-attributed swift dependency in auto mode, got %#v", dep)
+	}
+}
+
+func TestServiceAutoRetainsNestedSwiftCarthagePackage(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftCarthageAnalysisFixture(t, filepath.Join(repo, "apps", "ios"))
+	result, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := singleDependencyReport(t, result)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("nested Carthage package lost dependency attribution: %#v", dep)
+	}
+}
+
+func TestServiceAutoRetainsNestedSwiftCarthagePackagePastDetectionBudget(t *testing.T) {
+	repo := t.TempDir()
+	ios := filepath.Join(repo, "apps", "ios")
+	writeFile(t, filepath.Join(ios, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
+	writeFile(t, filepath.Join(ios, "Cartfile.resolved"), "github \"ReactiveX/RxSwift\" \"6.8.0\"\n")
+	for index := 0; index < 2048; index++ {
+		writeFile(t, filepath.Join(ios, "D-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	writeFile(t, filepath.Join(ios, "Sources", "App", "main.swift"), "import RxSwift\nlet value = DisposeBag()\n")
+
+	result, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := singleDependencyReport(t, result)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("nested Carthage package lost dependency attribution after detection budget: %#v", dep)
+	}
+}
+
+func TestServiceAutoRetainsRootSwiftCarthagePackagePastDetectionBudget(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftCarthageAnalysisFixture(t, repo)
+	for index := 0; index < 2048; index++ {
+		writeFile(t, filepath.Join(repo, "000-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	result, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := singleDependencyReport(t, result)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("root Carthage package lost dependency attribution after detection budget: %#v", dep)
+	}
+}
+
+func TestServiceAutoIgnoresCarthageMetadataInJavaScriptRepository(t *testing.T) {
+	repo := t.TempDir()
+	writeJSFixture(t, repo)
+	writeFile(t, filepath.Join(repo, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
+	writeFile(t, filepath.Join(repo, "Cartfile.resolved"), "github \"ReactiveX/RxSwift\" \"6.8.0\"\n")
+	if err := os.Mkdir(filepath.Join(repo, "fake.swift"), 0o750); err != nil {
+		t.Fatalf("mkdir fake swift directory: %v", err)
+	}
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "auto",
+	})
+	if err != nil {
+		t.Fatalf("analyse JavaScript repo with Carthage metadata: %v", err)
+	}
+	if dep := singleDependencyReport(t, reportData); dep.Language != "js-ts" {
+		t.Fatalf("expected JavaScript auto selection despite Carthage metadata, got %#v", dep)
 	}
 }
 

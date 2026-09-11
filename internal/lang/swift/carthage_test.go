@@ -2,8 +2,10 @@ package swift
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
@@ -11,10 +13,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestSwiftAdapterDetectWithCarthageRoots(t *testing.T) {
+func TestSwiftAdapterDetectWithCarthageMetadataAndSource(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
-	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import RxSwift\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "App", swiftMainFileName), "import RxSwift\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "Packages", "Feature", carthageResolvedName), buildCartfileResolvedContent([]swiftFixtureCarthageDependency{{kind: "github", source: "SnapKit/SnapKit", reference: "5.7.0"}}))
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
@@ -24,12 +26,123 @@ func TestSwiftAdapterDetectWithCarthageRoots(t *testing.T) {
 	if !detection.Matched {
 		t.Fatalf("expected swift detection to match")
 	}
+	if detection.Confidence != 72 {
+		t.Fatalf("expected preflight and broad root metadata confidence to total 72, got %#v", detection)
+	}
 	if !slices.Contains(detection.Roots, repo) {
 		t.Fatalf("expected repo root in detection roots, got %#v", detection.Roots)
 	}
 	nested := filepath.Join(repo, "Packages", "Feature")
-	if !slices.Contains(detection.Roots, nested) {
-		t.Fatalf("expected nested Carthage root in detection roots, got %#v", detection.Roots)
+	if slices.Contains(detection.Roots, nested) {
+		t.Fatalf("did not expect Carthage metadata to create a detection root, got %#v", detection.Roots)
+	}
+}
+
+func TestSwiftAdapterDetectsRootCarthageProjectPastTraversalBudget(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftRootCarthageProjectPastBudget(t, repo, "000-assets", "App")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !detection.Matched || !slices.Contains(detection.Roots, repo) {
+		t.Fatalf("expected root Carthage project to survive traversal budget, got %#v", detection)
+	}
+}
+
+func TestSwiftAdapterRetainsObservedRootCarthageConfidencePastTraversalBudget(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftRootCarthageProjectPastBudget(t, repo, "D-assets", "zzz-source")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if detection.Confidence != 70 {
+		t.Fatalf("expected preflight and observed root Cartfile confidence to total 70, got %#v", detection)
+	}
+}
+
+func writeSwiftRootCarthageProjectPastBudget(t *testing.T, repo, assetDirectory, sourceDirectory string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	for index := 0; index < maxDetectFiles; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, assetDirectory, "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, sourceDirectory, swiftMainFileName), "import RxSwift\n")
+}
+
+func TestSwiftAdapterDetectsRootCarthageProjectBeyondFirstTopLevelDirectories(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	for index := 0; index < 33; index++ {
+		if err := os.Mkdir(filepath.Join(repo, "empty"+strconv.Itoa(index)), 0o750); err != nil {
+			t.Fatalf("mkdir empty source sibling: %v", err)
+		}
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "source", swiftMainFileName), "import RxSwift\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !detection.Matched || !slices.Contains(detection.Roots, repo) {
+		t.Fatalf("expected root Carthage project beyond first source siblings to match, got %#v", detection)
+	}
+}
+
+func TestSwiftAdapterBoundsRootCarthageSourceProbeOnEmptyDirectoryTree(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	for index := 0; index < maxRootCarthageSourceTraversalEntries; index++ {
+		if err := os.Mkdir(filepath.Join(repo, "empty"+strconv.Itoa(index)), 0o750); err != nil {
+			t.Fatalf("mkdir empty source sibling: %v", err)
+		}
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected empty directory tree to remain non-matching, got %#v", detection)
+	}
+}
+
+func TestSwiftAdapterBoundsRootCarthageSourceProbeDepth(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	directory := repo
+	for index := 0; index < maxRootCarthageSourceDepth+16; index++ {
+		directory = filepath.Join(directory, "empty"+strconv.Itoa(index))
+		if err := os.Mkdir(directory, 0o750); err != nil {
+			t.Fatalf("mkdir empty source descendant: %v", err)
+		}
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected deep empty directory tree to remain non-matching, got %#v", detection)
+	}
+}
+
+func TestSwiftAdapterIgnoresCarthageMetadataWithSwiftNamedDirectory(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	if err := os.Mkdir(filepath.Join(repo, "fake.swift"), 0o750); err != nil {
+		t.Fatalf("mkdir fake swift directory: %v", err)
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected metadata and fake Swift directory to remain non-matching, got %#v", detection)
 	}
 }
 
