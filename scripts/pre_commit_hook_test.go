@@ -70,8 +70,8 @@ func TestHooksInstallMigratesLegacyWorktreeHooksPath(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(repoDir, "Makefile"), readRepositoryFile(t, "Makefile"))
 	runCommand(t, repoDir, "make", "hooks-uninstall")
-	assertNoLocalHooksPath(t, repoDir)
-	assertNoWorktreeHooksPath(t, repoDir)
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	assertNoHooksPath(t, repoDir, "--worktree", "worktree")
 }
 
 func TestHooksInstallPreservesMaskedCustomLocalHooksPath(t *testing.T) {
@@ -155,11 +155,11 @@ func TestHooksInstallIsIdempotentAndUninstallsOnlyManagedOrLegacyPaths(t *testin
 	if _, err := os.Stat(managedHook); !os.IsNotExist(err) {
 		t.Fatalf("managed hook remains after uninstall: %v", err)
 	}
-	assertNoLocalHooksPath(t, repoDir)
+	assertNoHooksPath(t, repoDir, "--local", "local")
 
 	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
 	runCommand(t, repoDir, "make", "hooks-uninstall")
-	assertNoLocalHooksPath(t, repoDir)
+	assertNoHooksPath(t, repoDir, "--local", "local")
 }
 
 func newHookTestRepository(t *testing.T) string {
@@ -226,23 +226,13 @@ func gitOutput(t *testing.T, repoDir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func assertNoLocalHooksPath(t *testing.T, repoDir string) {
+func assertNoHooksPath(t *testing.T, repoDir, scope, scopeName string) {
 	t.Helper()
-	command := exec.Command("git", "config", "--local", "--get", "core.hooksPath")
+	command := exec.Command("git", "config", scope, "--get", "core.hooksPath")
 	command.Dir = repoDir
 	output, err := command.CombinedOutput()
 	if err == nil || len(output) != 0 {
-		t.Fatalf("local core.hooksPath remains: %v\n%s", err, output)
-	}
-}
-
-func assertNoWorktreeHooksPath(t *testing.T, repoDir string) {
-	t.Helper()
-	command := exec.Command("git", "config", "--worktree", "--get", "core.hooksPath")
-	command.Dir = repoDir
-	output, err := command.CombinedOutput()
-	if err == nil || len(output) != 0 {
-		t.Fatalf("worktree core.hooksPath remains: %v\n%s", err, output)
+		t.Fatalf("%s core.hooksPath remains: %v\n%s", scopeName, err, output)
 	}
 }
 
