@@ -80,6 +80,83 @@ func TestStaveTUIFeatureFlagRendersAndQuitsInPTY(t *testing.T) {
 	}
 }
 
+func TestStaveTUIRedirectedInputUsesLineModeWithPTYOutput(t *testing.T) {
+	root := mustModuleRoot(t)
+	bin := filepath.Join(t.TempDir(), "lopper")
+	buildBinary(t, root, bin)
+	fixture := filepath.Join(root, "testdata", "js", "esm")
+
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create redirected stdin pipe: %v", err)
+	}
+	inputWriterOpen := true
+	t.Cleanup(func() {
+		if inputWriterOpen {
+			if err := inputWriter.Close(); err != nil {
+				t.Errorf("close redirected stdin writer: %v", err)
+			}
+		}
+	})
+	// Start with a controlling PTY, then have the shell replace stdin with the
+	// pipe passed as child fd 3. This keeps stdout terminal-capable while the
+	// executed lopper process receives redirected stdin.
+	cmd := exec.Command("/bin/sh", "-c", "exec 0<&3; exec \"$@\"", "sh", bin, "tui", "--repo", fixture, "--language", "js-ts", "--top", "5", "--enable-feature", "stave-tui-preview")
+	cmd.Dir = root
+	cmd.Env = terminalCapableTestEnvironment()
+	cmd.ExtraFiles = []*os.File{inputReader}
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
+	if err != nil {
+		t.Fatalf("start lopper with redirected stdin: %v", err)
+	}
+	if err := inputReader.Close(); err != nil {
+		t.Fatalf("close parent stdin reader: %v", err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			closePTYProcess(t, ptmx, cmd)
+		}
+	}()
+
+	output, readDone := collectPTYOutput(ptmx)
+	if _, err := inputWriter.Write([]byte("filter esm\nq\n")); err != nil {
+		t.Fatalf("write redirected commands: %v", err)
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatalf("close redirected stdin: %v", err)
+	}
+	inputWriterOpen = false
+	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
+		t.Fatalf("redirected-input TUI did not exit: %v; output=%q", err, output.String())
+	}
+	if err := ptmx.Close(); err != nil {
+		t.Fatalf("close stdout PTY after exit: %v", err)
+	}
+	finished = true
+	<-readDone
+
+	text := output.String()
+	if !strings.Contains(text, "filter esm") || !strings.Contains(text, "esm") {
+		t.Fatalf("redirected filter command was not processed: %q", text)
+	}
+	if strings.Contains(text, "\x1b[?1049") || strings.Contains(text, "\x1b[?25") {
+		t.Fatalf("redirected stdin entered full-screen terminal mode: %q", text)
+	}
+}
+
+func terminalCapableTestEnvironment() []string {
+	keys := map[string]bool{"TERM": true, "COLORTERM": true, "NO_COLOR": true, "CI": true}
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !keys[key] {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
+}
+
 func TestStaveTUIResizeAndInterruptExitWithinBound(t *testing.T) {
 	root := mustModuleRoot(t)
 	bin := filepath.Join(t.TempDir(), "lopper")

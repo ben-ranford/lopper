@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/terminal"
 	"github.com/ben-ranford/stave"
@@ -95,7 +96,7 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 		writer = os.Stdout
 	}
 	state := buildSummaryState(opts)
-	tty := supportsScreenRefresh(writer)
+	tty := supportsStaveInteractiveTerminal(p.legacy.In, writer)
 	if tty {
 		if width, _, ok := staveTerminalDimensions(writer); ok {
 			opts.Width = width
@@ -114,14 +115,16 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 	if supportsStaveFullScreen(sessionOpts.RuntimeDetected) {
 		return p.runStaveTerminal(ctx, opts, prepared, p.legacy.In, writer, sessionOpts.RuntimeDetected.AlternateScreen)
 	}
-	line := staveLineSession{prepared: prepared, opts: sessionOpts, reader: bufio.NewReader(p.legacy.In), writer: writer, tty: tty}
-	return line.run(ctx)
+	input := newStaveLineInput(p.legacy.In)
+	line := staveLineSession{prepared: prepared, opts: sessionOpts, reader: input.reader, cancelRead: input.cancel, writer: writer, tty: tty}
+	return errors.Join(line.run(ctx), input.cleanup())
 }
 
 type staveLineSession struct {
 	prepared    *stave.Prepared[staveSummaryModel]
 	opts        stave.SessionOptions
 	reader      *bufio.Reader
+	cancelRead  func() bool
 	writer      io.Writer
 	tty         bool
 	callCounter uint64
@@ -132,7 +135,7 @@ func (s *staveLineSession) run(ctx context.Context) error {
 		if err := s.refreshFrame(ctx); err != nil {
 			return err
 		}
-		input, eof, err := readStaveLineInput(s.reader)
+		input, eof, err := readStaveLineInputContext(ctx, s.reader, s.cancelRead)
 		if err != nil {
 			return err
 		}
@@ -287,6 +290,69 @@ func readStaveLineInput(reader *bufio.Reader) (string, bool, error) {
 		return "", false, err
 	}
 	return strings.TrimSpace(input), false, nil
+}
+
+// readStaveLineInputContext cancels file-backed reads without consuming input.
+// Generic readers have no portable interruption mechanism, so they retain the
+// synchronous behavior of readStaveLineInput.
+func readStaveLineInputContext(ctx context.Context, reader *bufio.Reader, cancelRead func() bool) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if cancelRead == nil {
+		input, eof, err := readStaveLineInput(reader)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", false, ctxErr
+		}
+		return input, eof, err
+	}
+	readDone := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			_ = cancelRead()
+		case <-readDone:
+		}
+	}()
+	input, eof, err := readStaveLineInput(reader)
+	close(readDone)
+	<-watchDone
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", false, ctxErr
+	}
+	return input, eof, err
+}
+
+type staveLineInput struct {
+	reader  *bufio.Reader
+	cancel  func() bool
+	cleanup func() error
+}
+
+func newStaveLineInput(input io.Reader) staveLineInput {
+	if file, ok := input.(*os.File); ok {
+		if info, err := file.Stat(); err == nil && info.Mode().IsRegular() {
+			return staveLineInput{reader: bufio.NewReader(input), cleanup: func() error { return nil }}
+		}
+		if err := file.SetReadDeadline(time.Time{}); err == nil {
+			return staveLineInput{reader: bufio.NewReader(file), cancel: func() bool { return file.SetReadDeadline(time.Now()) == nil }, cleanup: func() error { return file.SetReadDeadline(time.Time{}) }}
+		}
+	}
+	// A generic io.Reader cannot be interrupted safely. Callers that need an
+	// idle read to stop with the context must provide a supported nonregular
+	// *os.File. Stave borrows generic readers and never closes them.
+	return staveLineInput{reader: bufio.NewReader(input), cleanup: func() error { return nil }}
+}
+
+func supportsStaveInteractiveTerminal(input io.Reader, output io.Writer) bool {
+	return staveTerminalFile(input) && staveTerminalFile(output)
+}
+
+func staveTerminalFile(stream any) bool {
+	file, ok := stream.(*os.File)
+	return ok && charmterm.IsTerminal(file.Fd())
 }
 
 func sendLopperEvent(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], ev event.Event) error {

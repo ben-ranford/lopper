@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/stave/layout"
+	"github.com/creack/pty"
 )
 
 type cancelOnFirstRead struct {
@@ -123,26 +123,46 @@ func checkStaveStartNewSessionSanitizesInvalidUtf8WithoutPanicking(t *testing.T,
 
 func checkStaveStartFullScreenPathRunsWhenTtyCapabilitiesAreAvailable(t *testing.T, opts Options, rep report.Report) {
 	t.Helper()
-	charDevice, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	terminalInput, terminalOutput, err := pty.Open()
 	if err != nil {
-		t.Skipf("open tty-like device: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := charDevice.Close(); err != nil {
-			t.Logf("close character device: %v", err)
-		}
-	})
-	if !supportsScreenRefresh(charDevice) {
-		t.Skip("character-device refresh detection unavailable")
+	cleanupStaveTestCloser(t, "terminal input", terminalInput)
+	cleanupStaveTestCloser(t, "terminal output", terminalOutput)
+	if err := pty.Setsize(terminalOutput, &pty.Winsize{Rows: 24, Cols: 100}); err != nil {
+		t.Fatal(err)
 	}
-	if !supportsStaveFullScreen(staveSessionOptions(opts, true).RuntimeDetected) {
-		t.Skip("full-screen Stave capabilities unavailable in this environment")
+	if !supportsStaveInteractiveTerminal(terminalOutput, terminalOutput) {
+		t.Fatal("pseudo-terminal did not satisfy interactive TTY contract")
 	}
-
-	summary := NewSummary(charDevice, strings.NewReader("q\n"), &stubAnalyzer{report: rep}, report.NewFormatter())
-	if err := NewStavePreview(summary).Start(context.Background(), opts); err != nil {
+	actualOpts := opts
+	if width, _, ok := staveTerminalDimensions(terminalOutput); ok {
+		actualOpts.Width = width
+	}
+	caps := staveSessionOptions(actualOpts, true).RuntimeDetected
+	if !supportsStaveFullScreen(caps) {
+		t.Fatalf("full-screen capabilities unavailable: %+v", caps)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), staveSignalSubprocessBound)
+	defer cancel()
+	summary := NewSummary(terminalOutput, terminalOutput, &stubAnalyzer{report: rep}, report.NewFormatter())
+	done := make(chan error, 1)
+	go func() { done <- NewStavePreview(summary).Start(ctx, actualOpts) }()
+	capture := newSignalPTYCapture(terminalInput)
+	waitSignalOutput(t, capture, done, func(output string) bool { return strings.Contains(output, "\x1b[?1049h") })
+	if _, err := terminalInput.WriteString("q"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSignalProcess(done); err != nil {
 		t.Fatalf("full-screen start failed: %v", err)
 	}
+	if err := terminalOutput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := terminalInput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitSignalCapture(t, capture)
 }
 
 func checkStaveStartHandledActionInvocationErrorsRenderAsSessionFeedback(t *testing.T, opts Options, rep report.Report) {

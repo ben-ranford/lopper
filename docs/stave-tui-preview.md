@@ -34,10 +34,16 @@ adapter modules are not part of this dependency.
 
 ## Terminal interaction
 
-On a colored, cursor-capable TTY, the preview uses Stave's interactive session
-and restores the terminal on quit, interrupt, cancellation, or an error. A
-pipe, redirected output, `TERM=dumb`, `NO_COLOR`, or EOF selects the
-plain/line-compatible path and emits no cursor-control screen updates.
+On a colored, cursor-capable input and output TTY, the preview uses Stave's
+interactive session and restores the terminal on quit, interrupt,
+cancellation, or an error. A pipe, redirected output, `TERM=dumb`, `NO_COLOR`,
+or EOF selects the plain/line-compatible path and emits no cursor-control
+screen updates. File-backed pipe input honors cancellation; custom borrowed
+readers remain synchronous unless they return input or EOF.
+While a preview session runs, Lopper exclusively consumes supported nonregular
+file input and clears its read deadline before and after the session. Use the
+session context for timeouts; existing file deadlines cannot be queried or
+restored.
 The line path still detects PTY width changes and sends a typed resize event
 before the next frame, so responsive layout is not limited to alternate-screen
 mode.
