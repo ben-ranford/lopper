@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -571,6 +572,24 @@ func TestResolveConfigPathExplicitStatError(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPathRejectsRemoteURLBeforeLocalPathLookup(t *testing.T) {
+	repo := t.TempDir()
+	remoteURL := "https://example.com/policies/base.yml"
+	if runtime.GOOS != "windows" {
+		// Windows disallows ':' in directory names, so this collision cannot exist there.
+		localCollision := filepath.Join(repo, "https:", "example.com", "policies", "base.yml")
+		testutil.MustWriteFile(t, localCollision, "thresholds:\n  fail_on_increase_percent: 3\n")
+	}
+
+	_, found, err := resolveConfigPath(repo, remoteURL)
+	if err == nil || !strings.Contains(err.Error(), "remote policy packs are disabled") {
+		t.Fatalf("expected explicit remote URL rejection, got %v", err)
+	}
+	if found {
+		t.Fatal("expected remote URL not to resolve through a matching local path")
+	}
+}
+
 func TestLoadWithPolicyPackPrecedenceAndSources(t *testing.T) {
 	repo := t.TempDir()
 	basePolicy := `thresholds:
@@ -1121,6 +1140,11 @@ func TestRemotePolicyURLValidation(t *testing.T) {
 	}
 	if parsed, ok := parseRemoteURL("https:///missing-host"); ok || parsed != nil {
 		t.Fatalf("expected hostless remote URL to be rejected")
+	}
+	for _, raw := range []string{"HTTP://example.com/policy.yml", "HTTPS://example.com/policy.yml"} {
+		if parsed, ok := parseRemoteURL(raw); !ok || parsed == nil {
+			t.Fatalf("expected mixed-case remote URL %q to be recognized", raw)
+		}
 	}
 	if _, err := canonicalRemotePolicyURL("mailto:test@example.com"); err == nil {
 		t.Fatalf("expected invalid canonical remote URL error")
