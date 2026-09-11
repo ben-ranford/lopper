@@ -44,10 +44,20 @@ func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence f
 		dependencies[depIndex].Recommendations = filterByConfidenceScore(dependencies[depIndex].Recommendations, minConfidence, func(item Recommendation) float64 {
 			return item.ConfidenceScore
 		})
-		dependencies[depIndex].RiskCues = filterByConfidenceScore(dependencies[depIndex].RiskCues, minConfidence, func(item RiskCue) float64 {
-			return item.ConfidenceScore
-		})
+		dependencies[depIndex].RiskCues = filterRiskCuesByConfidence(dependencies[depIndex].RiskCues, minConfidence)
 	}
+}
+
+func filterRiskCuesByConfidence(values []RiskCue, minConfidence float64) []RiskCue {
+	filtered := make([]RiskCue, 0, len(values))
+	for _, value := range values {
+		securityRisk := riskSeverityWeight(value.Severity) >= riskSeverityWeight("medium")
+		if value.ConfidenceScore < minConfidence && !securityRisk {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
 }
 
 func orderedConfidenceReasonCodes(reasonCodes []string) []string {
