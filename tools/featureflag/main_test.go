@@ -1139,7 +1139,7 @@ func TestRunPREnforceValidatesFeatureCodeContinuity(t *testing.T) {
 ]`,
 		},
 		{
-			name: "rejects chained rename that drops historical alias",
+			name: "allows chained rename that retires older alias",
 			previous: `[
   {
     "code": "LOP-FEAT-0001",
@@ -1158,7 +1158,6 @@ func TestRunPREnforceValidatesFeatureCodeContinuity(t *testing.T) {
     "lifecycle": "preview"
   }
 ]`,
-			want: "original-feature",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
