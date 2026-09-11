@@ -561,25 +561,30 @@ func prReviewVersionRows(baseReport, headReport report.Report, category string) 
 		if ecosystem == "" {
 			ecosystem = dependencyIdentityEcosystem(headDep)
 		}
-		versionCategory := prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion)
+		versionCategory, comparableVersions := prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion)
 		if versionCategory != category {
+			continue
+		}
+		if comparableVersions && report.CanonicalPackageEcosystem(ecosystem) != "pypi" &&
+			strings.TrimLeft(baseVersion, "vV") == strings.TrimLeft(headVersion, "vV") {
 			continue
 		}
 		row := prReviewRowForPair(category, baseDep, headDep)
 		row.VersionChange = versionCategory
 		row.Regression = versionCategory == prReviewCategoryDowngraded
 		row.Evidence = append(row.Evidence, "identity versions differ")
-		row.Evidence = appendVersionOrderingEvidence(row.Evidence, versionCategory)
+		row.Evidence = appendVersionOrderingEvidence(row.Evidence, versionCategory, comparableVersions)
 		rows = append(rows, row)
 	}
 	return rows
 }
 
 func prReviewVersionCategory(baseVersion, headVersion string) string {
-	return prReviewVersionCategoryForEcosystem("", baseVersion, headVersion)
+	category, _ := prReviewVersionCategoryForEcosystem("", baseVersion, headVersion)
+	return category
 }
 
-func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion string) string {
+func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion string) (string, bool) {
 	var (
 		cmp               int
 		comparableVersion bool
@@ -590,20 +595,23 @@ func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion str
 		cmp, comparableVersion = report.CompareSemanticVersions(baseVersion, headVersion)
 	}
 	if !comparableVersion {
-		return prReviewCategoryVersionChanged
+		return prReviewCategoryVersionChanged, false
 	}
 	switch {
 	case cmp < 0:
-		return prReviewCategoryUpgraded
+		return prReviewCategoryUpgraded, true
 	case cmp > 0:
-		return prReviewCategoryDowngraded
+		return prReviewCategoryDowngraded, true
 	default:
-		return prReviewCategoryVersionChanged
+		return prReviewCategoryVersionChanged, true
 	}
 }
 
-func appendVersionOrderingEvidence(evidence []string, category string) []string {
+func appendVersionOrderingEvidence(evidence []string, category string, comparableVersions bool) []string {
 	if category == prReviewCategoryVersionChanged {
+		if comparableVersions {
+			return append(evidence, "version precedence is equal; artifact identities differ")
+		}
 		return append(evidence, "version ordering was not inferred")
 	}
 	return evidence
