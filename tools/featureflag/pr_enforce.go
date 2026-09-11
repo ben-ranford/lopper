@@ -78,6 +78,10 @@ func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag
 	if len(catalogViolations) > 0 {
 		return result
 	}
+	result.CatalogViolations = featureCodeContinuityViolations(current, previous)
+	if len(result.CatalogViolations) > 0 {
+		return result
+	}
 
 	addedFlags := newlyAddedFlags(current, previous)
 	result.AddedFlags = addedFlags
@@ -88,6 +92,31 @@ func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag
 		}
 	}
 	return result
+}
+
+func featureCodeContinuityViolations(current, previous []featureflags.Flag) []string {
+	currentByCode := make(map[string]featureflags.Flag, len(current))
+	for _, flag := range current {
+		currentByCode[flag.Code] = flag
+	}
+
+	violations := make([]string, 0)
+	for _, previousFlag := range previous {
+		currentFlag, found := currentByCode[previousFlag.Code]
+		if !found {
+			violations = append(violations, fmt.Sprintf("Feature flag code `%s` must remain in the feature catalog.", previousFlag.Code))
+			continue
+		}
+		currentNames := make(map[string]struct{}, 1+len(currentFlag.DeprecatedNames))
+		currentNames[currentFlag.Name] = struct{}{}
+		for _, name := range currentFlag.DeprecatedNames {
+			currentNames[name] = struct{}{}
+		}
+		if _, retained := currentNames[previousFlag.Name]; !retained {
+			violations = append(violations, fmt.Sprintf("Feature flag code `%s` was renamed from `%s` to `%s` and must retain its previous canonical name in `deprecatedNames`.", previousFlag.Code, previousFlag.Name, currentFlag.Name))
+		}
+	}
+	return violations
 }
 
 func readCurrentCatalogForPREnforcement(root string) ([]featureflags.Flag, []string, error) {
@@ -252,7 +281,7 @@ func formatPREnforcementReport(result prEnforcementResult) string {
 		b.WriteString("- Feature PR: no\n")
 	}
 	fmt.Fprintf(&b, "- Check: %s\n", status)
-	b.WriteString("- Rule: `preview` PRs add new preview flags, `feat` PRs graduate existing preview flags, new flags must start as `preview`, and feature flag ids and names must be unique.\n\n")
+	b.WriteString("- Rule: `preview` PRs add new preview flags, `feat` PRs graduate existing preview flags, new flags must start as `preview`, feature flag codes are immutable, renamed flags retain their previous canonical names in `deprecatedNames`, and feature flag ids and names must be unique.\n\n")
 
 	writePREnforcementFlagSection(&b, "New feature flags in this PR", result.AddedFlags, writeAddedFlag)
 	writePREnforcementFlagSection(&b, "Graduated feature flags in this PR", result.GraduatedFlags, writeGraduatedFlag)
