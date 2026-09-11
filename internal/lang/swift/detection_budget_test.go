@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,7 +63,7 @@ func TestSwiftRootCarthageProbeFindsRootSourceAndRejectsInvalidCandidate(t *test
 	if err := root.Close(); err != nil {
 		t.Fatalf("close test root: %v", err)
 	}
-	if _, _, _, err := discoverRootSwiftSourceCandidatesWithinLimit(context.Background(), root, maxRootCarthageSourceTraversalEntries); err == nil {
+	if _, _, _, err := discoverSwiftSourceCandidatesWithinLimit(context.Background(), root, ".", maxRootCarthageSourceTraversalEntries); err == nil {
 		t.Fatal("expected closed root to reject candidate discovery")
 	}
 }
@@ -86,6 +88,83 @@ func TestSwiftRootCarthageProbeRequiresRegularNonSymlinkSource(t *testing.T) {
 	if found {
 		t.Fatal("expected symlinked Swift source to be ignored as Carthage corroboration")
 	}
+}
+
+func TestSwiftRootCarthageProbeAllowsRequestedRootAliases(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		ancestor bool
+	}{
+		{name: "root symlink"},
+		{name: "ancestor symlink", ancestor: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolved, requested := swiftRequestedRootAlias(t, test.ancestor)
+			t.Run("metadata only", func(t *testing.T) {
+				testutil.MustWriteFile(t, filepath.Join(resolved, carthageManifestName), "github \"owner/repo\"\n")
+
+				detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
+				if err != nil {
+					t.Fatalf("detect metadata-only alias: %v", err)
+				}
+				if detection.Matched {
+					t.Fatalf("expected metadata-only alias to remain uncorroborated, got %#v", detection)
+				}
+			})
+
+			t.Run("Swift source", func(t *testing.T) {
+				testutil.MustWriteFile(t, filepath.Join(resolved, carthageManifestName), "github \"owner/repo\"\n")
+				testutil.MustWriteFile(t, filepath.Join(resolved, "Sources", swiftMainFileName), "import Foundation\n")
+
+				detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
+				if err != nil {
+					t.Fatalf("detect Swift source through alias: %v", err)
+				}
+				if !detection.Matched || !slices.Contains(detection.Roots, requested) {
+					t.Fatalf("expected requested alias root to be retained, got %#v", detection)
+				}
+			})
+		})
+	}
+}
+
+func TestSwiftRootCarthageProbeRejectsSymlinkBelowRequestedRoot(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), "github \"owner/repo\"\n")
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, swiftMainFileName), "import Foundation\n")
+	if err := os.Symlink(outside, filepath.Join(repo, "Sources")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect symlinked child: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected symlinked child source to be ignored, got %#v", detection)
+	}
+}
+
+func swiftRequestedRootAlias(t *testing.T, ancestor bool) (string, string) {
+	t.Helper()
+	resolved := t.TempDir()
+	linkTarget := resolved
+	if ancestor {
+		resolved = filepath.Join(resolved, "repo")
+		if err := os.Mkdir(resolved, 0o750); err != nil {
+			t.Fatalf("mkdir resolved repo: %v", err)
+		}
+		linkTarget = filepath.Dir(resolved)
+	}
+	alias := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(linkTarget, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if ancestor {
+		alias = filepath.Join(alias, "repo")
+	}
+	return resolved, alias
 }
 
 func TestSwiftDetectionRequiresRegularCarthageAndSwiftEntries(t *testing.T) {
@@ -158,6 +237,64 @@ func TestSwiftNestedCarthageProbeSharesBudgetFairly(t *testing.T) {
 	}
 	if _, foundFirst := roots[first]; !detection.Matched || !rootsContain(roots, second) || foundFirst {
 		t.Fatalf("expected the fairly budgeted second root to be retained, got detection=%#v roots=%#v", detection, roots)
+	}
+}
+
+func TestSwiftNestedCarthageProbeRejectsReplacedCandidateSymlink(t *testing.T) {
+	repo := t.TempDir()
+	candidate := filepath.Join(repo, "Packages", "Library")
+	if err := os.MkdirAll(filepath.Dir(candidate), 0o750); err != nil {
+		t.Fatalf("make candidate parent: %v", err)
+	}
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, swiftMainFileName), "import Foundation\n")
+	if err := os.Symlink(outside, candidate); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	err := applyCarthageDetectionRoots(context.Background(), repo, &detection, roots,
+		map[string]int{candidate: 10}, map[string]struct{}{})
+	if err != nil {
+		t.Fatalf("probe replaced nested candidate: %v", err)
+	}
+	if detection.Matched || rootsContain(roots, candidate) {
+		t.Fatalf("expected replaced candidate symlink to be ignored, got detection=%#v roots=%#v", detection, roots)
+	}
+}
+
+func TestSwiftRootCarthageProbeSortsChildrenAcrossReadBatches(t *testing.T) {
+	repo := t.TempDir()
+	candidate := filepath.Join(repo, "parent")
+	if err := os.Mkdir(candidate, 0o750); err != nil {
+		t.Fatalf("make candidate: %v", err)
+	}
+	for index := 0; index < rootCarthageSourceReadBatchSize+1; index++ {
+		name := "child" + strconv.Itoa(rootCarthageSourceReadBatchSize-index)
+		if err := os.Mkdir(filepath.Join(candidate, name), 0o750); err != nil {
+			t.Fatalf("make child %q: %v", name, err)
+		}
+	}
+	root, err := safeio.OpenRootNoFollow(repo)
+	if err != nil {
+		t.Fatalf("open repo root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close repo root: %v", closeErr)
+		}
+	})
+
+	queue := make([]rootCarthageSourceDirectory, 0, rootCarthageSourceReadBatchSize+1)
+	_, entries, err := walkCarthageSwiftSourceDirectory(context.Background(), root, rootCarthageSourceDirectory{path: "parent", depth: 1}, &queue, rootCarthageSourceReadBatchSize+1)
+	if err != nil || entries != rootCarthageSourceReadBatchSize+1 {
+		t.Fatalf("walk batched children: entries=%d err=%v", entries, err)
+	}
+	if !slices.IsSortedFunc(queue, func(left, right rootCarthageSourceDirectory) int {
+		return strings.Compare(left.path, right.path)
+	}) {
+		t.Fatalf("children spanning batches are not ordered: %#v", queue)
 	}
 }
 
