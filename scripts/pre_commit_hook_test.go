@@ -48,6 +48,11 @@ func TestHooksInstallSnapshotsTrustedHookAndRejectsUnsafeStagedContent(t *testin
 	}
 	runCommand(t, repoDir, "git", "reset", "--", "unformatted.go")
 
+	writeFile(t, filepath.Join(repoDir, "broken.go"), "package fixture\n\nfunc broken( {\n")
+	runCommand(t, repoDir, "git", "add", "broken.go")
+	assertCommitFailsWithEnv(t, repoDir, "broken.go", []string{"TMPDIR=" + tempDir})
+	runCommand(t, repoDir, "git", "reset", "--", "broken.go")
+
 	for _, name := range []string{": staged.go", "0:unformatted.go"} {
 		writeFile(t, filepath.Join(repoDir, name), "package fixture\n\nfunc adversarialName(){}\n")
 		runCommand(t, repoDir, "git", "add", "--", "./"+name)
@@ -262,6 +267,41 @@ func TestHooksInstallRefusesMultiValueWorktreeHooksPathsWithoutMutation(t *testi
 	}
 }
 
+func TestHooksInstallRefusesIncludedAndNewlineHooksPathsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	includeFile := filepath.Join(t.TempDir(), "hooks.inc")
+	writeFile(t, includeFile, "[core]\n\thooksPath = .githooks\n")
+	runCommand(t, linkedDir, "git", "config", "--worktree", "includeIf.onbranch:main.path", includeFile)
+
+	command := exec.Command("make", "hooks-install")
+	command.Dir = repoDir
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "includes another config") {
+		t.Fatalf("included worktree install = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before refusal: %v", err)
+	}
+
+	runCommand(t, linkedDir, "git", "config", "--worktree", "--unset-all", "includeIf.onbranch:main.path")
+	newlinePath := ".githooks\n" + filepath.Dir(managedHookPath(t, repoDir))
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", newlinePath)
+	command = exec.Command("make", "hooks-install")
+	command.Dir = repoDir
+	output, err = command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
+		t.Fatalf("newline hook path install = %v\n%s", err, output)
+	}
+	if got := gitOutput(t, repoDir, "config", "--local", "--get", "core.hooksPath"); got != newlinePath {
+		t.Fatalf("newline core.hooksPath = %q", got)
+	}
+}
+
 func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *testing.T) {
 	t.Parallel()
 
@@ -278,11 +318,17 @@ func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *tes
 	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", ".githooks")
 	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
 	runCommand(t, linkedDir, "git", "config", "--worktree", "--replace-all", "core.hooksPath", managedDir)
+	includeFile := filepath.Join(t.TempDir(), "shared-hooks.inc")
+	writeFile(t, includeFile, "[core]\n\thooksPath = "+managedDir+"\n")
+	runCommand(t, linkedDir, "git", "config", "--worktree", "include.path", includeFile)
 
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	assertConfigValues(t, repoDir, "--local", localCustom)
 	assertConfigValues(t, repoDir, "--worktree", worktreeCustom)
 	assertConfigValues(t, linkedDir, "--worktree", managedDir)
+	if got := gitOutput(t, linkedDir, "config", "--includes", "--get-all", "core.hooksPath"); !strings.Contains(got, managedDir) {
+		t.Fatalf("included shared hook reference = %q", got)
+	}
 	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
 		t.Fatalf("shared managed hook was removed while linked worktree still uses it: %v", err)
 	}
