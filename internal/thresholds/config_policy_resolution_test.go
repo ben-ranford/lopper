@@ -1,10 +1,6 @@
 package thresholds
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,15 +60,6 @@ func TestThresholdConfigPolicySourcesAndRemoteValidation(t *testing.T) {
 		t.Fatalf("expected canonicalPolicyLocation to reject invalid remote pin")
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	location := server.URL + "/policy.yml#sha256=" + strings.Repeat("a", 64)
-	if _, err := readRemotePolicyFile(location); err == nil || !strings.Contains(err.Error(), "unexpected status") {
-		t.Fatalf("expected remote status error, got %v", err)
-	}
 }
 
 func TestThresholdConfigRootContainment(t *testing.T) {
@@ -216,18 +203,6 @@ func TestThresholdConfigReadPolicyLocationBranches(t *testing.T) {
 		t.Fatalf("expected untrusted local read to succeed, data=%q err=%v", data, err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if _, err := w.Write(policyData); err != nil {
-			t.Errorf("write remote policy response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	sum := sha256.Sum256(policyData)
-	remotePolicy := server.URL + "/policy.yml#sha256=" + hex.EncodeToString(sum[:])
-	if data, err := readPolicyLocation(remotePolicy, packTrust{}, true); err != nil || string(data) != string(policyData) {
-		t.Fatalf("expected pinned remote policy read to succeed, data=%q err=%v", data, err)
-	}
 }
 
 func TestThresholdConfigResolvePackErrorBranches(t *testing.T) {

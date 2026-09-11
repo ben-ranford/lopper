@@ -133,13 +133,7 @@ thresholds:
   fail_on_increase_percent: 2
 ```
 
-Remote policy packs are supported when pinned by SHA-256 in the URL fragment and loaded from an explicit trusted config path (`--config ...`):
-
-```yaml
-policy:
-  packs:
-    - https://example.com/lopper/org-policy.yml#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-```
+Policy packs must be local files. HTTP and HTTPS policy packs are disabled, including pinned URLs and packs referenced by an explicit `--config` path. Download and review a pack before referencing its local path.
 
 Policy precedence is deterministic:
 
