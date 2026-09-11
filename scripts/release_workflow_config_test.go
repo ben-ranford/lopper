@@ -2780,6 +2780,7 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
+		Enabled           *bool `json:"enabled"`
 		Automerge         *bool `json:"automerge"`
 		PlatformAutomerge bool  `json:"platformAutomerge"`
 		PackageRules      []struct {
@@ -2791,6 +2792,9 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	}
 	readJSONConfig(t, "renovate.json", &config)
 
+	if config.Enabled != nil && !*config.Enabled {
+		t.Fatal("Renovate must not globally disable dependency update PR creation")
+	}
 	if config.Automerge != nil && *config.Automerge {
 		t.Fatal("Renovate must not enable global unattended automerge")
 	}
