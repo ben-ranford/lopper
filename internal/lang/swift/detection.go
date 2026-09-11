@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -45,7 +46,7 @@ func applyRootCarthageSignals(ctx context.Context, repoPath string, detection *l
 	if err != nil || confidence == 0 {
 		return false, err
 	}
-	corroborated, err := hasSwiftSourceNearRoot(ctx, repoPath)
+	corroborated, _, err := probeSwiftSourceWithinRoot(ctx, repoPath, maxRootCarthageSourceTraversalEntries)
 	if err != nil || !corroborated {
 		return false, err
 	}
@@ -75,42 +76,42 @@ func rootCarthageDetectionConfidence(repoPath string) (int, error) {
 	return confidence, nil
 }
 
-func hasSwiftSourceNearRoot(ctx context.Context, repoPath string) (found bool, err error) {
+func probeSwiftSourceWithinRoot(ctx context.Context, repoPath string, maxEntries int) (found bool, entriesSeen int, err error) {
 	if err := contextError(ctx); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	root, err := safeio.OpenRootNoFollow(repoPath)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer func() {
 		err = errors.Join(err, root.Close())
 	}()
 
-	directories, rootEntries, found, err := discoverRootSwiftSourceCandidates(ctx, root)
+	directories, rootEntries, found, err := discoverRootSwiftSourceCandidatesWithinLimit(ctx, root, min(maxRootCarthageSourceRootEntries, maxEntries))
 	if err != nil || found {
-		return found, err
+		return found, rootEntries, err
 	}
 
-	remaining := maxRootCarthageSourceTraversalEntries - rootEntries
+	remaining := maxEntries - rootEntries
 	for index, directory := range directories {
 		if remaining == 0 {
 			break
 		}
 		if err := contextError(ctx); err != nil {
-			return false, err
+			return false, maxEntries - remaining, err
 		}
 		budget := max(1, remaining/(len(directories)-index))
 		found, entries, err := findSwiftSourceWithinRootDirectory(ctx, root, directory, budget)
 		if err != nil || found {
-			return found, err
+			return found, maxEntries - remaining + entries, err
 		}
 		remaining -= entries
 	}
-	return false, nil
+	return false, maxEntries - remaining, nil
 }
 
-func discoverRootSwiftSourceCandidates(ctx context.Context, root safeio.Root) (directories []string, entriesSeen int, found bool, err error) {
+func discoverRootSwiftSourceCandidatesWithinLimit(ctx context.Context, root safeio.Root, maxEntries int) (directories []string, entriesSeen int, found bool, err error) {
 	directory, err := safeio.OpenPinnedDirectory(root, ".")
 	if err != nil {
 		return nil, 0, false, err
@@ -119,11 +120,11 @@ func discoverRootSwiftSourceCandidates(ctx context.Context, root safeio.Root) (d
 		err = errors.Join(err, directory.Close())
 	}()
 
-	for entriesSeen < maxRootCarthageSourceRootEntries {
+	for entriesSeen < maxEntries {
 		if err := contextError(ctx); err != nil {
 			return nil, entriesSeen, false, err
 		}
-		entries, readErr := directory.ReadDir(min(rootCarthageSourceReadBatchSize, maxRootCarthageSourceRootEntries-entriesSeen))
+		entries, readErr := directory.ReadDir(min(rootCarthageSourceReadBatchSize, maxEntries-entriesSeen))
 		entriesSeen += len(entries)
 		for _, entry := range entries {
 			if isRegularSwiftSource(entry) {
@@ -224,7 +225,11 @@ type rootCarthageSourceDirectory struct {
 }
 
 func isRegularSwiftSource(entry fs.DirEntry) bool {
-	if !strings.EqualFold(filepath.Ext(entry.Name()), swiftSourceExtension) || entry.Type()&fs.ModeSymlink != 0 {
+	return strings.EqualFold(filepath.Ext(entry.Name()), swiftSourceExtension) && isRegularNonSymlink(entry)
+}
+
+func isRegularNonSymlink(entry fs.DirEntry) bool {
+	if entry.Type()&fs.ModeSymlink != 0 {
 		return false
 	}
 	info, err := entry.Info()
@@ -238,34 +243,68 @@ func walkSwiftDetection(ctx context.Context, repoPath string, detection *languag
 		swiftDirectories[filepath.Clean(repoPath)] = struct{}{}
 	}
 	err := shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		if confidence := carthageDetectionConfidence(repoPath, path, entry.Name(), rootCarthageCorroborated); confidence > 0 {
+		if confidence := carthageDetectionConfidence(repoPath, path, entry, rootCarthageCorroborated); confidence > 0 {
 			carthageRoots[filepath.Dir(path)] += confidence
 		}
-		if strings.EqualFold(filepath.Ext(entry.Name()), swiftSourceExtension) {
+		if isRegularSwiftSource(entry) {
 			recordSwiftSourceDirectories(repoPath, path, swiftDirectories)
 		}
-		return recordSwiftDetectionEntry(path, entry.Name(), detection, roots)
+		return recordSwiftDetectionEntry(path, entry, detection, roots)
 	})
 	if err != nil {
 		return err
 	}
+	return applyCarthageDetectionRoots(ctx, repoPath, detection, roots, carthageRoots, swiftDirectories)
+}
+
+func applyCarthageDetectionRoots(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}, carthageRoots map[string]int, swiftDirectories map[string]struct{}) error {
+	candidates := make([]string, 0, len(carthageRoots))
 	for root, confidence := range carthageRoots {
 		if _, corroborated := swiftDirectories[root]; corroborated {
-			roots[root] = struct{}{}
-			detection.Confidence += confidence
+			applyCarthageDetectionRoot(root, confidence, detection, roots)
+			continue
+		}
+		if filepath.Clean(root) != filepath.Clean(repoPath) {
+			candidates = append(candidates, root)
+		}
+	}
+	slices.Sort(candidates)
+
+	remaining := maxNestedCarthageSourceTraversalEntries
+	for index, root := range candidates {
+		if remaining == 0 {
+			break
+		}
+		budget := max(1, remaining/(len(candidates)-index))
+		found, entries, err := probeSwiftSourceWithinRoot(ctx, root, budget)
+		if err != nil {
+			return err
+		}
+		remaining -= entries
+		if found {
+			applyCarthageDetectionRoot(root, carthageRoots[root], detection, roots)
 		}
 	}
 	return nil
 }
 
-func carthageDetectionConfidence(repoPath, path, name string, rootCarthageCorroborated bool) int {
+func applyCarthageDetectionRoot(root string, confidence int, detection *language.Detection, roots map[string]struct{}) {
+	detection.Matched = true
+	detection.Confidence += confidence
+	roots[root] = struct{}{}
+}
+
+func carthageDetectionConfidence(repoPath, path string, entry fs.DirEntry, rootCarthageCorroborated bool) int {
 	rootConfidence := 0
-	switch strings.ToLower(name) {
+	switch strings.ToLower(entry.Name()) {
 	case strings.ToLower(carthageManifestName):
 		rootConfidence = 60
 	case strings.ToLower(carthageResolvedName):
 		rootConfidence = 25
 	default:
+		return 0
+	}
+	if !isRegularNonSymlink(entry) {
 		return 0
 	}
 	if filepath.Dir(path) == filepath.Clean(repoPath) {
@@ -299,17 +338,17 @@ func detectSwiftEntry(ctx context.Context, path string, entry fs.DirEntry, detec
 	if *visited > maxDetectFiles {
 		return fs.SkipAll
 	}
-	return recordSwiftDetectionEntry(path, entry.Name(), detection, roots)
+	return recordSwiftDetectionEntry(path, entry, detection, roots)
 }
 
-func recordSwiftDetectionEntry(path string, name string, detection *language.Detection, roots map[string]struct{}) error {
-	switch strings.ToLower(name) {
+func recordSwiftDetectionEntry(path string, entry fs.DirEntry, detection *language.Detection, roots map[string]struct{}) error {
+	switch strings.ToLower(entry.Name()) {
 	case strings.ToLower(packageManifestName), strings.ToLower(packageResolvedName), strings.ToLower(podManifestName), strings.ToLower(podLockName):
 		detection.Matched = true
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
 	}
-	if strings.EqualFold(filepath.Ext(name), swiftSourceExtension) {
+	if isRegularSwiftSource(entry) {
 		detection.Matched = true
 		detection.Confidence += 2
 	}

@@ -29,6 +29,8 @@ const (
 	carthageManager                       = "carthage"
 )
 
+const maxNestedCarthageSourceTraversalEntries = 2048
+
 type importBinding = shared.ImportRecord
 
 type fileScan struct {
