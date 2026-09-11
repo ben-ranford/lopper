@@ -43,6 +43,10 @@ JSON uses `schemaVersion: "lopper.pr-review.v1"` and includes:
 Version upgrade/downgrade rows are only emitted when dependency identity includes
 known base and head versions. Unknown identity does not produce a version-change
 claim.
+For SemVer identities, an optional `v` or `V` prefix alone does not produce a
+version-change row. Build-metadata changes remain visible with equal-precedence
+evidence; incomparable versions are identified separately. PyPI identities retain
+their PEP 440 comparison behavior.
 
 Newly reachable vulnerability rows retain `versionStatus` when available.
 `affected` means supported advisory metadata confirms that the installed version

@@ -379,8 +379,10 @@ func TestPRReviewVersionCategoryClassifiesOrderedAndUnorderedVersions(t *testing
 	if got := prReviewVersionCategory("1.0.0", "1.0.0"); got != prReviewCategoryVersionChanged {
 		t.Fatalf("expected equal versions to avoid upgrade/downgrade labels, got %q", got)
 	}
-	if got := prReviewVersionCategoryForEcosystem(" PyPI ", "1.0", "1.0rc1"); got != prReviewCategoryDowngraded {
-		t.Fatalf("expected PEP 440 prerelease decrease to be a downgrade, got %q", got)
+	base := report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("demo", " PyPI ", "1.0", 10, 90, false)}}
+	head := report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("demo", " PyPI ", "1.0rc1", 10, 90, false)}}
+	if rows := prReviewVersionRows(base, head, prReviewCategoryDowngraded); len(rows) != 1 {
+		t.Fatalf("expected PEP 440 prerelease decrease to be a downgrade, got %#v", rows)
 	}
 }
 
