@@ -556,7 +556,7 @@ func loadVendoredModuleMetadata(repoPath string) (vendoredModuleMetadata, error)
 	if !exists {
 		return metadata, nil
 	}
-	content, err := safeio.ReadFileUnder(repoPath, vendorModulesPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, vendorModulesPath, maxVendoredModuleMetadataBytes)
 	if err != nil {
 		return metadata, err
 	}

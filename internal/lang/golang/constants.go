@@ -6,6 +6,7 @@ const (
 	goVendoredProvenancePreviewFeature = "go-vendored-provenance"
 	vendorModulesTxtName               = "vendor/modules.txt"
 	maxScannableGoFile                 = 2 * 1024 * 1024
+	maxVendoredModuleMetadataBytes     = 2 * 1024 * 1024
 )
 
 var goSkippedDirs = map[string]bool{
