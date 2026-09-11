@@ -3,6 +3,8 @@ package swift
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +44,60 @@ func TestSwiftRootCarthageProbeHonorsCancellation(t *testing.T) {
 	if _, _, err := findSwiftSourceWithinRootDirectory(ctx, root, "Sources", 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation while reading source candidates, got %v", err)
 	}
+}
+
+func TestSwiftCarthageProbeIgnoresOnlyPureSentinelErrors(t *testing.T) {
+	operationalErr := errors.New("directory read failed")
+	pureEOF := &swiftReadDirTestFile{readErr: io.EOF}
+	if _, complete, err := readRootCarthageSourceBatch(pureEOF, 1); err != nil || !complete {
+		t.Fatalf("pure EOF batch = complete=%v err=%v, want complete without error", complete, err)
+	}
+	repo := t.TempDir()
+	swiftPath := filepath.Join(repo, swiftMainFileName)
+	testutil.MustWriteFile(t, swiftPath, "import Foundation\n")
+	info, err := os.Lstat(swiftPath)
+	if err != nil {
+		t.Fatalf("stat partial Swift entry: %v", err)
+	}
+	mixedEOF := &swiftReadDirTestFile{
+		entries: []fs.DirEntry{fs.FileInfoToDirEntry(info)},
+		readErr: errors.Join(io.EOF, operationalErr),
+	}
+	if entries, complete, err := readRootCarthageSourceBatch(mixedEOF, 1); complete || !errors.Is(err, operationalErr) || len(entries) != 1 {
+		t.Fatalf("mixed EOF batch = entries=%v complete=%v err=%v, want operational error", entries, complete, err)
+	}
+	if !isIgnorableNestedCarthageProbeError(safeio.ErrTargetPathSymlink) || isIgnorableNestedCarthageProbeError(errors.Join(safeio.ErrTargetPathSymlink, operationalErr)) {
+		t.Fatal("expected mixed nested probe error to remain operational")
+	}
+}
+
+type swiftReadDirTestFile struct {
+	entries []fs.DirEntry
+	readErr error
+}
+
+func (f *swiftReadDirTestFile) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (f *swiftReadDirTestFile) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (f *swiftReadDirTestFile) Close() error {
+	return nil
+}
+
+func (f *swiftReadDirTestFile) Stat() (fs.FileInfo, error) {
+	return nil, errors.New("unexpected stat")
+}
+
+func (f *swiftReadDirTestFile) Chmod(fs.FileMode) error {
+	return nil
+}
+
+func (f *swiftReadDirTestFile) ReadDir(int) ([]fs.DirEntry, error) {
+	return f.entries, f.readErr
 }
 
 func TestSwiftRootCarthageProbeFindsRootSourceAndRejectsInvalidCandidate(t *testing.T) {
@@ -103,6 +159,22 @@ func TestSwiftRootCarthageProbeAllowsRequestedRootAliases(t *testing.T) {
 			assertSwiftRootCarthageAliasMetadata(t, resolved, requested)
 			assertSwiftRootCarthageAliasSource(t, resolved, requested)
 		})
+	}
+}
+
+func TestSwiftNestedCarthageDetectionAllowsRequestedRootAlias(t *testing.T) {
+	resolved, requested := swiftRequestedRootAlias(t, false)
+	nestedRoot := filepath.Join(resolved, "apps", "ios")
+	testutil.MustWriteFile(t, filepath.Join(nestedRoot, carthageManifestName), "github \"owner/repo\"\n")
+	testutil.MustWriteFile(t, filepath.Join(nestedRoot, "Sources", swiftMainFileName), "import Foundation\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
+	if err != nil {
+		t.Fatalf("detect nested Carthage project through alias: %v", err)
+	}
+	wantRoot := filepath.Join(requested, "apps", "ios")
+	if !detection.Matched || !slices.Contains(detection.Roots, wantRoot) {
+		t.Fatalf("expected requested nested root to be retained, got %#v", detection)
 	}
 }
 
@@ -214,12 +286,12 @@ func writeSwiftDetectionRegularityFixture(t *testing.T, repo string, regularCart
 	if regularCarthage {
 		testutil.MustWriteFile(t, cartfilePath, "github \"owner/repo\"\n")
 	} else if err := os.Symlink(filepath.Join(outside, carthageManifestName), cartfilePath); err != nil {
-		t.Fatalf("symlink Cartfile: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	if regularSwift {
 		testutil.MustWriteFile(t, swiftPath, "import Foundation\n")
 	} else if err := os.Symlink(filepath.Join(outside, "main.swift"), swiftPath); err != nil {
-		t.Fatalf("symlink Swift source: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 }
 
