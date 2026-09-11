@@ -465,36 +465,29 @@ hooks-install:
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
 		worktree_config_enabled="$$(git config --bool --get extensions.worktreeConfig || :)"; \
+		check_hook_paths() { \
+			label="$$1"; allow_legacy="$$2"; shift 2; \
+			if git config "$$@" --get-all core.hooksPath >/dev/null 2>&1; then \
+				git config "$$@" --get-all core.hooksPath | while IFS= read -r path; do \
+					case "$$path" in \
+						"$$managed_dir") ;; \
+						.githooks) if [ "$$allow_legacy" != true ]; then echo "Refusing to install while $$label has a non-managed core.hooksPath" >&2; exit 1; fi ;; \
+						*) echo "Refusing to replace $$label core.hooksPath: $$path" >&2; exit 1 ;; \
+					esac; \
+				done; \
+			fi; \
+		}; \
 		if [ "$$worktree_config_enabled" = true ]; then \
 			current_git_dir="$$(git rev-parse --path-format=absolute --git-dir)"; \
 			for config_file in "$$common_dir"/config.worktree "$$common_dir"/worktrees/*/config.worktree; do \
 				[ -f "$$config_file" ] || continue; \
 				[ "$$config_file" = "$$current_git_dir/config.worktree" ] && continue; \
-				if git config --file "$$config_file" --get-all core.hooksPath >/dev/null 2>&1; then \
-					other_path="$$(git config --file "$$config_file" --get-all core.hooksPath)"; \
-					if [ "$$other_path" != "$$managed_dir" ]; then \
-						echo "Refusing to install while another worktree has a non-managed core.hooksPath" >&2; \
-						exit 1; \
-					fi; \
-				fi; \
+				check_hook_paths "another worktree" false --file "$$config_file"; \
 			done; \
 		fi; \
-		current_path="$$(git config --get core.hooksPath || :)"; \
-		case "$$current_path" in \
-			''|"$$managed_dir"|.githooks) ;; \
-			*) echo "Refusing to replace existing core.hooksPath: $$current_path" >&2; exit 1 ;; \
-		esac; \
-		local_path="$$(git config --local --get core.hooksPath || :)"; \
-		case "$$local_path" in \
-			''|"$$managed_dir"|.githooks) ;; \
-			*) echo "Refusing to replace local core.hooksPath: $$local_path" >&2; exit 1 ;; \
-		esac; \
-		worktree_path=; \
-		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
-		case "$$worktree_path" in \
-			''|"$$managed_dir"|.githooks) ;; \
-			*) echo "Refusing to replace worktree core.hooksPath: $$worktree_path" >&2; exit 1 ;; \
-		esac; \
+		check_hook_paths "effective" true; \
+		check_hook_paths "local" true --local; \
+		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" true --worktree; fi; \
 		mkdir -p "$$managed_dir"; \
 		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
 		trap 'rm -f "$$temp_hook"' EXIT HUP INT TERM; \
@@ -503,16 +496,9 @@ hooks-install:
 		chmod 755 "$$temp_hook"; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		trap - EXIT HUP INT TERM; \
-		git config --local core.hooksPath "$$managed_dir"; \
-		worktree_path=; \
-		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
-		case "$$worktree_path" in \
-			''|"$$managed_dir") ;; \
-			.githooks) git config --worktree core.hooksPath "$$managed_dir" ;; \
-			*) echo "Refusing to replace worktree core.hooksPath: $$worktree_path" >&2; exit 1 ;; \
-		esac; \
-		effective_path="$$(git config --get core.hooksPath || :)"; \
-		if [ "$$effective_path" != "$$managed_dir" ]; then \
+		git config --local --replace-all core.hooksPath "$$managed_dir"; \
+		if [ "$$worktree_config_enabled" = true ] && git config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
+		if ! git config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then \
 			echo "Managed core.hooksPath was not activated" >&2; \
 			exit 1; \
 		fi; \
@@ -524,21 +510,26 @@ hooks-uninstall:
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
 		worktree_config_enabled="$$(git config --bool --get extensions.worktreeConfig || :)"; \
-		local_path="$$(git config --local --get core.hooksPath || :)"; \
-		case "$$local_path" in \
-			"$$managed_dir"|.githooks) git config --local --unset-all core.hooksPath ;; \
-			'') ;; \
-			*) echo "Preserved unrelated core.hooksPath: $$local_path" ;; \
-		esac; \
-		worktree_path=; \
-		if [ "$$worktree_config_enabled" = true ]; then worktree_path="$$(git config --worktree --get core.hooksPath || :)"; fi; \
-		case "$$worktree_path" in \
-			"$$managed_dir"|.githooks) if [ "$$worktree_config_enabled" = true ]; then git config --worktree --unset-all core.hooksPath; fi ;; \
-			'') ;; \
-			*) echo "Preserved unrelated worktree core.hooksPath: $$worktree_path" ;; \
-		esac; \
-		rm -f "$$managed_hook"; \
-		rmdir "$$managed_dir" 2>/dev/null || :; \
+		remove_managed_paths() { \
+			git config "$$@" --fixed-value --unset-all core.hooksPath "$$managed_dir" 2>/dev/null || :; \
+			git config "$$@" --fixed-value --unset-all core.hooksPath .githooks 2>/dev/null || :; \
+		}; \
+		remove_managed_paths --local; \
+		if [ "$$worktree_config_enabled" = true ]; then remove_managed_paths --worktree; fi; \
+		managed_hook_still_referenced=false; \
+		if git config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then managed_hook_still_referenced=true; fi; \
+		if [ "$$worktree_config_enabled" = true ]; then \
+			for config_file in "$$common_dir"/config.worktree "$$common_dir"/worktrees/*/config.worktree; do \
+				[ -f "$$config_file" ] || continue; \
+				if git config --file "$$config_file" --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then managed_hook_still_referenced=true; fi; \
+			done; \
+		fi; \
+		if [ "$$managed_hook_still_referenced" = true ]; then \
+			echo "Preserved managed pre-commit hook because another configuration still uses it"; \
+		else \
+			rm -f "$$managed_hook"; \
+			rmdir "$$managed_dir" 2>/dev/null || :; \
+		fi; \
 		echo "Removed managed pre-commit hook"
 
 vscode-extension-install:

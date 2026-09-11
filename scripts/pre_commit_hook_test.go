@@ -34,17 +34,27 @@ func TestHooksInstallSnapshotsTrustedHookAndRejectsUnsafeStagedContent(t *testin
 	assertCommitFails(t, repoDir, "trailing whitespace")
 	runCommand(t, repoDir, "git", "reset", "--", "whitespace.txt")
 
+	tempDir := filepath.Join(t.TempDir(), "temporary files")
+	if err := os.Mkdir(tempDir, 0o755); err != nil {
+		t.Fatalf("create temporary directory: %v", err)
+	}
 	stagedGo := filepath.Join(repoDir, "unformatted.go")
 	writeFile(t, stagedGo, "package fixture\n\nfunc unformatted(){}\n")
 	runCommand(t, repoDir, "git", "add", "unformatted.go")
 	writeFile(t, stagedGo, "package fixture\n\nfunc unformatted() {}\n")
-	assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
+	output := assertCommitFailsWithEnv(t, repoDir, "staged Go files must be gofmt-formatted", []string{"TMPDIR=" + tempDir})
+	if !strings.Contains(output, "unformatted.go") {
+		t.Fatalf("gofmt diagnostic does not identify the staged file:\n%s", output)
+	}
 	runCommand(t, repoDir, "git", "reset", "--", "unformatted.go")
 
 	for _, name := range []string{": staged.go", "0:unformatted.go"} {
 		writeFile(t, filepath.Join(repoDir, name), "package fixture\n\nfunc adversarialName(){}\n")
 		runCommand(t, repoDir, "git", "add", "--", "./"+name)
-		assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
+		output := assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
+		if !strings.Contains(output, name) {
+			t.Fatalf("gofmt diagnostic does not identify %q:\n%s", name, output)
+		}
 		runCommand(t, repoDir, "git", "reset", "--", "./"+name)
 	}
 }
@@ -87,7 +97,7 @@ func TestHooksInstallPreservesMaskedCustomLocalHooksPath(t *testing.T) {
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
 	output, err := command.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "Refusing to replace local") {
+	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
 		t.Fatalf("masked custom hook install = %v\n%s", err, output)
 	}
 	assertConfigEquals(t, repoDir, ".githooks")
@@ -211,6 +221,73 @@ func TestHooksInstallIsIdempotentAndUninstallsOnlyManagedOrLegacyPaths(t *testin
 	assertNoHooksPath(t, repoDir, "--local", "local")
 }
 
+func TestHooksInstallRefusesMultiValueCustomHooksPathsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	customDir := filepath.Join(repoDir, "custom hooks")
+	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", customDir)
+
+	command := exec.Command("make", "hooks-install")
+	command.Dir = repoDir
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
+		t.Fatalf("multi-value install = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", ".githooks", customDir)
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before refusal: %v", err)
+	}
+}
+
+func TestHooksInstallRefusesMultiValueWorktreeHooksPathsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	customDir := filepath.Join(repoDir, "custom worktree hooks")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", customDir)
+
+	command := exec.Command("make", "hooks-install")
+	command.Dir = repoDir
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
+		t.Fatalf("multi-value worktree install = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--worktree", ".githooks", customDir)
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before refusal: %v", err)
+	}
+}
+
+func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedDir := filepath.Dir(managedHookPath(t, repoDir))
+	localCustom := filepath.Join(repoDir, "custom local hooks")
+	worktreeCustom := filepath.Join(repoDir, "custom worktree hooks")
+	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", localCustom)
+	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", worktreeCustom)
+	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "--replace-all", "core.hooksPath", managedDir)
+
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	assertConfigValues(t, repoDir, "--local", localCustom)
+	assertConfigValues(t, repoDir, "--worktree", worktreeCustom)
+	assertConfigValues(t, linkedDir, "--worktree", managedDir)
+	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
+		t.Fatalf("shared managed hook was removed while linked worktree still uses it: %v", err)
+	}
+}
+
 func newHookTestRepository(t *testing.T) string {
 	t.Helper()
 
@@ -285,14 +362,29 @@ func assertNoHooksPath(t *testing.T, repoDir, scope, scopeName string) {
 	}
 }
 
-func assertCommitFails(t *testing.T, repoDir, wantOutput string) {
+func assertConfigValues(t *testing.T, repoDir, scope string, want ...string) {
+	t.Helper()
+	got := strings.Split(gitOutput(t, repoDir, "config", scope, "--get-all", "core.hooksPath"), "\n")
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("%s core.hooksPath = %q, want %q", scope, got, want)
+	}
+}
+
+func assertCommitFails(t *testing.T, repoDir, wantOutput string) string {
+	t.Helper()
+	return assertCommitFailsWithEnv(t, repoDir, wantOutput, nil)
+}
+
+func assertCommitFailsWithEnv(t *testing.T, repoDir, wantOutput string, env []string) string {
 	t.Helper()
 	command := exec.Command("git", "commit", "-m", "must fail")
 	command.Dir = repoDir
+	command.Env = append(os.Environ(), env...)
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), wantOutput) {
 		t.Fatalf("commit = %v\n%s", err, output)
 	}
+	return string(output)
 }
 
 func runCommitWithHook(t *testing.T, repoDir, message string) {
