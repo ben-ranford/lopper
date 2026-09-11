@@ -2776,31 +2776,25 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 	}
 }
 
+type renovateReviewRule struct {
+	MatchPackageNames []string `json:"matchPackageNames"`
+	MatchUpdateTypes  []string `json:"matchUpdateTypes"`
+	Enabled           *bool    `json:"enabled"`
+	Automerge         *bool    `json:"automerge"`
+}
+
 func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
-		Enabled           *bool `json:"enabled"`
-		Automerge         *bool `json:"automerge"`
-		PlatformAutomerge bool  `json:"platformAutomerge"`
-		PackageRules      []struct {
-			MatchPackageNames []string `json:"matchPackageNames"`
-			MatchUpdateTypes  []string `json:"matchUpdateTypes"`
-			Enabled           *bool    `json:"enabled"`
-			Automerge         *bool    `json:"automerge"`
-		} `json:"packageRules"`
+		Enabled           *bool                `json:"enabled"`
+		Automerge         *bool                `json:"automerge"`
+		PlatformAutomerge bool                 `json:"platformAutomerge"`
+		PackageRules      []renovateReviewRule `json:"packageRules"`
 	}
 	readJSONConfig(t, "renovate.json", &config)
 
-	if config.Enabled != nil && !*config.Enabled {
-		t.Fatal("Renovate must not globally disable dependency update PR creation")
-	}
-	if config.Automerge != nil && *config.Automerge {
-		t.Fatal("Renovate must not enable global unattended automerge")
-	}
-	if config.PlatformAutomerge {
-		t.Fatal("Renovate platformAutomerge must be disabled so dependency updates require human review")
-	}
+	assertRenovateGlobalReviewSettings(t, config.Enabled, config.Automerge, config.PlatformAutomerge)
 
 	var matcherConfig struct {
 		PackageRules []map[string]json.RawMessage `json:"packageRules"`
@@ -2809,14 +2803,7 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 
 	hasCatchAllReviewRule := false
 	for index, rule := range config.PackageRules {
-		if rule.Enabled != nil && !*rule.Enabled {
-			t.Fatalf("Renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
-		}
-		if rule.Automerge != nil && *rule.Automerge {
-			t.Fatalf("Renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
-		}
-		if len(rule.MatchPackageNames) == 1 && rule.MatchPackageNames[0] == "*" &&
-			rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(matcherConfig.PackageRules[index]) {
+		if renovateRuleRequiresHumanReview(t, rule, matcherConfig.PackageRules[index]) {
 			hasCatchAllReviewRule = true
 		}
 	}
@@ -2825,13 +2812,72 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	}
 }
 
+func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge *bool, platformAutomerge bool) {
+	t.Helper()
+
+	if enabled != nil && !*enabled {
+		t.Fatal("Renovate must not globally disable dependency update PR creation")
+	}
+	if automerge != nil && *automerge {
+		t.Fatal("Renovate must not enable global unattended automerge")
+	}
+	if platformAutomerge {
+		t.Fatal("Renovate platformAutomerge must be disabled so dependency updates require human review")
+	}
+}
+
+func renovateRuleRequiresHumanReview(t *testing.T, rule renovateReviewRule, rawRule map[string]json.RawMessage) bool {
+	t.Helper()
+
+	if rule.Enabled != nil && !*rule.Enabled {
+		t.Fatalf("Renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
+	}
+	if rule.Automerge != nil && *rule.Automerge {
+		t.Fatalf("Renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
+	}
+	return len(rule.MatchPackageNames) == 1 && rule.MatchPackageNames[0] == "*" &&
+		rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(rawRule)
+}
+
+var renovateLegacyNarrowingMatchers = map[string]struct{}{
+	"paths":             {},
+	"languages":         {},
+	"baseBranchList":    {},
+	"managers":          {},
+	"datasources":       {},
+	"depTypeList":       {},
+	"packageNames":      {},
+	"packagePatterns":   {},
+	"sourceUrlPrefixes": {},
+	"updateTypes":       {},
+}
+
 func renovateRuleHasNarrowingMatcher(rule map[string]json.RawMessage) bool {
 	for key := range rule {
 		if (strings.HasPrefix(key, "match") && key != "matchPackageNames") || strings.HasPrefix(key, "exclude") {
 			return true
 		}
+		if _, isLegacyMatcher := renovateLegacyNarrowingMatchers[key]; isLegacyMatcher {
+			return true
+		}
 	}
 	return false
+}
+
+func TestRenovateCatchAllReviewRuleRejectsLegacyNarrowingMatchers(t *testing.T) {
+	t.Parallel()
+
+	for matcher := range renovateLegacyNarrowingMatchers {
+		t.Run(matcher, func(t *testing.T) {
+			rule := map[string]json.RawMessage{
+				"matchPackageNames": json.RawMessage(`["*"]`),
+				matcher:             json.RawMessage(`["hostile"]`),
+			}
+			if !renovateRuleHasNarrowingMatcher(rule) {
+				t.Fatalf("legacy %s matcher must prevent a catch-all review rule", matcher)
+			}
+		})
+	}
 }
 
 func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
