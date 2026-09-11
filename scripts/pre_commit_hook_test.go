@@ -229,41 +229,142 @@ func TestHooksInstallIsIdempotentAndUninstallsOnlyManagedOrLegacyPaths(t *testin
 func TestHooksInstallRefusesMultiValueCustomHooksPathsWithoutMutation(t *testing.T) {
 	t.Parallel()
 
-	repoDir := newHookTestRepository(t)
-	customDir := filepath.Join(repoDir, "custom hooks")
-	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", ".githooks")
-	runCommand(t, repoDir, "git", "config", "--local", "--add", "core.hooksPath", customDir)
-
-	command := exec.Command("make", "hooks-install")
-	command.Dir = repoDir
-	output, err := command.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
-		t.Fatalf("multi-value install = %v\n%s", err, output)
-	}
-	assertConfigValues(t, repoDir, "--local", ".githooks", customDir)
-	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
-		t.Fatalf("installer created managed hook directory before refusal: %v", err)
-	}
+	assertHooksInstallRefusesMultiValueHooksPaths(t, "--local", "custom hooks")
 }
 
 func TestHooksInstallRefusesMultiValueWorktreeHooksPathsWithoutMutation(t *testing.T) {
 	t.Parallel()
 
+	assertHooksInstallRefusesMultiValueHooksPaths(t, "--worktree", "custom worktree hooks")
+}
+
+func assertHooksInstallRefusesMultiValueHooksPaths(t *testing.T, scope, customDirectory string) {
+	t.Helper()
+
 	repoDir := newHookTestRepository(t)
-	customDir := filepath.Join(repoDir, "custom worktree hooks")
-	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
-	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", ".githooks")
-	runCommand(t, repoDir, "git", "config", "--worktree", "--add", "core.hooksPath", customDir)
+	customDir := filepath.Join(repoDir, customDirectory)
+	if scope == "--worktree" {
+		runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	}
+	runCommand(t, repoDir, "git", "config", scope, "--add", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", scope, "--add", "core.hooksPath", customDir)
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
-		t.Fatalf("multi-value worktree install = %v\n%s", err, output)
+		t.Fatalf("multi-value %s install = %v\n%s", scope, err, output)
 	}
-	assertConfigValues(t, repoDir, "--worktree", ".githooks", customDir)
+	assertConfigValues(t, repoDir, scope, ".githooks", customDir)
 	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
 		t.Fatalf("installer created managed hook directory before refusal: %v", err)
+	}
+}
+
+func TestHooksInstallUsesLocalWorktreeConfigWhenGlobalConfigIsTrue(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	writeFile(t, globalConfig, "[extensions]\n\tworktreeConfig = true\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "GIT_CONFIG_GLOBAL="+globalConfig, "GIT_CONFIG_NOSYSTEM=1")
+	if err != nil {
+		t.Fatalf("install with global-only worktreeConfig = %v\n%s", err, output)
+	}
+	assertConfigEquals(t, repoDir, filepath.Dir(managedHookPath(t, repoDir)))
+	currentGitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	if _, err := os.Stat(filepath.Join(currentGitDir, "config.worktree")); !os.IsNotExist(err) {
+		t.Fatalf("install wrote a worktree config for global-only worktreeConfig: %v", err)
+	}
+
+	output, err = runMakeWithEnv(repoDir, "hooks-uninstall", "GIT_CONFIG_GLOBAL="+globalConfig, "GIT_CONFIG_NOSYSTEM=1")
+	if err != nil || strings.Contains(string(output), "cannot be used with multiple working trees") {
+		t.Fatalf("uninstall with global-only worktreeConfig = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(managedHookPath(t, repoDir)); !os.IsNotExist(err) {
+		t.Fatalf("uninstall retained managed hook with global-only worktreeConfig: %v", err)
+	}
+}
+
+func TestHooksInstallAndUninstallRejectMalformedLocalWorktreeConfigBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	configPath := filepath.Join(gitDir, "config")
+	managedHook := managedHookPath(t, repoDir)
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "invalid")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil {
+		t.Fatalf("install with malformed local worktreeConfig unexpectedly succeeded:\n%s", output)
+	}
+	assertFileDoesNotContain(t, configPath, "hooksPath")
+	if _, err := os.Stat(filepath.Dir(managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before malformed-config refusal: %v", err)
+	}
+
+	writeFileMode(t, managedHook, "#!/bin/sh\nexit 0\n", 0o755)
+	managedDir := filepath.Dir(managedHook)
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read malformed local config: %v", err)
+	}
+	writeFile(t, configPath, string(configData)+"\n[core]\n\thooksPath = "+managedDir+"\n")
+	output, err = runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil {
+		t.Fatalf("uninstall with malformed local worktreeConfig unexpectedly succeeded:\n%s", output)
+	}
+	assertFileContains(t, configPath, managedDir)
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook before malformed-config refusal: %v", err)
+	}
+}
+
+func TestHooksUninstallRejectsMalformedForeignWorktreeConfigBeforeDeletingManagedHook(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "make", "hooks-install")
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	foreignGitDir := gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(foreignGitDir, "config.worktree"), "[broken\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil {
+		t.Fatalf("uninstall with malformed foreign worktree config unexpectedly succeeded:\n%s", output)
+	}
+	managedHook := managedHookPath(t, repoDir)
+	assertConfigValues(t, repoDir, "--local", filepath.Dir(managedHook))
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook before foreign-config refusal: %v", err)
+	}
+}
+
+func TestHooksUninstallRejectsMalformedGlobalIncludedConfigBeforeDeletingManagedHook(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	brokenConfig := filepath.Join(t.TempDir(), "broken.gitconfig")
+	writeFile(t, globalConfig, "[include]\n\tpath = "+brokenConfig+"\n")
+	writeFile(t, brokenConfig, "[broken\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall", "GIT_CONFIG_GLOBAL="+globalConfig, "GIT_CONFIG_NOSYSTEM=1")
+	if err == nil {
+		t.Fatalf("uninstall with malformed global included config unexpectedly succeeded:\n%s", output)
+	}
+	assertConfigValues(t, repoDir, "--local", managedDir)
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook before global-config refusal: %v", err)
 	}
 }
 
@@ -322,7 +423,15 @@ func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *tes
 	writeFile(t, includeFile, "[core]\n\thooksPath = "+managedDir+"\n")
 	runCommand(t, linkedDir, "git", "config", "--worktree", "include.path", includeFile)
 
-	runCommand(t, repoDir, "make", "hooks-uninstall")
+	command := exec.Command("make", "hooks-uninstall")
+	command.Dir = repoDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hooks-uninstall = %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "Preserved") || strings.Contains(string(output), "Removed") {
+		t.Fatalf("preserved-hook uninstall output = %q", output)
+	}
 	assertConfigValues(t, repoDir, "--local", localCustom)
 	assertConfigValues(t, repoDir, "--worktree", worktreeCustom)
 	assertConfigValues(t, linkedDir, "--worktree", managedDir)
@@ -380,6 +489,28 @@ func assertFileEquals(t *testing.T, path, want string) {
 	}
 }
 
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("%s does not contain %q", path, want)
+	}
+}
+
+func assertFileDoesNotContain(t *testing.T, path, unwanted string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if strings.Contains(string(data), unwanted) {
+		t.Fatalf("%s unexpectedly contains %q", path, unwanted)
+	}
+}
+
 func assertConfigEquals(t *testing.T, repoDir, want string) {
 	t.Helper()
 	if got := gitOutput(t, repoDir, "config", "--get", "core.hooksPath"); got != want {
@@ -396,6 +527,13 @@ func gitOutput(t *testing.T, repoDir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func runMakeWithEnv(repoDir, target string, env ...string) ([]byte, error) {
+	command := exec.Command("make", target)
+	command.Dir = repoDir
+	command.Env = append(os.Environ(), env...)
+	return command.CombinedOutput()
 }
 
 func assertNoHooksPath(t *testing.T, repoDir, scope, scopeName string) {
