@@ -375,6 +375,31 @@ func TestServiceAutoRetainsNestedSwiftCarthagePackage(t *testing.T) {
 	}
 }
 
+func TestServiceAutoRetainsNestedSwiftCarthagePackagePastDetectionBudget(t *testing.T) {
+	repo := t.TempDir()
+	ios := filepath.Join(repo, "apps", "ios")
+	writeFile(t, filepath.Join(ios, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
+	writeFile(t, filepath.Join(ios, "Cartfile.resolved"), "github \"ReactiveX/RxSwift\" \"6.8.0\"\n")
+	for index := 0; index < 2048; index++ {
+		writeFile(t, filepath.Join(ios, "D-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	writeFile(t, filepath.Join(ios, "Sources", "App", "main.swift"), "import RxSwift\nlet value = DisposeBag()\n")
+
+	result, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "rxswift",
+		Language:   "auto",
+		Features:   mustResolveSwiftCarthagePreviewSet(t, true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := singleDependencyReport(t, result)
+	if dep.Language != "swift" || dep.TotalExportsCount == 0 {
+		t.Fatalf("nested Carthage package lost dependency attribution after detection budget: %#v", dep)
+	}
+}
+
 func TestServiceAutoRetainsRootSwiftCarthagePackagePastDetectionBudget(t *testing.T) {
 	repo := t.TempDir()
 	writeSwiftCarthageAnalysisFixture(t, repo)
