@@ -6632,12 +6632,12 @@ func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) s
 	return value
 }
 
-func TestAnalysisCacheSchemaInvalidatesPreV6Entries(t *testing.T) {
-	const expectedDeclaration = `const analysisCacheSchemaVersion = "v6"`
+func TestAnalysisCacheSchemaInvalidatesPreV7Entries(t *testing.T) {
+	const expectedDeclaration = `const analysisCacheSchemaVersion = "v7"`
 
 	source := readConfig(t, "internal/analysis/cache_entry.go")
 	if !strings.Contains(source, expectedDeclaration) {
-		t.Fatalf("analysis cache schema must invalidate pre-v6 entries; expected %q", expectedDeclaration)
+		t.Fatalf("analysis cache schema must invalidate pre-v7 entries; expected %q", expectedDeclaration)
 	}
 }
 
