@@ -11,7 +11,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestSwiftAdapterDetectWithCarthageRoots(t *testing.T) {
+func TestSwiftAdapterDetectWithCarthageMetadataAndSource(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "App", swiftMainFileName), "import RxSwift\n")
@@ -28,8 +28,8 @@ func TestSwiftAdapterDetectWithCarthageRoots(t *testing.T) {
 		t.Fatalf("expected repo root in detection roots, got %#v", detection.Roots)
 	}
 	nested := filepath.Join(repo, "Packages", "Feature")
-	if !slices.Contains(detection.Roots, nested) {
-		t.Fatalf("expected nested Carthage root in detection roots, got %#v", detection.Roots)
+	if slices.Contains(detection.Roots, nested) {
+		t.Fatalf("did not expect Carthage metadata to create a detection root, got %#v", detection.Roots)
 	}
 }
 

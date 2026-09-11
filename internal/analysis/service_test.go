@@ -356,6 +356,25 @@ func TestServiceAnalyseSwiftCarthageAutoModeBehindPreviewFlag(t *testing.T) {
 	}
 }
 
+func TestServiceAutoIgnoresCarthageMetadataInJavaScriptRepository(t *testing.T) {
+	repo := t.TempDir()
+	writeJSFixture(t, repo)
+	writeFile(t, filepath.Join(repo, "Cartfile"), "github \"ReactiveX/RxSwift\" ~> 6.0\n")
+	writeFile(t, filepath.Join(repo, "Cartfile.resolved"), "github \"ReactiveX/RxSwift\" \"6.8.0\"\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "auto",
+	})
+	if err != nil {
+		t.Fatalf("analyse JavaScript repo with Carthage metadata: %v", err)
+	}
+	if dep := singleDependencyReport(t, reportData); dep.Language != "js-ts" {
+		t.Fatalf("expected JavaScript auto selection despite Carthage metadata, got %#v", dep)
+	}
+}
+
 func TestServiceAnalyseSwiftCarthageAllModeBehindPreviewFlag(t *testing.T) {
 	repo := t.TempDir()
 	writeJSFixture(t, repo)
