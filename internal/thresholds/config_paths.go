@@ -10,7 +10,7 @@ import (
 func resolveConfigPath(repoPath, explicitPath string) (string, bool, error) {
 	if explicitPath != "" {
 		if _, remote := parseRemoteURL(explicitPath); remote {
-			return "", false, fmt.Errorf("remote policy packs are disabled: %s", explicitPath)
+			return "", false, fmt.Errorf("remote policy locations are disabled: %s", explicitPath)
 		}
 		candidate := explicitPath
 		if !filepath.IsAbs(candidate) {
