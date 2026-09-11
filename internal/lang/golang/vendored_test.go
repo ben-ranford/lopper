@@ -1,10 +1,12 @@
 package golang
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -73,6 +75,17 @@ func TestLoadVendoredModuleMetadata(t *testing.T) {
 	}
 	if got := metadata.ImportToDependency["github.com/acme/dep/pkg"]; got != "github.com/acme/dep" {
 		t.Fatalf("expected package mapping for vendored dep, got %q", got)
+	}
+}
+
+func TestLoadVendoredModuleMetadataRejectsOversizedManifest(t *testing.T) {
+	repo := t.TempDir()
+	const maxVendoredManifestBytes = 2 * 1024 * 1024
+	testutil.MustWriteFile(t, filepath.Join(repo, vendorModulesTxtName), strings.Repeat("x", maxVendoredManifestBytes+1))
+
+	_, err := loadVendoredModuleMetadata(repo)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized vendor/modules.txt to be rejected, got %v", err)
 	}
 }
 
