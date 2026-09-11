@@ -146,6 +146,76 @@ func TestHooksInstallUsesCommonGitDirectoryForLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestManagedHookChecksTrackedSymlinkReplacedByUnformattedGoFile(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkPath := filepath.Join(repoDir, "replaced.go")
+	if err := os.Symlink("tracked.txt", linkPath); err != nil {
+		t.Fatalf("create tracked Go symlink: %v", err)
+	}
+	runCommand(t, repoDir, "git", "add", "replaced.go")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "add Go symlink")
+	runCommand(t, repoDir, "make", "hooks-install")
+
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("remove Go symlink: %v", err)
+	}
+	writeFile(t, linkPath, "package fixture\n\nfunc unformatted(){}\n")
+	runCommand(t, repoDir, "git", "add", "replaced.go")
+	assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
+}
+
+func TestManagedHookWorksWhenLinkedWorktreeSetsCoreBare(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "make", "hooks-install")
+	writeFile(t, filepath.Join(linkedDir, "linked.go"), "package fixture\n\nfunc unformatted(){}\n")
+	runCommand(t, linkedDir, "git", "add", "linked.go")
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.bare", "true")
+
+	command := exec.Command(managedHookPath(t, linkedDir))
+	command.Dir = linkedDir
+	outputBytes, err := command.CombinedOutput()
+	output := string(outputBytes)
+	if err == nil || !strings.Contains(output, "staged Go files must be gofmt-formatted") {
+		t.Fatalf("managed hook with core.bare=true = %v\n%s", err, output)
+	}
+	if strings.Contains(output, "this operation must be run in a work tree") {
+		t.Fatalf("managed hook inherited core.bare=true:\n%s", output)
+	}
+	runCommand(t, linkedDir, "make", "hooks-uninstall")
+	if _, err := os.Stat(managedHookPath(t, linkedDir)); !os.IsNotExist(err) {
+		t.Fatalf("uninstall with core.bare=true left managed hook: %v", err)
+	}
+}
+
+func TestManagedHookDoesNotRunConfiguredDiffHelpers(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	markerPath := filepath.Join(repoDir, "diff-helper-ran")
+	helperPath := filepath.Join(repoDir, "hostile-diff-helper")
+	writeFileMode(t, helperPath, "#!/bin/sh\ntouch "+markerPath+"\nexit 0\n", 0o755)
+	runCommand(t, repoDir, "git", "config", "diff.external", helperPath)
+	runCommand(t, repoDir, "git", "config", "diff.hostile.textconv", helperPath)
+	writeFile(t, filepath.Join(repoDir, ".gitattributes"), "*.go diff=hostile\n")
+	writeFile(t, filepath.Join(repoDir, "hostile.go"), "package fixture\n\nfunc hostile() {}\n")
+	runCommand(t, repoDir, "git", "add", ".gitattributes", "hostile.go")
+	runCommitWithHook(t, repoDir, "stage hostile diff fixture")
+	writeFile(t, filepath.Join(repoDir, "hostile.go"), "package fixture\n\nfunc hostileChanged() {}\n")
+	runCommand(t, repoDir, "git", "add", "hostile.go")
+	runCommitWithHook(t, repoDir, "commit without diff helper")
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("configured diff helper ran during commit: %v", err)
+	}
+}
+
 func TestHooksInstallRefusesLinkedWorktreeOverrideBeforeMutationAndSucceedsAfterRemoval(t *testing.T) {
 	t.Parallel()
 
@@ -324,6 +394,26 @@ func TestHooksInstallAndUninstallRejectMalformedLocalWorktreeConfigBeforeMutatio
 	}
 }
 
+func TestHooksUninstallFailsWhenConfigIsLockedWithoutRemovingManagedHook(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Unable to remove managed core.hooksPath") {
+		t.Fatalf("uninstall with config lock = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", managedDir)
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook while config was locked: %v", err)
+	}
+}
+
 func TestHooksUninstallRejectsMalformedForeignWorktreeConfigBeforeDeletingManagedHook(t *testing.T) {
 	t.Parallel()
 
@@ -440,6 +530,29 @@ func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *tes
 	}
 	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
 		t.Fatalf("shared managed hook was removed while linked worktree still uses it: %v", err)
+	}
+}
+
+func TestHooksUninstallPreservesHookForForeignManagedPathAliases(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	relativeManagedDir, err := filepath.Rel(linkedDir, managedDir)
+	if err != nil {
+		t.Fatalf("make managed hook path relative: %v", err)
+	}
+	runCommand(t, linkedDir, "git", "config", "--worktree", "--add", "core.hooksPath", managedDir+string(filepath.Separator))
+	runCommand(t, linkedDir, "git", "config", "--worktree", "--add", "core.hooksPath", relativeManagedDir)
+
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook used through foreign aliases: %v", err)
 	}
 }
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
-if ! git diff --cached --check --no-ext-diff --no-textconv; then
+if ! git -c core.bare=false diff --cached --check --no-ext-diff --no-textconv; then
 	echo "[pre-commit] staged whitespace check failed" >&2
 	exit 1
 fi
 
-if git diff --cached --quiet --diff-filter=ACMR -- '*.go'; then
+if git -c core.bare=false diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go'; then
 	staged_gofmt_diff=
 else
-	staged_gofmt_diff=$(git diff --cached --name-only -z --diff-filter=ACMR -- '*.go' |
-		xargs -0 -n 1 sh -c "temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt_output=\$(gofmt -d \"\$temp_file\" 2>&1); status=\$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\"; fi" sh)
+	staged_gofmt_diff=$(git -c core.bare=false diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' |
+		xargs -0 -n 1 sh -c "temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git -c core.bare=false show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt_output=\$(gofmt -d \"\$temp_file\" 2>&1); status=\$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\"; fi" sh)
 fi
 if [ -n "$staged_gofmt_diff" ]; then
 	echo "[pre-commit] staged Go files must be gofmt-formatted:" >&2
