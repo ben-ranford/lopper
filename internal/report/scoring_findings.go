@@ -1,9 +1,6 @@
 package report
 
-import (
-	"slices"
-	"strings"
-)
+import "slices"
 
 func AnnotateFindingConfidence(dependencies []DependencyReport) {
 	for depIndex := range dependencies {
@@ -54,7 +51,7 @@ func FilterFindingsByConfidence(dependencies []DependencyReport, minConfidence f
 func filterRiskCuesByConfidence(values []RiskCue, minConfidence float64) []RiskCue {
 	filtered := make([]RiskCue, 0, len(values))
 	for _, value := range values {
-		securityRisk := riskSeverityWeight(value.Severity) >= riskSeverityWeight("medium") || strings.EqualFold(strings.TrimSpace(value.Severity), "critical")
+		securityRisk := riskSeverityWeight(value.Severity) >= riskSeverityWeight("medium")
 		if value.ConfidenceScore < minConfidence && !securityRisk {
 			continue
 		}
