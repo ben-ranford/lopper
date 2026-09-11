@@ -211,7 +211,7 @@ func (t *staveTerminal) interruptKey(msg tea.KeyMsg) bool {
 		commandMode = snap.model.interaction.commandMode
 	}
 	key := msg.Key()
-	return (key.Text == "q" && t.inflight && !commandMode) || (key.Mod == tea.ModCtrl && (key.Text == "c" || key.Text == "d"))
+	return ((key.Text == "q" || key.Code == tea.KeyEscape) && t.inflight && !commandMode) || (key.Mod == tea.ModCtrl && (key.Text == "c" || key.Text == "d"))
 }
 
 func (t *staveTerminal) enterAction() (command, selectedAction, selectedDep string) {
