@@ -455,13 +455,72 @@ clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 
 hooks-install:
-	@git config core.hooksPath .githooks
-	@chmod +x .githooks/*
-	@echo "Installed git hooks from .githooks"
+	@set -eu; \
+		source_hook=".githooks/pre-commit"; \
+		if [ ! -f "$$source_hook" ]; then \
+			echo "Missing reviewed hook: $$source_hook" >&2; \
+			exit 1; \
+		fi; \
+		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		managed_hook="$$managed_dir/pre-commit"; \
+		current_path="$$(git config --get core.hooksPath || :)"; \
+		case "$$current_path" in \
+			''|"$$managed_dir"|.githooks) ;; \
+			*) echo "Refusing to replace existing core.hooksPath: $$current_path" >&2; exit 1 ;; \
+		esac; \
+		local_path="$$(git config --local --get core.hooksPath || :)"; \
+		case "$$local_path" in \
+			''|"$$managed_dir"|.githooks) ;; \
+			*) echo "Refusing to replace local core.hooksPath: $$local_path" >&2; exit 1 ;; \
+		esac; \
+		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		case "$$worktree_path" in \
+			''|"$$managed_dir"|.githooks) ;; \
+			*) echo "Refusing to replace worktree core.hooksPath: $$worktree_path" >&2; exit 1 ;; \
+		esac; \
+		mkdir -p "$$managed_dir"; \
+		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
+		trap 'rm -f "$$temp_hook"' EXIT HUP INT TERM; \
+		umask 077; \
+		cp "$$source_hook" "$$temp_hook"; \
+		chmod 755 "$$temp_hook"; \
+		mv -f "$$temp_hook" "$$managed_hook"; \
+		trap - EXIT HUP INT TERM; \
+		git config --local core.hooksPath "$$managed_dir"; \
+		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		case "$$worktree_path" in \
+			''|"$$managed_dir") ;; \
+			.githooks) git config --worktree core.hooksPath "$$managed_dir" ;; \
+			*) echo "Refusing to replace worktree core.hooksPath: $$worktree_path" >&2; exit 1 ;; \
+		esac; \
+		effective_path="$$(git config --get core.hooksPath || :)"; \
+		if [ "$$effective_path" != "$$managed_dir" ]; then \
+			echo "Managed core.hooksPath was not activated" >&2; \
+			exit 1; \
+		fi; \
+		echo "Installed reviewed pre-commit hook in $$managed_dir"
 
 hooks-uninstall:
-	@git config --unset core.hooksPath || true
-	@echo "Removed custom core.hooksPath hook configuration"
+	@set -eu; \
+		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		managed_hook="$$managed_dir/pre-commit"; \
+		local_path="$$(git config --local --get core.hooksPath || :)"; \
+		case "$$local_path" in \
+			"$$managed_dir"|.githooks) git config --local --unset-all core.hooksPath ;; \
+			'') ;; \
+			*) echo "Preserved unrelated core.hooksPath: $$local_path" ;; \
+		esac; \
+		worktree_path="$$(git config --worktree --get core.hooksPath || :)"; \
+		case "$$worktree_path" in \
+			"$$managed_dir"|.githooks) git config --worktree --unset-all core.hooksPath ;; \
+			'') ;; \
+			*) echo "Preserved unrelated worktree core.hooksPath: $$worktree_path" ;; \
+		esac; \
+		rm -f "$$managed_hook"; \
+		rmdir "$$managed_dir" 2>/dev/null || :; \
+		echo "Removed managed pre-commit hook"
 
 vscode-extension-install:
 	cd $(VSCODE_EXTENSION_DIR) && npm ci
