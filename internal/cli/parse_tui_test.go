@@ -44,6 +44,17 @@ func TestParseArgsTUIFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgsTUIStavePreviewRequiresExplicitEnablement(t *testing.T) {
+	defaultReq := mustParseArgs(t, []string{"tui"})
+	if defaultReq.TUI.UseStavePreview || defaultReq.TUI.Features.Enabled("stave-tui-preview") {
+		t.Fatal("Stave preview must be disabled by default")
+	}
+	enabled := mustParseArgs(t, []string{"tui", "--enable-feature", "stave-tui-preview"})
+	if !enabled.TUI.UseStavePreview || !enabled.TUI.Features.Enabled("stave-tui-preview") {
+		t.Fatalf("explicit Stave preview enablement was not preserved: %+v", enabled.TUI)
+	}
+}
+
 func TestParseArgsTUIInvalidInputs(t *testing.T) {
 	cases := []struct {
 		name string

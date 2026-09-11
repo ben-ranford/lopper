@@ -56,7 +56,7 @@ func New(out io.Writer, in io.Reader) *App {
 	}
 	summary := ui.NewSummary(out, in, analyzer, formatter)
 	summary.Actions = app.tuiActionRunner()
-	app.TUI = summary
+	app.TUI = ui.NewStavePreview(summary)
 	return app
 }
 
@@ -105,6 +105,8 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 		BaselinePath:      req.TUI.BaselinePath,
 		BaselineStorePath: req.TUI.BaselineStorePath,
 		BaselineKey:       req.TUI.BaselineKey,
+		Features:          req.TUI.Features,
+		UseStavePreview:   req.TUI.UseStavePreview,
 	}
 	if req.TUI.SnapshotPath != "" {
 		return "", a.TUI.Snapshot(ctx, opts, req.TUI.SnapshotPath)

@@ -609,9 +609,5 @@ func isDetailCommand(input string) (string, bool) {
 	if command != "open" && command != "detail" {
 		return "", false
 	}
-	dependency := strings.TrimSpace(args)
-	if dependency == "" {
-		return "", false
-	}
-	return dependency, true
+	return strings.TrimSpace(args), true
 }

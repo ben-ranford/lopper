@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -12,16 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vscode_release_notes
 
 
+def fixture_git_env() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith("GIT_"):
+            del environment[key]
+    return environment
+
+
 class VSCodeReleaseNotesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q", self.repo], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.name", "Test"], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.email", "test@example.com"], check=True)
+        self.git("init", "-q", self.repo)
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.com")
         self.write_release("1.0.0", "# Changelog\n\n## 1.0.0 (2026-01-01)\n\n- Previous release.\n")
         self.commit("initial release")
-        subprocess.run(["git", "-C", self.repo, "tag", "v1.0.0"], check=True)
+        self.git("tag", "v1.0.0")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -47,9 +57,32 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
         (self.repo / "CHANGELOG.md").write_text("# Changelog\n\n## [1.0.1](x) (2026-02-02)\n\n* **vscode:** show dependency findings ([abcdef0](x))\n", encoding="utf-8")
 
     def commit(self, subject: str) -> str:
-        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", subject], check=True)
-        return subprocess.check_output(["git", "-C", self.repo, "rev-parse", "HEAD"], text=True).strip()
+        self.git("add", ".")
+        self.git("commit", "-qm", subject)
+        return subprocess.check_output(["git", "-C", self.repo, "rev-parse", "HEAD"], text=True, env=fixture_git_env()).strip()
+
+    def git(self, *args) -> None:
+        if args[0] == "init":
+            command = ["git", *args]
+        else:
+            command = ["git", "-C", self.repo, *args]
+        subprocess.run(command, check=True, env=fixture_git_env())
+
+    def test_commit_ignores_inherited_git_index(self) -> None:
+        with tempfile.TemporaryDirectory() as marker_temp:
+            marker_repo = Path(marker_temp)
+            self.git("init", "-q", marker_repo)
+            marker_file = marker_repo / "marker.txt"
+            marker_file.write_text("marker\n", encoding="utf-8")
+            subprocess.run(["git", "-C", marker_repo, "add", "marker.txt"], check=True, env=fixture_git_env())
+            marker_index = marker_repo / ".git" / "index"
+            before = marker_index.read_bytes()
+            (self.repo / "fixture-change.txt").write_text("fixture\n", encoding="utf-8")
+
+            with mock.patch.dict("os.environ", {"GIT_INDEX_FILE": str(marker_index)}):
+                self.commit("ignore inherited index")
+
+            self.assertEqual(marker_index.read_bytes(), before)
 
     def test_generates_user_visible_source_note_from_root_release_changelog(self) -> None:
         source = self.repo / "extensions/vscode-lopper/src/extension.ts"

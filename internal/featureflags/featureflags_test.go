@@ -635,6 +635,26 @@ func TestEnabledFlag(t *testing.T) {
 	assertNilFeatureSet(t)
 }
 
+func TestExplicitOnlyPreviewNeverDefaultsOn(t *testing.T) {
+	registry, err := NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "opt-in", Lifecycle: LifecyclePreview, ExplicitOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, channel := range []Channel{ChannelDev, ChannelRolling, ChannelRelease} {
+		resolved, err := registry.Resolve(ResolveOptions{Channel: channel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Enabled("opt-in") {
+			t.Fatalf("explicit-only feature defaulted on for %s", channel)
+		}
+	}
+	resolved, err := registry.Resolve(ResolveOptions{Channel: ChannelRolling, Enable: []string{"opt-in"}})
+	if err != nil || !resolved.Enabled("opt-in") {
+		t.Fatalf("explicit enable failed: enabled=%t err=%v", resolved.Enabled("opt-in"), err)
+	}
+}
+
 func assertEnabledFlag(t *testing.T, set Set, ref string) {
 	t.Helper()
 	enabled, err := set.EnabledFlag(ref)

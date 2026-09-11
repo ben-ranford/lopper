@@ -33,6 +33,7 @@ type Flag struct {
 	DeprecatedNames    []string  `json:"deprecatedNames,omitempty" yaml:"deprecatedNames,omitempty"`
 	Description        string    `json:"description" yaml:"description"`
 	Lifecycle          Lifecycle `json:"lifecycle" yaml:"lifecycle"`
+	ExplicitOnly       bool      `json:"explicitOnly,omitempty" yaml:"explicitOnly,omitempty"`
 	FirstStableRelease string    `json:"firstStableRelease,omitempty" yaml:"firstStableRelease,omitempty"`
 }
 

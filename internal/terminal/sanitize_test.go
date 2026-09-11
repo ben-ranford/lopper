@@ -20,11 +20,11 @@ func TestSanitizeString(t *testing.T) {
 		{name: "valid c1 control", value: "a" + string(rune(0x85)) + "b", want: "a\\x85b"},
 		{name: "replacement char after control", value: "a\n\ufffdb", want: "a\\x0a\ufffdb"},
 		{name: "c1 control", value: string([]byte{'a', 0x80, 'b'}), want: "a\\x80b"},
-		{name: "invalid utf8", value: string([]byte{'a', 0xff, 'b'}), want: string([]byte{'a', 0xff, 'b'})},
+		{name: "invalid utf8", value: string([]byte{'a', 0xff, 'b'}), want: `a\xffb`},
 		{
 			name:  "invalid utf8 after control",
 			value: string([]byte{'a', '\n', 0xff, 'b'}),
-			want:  string([]byte{'a', '\\', 'x', '0', 'a', 0xff, 'b'}),
+			want:  `a\x0a\xffb`,
 		},
 	}
 

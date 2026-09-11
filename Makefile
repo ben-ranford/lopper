@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -65,7 +65,7 @@ GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFL
 
 # Keep the parallel CI partitions fixed so environment or command-line overrides
 # cannot omit a required gate. runtime-pycache-check runs after each partition.
-override CI_TEST_TARGETS := test test-leaks
+override CI_TEST_TARGETS := stave-ui-check test test-leaks
 override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test-race bench-gate build cov runtime-pycache-check
 
 format:
@@ -228,6 +228,17 @@ test-race:
 test-race-lockfiledrift-head:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
+# Focused proof for the opt-in Stave UI. Keep this bounded and deterministic:
+# the regular test/race/leak/coverage targets remain the repository-wide gates.
+stave-ui-check:
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui -run '^(TestStave|TestCompareParity|TestLopperStave|TestNewStaveRenderer)'
+	@results=$$(mktemp); \
+	trap 'rm -f "$$results"' EXIT INT TERM; \
+	if ! $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -json -count=1 ./cmd/lopper -run '^(TestStaveTUI.*|TestTUIWithoutStaveFlagUsesLegacyLinePath)$$' > "$$results"; then \
+		cat "$$results"; exit 1; \
+	fi; \
+	python3 scripts/check-stave-test-results.py < "$$results"
+
 bench-mem:
 	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
 	bench_output_tmp=$$(mktemp); \
@@ -294,13 +305,13 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-race bench-gate build cov runtime-pycache-check
 
 ci-tests: $(CI_TEST_TARGETS) runtime-pycache-check
 
 ci-checks: $(CI_CHECK_TARGETS)
 
-smoke: mod-check test-race build
+smoke: mod-check stave-ui-check test-race build
 
 demos:
 	./scripts/demos/render.sh

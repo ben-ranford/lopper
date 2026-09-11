@@ -1,12 +1,15 @@
 package scripts
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 func TestBenchGateFingerprintsHelperTestFiles(t *testing.T) {
@@ -60,6 +63,39 @@ func TestHelper(t *testing.T) {}
 	}
 	if !strings.Contains(output, "does not match the resolved head harness fingerprint") {
 		t.Fatalf("expected helper file fingerprint mismatch, got:\n%s", output)
+	}
+}
+
+func TestBenchGateFixtureDoesNotMutateInheritedGitIndex(t *testing.T) {
+	markerRepo := t.TempDir()
+	runGitCommand(t, markerRepo, "init", "-q")
+	markerFile := filepath.Join(markerRepo, "marker.txt")
+	if err := os.WriteFile(markerFile, []byte("marker\n"), 0o644); err != nil {
+		t.Fatalf("write inherited-index marker: %v", err)
+	}
+	runGitCommand(t, markerRepo, "add", "marker.txt")
+	markerIndex := filepath.Join(markerRepo, ".git", "index")
+	before, err := os.ReadFile(markerIndex)
+	if err != nil {
+		t.Fatalf("read inherited index before fixture: %v", err)
+	}
+	t.Setenv("GIT_INDEX_FILE", markerIndex)
+
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
+	fixture.commit("base")
+	fixture.writeFile("README.md", "head\n")
+	fixture.commit("head")
+	if output, exitCode := fixture.runBenchGate(); exitCode != 0 {
+		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+
+	after, err := os.ReadFile(markerIndex)
+	if err != nil {
+		t.Fatalf("read inherited index after fixture: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("benchmark fixture modified the inherited Git index")
 	}
 }
 
@@ -947,7 +983,13 @@ func (f *benchGateFixture) runBenchGate() (string, int) {
 
 	cmd := exec.Command("sh", "./scripts/bench-gate.sh")
 	cmd.Dir = f.root
-	cmd.Env = append(os.Environ(),
+	commandEnv := gitexec.SanitizedEnv()
+	if home := os.Getenv("HOME"); home != "" {
+		// The benchmark command invokes Go, which uses HOME to locate its
+		// build cache. Git remains isolated by SanitizedEnv's explicit config.
+		commandEnv = append(commandEnv, "HOME="+home)
+	}
+	commandEnv = append(commandEnv,
 		"GO=go",
 		"GO_BIN="+f.goBin,
 		"GO_TOOLCHAIN=local",
@@ -964,6 +1006,7 @@ func (f *benchGateFixture) runBenchGate() (string, int) {
 		"MEMORY_BENCH_STATUS=.artifacts/memory-bench-status.txt",
 		"MEMORY_BENCH_ENFORCE=1",
 	)
+	cmd.Env = commandEnv
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(output), 0
@@ -987,6 +1030,7 @@ func (f *benchGateFixture) git(args ...string) string {
 
 	cmd := exec.Command("git", args...)
 	cmd.Dir = f.root
+	cmd.Env = gitexec.SanitizedEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		f.t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
