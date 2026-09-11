@@ -289,7 +289,7 @@ func updateStaveOutcomeOptions(model *staveSummaryModel, value map[string]any) {
 
 func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[string]any) {
 	model.interaction.status = staveActionStatus(actionID, value)
-	if !updateStaveOutcomeReport(model, value) {
+	if !updateStaveOutcomeReport(model, actionID, value) {
 		return
 	}
 	updateStaveOutcomeDependency(model, value)
@@ -309,7 +309,7 @@ func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[
 	}
 }
 
-func updateStaveOutcomeReport(model *staveSummaryModel, value map[string]any) bool {
+func updateStaveOutcomeReport(model *staveSummaryModel, actionID string, value map[string]any) bool {
 	rawReport, ok := value["report"]
 	if !ok || model.view == nil {
 		return true
@@ -318,6 +318,22 @@ func updateStaveOutcomeReport(model *staveSummaryModel, value map[string]any) bo
 	if err != nil {
 		model.interaction.error = "invalid action outcome: report decode failed"
 		return false
+	}
+	if actionID == staveActionApplyCodemod {
+		dependency, _ := value["dependency"].(string)
+		applyReport := findCodemodApplyReport(decoded, dependency)
+		if applyReport == nil {
+			model.interaction.error = "invalid action outcome: codemod result missing"
+			return false
+		}
+		cloned, err := cloneSummaryReportView(*model.view)
+		if err != nil {
+			model.interaction.error = "invalid action outcome: report clone failed"
+			return false
+		}
+		mergeCodemodApplyReport(&cloned, dependency, applyReport)
+		model.view = &cloned
+		return true
 	}
 	mapped := mapSummaryReportView(decoded)
 	model.view = &mapped

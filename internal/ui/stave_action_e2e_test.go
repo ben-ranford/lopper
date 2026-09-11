@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -162,6 +163,114 @@ func TestStaveCodemodSkipOnlyOutcomeIsNotReportedAsApplied(t *testing.T) {
 	}
 	if snap.Model.interaction.status != "No codemod changes" || snap.Model.interaction.error != "" {
 		t.Fatalf("skip-only codemod feedback is misleading: %+v", snap.Model.interaction)
+	}
+}
+
+func TestStaveCodemodOutcomeKeepsUnselectedDependencies(t *testing.T) {
+	runner := &staveBaselineRunner{apply: &report.CodemodApplyReport{AppliedFiles: 1, AppliedPatches: 2}}
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+	summary.Actions = runner
+	opts := summary.applyDefaults(Options{Width: 80})
+	view := summaryReportView{Dependencies: []summaryDependencyView{
+		{Language: "js", Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		{Language: "js", Name: "react", UsedExportsCount: 3, TotalExportsCount: 4, UsedPercent: 75},
+	}}
+	state := buildSummaryState(opts)
+	program, err := newLopperStaveProgram(summary, &opts, &view, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := program.NewSession(context.Background(), staveSessionOptions(opts, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Session.Close()
+	before, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := completeLopperAction(context.Background(), t, prepared, staveActionApplyCodemod, map[string]any{"dependency": "js:lodash", "confirm": true, "allowDirty": false}, staveTestActionCall{sessionID: "e2e", callID: "codemod-merge", confirm: true}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(snap.Model.view.Dependencies); got != 2 {
+		t.Fatalf("codemod outcome replaced the summary: %d dependencies", got)
+	}
+	lodash, found := staveSelectedDetail(*snap.Model.view, "js:lodash")
+	if !found || lodash.CodemodApply == nil || lodash.CodemodApply.AppliedPatches != 2 {
+		t.Fatalf("selected codemod result was not merged: %#v", lodash)
+	}
+	react, found := staveSelectedDetail(*snap.Model.view, "js:react")
+	if !found || react.UsedExportsCount != 3 || react.TotalExportsCount != 4 {
+		t.Fatalf("unselected dependency was lost or changed: %#v", react)
+	}
+	previousLodash, found := staveSelectedDetail(*before.Model.view, "js:lodash")
+	if !found || previousLodash.CodemodApply != nil {
+		t.Fatalf("codemod outcome mutated the prior value-owned view: %#v", previousLodash)
+	}
+}
+
+func TestStaveCodemodOutcomeWithoutSelectedResultPreservesSummary(t *testing.T) {
+	view := &summaryReportView{Dependencies: []summaryDependencyView{{Language: "js", Name: "lodash"}, {Language: "js", Name: "react"}}}
+	model := staveSummaryModel{view: view, interaction: staveSummaryInteraction{summary: summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}}}
+	invoked := mustStaveActionEvent(t, event.ActionInvoked, event.ActionInvokedPayload{CallID: "missing-codemod", ActionID: staveActionApplyCodemod})
+	model, _, err := reduceStaveSummary(stave.ReduceContext{}, model, invoked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := mustStaveActionEvent(t, event.EffectResult, event.EffectResultPayload{CallID: "missing-codemod", Status: "done", Value: map[string]any{
+		"version": staveActionResultVersion,
+		"action":  staveActionApplyCodemod,
+		"value": map[string]any{
+			"dependency": "js:lodash",
+			"applied":    true,
+			"report":     map[string]any{"dependencies": []any{}},
+		},
+	}})
+	model, _, err = reduceStaveSummary(stave.ReduceContext{}, model, completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.interaction.error != "invalid action outcome: codemod result missing" {
+		t.Fatalf("missing codemod result was accepted: %+v", model.interaction)
+	}
+	if got := len(model.view.Dependencies); got != 2 {
+		t.Fatalf("missing codemod result mutated summary: %d dependencies", got)
+	}
+}
+
+func TestStaveCodemodOutcomeCloneFailurePreservesSummary(t *testing.T) {
+	view := &summaryReportView{Dependencies: []summaryDependencyView{{Language: "js", Name: "lodash", UsedPercent: math.NaN()}}}
+	model := staveSummaryModel{view: view, interaction: staveSummaryInteraction{summary: summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}}}
+	invoked := mustStaveActionEvent(t, event.ActionInvoked, event.ActionInvokedPayload{CallID: "clone-codemod", ActionID: staveActionApplyCodemod})
+	model, _, err := reduceStaveSummary(stave.ReduceContext{}, model, invoked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := mustStaveActionEvent(t, event.EffectResult, event.EffectResultPayload{CallID: "clone-codemod", Status: "done", Value: map[string]any{
+		"version": staveActionResultVersion,
+		"action":  staveActionApplyCodemod,
+		"value": map[string]any{
+			"dependency": "js:lodash",
+			"applied":    true,
+			"report": report.Report{Dependencies: []report.DependencyReport{{
+				Language: "js", Name: "lodash", Codemod: &report.CodemodReport{Apply: &report.CodemodApplyReport{AppliedFiles: 1}},
+			}}},
+		},
+	}})
+	model, _, err = reduceStaveSummary(stave.ReduceContext{}, model, completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.interaction.error != "invalid action outcome: report clone failed" {
+		t.Fatalf("clone failure was not reported: %+v", model.interaction)
+	}
+	if got := len(model.view.Dependencies); got != 1 || !math.IsNaN(model.view.Dependencies[0].UsedPercent) {
+		t.Fatalf("clone failure mutated summary: %#v", model.view.Dependencies)
 	}
 }
 

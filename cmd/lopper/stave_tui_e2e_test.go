@@ -548,12 +548,26 @@ func readPTYUntil(t *testing.T, r io.Reader, timeout time.Duration, done func(st
 }
 
 func selectedLine(output string) string {
+	var selected string
 	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, "> ") {
-			return strings.TrimSpace(line)
+			selected = strings.TrimSpace(line)
 		}
 	}
-	return ""
+	return selected
+}
+
+func TestSelectedLineUsesMostRecentTerminalDelta(t *testing.T) {
+	output := "\x1b[H\x1b[2J\r\n> github.com/pelletier/go-toml/v2: go\r\n" +
+		"\x1b[3d\x1b[38;2;242;246;248m> charm.land/bubbletea/v2: go\r\n"
+
+	selected := selectedLine(output)
+	if !strings.Contains(selected, "charm.land/bubbletea/v2") {
+		t.Fatalf("selectedLine returned stale selection %q", selected)
+	}
+	if strings.Contains(selected, "go-toml") {
+		t.Fatalf("selectedLine retained an earlier selection %q", selected)
+	}
 }
 
 func assertPlainFrameBounds(t *testing.T, output, anchor string, width, height int) {
