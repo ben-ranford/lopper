@@ -299,7 +299,7 @@ func TestAnalysisCacheIgnoresLegacySchemaEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare current cache entry: %v", err)
 	}
-	legacyEntry, err := cache.prepareEntryWithSchemaVersion(req, adapter.ID(), repo, "v3")
+	legacyEntry, err := cache.prepareEntryWithSchemaVersion(req, adapter.ID(), repo, "v6")
 	if err != nil {
 		t.Fatalf("prepare legacy cache entry: %v", err)
 	}
