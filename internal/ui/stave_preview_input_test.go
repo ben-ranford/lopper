@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/stave/layout"
@@ -95,6 +96,74 @@ func TestStavePreviewStartUsesLineModeForPipedInput(t *testing.T) {
 	if err := NewStavePreview(summary).Start(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
 		t.Fatalf("piped-input preview start: %v", err)
 	}
+}
+
+func TestStavePreviewPipedInputTracksPTYOutputSizeInLineMode(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("NO_COLOR", "")
+	terminalInput, terminalOutput, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaveTestCloser(t, "terminal input", terminalInput)
+	cleanupStaveTestCloser(t, "terminal output", terminalOutput)
+	if err := pty.Setsize(terminalOutput, &pty.Winsize{Rows: 30, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+	pipedInput, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaveTestCloser(t, "piped input", pipedInput)
+	cleanupStaveTestCloser(t, "pipe writer", pipeWriter)
+
+	summary := NewSummary(terminalOutput, pipedInput, &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Language: "go", Name: "alpha"}}}}, report.NewFormatter())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewStavePreview(summary).Start(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80})
+	}()
+	capture := newSignalPTYCapture(terminalInput)
+	waitSignalOutput(t, capture, done, func(output string) bool { return strings.Contains(output, "Stave preview") })
+	initial := capture.String()
+	if strings.Contains(initial, "\x1b[") {
+		t.Fatalf("piped input emitted terminal control output: %q", initial)
+	}
+	if width := maxStaveRenderedLineWidth(initial); width != 100 {
+		t.Fatalf("initial frame width = %d, want 100", width)
+	}
+
+	if err := pty.Setsize(terminalOutput, &pty.Winsize{Rows: 40, Cols: 120}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pipeWriter.WriteString("refresh\nq\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSignalProcess(done); err != nil {
+		t.Fatalf("piped-input preview start: %v", err)
+	}
+	output := capture.String()
+	if width := maxStaveRenderedLineWidth(output); width != 120 {
+		t.Fatalf("resized frame width = %d, want 120", width)
+	}
+	if err := terminalOutput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := terminalInput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitSignalCapture(t, capture)
+}
+
+func maxStaveRenderedLineWidth(output string) int {
+	maxWidth := 0
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r", ""), "\n") {
+		maxWidth = max(maxWidth, utf8.RuneCountInString(line))
+	}
+	return maxWidth
 }
 
 func TestStavePreviewStartUsesLineModeForDumbTerminal(t *testing.T) {

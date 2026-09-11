@@ -96,8 +96,9 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 		writer = os.Stdout
 	}
 	state := buildSummaryState(opts)
-	tty := supportsStaveInteractiveTerminal(p.legacy.In, writer)
-	if tty {
+	interactiveTTY := supportsStaveInteractiveTerminal(p.legacy.In, writer)
+	outputTTY := staveTerminalFile(writer)
+	if outputTTY {
 		if width, _, ok := staveTerminalDimensions(writer); ok {
 			opts.Width = width
 		}
@@ -106,7 +107,7 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	sessionOpts := staveSessionOptions(opts, tty)
+	sessionOpts := staveSessionOptions(opts, interactiveTTY)
 	prepared, err := program.NewSession(ctx, sessionOpts)
 	if err != nil {
 		return err
@@ -116,7 +117,7 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 		return p.runStaveTerminal(ctx, opts, prepared, p.legacy.In, writer, sessionOpts.RuntimeDetected.AlternateScreen)
 	}
 	input := newStaveLineInput(p.legacy.In)
-	line := staveLineSession{prepared: prepared, opts: sessionOpts, reader: input.reader, cancelRead: input.cancel, writer: writer, tty: tty}
+	line := staveLineSession{prepared: prepared, opts: sessionOpts, reader: input.reader, cancelRead: input.cancel, writer: writer, tty: outputTTY}
 	return errors.Join(line.run(ctx), input.cleanup())
 }
 
