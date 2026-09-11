@@ -100,31 +100,33 @@ func TestSwiftRootCarthageProbeAllowsRequestedRootAliases(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resolved, requested := swiftRequestedRootAlias(t, test.ancestor)
-			t.Run("metadata only", func(t *testing.T) {
-				testutil.MustWriteFile(t, filepath.Join(resolved, carthageManifestName), "github \"owner/repo\"\n")
-
-				detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
-				if err != nil {
-					t.Fatalf("detect metadata-only alias: %v", err)
-				}
-				if detection.Matched {
-					t.Fatalf("expected metadata-only alias to remain uncorroborated, got %#v", detection)
-				}
-			})
-
-			t.Run("Swift source", func(t *testing.T) {
-				testutil.MustWriteFile(t, filepath.Join(resolved, carthageManifestName), "github \"owner/repo\"\n")
-				testutil.MustWriteFile(t, filepath.Join(resolved, "Sources", swiftMainFileName), "import Foundation\n")
-
-				detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
-				if err != nil {
-					t.Fatalf("detect Swift source through alias: %v", err)
-				}
-				if !detection.Matched || !slices.Contains(detection.Roots, requested) {
-					t.Fatalf("expected requested alias root to be retained, got %#v", detection)
-				}
-			})
+			assertSwiftRootCarthageAliasMetadata(t, resolved, requested)
+			assertSwiftRootCarthageAliasSource(t, resolved, requested)
 		})
+	}
+}
+
+func assertSwiftRootCarthageAliasMetadata(t *testing.T, resolved, requested string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(resolved, carthageManifestName), "github \"owner/repo\"\n")
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
+	if err != nil {
+		t.Fatalf("detect metadata-only alias: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected metadata-only alias to remain uncorroborated, got %#v", detection)
+	}
+}
+
+func assertSwiftRootCarthageAliasSource(t *testing.T, resolved, requested string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(resolved, "Sources", swiftMainFileName), "import Foundation\n")
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), requested)
+	if err != nil {
+		t.Fatalf("detect Swift source through alias: %v", err)
+	}
+	if !detection.Matched || !slices.Contains(detection.Roots, requested) {
+		t.Fatalf("expected requested alias root to be retained, got %#v", detection)
 	}
 }
 
