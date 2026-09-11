@@ -15,7 +15,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	scan := newScanResult()
 
 	foundPowerShellFile := false
-	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shouldSkipPowerShellDir, func(path string, entry fs.DirEntry) error {
+	truncated, err := shared.WalkRepoFilesWithStatus(ctx, repoPath, maxScanFiles, shouldSkipPowerShellDir, func(path string, entry fs.DirEntry) error {
 		processed, scanErr := scanPowerShellFile(repoPath, path, entry, &scan)
 		if processed {
 			foundPowerShellFile = true
@@ -24,6 +24,10 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	})
 	if err != nil {
 		return scan, err
+	}
+
+	if truncated {
+		scan.Warnings = append(scan.Warnings, fmt.Sprintf("PowerShell scan reached the %d file limit; results are partial", maxScanFiles))
 	}
 
 	if !foundPowerShellFile {
