@@ -32,6 +32,13 @@ func TestGeneratedManpageMatchesCheckedInBody(t *testing.T) {
 	if !bytes.Equal(manpageBody(checkedIn), manpageBody(generated)) {
 		t.Fatal("checked-in manpage body does not match generated CLI usage")
 	}
+
+	check := exec.Command("./scripts/check-manpage.sh")
+	check.Dir = ".."
+	check.Env = append(os.Environ(), "MANPAGE_DATE=2026-09-11")
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("check generated manpage with inherited date override: %v\n%s", err, output)
+	}
 }
 
 func manpageBody(manpage []byte) []byte {
