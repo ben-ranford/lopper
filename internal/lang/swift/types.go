@@ -11,6 +11,7 @@ const (
 	podLockName                           = "Podfile.lock"
 	carthageManifestName                  = "Cartfile"
 	carthageResolvedName                  = "Cartfile.resolved"
+	swiftSourceExtension                  = ".swift"
 	maxDetectFiles                        = 2048
 	maxRootCarthageSourceTraversalEntries = 2048
 	maxRootCarthageSourceRootEntries      = 1024
