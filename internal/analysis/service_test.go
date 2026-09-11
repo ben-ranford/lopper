@@ -942,8 +942,8 @@ func TestServiceAppliesDeterministicFindingConfidenceFiltering(t *testing.T) {
 	if len(dep.Recommendations) != 0 {
 		t.Fatalf("expected recommendations to be filtered, got %#v", dep.Recommendations)
 	}
-	if len(dep.RiskCues) != 0 {
-		t.Fatalf("expected risk cues to be filtered, got %#v", dep.RiskCues)
+	if len(dep.RiskCues) != 1 || dep.RiskCues[0].Severity != "high" || dep.RiskCues[0].ConfidenceScore >= float64(threshold) {
+		t.Fatalf("expected low-confidence security risk to remain visible, got %#v", dep.RiskCues)
 	}
 }
 
