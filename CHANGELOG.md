@@ -2,6 +2,13 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.8](https://github.com/ben-ranford/lopper/compare/v1.8.7...v1.8.8) (2026-09-11)
+
+
+### Bug Fixes
+
+* **go:** bound vendored module metadata reads ([#1595](https://github.com/ben-ranford/lopper/issues/1595)) ([064e08d](https://github.com/ben-ranford/lopper/commit/064e08da4d538e211be963f4899b45fadb54bb09))
+
 ## [1.8.7](https://github.com/ben-ranford/lopper/compare/v1.8.6...v1.8.7) (2026-09-10)
 
 * Source builds require Go `1.27.1` or newer (previously `1.27.0`).
