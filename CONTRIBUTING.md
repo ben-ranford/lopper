@@ -26,7 +26,7 @@ make demos-check
 
 ## Local Git hook
 
-Run `make hooks-install` only from a trusted checkout, after reviewing `.githooks/pre-commit` and the `hooks-install` target in `Makefile`. The installer copies that hook into the repository's absolute shared Git metadata directory (`lopper-hooks`) before configuring `core.hooksPath`, so later branch checkouts cannot replace the hook Git executes. It refuses to replace an unrelated custom hook path.
+Run `make hooks-install` only from a trusted checkout, after reviewing `.githooks/pre-commit` and the `hooks-install` target in `Makefile`. The installer copies that hook into the repository's absolute shared Git metadata directory (`lopper-hooks`) before configuring `core.hooksPath`, so later branch checkouts cannot replace the hook Git executes. It refuses to replace an unrelated custom hook path. When worktree-specific Git config is enabled, clear or migrate non-managed hook paths in linked worktrees before installing.
 
 The installed hook checks staged whitespace and reports files that need `gofmt`; it does not run repository scripts, `make`, or Go tests. Run `make ci` explicitly before publishing changes; CI continues to require the full gate. Use `make hooks-uninstall` to remove the managed hook. It leaves unrelated custom hook paths intact.
 
