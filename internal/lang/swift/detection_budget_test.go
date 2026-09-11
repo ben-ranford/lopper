@@ -172,7 +172,7 @@ func swiftRequestedRootAlias(t *testing.T, ancestor bool) (string, string) {
 func TestSwiftDetectionRequiresRegularCarthageAndSwiftEntries(t *testing.T) {
 	detectBroadSignals := func(repo string) (language.Detection, error) {
 		detection := language.Detection{}
-		err := walkSwiftDetection(context.Background(), repo, &detection, map[string]struct{}{}, false)
+		err := walkSwiftDetection(context.Background(), repo, &detection, map[string]struct{}{}, rootCarthagePreflight{})
 		return detection, err
 	}
 	for _, test := range []struct {
@@ -373,6 +373,33 @@ func TestSwiftRootCarthageConfidenceCountsOnlyRegularMetadata(t *testing.T) {
 	}
 	if _, err := rootCarthageDetectionConfidence("\x00"); err == nil {
 		t.Fatal("expected invalid metadata root to fail")
+	}
+}
+
+func TestSwiftWalkRetainsUncorroboratedRootCarthagePreflight(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", swiftMainFileName), "import Foundation\n")
+	detection := language.Detection{}
+	roots := map[string]struct{}{}
+	err := walkSwiftDetection(context.Background(), repo, &detection, roots, rootCarthagePreflight{confidence: 60})
+	if err != nil {
+		t.Fatalf("walk retained root preflight: %v", err)
+	}
+	if !detection.Matched || detection.Confidence < 60 || !rootsContain(roots, repo) {
+		t.Fatalf("expected source corroboration to retain root preflight, got detection=%#v roots=%#v", detection, roots)
+	}
+}
+
+func TestSwiftCaseVariantCarthageMetadataDoesNotInventRootConfidence(t *testing.T) {
+	repo := t.TempDir()
+	caseVariant := strings.ToLower(carthageManifestName)
+	testutil.MustWriteFile(t, filepath.Join(repo, caseVariant), "github \"owner/repo\"\n")
+	entries, err := os.ReadDir(repo)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("read case-variant metadata: entries=%#v err=%v", entries, err)
+	}
+	if confidence := carthageDetectionConfidence(entries[0]); confidence != 10 {
+		t.Fatalf("case-variant metadata confidence = %d, want ordinary 10", confidence)
 	}
 }
 
