@@ -29,31 +29,36 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	rootCarthageCorroborated, err := applyRootCarthageSignals(ctx, repoPath, &detection, roots)
+	rootCarthage, err := applyRootCarthageSignals(ctx, repoPath, &detection, roots)
 	if err != nil {
 		return language.Detection{}, err
 	}
 
-	if err := walkSwiftDetection(ctx, repoPath, &detection, roots, rootCarthageCorroborated); err != nil {
+	if err := walkSwiftDetection(ctx, repoPath, &detection, roots, rootCarthage); err != nil {
 		return language.Detection{}, err
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func applyRootCarthageSignals(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
+type rootCarthagePreflight struct {
+	confidence   int
+	corroborated bool
+}
+
+func applyRootCarthageSignals(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}) (rootCarthagePreflight, error) {
 	confidence, err := rootCarthageDetectionConfidence(repoPath)
 	if err != nil || confidence == 0 {
-		return false, err
+		return rootCarthagePreflight{}, err
 	}
 	corroborated, _, err := probeSwiftSourceWithinRoot(ctx, repoPath, maxRootCarthageSourceTraversalEntries)
 	if err != nil || !corroborated {
-		return false, err
+		return rootCarthagePreflight{confidence: confidence}, err
 	}
 	detection.Matched = true
 	detection.Confidence += confidence
 	roots[repoPath] = struct{}{}
-	return true, nil
+	return rootCarthagePreflight{confidence: confidence, corroborated: true}, nil
 }
 
 func rootCarthageDetectionConfidence(repoPath string) (int, error) {
@@ -236,14 +241,16 @@ func isRegularNonSymlink(entry fs.DirEntry) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func walkSwiftDetection(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}, rootCarthageCorroborated bool) error {
+func walkSwiftDetection(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}, rootCarthage rootCarthagePreflight) error {
 	carthageRoots := make(map[string]int)
 	swiftDirectories := make(map[string]struct{})
-	if rootCarthageCorroborated {
+	if rootCarthage.corroborated {
 		swiftDirectories[filepath.Clean(repoPath)] = struct{}{}
+	} else if rootCarthage.confidence > 0 {
+		carthageRoots[filepath.Clean(repoPath)] = rootCarthage.confidence
 	}
 	err := shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		if confidence := carthageDetectionConfidence(repoPath, path, entry, rootCarthageCorroborated); confidence > 0 {
+		if confidence := carthageDetectionConfidence(entry); confidence > 0 {
 			carthageRoots[filepath.Dir(path)] += confidence
 		}
 		if isRegularSwiftSource(entry) {
@@ -351,24 +358,14 @@ func applyCarthageDetectionRoot(root string, confidence int, detection *language
 	roots[root] = struct{}{}
 }
 
-func carthageDetectionConfidence(repoPath, path string, entry fs.DirEntry, rootCarthageCorroborated bool) int {
-	rootConfidence := 0
+func carthageDetectionConfidence(entry fs.DirEntry) int {
 	switch strings.ToLower(entry.Name()) {
-	case strings.ToLower(carthageManifestName):
-		rootConfidence = 60
-	case strings.ToLower(carthageResolvedName):
-		rootConfidence = 25
+	case strings.ToLower(carthageManifestName), strings.ToLower(carthageResolvedName):
 	default:
 		return 0
 	}
 	if !isRegularNonSymlink(entry) {
 		return 0
-	}
-	if filepath.Dir(path) == filepath.Clean(repoPath) {
-		if rootCarthageCorroborated {
-			return 10
-		}
-		return 10 + rootConfidence
 	}
 	return 10
 }
