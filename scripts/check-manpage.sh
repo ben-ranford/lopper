@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 MANPAGE_DATE="${MANPAGE_DATE:-1970-01-01}"
-tmp_path="$(mktemp)"
+tmp_path="$(mktemp "${TMPDIR:-/tmp}/lopper-manpage.XXXXXX")"
 trap 'rm -f "$tmp_path"' EXIT
 
 MANPAGE_DATE="$MANPAGE_DATE" ./scripts/generate-manpage.sh "$tmp_path"
