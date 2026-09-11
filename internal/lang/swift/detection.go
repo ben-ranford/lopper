@@ -88,7 +88,7 @@ func probeSwiftSourceWithinRoot(ctx context.Context, repoPath string, maxEntries
 		err = errors.Join(err, root.Close())
 	}()
 
-	directories, rootEntries, found, err := discoverRootSwiftSourceCandidatesWithinLimit(ctx, root, min(maxRootCarthageSourceRootEntries, maxEntries))
+	directories, rootEntries, found, err := discoverRootSwiftSourceCandidatesWithinLimit(ctx, root, maxEntries)
 	if err != nil || found {
 		return found, rootEntries, err
 	}
@@ -141,6 +141,7 @@ func discoverRootSwiftSourceCandidatesWithinLimit(ctx context.Context, root safe
 			return nil, entriesSeen, false, readErr
 		}
 	}
+	slices.Sort(directories)
 	return directories, entriesSeen, false, nil
 }
 

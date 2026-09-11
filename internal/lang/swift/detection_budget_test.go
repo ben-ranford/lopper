@@ -61,7 +61,7 @@ func TestSwiftRootCarthageProbeFindsRootSourceAndRejectsInvalidCandidate(t *test
 	if err := root.Close(); err != nil {
 		t.Fatalf("close test root: %v", err)
 	}
-	if _, _, _, err := discoverRootSwiftSourceCandidatesWithinLimit(context.Background(), root, maxRootCarthageSourceRootEntries); err == nil {
+	if _, _, _, err := discoverRootSwiftSourceCandidatesWithinLimit(context.Background(), root, maxRootCarthageSourceTraversalEntries); err == nil {
 		t.Fatal("expected closed root to reject candidate discovery")
 	}
 }
@@ -162,20 +162,24 @@ func TestSwiftNestedCarthageProbeSharesBudgetFairly(t *testing.T) {
 }
 
 func TestSwiftCarthageProbeReportsActualEntries(t *testing.T) {
-	repo := t.TempDir()
-	writeSwiftProbeFiles(t, repo, 4, false)
-
 	for _, test := range []struct {
+		files       int
 		budget      int
 		wantEntries int
 	}{
-		{budget: 2, wantEntries: 2},
-		{budget: maxNestedCarthageSourceTraversalEntries, wantEntries: 4},
+		{files: 4, budget: 2, wantEntries: 2},
+		{files: 4, budget: maxNestedCarthageSourceTraversalEntries, wantEntries: 4},
+		{files: 1025, budget: maxRootCarthageSourceTraversalEntries, wantEntries: 1025},
 	} {
-		found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, test.budget)
-		if err != nil || found || entries != test.wantEntries {
-			t.Fatalf("probe budget %d = found=%v entries=%d err=%v, want found=false entries=%d", test.budget, found, entries, err, test.wantEntries)
-		}
+		t.Run(strconv.Itoa(test.files)+" files", func(t *testing.T) {
+			repo := t.TempDir()
+			writeSwiftProbeFiles(t, repo, test.files, false)
+
+			found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, test.budget)
+			if err != nil || found || entries != test.wantEntries {
+				t.Fatalf("probe budget %d = found=%v entries=%d err=%v, want found=false entries=%d", test.budget, found, entries, err, test.wantEntries)
+			}
+		})
 	}
 }
 
