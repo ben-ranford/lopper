@@ -455,13 +455,139 @@ clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 
 hooks-install:
-	@git config core.hooksPath .githooks
-	@chmod +x .githooks/*
-	@echo "Installed git hooks from .githooks"
+	@set -eu; \
+		source_hook=".githooks/pre-commit"; \
+		if [ ! -f "$$source_hook" ]; then \
+			echo "Missing reviewed hook: $$source_hook" >&2; \
+			exit 1; \
+		fi; \
+		common_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		managed_hook="$$managed_dir/pre-commit"; \
+		common_config_origin="file:$$common_dir/config"; \
+		run_config() { git_dir="$$1"; shift; if [ -n "$$git_dir" ]; then git -c core.bare=false --git-dir="$$git_dir" config "$$@"; else git -c core.bare=false config "$$@"; fi; }; \
+		read_worktree_config() { \
+			value_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$value_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$common_dir/config" --bool --get extensions.worktreeConfig >"$$value_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then worktree_config_enabled="$$(cat "$$value_file")"; rm -f "$$value_file" "$$error_file"; case "$$worktree_config_enabled" in true|false) return 0 ;; *) echo "Unable to inspect extensions.worktreeConfig" >&2; exit 1 ;; esac; fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$value_file" "$$error_file"; worktree_config_enabled=false; return 0; fi; \
+			cat "$$error_file" >&2; rm -f "$$value_file" "$$error_file"; echo "Unable to inspect extensions.worktreeConfig" >&2; exit 1; \
+		}; \
+		refuse_config_includes() { \
+			config_file="$$1"; [ -f "$$config_file" ] || return 0; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --file "$$config_file" --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then rm -f "$$error_file"; echo "Refusing to install while $$config_file includes another config" >&2; exit 1; fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; return 0; fi; \
+			cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect includes in $$config_file" >&2; exit 1; \
+		}; \
+		check_hook_paths() { \
+			label="$$1"; git_dir="$$2"; legacy_mode="$$3"; shift 3; \
+			values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; \
+			error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; \
+			status=0; run_config "$$git_dir" --includes --show-scope --show-origin --null "$$@" --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -ne 0 ]; then \
+				if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file"; return 0; fi; \
+				cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; \
+			fi; \
+			if ! xargs -0 -n 3 sh -c 'mode="$$1"; common_origin="$$2"; worktree_origin="$$3"; label="$$4"; managed_dir="$$5"; origin="$$7"; path="$$8"; case "$$path" in "$$managed_dir") ;; .githooks) case "$$mode:$$origin" in current:"$$common_origin"|current:"$$worktree_origin"|common:"$$common_origin") ;; *) echo "Refusing to install while $$label has a non-managed core.hooksPath" >&2; exit 1 ;; esac ;; *) echo "Refusing to replace $$label core.hooksPath: $$path" >&2; exit 1 ;; esac' sh "$$legacy_mode" "$$common_config_origin" "file:$$git_dir/config.worktree" "$$label" "$$managed_dir" <"$$values_file"; then \
+				rm -f "$$values_file" "$$error_file"; exit 1; \
+			fi; \
+			rm -f "$$values_file" "$$error_file"; \
+		}; \
+		read_worktree_config; \
+		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
+		refuse_config_includes "$$common_dir/config"; \
+		if [ "$$worktree_config_enabled" = true ]; then refuse_config_includes "$$current_git_dir/config.worktree"; fi; \
+		if [ "$$worktree_config_enabled" = true ]; then \
+			for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
+				[ -d "$$foreign_git_dir" ] || continue; \
+				[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
+				refuse_config_includes "$$foreign_git_dir/config.worktree"; \
+				check_hook_paths "another worktree" "$$foreign_git_dir" common; \
+				check_hook_paths "another worktree" "$$foreign_git_dir" none --worktree; \
+			done; \
+		fi; \
+		check_hook_paths "effective" "$$current_git_dir" current; \
+		check_hook_paths "local" "$$current_git_dir" current --local; \
+		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" "$$current_git_dir" current --worktree; fi; \
+		mkdir -p "$$managed_dir"; \
+		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
+		trap 'rm -f "$$temp_hook"' EXIT HUP INT TERM; \
+		umask 077; \
+		cp "$$source_hook" "$$temp_hook"; \
+		chmod 755 "$$temp_hook"; \
+		mv -f "$$temp_hook" "$$managed_hook"; \
+		trap - EXIT HUP INT TERM; \
+		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
+		git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; \
+		if ! git -c core.bare=false config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then \
+			echo "Managed core.hooksPath was not activated" >&2; \
+			exit 1; \
+		fi; \
+		echo "Installed reviewed pre-commit hook in $$managed_dir"
 
 hooks-uninstall:
-	@git config --unset core.hooksPath || true
-	@echo "Removed custom core.hooksPath hook configuration"
+	@set -eu; \
+		common_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		managed_hook="$$managed_dir/pre-commit"; \
+		run_config() { git_dir="$$1"; shift; if [ -n "$$git_dir" ]; then git -c core.bare=false --git-dir="$$git_dir" config "$$@"; else git -c core.bare=false config "$$@"; fi; }; \
+		read_worktree_config() { \
+			value_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$value_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$common_dir/config" --bool --get extensions.worktreeConfig >"$$value_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then worktree_config_enabled="$$(cat "$$value_file")"; rm -f "$$value_file" "$$error_file"; case "$$worktree_config_enabled" in true|false) return 0 ;; *) echo "Unable to inspect extensions.worktreeConfig" >&2; exit 1 ;; esac; fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$value_file" "$$error_file"; worktree_config_enabled=false; return 0; fi; \
+			cat "$$error_file" >&2; rm -f "$$value_file" "$$error_file"; echo "Unable to inspect extensions.worktreeConfig" >&2; exit 1; \
+		}; \
+		check_config_query() { \
+			label="$$1"; git_dir="$$2"; shift 2; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; \
+			status=0; run_config "$$git_dir" --includes --null "$$@" --get-all core.hooksPath >/dev/null 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -ne 0 ] && { [ "$$status" -ne 1 ] || [ -s "$$error_file" ]; }; then cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; fi; \
+			rm -f "$$error_file"; \
+		}; \
+		remove_managed_paths() { \
+			status=0; git -c core.bare=false config "$$@" --fixed-value --unset-all core.hooksPath "$$managed_dir" >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove managed core.hooksPath" >&2; exit 1; fi; \
+			status=0; git -c core.bare=false config "$$@" --fixed-value --unset-all core.hooksPath .githooks >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove legacy core.hooksPath" >&2; exit 1; fi; \
+		}; \
+		managed_hook_is_referenced() { \
+			label="$$1"; git_dir="$$2"; values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; status=0; run_config "$$git_dir" --includes --null --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then \
+				if xargs -0 -n 1 sh -c 'managed_dir="$$1"; path="$$2"; case "$$path" in "$$managed_dir"|"$$managed_dir"/) printf "%s\\n" referenced ;; /*) if [ -e "$$path" ] && [ "$$path" -ef "$$managed_dir" ]; then printf "%s\\n" referenced; fi ;; *) printf "%s\\n" referenced ;; esac' sh "$$managed_dir" <"$$values_file" | grep -q .; then rm -f "$$values_file" "$$error_file"; return 0; fi; \
+				rm -f "$$values_file" "$$error_file"; return 1; \
+			fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file"; return 1; fi; \
+			cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; \
+		}; \
+		read_worktree_config; \
+		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
+		includes_may_reference_managed_hook=false; \
+		for config_file in "$$common_dir/config" "$$common_dir/config.worktree" "$$common_dir"/worktrees/*/config.worktree; do \
+			[ -f "$$config_file" ] || continue; \
+			error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --file "$$config_file" --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; if [ "$$status" -eq 0 ]; then includes_may_reference_managed_hook=true; rm -f "$$error_file"; elif [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; else cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect includes in $$config_file" >&2; exit 1; fi; \
+		done; \
+		if [ "$$worktree_config_enabled" = true ]; then for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do [ -d "$$foreign_git_dir" ] || continue; [ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; check_config_query "another worktree" "$$foreign_git_dir"; done; fi; \
+		check_config_query "effective" ""; \
+		remove_managed_paths --local; \
+		if [ "$$worktree_config_enabled" = true ]; then remove_managed_paths --worktree; fi; \
+		managed_hook_still_referenced=false; \
+		if [ "$$includes_may_reference_managed_hook" = true ]; then managed_hook_still_referenced=true; fi; \
+		if managed_hook_is_referenced "effective" ""; then managed_hook_still_referenced=true; fi; \
+		if [ "$$worktree_config_enabled" = true ]; then \
+			for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
+				[ -d "$$foreign_git_dir" ] || continue; \
+				[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
+				if managed_hook_is_referenced "another worktree" "$$foreign_git_dir"; then managed_hook_still_referenced=true; fi; \
+			done; \
+		fi; \
+		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then \
+			if [ "$$managed_hook_still_referenced" = true ]; then \
+				echo "Preserved managed pre-commit hook because another configuration still uses it"; \
+			else \
+				rm -f "$$managed_hook"; \
+				rmdir "$$managed_dir" 2>/dev/null || :; \
+				echo "Removed managed pre-commit hook"; \
+			fi; \
+		else \
+			echo "No managed pre-commit hook to remove"; \
+		fi; \
+		:
 
 vscode-extension-install:
 	cd $(VSCODE_EXTENSION_DIR) && npm ci

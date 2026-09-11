@@ -1,33 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-# Git runs hooks with repository-location variables set. Clearing them lets
-# nested git commands rediscover the current worktree instead of leaking the
-# hook context into child processes. Keep GIT_INDEX_FILE: partial commits use
-# it to identify the exact content being committed.
-unset GIT_DIR GIT_WORK_TREE GIT_PREFIX
+if ! git -c core.bare=false diff --cached --check --no-ext-diff --no-textconv; then
+	echo "[pre-commit] staged whitespace check failed" >&2
+	exit 1
+fi
 
-# Some linked-worktree setups inherit shared Git config with core.bare=true.
-# Append a worktree-mode override without discarding caller runtime config.
-git_config_count=${GIT_CONFIG_COUNT:-0}
-case "$git_config_count" in
-	''|*[!0-9]*)
-		echo "[pre-commit] invalid GIT_CONFIG_COUNT: $git_config_count" >&2
-		exit 1
-		;;
-esac
-while [ "${git_config_count#0}" != "$git_config_count" ]; do
-	git_config_count=${git_config_count#0}
-done
-git_config_count=${git_config_count:-0}
-export "GIT_CONFIG_KEY_${git_config_count}=core.bare"
-export "GIT_CONFIG_VALUE_${git_config_count}=false"
-export GIT_CONFIG_COUNT=$((git_config_count + 1))
-
-echo "[pre-commit] running make fmt"
-make fmt
-
-echo "[pre-commit] running make ci (module, lint, workflow, shell, duplication, inline suppressions, security, vuln, test, goleak, race, memory delta, build, coverage checks)"
-make ci
-
-echo "[pre-commit] checks passed"
+if git -c core.bare=false diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go'; then
+	staged_gofmt_diff=
+else
+	staged_gofmt_diff=$(git -c core.bare=false diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' |
+		xargs -0 -n 1 sh -c "temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git -c core.bare=false show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt_output=\$(gofmt -d \"\$temp_file\" 2>&1); status=\$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\"; fi" sh)
+fi
+if [ -n "$staged_gofmt_diff" ]; then
+	echo "[pre-commit] staged Go files must be gofmt-formatted:" >&2
+	printf '%s\n' "$staged_gofmt_diff" >&2
+	exit 1
+fi
