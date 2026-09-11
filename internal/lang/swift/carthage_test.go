@@ -40,11 +40,7 @@ func TestSwiftAdapterDetectWithCarthageMetadataAndSource(t *testing.T) {
 
 func TestSwiftAdapterDetectsRootCarthageProjectPastTraversalBudget(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
-	for index := 0; index < maxDetectFiles; index++ {
-		testutil.MustWriteFile(t, filepath.Join(repo, "000-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
-	}
-	testutil.MustWriteFile(t, filepath.Join(repo, "App", swiftMainFileName), "import RxSwift\n")
+	writeSwiftRootCarthageProjectPastBudget(t, repo, "000-assets", "App")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -57,11 +53,7 @@ func TestSwiftAdapterDetectsRootCarthageProjectPastTraversalBudget(t *testing.T)
 
 func TestSwiftAdapterRetainsObservedRootCarthageConfidencePastTraversalBudget(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
-	for index := 0; index < maxDetectFiles; index++ {
-		testutil.MustWriteFile(t, filepath.Join(repo, "D-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
-	}
-	testutil.MustWriteFile(t, filepath.Join(repo, "zzz-source", swiftMainFileName), "import RxSwift\n")
+	writeSwiftRootCarthageProjectPastBudget(t, repo, "D-assets", "zzz-source")
 
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
 	if err != nil {
@@ -70,6 +62,15 @@ func TestSwiftAdapterRetainsObservedRootCarthageConfidencePastTraversalBudget(t 
 	if detection.Confidence != 70 {
 		t.Fatalf("expected preflight and observed root Cartfile confidence to total 70, got %#v", detection)
 	}
+}
+
+func writeSwiftRootCarthageProjectPastBudget(t *testing.T, repo, assetDirectory, sourceDirectory string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), buildCartfileContent([]swiftFixtureCarthageDependency{rxSwiftCarthageFixtureDependency()}))
+	for index := 0; index < maxDetectFiles; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, assetDirectory, "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, sourceDirectory, swiftMainFileName), "import RxSwift\n")
 }
 
 func TestSwiftAdapterDetectsRootCarthageProjectBeyondFirstTopLevelDirectories(t *testing.T) {

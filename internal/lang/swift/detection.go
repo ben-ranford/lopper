@@ -154,37 +154,68 @@ func findSwiftSourceWithinRootDirectory(ctx context.Context, root safeio.Root, d
 		if candidate.depth > maxRootCarthageSourceDepth {
 			continue
 		}
-		directory, openErr := safeio.OpenPinnedDirectory(root, candidate.path)
-		if openErr != nil {
-			return false, entriesSeen, openErr
-		}
-
-		for entriesSeen < maxEntries {
-			if err := contextError(ctx); err != nil {
-				return false, entriesSeen, errors.Join(err, directory.Close())
-			}
-			entries, readErr := directory.ReadDir(min(rootCarthageSourceReadBatchSize, maxEntries-entriesSeen))
-			entriesSeen += len(entries)
-			for _, entry := range entries {
-				if isRegularSwiftSource(entry) {
-					return true, entriesSeen, directory.Close()
-				}
-				if entry.IsDir() && entry.Type()&fs.ModeSymlink == 0 && !shouldSkipDir(entry.Name()) && candidate.depth < maxRootCarthageSourceDepth {
-					queue = append(queue, rootCarthageSourceDirectory{path: filepath.Join(candidate.path, entry.Name()), depth: candidate.depth + 1})
-				}
-			}
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					break
-				}
-				return false, entriesSeen, errors.Join(readErr, directory.Close())
-			}
-		}
-		if closeErr := directory.Close(); closeErr != nil {
-			return false, entriesSeen, closeErr
+		found, entries, err := walkCarthageSwiftSourceDirectory(ctx, root, candidate, &queue, maxEntries-entriesSeen)
+		entriesSeen += entries
+		if err != nil || found {
+			return found, entriesSeen, err
 		}
 	}
 	return false, entriesSeen, nil
+}
+
+func walkCarthageSwiftSourceDirectory(ctx context.Context, root safeio.Root, candidate rootCarthageSourceDirectory, queue *[]rootCarthageSourceDirectory, maxEntries int) (found bool, entriesSeen int, err error) {
+	directory, err := safeio.OpenPinnedDirectory(root, candidate.path)
+	if err != nil {
+		return false, 0, err
+	}
+	defer func() {
+		err = errors.Join(err, directory.Close())
+	}()
+
+	for entriesSeen < maxEntries {
+		if err := contextError(ctx); err != nil {
+			return false, entriesSeen, err
+		}
+		entries, complete, err := readRootCarthageSourceBatch(directory, maxEntries-entriesSeen)
+		if err != nil {
+			return false, entriesSeen, err
+		}
+		entriesSeen += len(entries)
+		if collectRootCarthageSourceCandidates(entries, candidate, queue) {
+			return true, entriesSeen, nil
+		}
+		if complete {
+			return false, entriesSeen, nil
+		}
+	}
+	return false, entriesSeen, nil
+}
+
+func readRootCarthageSourceBatch(directory safeio.ReadDirFile, remaining int) ([]fs.DirEntry, bool, error) {
+	entries, err := directory.ReadDir(min(rootCarthageSourceReadBatchSize, remaining))
+	if err == nil {
+		return entries, false, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return entries, true, nil
+	}
+	return nil, false, err
+}
+
+func collectRootCarthageSourceCandidates(entries []fs.DirEntry, candidate rootCarthageSourceDirectory, queue *[]rootCarthageSourceDirectory) bool {
+	for _, entry := range entries {
+		if isRegularSwiftSource(entry) {
+			return true
+		}
+		if canDescendRootCarthageSourceCandidate(entry, candidate.depth) {
+			*queue = append(*queue, rootCarthageSourceDirectory{path: filepath.Join(candidate.path, entry.Name()), depth: candidate.depth + 1})
+		}
+	}
+	return false
+}
+
+func canDescendRootCarthageSourceCandidate(entry fs.DirEntry, depth int) bool {
+	return entry.IsDir() && entry.Type()&fs.ModeSymlink == 0 && !shouldSkipDir(entry.Name()) && depth < maxRootCarthageSourceDepth
 }
 
 type rootCarthageSourceDirectory struct {
@@ -193,7 +224,7 @@ type rootCarthageSourceDirectory struct {
 }
 
 func isRegularSwiftSource(entry fs.DirEntry) bool {
-	if !strings.EqualFold(filepath.Ext(entry.Name()), ".swift") || entry.Type()&fs.ModeSymlink != 0 {
+	if !strings.EqualFold(filepath.Ext(entry.Name()), swiftSourceExtension) || entry.Type()&fs.ModeSymlink != 0 {
 		return false
 	}
 	info, err := entry.Info()
@@ -210,7 +241,7 @@ func walkSwiftDetection(ctx context.Context, repoPath string, detection *languag
 		if confidence := carthageDetectionConfidence(repoPath, path, entry.Name(), rootCarthageCorroborated); confidence > 0 {
 			carthageRoots[filepath.Dir(path)] += confidence
 		}
-		if strings.EqualFold(filepath.Ext(entry.Name()), ".swift") {
+		if strings.EqualFold(filepath.Ext(entry.Name()), swiftSourceExtension) {
 			recordSwiftSourceDirectories(repoPath, path, swiftDirectories)
 		}
 		return recordSwiftDetectionEntry(path, entry.Name(), detection, roots)
@@ -278,7 +309,7 @@ func recordSwiftDetectionEntry(path string, name string, detection *language.Det
 		detection.Confidence += 10
 		roots[filepath.Dir(path)] = struct{}{}
 	}
-	if strings.EqualFold(filepath.Ext(name), ".swift") {
+	if strings.EqualFold(filepath.Ext(name), swiftSourceExtension) {
 		detection.Matched = true
 		detection.Confidence += 2
 	}
