@@ -137,8 +137,8 @@ func resolveScanInputs(ctx context.Context, repoPath string, compileInfo compile
 			return inputs, warnings, nil
 		}
 		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
-		files, err := walkCPPFiles(ctx, repoPath)
-		return scanInputsForFiles(files), warnings, err
+		files, walkWarnings, err := walkCPPFiles(ctx, repoPath)
+		return scanInputsForFiles(files), append(warnings, walkWarnings...), err
 	}
 	if len(compileInfo.SourceFiles) > 0 {
 		files, warnings, err := filterCompileSourceHints(repoPath, compileInfo.SourceFiles)
@@ -149,11 +149,11 @@ func resolveScanInputs(ctx context.Context, repoPath string, compileInfo compile
 			return scanInputsForFiles(files), warnings, nil
 		}
 		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
-		files, err = walkCPPFiles(ctx, repoPath)
-		return scanInputsForFiles(files), warnings, err
+		files, walkWarnings, err := walkCPPFiles(ctx, repoPath)
+		return scanInputsForFiles(files), append(warnings, walkWarnings...), err
 	}
-	files, err := walkCPPFiles(ctx, repoPath)
-	return scanInputsForFiles(files), nil, err
+	files, warnings, err := walkCPPFiles(ctx, repoPath)
+	return scanInputsForFiles(files), warnings, err
 }
 
 func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, []string, error) {
@@ -314,19 +314,23 @@ func (e *unresolvedIncludeEvidence) sample() string {
 	return fmt.Sprintf("%s:%d:%s", e.Location.File, e.Location.Line, e.Header)
 }
 
-func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
+func walkCPPFiles(ctx context.Context, repoPath string) ([]string, []string, error) {
 	files := make([]string, 0)
-	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
+	truncated, err := shared.WalkRepoFilesWithStatus(ctx, repoPath, maxScanFiles, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
 		if isCPPSourceFile(path) {
 			files = append(files, path)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Strings(files)
-	return files, nil
+	var warnings []string
+	if truncated {
+		warnings = append(warnings, fmt.Sprintf("C/C++ scan reached the %d file limit; results are partial", maxScanFiles))
+	}
+	return files, warnings, nil
 }
 
 func (r *includeResolver) scanFile(path string) (fileScan, []unresolvedIncludeEvidence, error) {
