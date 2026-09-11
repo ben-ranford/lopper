@@ -1093,6 +1093,143 @@ func TestRunPREnforceFeaturePRAllowsGraduationOnly(t *testing.T) {
 	}
 }
 
+func TestRunPREnforceValidatesFeatureCodeContinuity(t *testing.T) {
+	const previousCatalog = `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "original-feature",
+    "description": "Original behavior",
+    "lifecycle": "preview"
+  }
+]`
+
+	for _, tc := range []struct {
+		name     string
+		catalog  string
+		previous string
+		want     string
+	}{
+		{
+			name: "rejects recycled code",
+			catalog: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "replacement-feature",
+    "description": "Replacement behavior",
+    "lifecycle": "preview"
+  }
+]`,
+			want: "must retain its previous canonical name in `deprecatedNames`",
+		},
+		{
+			name:    "rejects removed code",
+			catalog: `[]`,
+			want:    "must remain in the feature catalog",
+		},
+		{
+			name: "allows rename with deprecated name",
+			catalog: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "renamed-feature",
+    "deprecatedNames": ["original-feature"],
+    "description": "Renamed behavior",
+    "lifecycle": "preview"
+  }
+]`,
+		},
+		{
+			name: "rejects chained rename that drops historical alias",
+			previous: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "renamed-feature",
+    "deprecatedNames": ["original-feature"],
+    "description": "Renamed behavior",
+    "lifecycle": "preview"
+  }
+]`,
+			catalog: `[
+  {
+    "code": "LOP-FEAT-0001",
+    "name": "latest-feature",
+    "deprecatedNames": ["renamed-feature"],
+    "description": "Latest behavior",
+    "lifecycle": "preview"
+  }
+]`,
+			want: "original-feature",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFeatureCatalog(t, root, tc.catalog)
+			previousPath := "previous-features.json"
+			previous := previousCatalog
+			if tc.previous != "" {
+				previous = tc.previous
+			}
+			testutil.MustWriteFile(t, filepath.Join(root, previousPath), previous)
+			t.Chdir(root)
+
+			output, err := captureStdout(t, func() error {
+				return run([]string{"pr-enforce", "--pr-title", "chore(ci): preserve immutable feature codes", "--previous-catalog", previousPath})
+			})
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("expected controlled rename to pass, got %v\n%s", err, output)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v\n%s", tc.want, err, output)
+			}
+		})
+	}
+}
+
+func TestFeatureCodeContinuityPreservesHistoricalNames(t *testing.T) {
+	previous := []featureflags.Flag{{
+		Code:            "LOP-FEAT-0001",
+		Name:            "renamed-feature",
+		DeprecatedNames: []string{"original-feature"},
+		Lifecycle:       featureflags.LifecyclePreview,
+	}}
+
+	for _, tc := range []struct {
+		name    string
+		current featureflags.Flag
+		want    string
+	}{
+		{
+			name: "rejects dropped alias after chained rename",
+			current: featureflags.Flag{
+				Code:            "LOP-FEAT-0001",
+				Name:            "latest-feature",
+				DeprecatedNames: []string{"renamed-feature"},
+				Lifecycle:       featureflags.LifecyclePreview,
+			},
+			want: "original-feature",
+		},
+		{
+			name: "rejects dropped alias without rename",
+			current: featureflags.Flag{
+				Code:      "LOP-FEAT-0001",
+				Name:      "renamed-feature",
+				Lifecycle: featureflags.LifecyclePreview,
+			},
+			want: "original-feature",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			violations := featureCodeContinuityViolations([]featureflags.Flag{tc.current}, previous)
+			if len(violations) != 1 || !strings.Contains(violations[0], tc.want) {
+				t.Fatalf("continuity violations = %#v, want missing historical name %q", violations, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunPREnforceRejectsStableAddedFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, `[
