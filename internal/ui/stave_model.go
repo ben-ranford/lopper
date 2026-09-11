@@ -293,6 +293,10 @@ func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[
 		return
 	}
 	updateStaveOutcomeDependency(model, value)
+	if failure, ok := value["failure"].(string); ok {
+		model.interaction.status = ""
+		model.interaction.error = failure
+	}
 	if actionID == staveActionRefresh {
 		clampStaveSlice(model)
 		clearMissingStaveDetail(model)
@@ -321,6 +325,14 @@ func updateStaveOutcomeReport(model *staveSummaryModel, actionID string, value m
 	}
 	if actionID == staveActionApplyCodemod {
 		dependency, _ := value["dependency"].(string)
+		dep, found := resolveStaveOutcomeDependency(model, dependency)
+		if !found {
+			updateStaveOutcomeDependency(model, value)
+			return false
+		}
+		if dep.Language != "" {
+			dependency = dep.Language + ":" + dep.Name
+		}
 		applyReport := findCodemodApplyReport(decoded, dependency)
 		if applyReport == nil {
 			model.interaction.error = "invalid action outcome: codemod result missing"
@@ -345,17 +357,27 @@ func updateStaveOutcomeDependency(model *staveSummaryModel, value map[string]any
 	if !ok {
 		return
 	}
-	if model.view != nil {
-		if _, found := staveSelectedDetail(*model.view, dependency); found {
-			model.interaction.summary.selectedDependency = dependency
-			model.interaction.focusPane = "detail"
-			return
-		}
+	if dep, found := resolveStaveOutcomeDependency(model, dependency); found {
+		model.interaction.summary.selectedDependency = dep.Language + ":" + dep.Name
+		model.interaction.focusPane = "detail"
+		return
 	}
 	model.interaction.status = ""
 	model.interaction.error = "No data for dependency " + dependency
 	model.interaction.summary.selectedDependency = ""
 	model.interaction.focusPane = "summary"
+}
+
+func resolveStaveOutcomeDependency(model *staveSummaryModel, dependency string) (detailDependencyView, bool) {
+	if model.view == nil {
+		return detailDependencyView{}, false
+	}
+	languageID := ""
+	if model.opts != nil {
+		languageID = model.opts.Language
+	}
+	languageID, name := parseDependencyLanguage(languageID, dependency)
+	return findSummaryDependencyDetail(model.view.Dependencies, languageID, name)
 }
 
 func clearMissingStaveDetail(model *staveSummaryModel) {
@@ -406,7 +428,10 @@ func staveRequiredTrueReport(hasTrue func(string) bool, value map[string]any, fi
 
 func staveCodemodOutcomeError(hasString, hasBool func(string) bool, value map[string]any) string {
 	if hasString("dependency") && hasBool("applied") && value["report"] != nil {
-		return ""
+		if _, hasFailure := value["failure"]; !hasFailure || hasString("failure") {
+			return ""
+		}
+		return "codemod failure invalid"
 	}
 	return "codemod payload incomplete"
 }

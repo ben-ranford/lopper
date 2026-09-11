@@ -374,6 +374,9 @@ func staveTerminalFile(stream any) bool {
 }
 
 func sendLopperEvent(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], ev event.Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	snapshot, err := prepared.Session.Snapshot()
 	if err != nil {
 		return err

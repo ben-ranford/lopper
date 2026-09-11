@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -163,6 +164,94 @@ func TestStaveCodemodSkipOnlyOutcomeIsNotReportedAsApplied(t *testing.T) {
 	}
 	if snap.Model.interaction.status != "No codemod changes" || snap.Model.interaction.error != "" {
 		t.Fatalf("skip-only codemod feedback is misleading: %+v", snap.Model.interaction)
+	}
+}
+
+func TestStaveCodemodPartialFailurePreservesApplyReportAndFailure(t *testing.T) {
+	runErr := errors.New("second file failed")
+	runner := &staveBaselineRunner{
+		apply:    &report.CodemodApplyReport{AppliedFiles: 1, AppliedPatches: 2, Results: []report.CodemodApplyResult{{File: "first.js", Status: "applied", PatchCount: 2}}},
+		applyErr: runErr,
+	}
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+	summary.Actions = runner
+	opts := summary.applyDefaults(Options{Width: 80})
+	view := summaryReportView{Dependencies: []summaryDependencyView{
+		{Language: "js", Name: "lodash", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+		{Language: "js", Name: "react", UsedExportsCount: 3, TotalExportsCount: 4, UsedPercent: 75},
+	}}
+	state := buildSummaryState(opts)
+	program, err := newLopperStaveProgram(summary, &opts, &view, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := program.NewSession(context.Background(), staveSessionOptions(opts, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Session.Close()
+
+	result, err := completeLopperAction(context.Background(), t, prepared, staveActionApplyCodemod, map[string]any{"dependency": "js:lodash", "confirm": true, "allowDirty": false}, staveTestActionCall{sessionID: "e2e", callID: "partial-failure", confirm: true})
+	if err != nil {
+		t.Fatalf("partial codemod result was rejected: %v", err)
+	}
+	if result.Outcome == nil {
+		t.Fatal("partial codemod result omitted its typed outcome")
+	}
+	snap, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Model.interaction.status != "" || snap.Model.interaction.error != runErr.Error() {
+		t.Fatalf("partial codemod feedback = status %q error %q", snap.Model.interaction.status, snap.Model.interaction.error)
+	}
+	lodash, found := staveSelectedDetail(*snap.Model.view, "js:lodash")
+	if !found || lodash.CodemodApply == nil || lodash.CodemodApply.AppliedPatches != 2 {
+		t.Fatalf("partial codemod report was not merged: %#v", lodash)
+	}
+	react, found := staveSelectedDetail(*snap.Model.view, "js:react")
+	if !found || react.UsedExportsCount != 3 {
+		t.Fatalf("partial codemod replaced an unrelated dependency: %#v", react)
+	}
+}
+
+func TestStaveLineCodemodPartialFailurePublishesReportAndFailure(t *testing.T) {
+	runErr := errors.New("second file failed")
+	runner := &staveBaselineRunner{
+		apply:    &report.CodemodApplyReport{AppliedFiles: 1, AppliedPatches: 2},
+		applyErr: runErr,
+	}
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+	summary.Actions = runner
+	opts := summary.applyDefaults(Options{Width: 80})
+	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "js", Name: "lodash"}}}
+	state := buildSummaryState(opts)
+	program, err := newLopperStaveProgram(summary, &opts, &view, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionOpts := staveSessionOptions(opts, false)
+	prepared, err := program.NewSession(context.Background(), sessionOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Session.Close()
+
+	line := staveLineSession{prepared: prepared, opts: sessionOpts, writer: io.Discard}
+	quit, err := line.command(context.Background(), "apply-codemod js:lodash --confirm")
+	if err != nil || quit {
+		t.Fatalf("partial line codemod = quit %t, err %v", quit, err)
+	}
+	snap, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Model.interaction.status != "" || snap.Model.interaction.error != runErr.Error() {
+		t.Fatalf("partial line feedback = status %q error %q", snap.Model.interaction.status, snap.Model.interaction.error)
+	}
+	lodash, found := staveSelectedDetail(*snap.Model.view, "js:lodash")
+	if !found || lodash.CodemodApply == nil || lodash.CodemodApply.AppliedPatches != 2 {
+		t.Fatalf("partial line codemod report was not merged: %#v", lodash)
 	}
 }
 

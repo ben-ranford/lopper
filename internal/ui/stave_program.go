@@ -194,16 +194,20 @@ func (s *staveSummaryShared) codemodAction(ctx context.Context, raw any) (any, e
 		return nil, fmt.Errorf("codemod apply is unavailable")
 	}
 	languageID, dependencyName := parseDependencyLanguage(s.opts.Language, dep)
-	result, err := s.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: s.opts.RepoPath, Dependency: dependencyName, TopN: s.opts.TopN, Language: languageID, AllowDirty: dirty})
-	if err != nil {
-		return nil, err
-	}
-	applyReport := findCodemodApplyReport(result, dep)
+	result, runErr := s.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: s.opts.RepoPath, Dependency: dependencyName, TopN: s.opts.TopN, Language: languageID, AllowDirty: dirty})
+	applyReport := findCodemodApplyReport(result, languageID+":"+dependencyName)
 	if applyReport == nil {
+		if runErr != nil {
+			return nil, runErr
+		}
 		return nil, fmt.Errorf("no safe codemod apply results for %s", dep)
 	}
 	applied := applyReport.AppliedFiles > 0 || applyReport.AppliedPatches > 0
-	return map[string]any{"version": staveActionResultVersion, "action": string(staveActionApplyCodemod), "dependency": dep, "applied": applied, "report": result}, nil
+	outcome := map[string]any{"version": staveActionResultVersion, "action": string(staveActionApplyCodemod), "dependency": dep, "applied": applied, "report": result}
+	if runErr != nil {
+		outcome["failure"] = sanitizeTerminalString(runErr.Error())
+	}
+	return outcome, nil
 }
 
 func (s *staveSummaryShared) baselineAction(ctx context.Context, raw any, kind summaryActionKind, title, id string) (any, error) {
@@ -277,7 +281,7 @@ func staveOutputSchema(id string) action.Schema {
 		fields += `,"dependency":{"type":"string","minLength":1}`
 		required += `,"dependency"`
 	case staveActionApplyCodemod:
-		fields += `,"dependency":{"type":"string"},"applied":{"type":"boolean"},"report":{"type":"object"}`
+		fields += `,"dependency":{"type":"string"},"applied":{"type":"boolean"},"report":{"type":"object"},"failure":{"type":"string","minLength":1}`
 		required += `,"dependency","applied","report"`
 	case staveActionSaveBaseline:
 		fields += `,"ok":{"type":"boolean"},"report":{"type":"object"},"path":{"type":"string"},"key":{"type":"string"},"options":{"type":"object","additionalProperties":false,"properties":{"baselinePath":{"type":"string"},"baselineStorePath":{"type":"string"},"baselineKey":{"type":"string"}},"required":["baselinePath","baselineStorePath","baselineKey"]}`
