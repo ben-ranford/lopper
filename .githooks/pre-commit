@@ -10,7 +10,7 @@ if git diff --cached --quiet --diff-filter=ACMR -- '*.go'; then
 	staged_gofmt_diff=
 else
 	staged_gofmt_diff=$(git diff --cached --name-only -z --diff-filter=ACMR -- '*.go' |
-		xargs -0 -n 1 sh -c "temp_file=\$(mktemp) || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt -d \"\$temp_file\"; status=\$?; [ \"\$status\" -eq 0 ] || [ \"\$status\" -eq 1 ]" sh)
+		xargs -0 -n 1 sh -c "temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git show \":0:\$1\" > \"\$temp_file\" || exit 1; diff=\$(gofmt -d \"\$temp_file\"); status=\$?; [ \"\$status\" -eq 0 ] || [ \"\$status\" -eq 1 ] || exit \"\$status\"; if [ -n \"\$diff\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$diff\"; fi" sh)
 fi
 if [ -n "$staged_gofmt_diff" ]; then
 	echo "[pre-commit] staged Go files must be gofmt-formatted:" >&2
