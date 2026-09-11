@@ -1,9 +1,6 @@
 package thresholds
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestThresholdConfigAdditionalRemotePolicyBranches(t *testing.T) {
 	t.Run("resolver surfaces canonical location failures", func(t *testing.T) {
@@ -12,15 +9,9 @@ func TestThresholdConfigAdditionalRemotePolicyBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("resolve remote pack ref against parent URL", func(t *testing.T) {
-		current := "https://example.com/policies/root.yml#sha256=" + strings.Repeat("a", 64)
-		got, err := resolvePackRef(current, "../shared/base.yml#sha256="+strings.Repeat("b", 64))
-		if err != nil {
-			t.Fatalf("resolve remote relative pack ref: %v", err)
-		}
-		want := "https://example.com/shared/base.yml#sha256=" + strings.Repeat("b", 64)
-		if got != want {
-			t.Fatalf("unexpected resolved remote pack ref: got %q want %q", got, want)
+	t.Run("reject remote pack ref against parent URL", func(t *testing.T) {
+		if _, err := resolvePackRef("https://example.com/policies/root.yml", "../shared/base.yml"); err == nil {
+			t.Fatal("expected remote parent pack reference rejection")
 		}
 	})
 
