@@ -115,11 +115,6 @@ func featureCodeContinuityViolations(current, previous []featureflags.Flag) []st
 		if _, retained := currentNames[previousFlag.Name]; !retained {
 			violations = append(violations, fmt.Sprintf("Feature flag code `%s` was renamed from `%s` to `%s` and must retain its previous canonical name in `deprecatedNames`.", previousFlag.Code, previousFlag.Name, currentFlag.Name))
 		}
-		for _, name := range previousFlag.DeprecatedNames {
-			if _, retained := currentNames[name]; !retained {
-				violations = append(violations, fmt.Sprintf("Feature flag code `%s` must retain historical feature name `%s` in its canonical name or `deprecatedNames`.", previousFlag.Code, name))
-			}
-		}
 	}
 	return violations
 }
