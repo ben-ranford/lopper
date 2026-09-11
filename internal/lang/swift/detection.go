@@ -119,8 +119,11 @@ func discoverSwiftSourceCandidatesWithinLimit(ctx context.Context, root safeio.R
 		if err := contextError(ctx); err != nil {
 			return nil, entriesSeen, false, err
 		}
-		entries, readErr := directory.ReadDir(min(rootCarthageSourceReadBatchSize, maxEntries-entriesSeen))
+		entries, complete, readErr := readRootCarthageSourceBatch(directory, maxEntries-entriesSeen)
 		entriesSeen += len(entries)
+		if readErr != nil {
+			return nil, entriesSeen, false, readErr
+		}
 		for _, entry := range entries {
 			if isRegularSwiftSource(entry) {
 				return nil, entriesSeen, true, nil
@@ -129,11 +132,8 @@ func discoverSwiftSourceCandidatesWithinLimit(ctx context.Context, root safeio.R
 				directories = append(directories, filepath.Join(directoryPath, entry.Name()))
 			}
 		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
-			return nil, entriesSeen, false, readErr
+		if complete {
+			break
 		}
 	}
 	slices.Sort(directories)
@@ -175,10 +175,10 @@ func walkCarthageSwiftSourceDirectory(ctx context.Context, root safeio.Root, can
 			return false, entriesSeen, err
 		}
 		entries, complete, err := readRootCarthageSourceBatch(directory, maxEntries-entriesSeen)
+		entriesSeen += len(entries)
 		if err != nil {
 			return false, entriesSeen, err
 		}
-		entriesSeen += len(entries)
 		if collectRootCarthageSourceCandidates(entries, candidate, &children) {
 			return true, entriesSeen, nil
 		}
@@ -195,10 +195,10 @@ func readRootCarthageSourceBatch(directory safeio.ReadDirFile, remaining int) ([
 	if err == nil {
 		return entries, false, nil
 	}
-	if errors.Is(err, io.EOF) {
+	if shared.IsPureSentinelError(err, io.EOF) {
 		return entries, true, nil
 	}
-	return nil, false, err
+	return entries, false, err
 }
 
 func collectRootCarthageSourceCandidates(entries []fs.DirEntry, candidate rootCarthageSourceDirectory, candidates *[]rootCarthageSourceDirectory) bool {
@@ -249,7 +249,16 @@ func walkSwiftDetection(ctx context.Context, repoPath string, detection *languag
 	} else if rootCarthage.confidence > 0 {
 		carthageRoots[filepath.Clean(repoPath)] = rootCarthage.confidence
 	}
-	err := shared.WalkRepoFiles(ctx, repoPath, maxDetectFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+	resolvedRepoPath, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		return err
+	}
+	err = shared.WalkRepoFiles(ctx, resolvedRepoPath, maxDetectFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+		requestedPath, pathErr := swiftDetectionPathForRequestedRoot(repoPath, resolvedRepoPath, path)
+		if pathErr != nil {
+			return pathErr
+		}
+		path = requestedPath
 		if confidence := carthageDetectionConfidence(entry); confidence > 0 {
 			carthageRoots[filepath.Dir(path)] += confidence
 		}
@@ -289,7 +298,7 @@ func applyCarthageDetectionRoots(ctx context.Context, repoPath string, detection
 		}
 		found, entries, err := probeSwiftSourceWithinTrustedRoot(ctx, trustedRoot, relativeRoot, budget)
 		remaining -= entries
-		if errors.Is(err, safeio.ErrTargetPathSymlink) || errors.Is(err, fs.ErrNotExist) {
+		if isIgnorableNestedCarthageProbeError(err) {
 			continue
 		}
 		if err != nil {
@@ -300,6 +309,18 @@ func applyCarthageDetectionRoots(ctx context.Context, repoPath string, detection
 		}
 	}
 	return nil
+}
+
+func isIgnorableNestedCarthageProbeError(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrTargetPathSymlink, fs.ErrNotExist)
+}
+
+func swiftDetectionPathForRequestedRoot(repoPath, resolvedRepoPath, path string) (string, error) {
+	relativePath, err := filepath.Rel(resolvedRepoPath, path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(repoPath, relativePath), nil
 }
 
 func collectUncorroboratedCarthageRoots(repoPath string, detection *language.Detection, roots map[string]struct{}, carthageRoots map[string]int, swiftDirectories map[string]struct{}) []string {
