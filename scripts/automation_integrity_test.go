@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,47 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestGeneratedManpageMatchesCheckedInBody(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "lopper.1")
+	cmd := exec.Command("./scripts/generate-manpage.sh", outputPath)
+	cmd.Dir = ".."
+	const generatedDate = "2042-02-03"
+	cmd.Env = append(os.Environ(), "MANPAGE_DATE="+generatedDate)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate manpage: %v\n%s", err, output)
+	}
+
+	generated, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read generated manpage: %v", err)
+	}
+	if !bytes.HasPrefix(generated, []byte(".TH LOPPER 1 \""+generatedDate+"\" \"lopper\" \"User Commands\"\n")) {
+		t.Fatalf("generated manpage does not preserve MANPAGE_DATE=%s in its header", generatedDate)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "docs", "man", "lopper.1"))
+	if err != nil {
+		t.Fatalf("read checked-in manpage: %v", err)
+	}
+
+	if !bytes.Equal(manpageBody(checkedIn), manpageBody(generated)) {
+		t.Fatal("checked-in manpage body does not match generated CLI usage")
+	}
+
+	check := exec.Command("./scripts/check-manpage.sh")
+	check.Dir = ".."
+	check.Env = append(os.Environ(), "MANPAGE_DATE=2026-09-11")
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("check generated manpage with inherited date override: %v\n%s", err, output)
+	}
+}
+
+func manpageBody(manpage []byte) []byte {
+	if newline := bytes.IndexByte(manpage, '\n'); newline >= 0 {
+		return manpage[newline+1:]
+	}
+	return nil
+}
 
 func TestAutomationIntegrityIsDirectCIPrequisite(t *testing.T) {
 	t.Parallel()

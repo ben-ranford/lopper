@@ -12,7 +12,11 @@ fi
 OUT_PATH="$1"
 OUT_DIR="$(dirname "$OUT_PATH")"
 mkdir -p "$OUT_DIR"
-MANPAGE_DATE="$(date -u +%Y-%m-%d)"
+MANPAGE_DATE="${MANPAGE_DATE:-$(date -u +%Y-%m-%d)}"
+if [[ ! "$MANPAGE_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+	echo "MANPAGE_DATE must use YYYY-MM-DD format" >&2
+	exit 1
+fi
 
 USAGE_TEXT="$(awk '
 	/const usage = `/ { in_usage = 1; next }
@@ -44,6 +48,10 @@ escape_roff() {
 	printf "lopper dashboard [--repos PATH1,PATH2 | --config PATH]\n"
 	printf "lopper baseline list [options]\n"
 	printf "lopper baseline show KEY [options]\n"
+	printf "lopper advisory sync osv --cache-path PATH [options]\n"
+	printf "lopper advisory status --cache-path PATH [options]\n"
+	printf "lopper pr-review --base SHA --head SHA [options]\n"
+	printf "lopper features [options]\n"
 	printf "lopper profile apply strict|balanced|noise-reduction [options]\n"
 	printf "lopper mcp\n"
 	printf ".fi\n"
