@@ -2,6 +2,7 @@ package elixir
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 func scanElixirRepo(ctx context.Context, repoPath string, declared map[string]struct{}) (scanResult, error) {
 	result := scanResult{declared: declared}
-	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shouldSkipDir, func(path string, _ os.DirEntry) error {
+	truncated, err := shared.WalkRepoFilesWithStatus(ctx, repoPath, maxScanFiles, shouldSkipDir, func(path string, _ os.DirEntry) error {
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext != ".ex" && ext != ".exs" {
 			return nil
@@ -32,5 +33,8 @@ func scanElixirRepo(ctx context.Context, repoPath string, declared map[string]st
 		})
 		return nil
 	})
+	if truncated {
+		result.warnings = append(result.warnings, fmt.Sprintf("Elixir scan reached the %d file limit; results are partial", maxScanFiles))
+	}
 	return result, err
 }

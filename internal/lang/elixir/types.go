@@ -22,6 +22,7 @@ var (
 )
 
 type scanResult struct {
+	warnings []string
 	files    []shared.FileUsage
 	declared map[string]struct{}
 }

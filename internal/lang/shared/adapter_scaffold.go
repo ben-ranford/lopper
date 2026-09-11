@@ -54,6 +54,13 @@ func NewReport(rawRepoPath string, now func() time.Time) (string, report.Report,
 }
 
 func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) error {
+	_, err := WalkRepoFilesWithStatus(ctx, repoPath, maxFiles, skipDir, visit)
+	return err
+}
+
+// WalkRepoFilesWithStatus reports whether a file beyond maxFiles stopped the walk.
+// Visitor-requested stops and walks that finish exactly at the limit are not truncations.
+func WalkRepoFilesWithStatus(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) (bool, error) {
 	if skipDir == nil {
 		skipDir = ShouldSkipCommonDir
 	}
@@ -68,9 +75,9 @@ func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir f
 		return walker.handle(ctx, path, entry, walkErr)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return err
+		return walker.truncated, err
 	}
-	return nil
+	return walker.truncated, nil
 }
 
 func WalkContextErr(ctx context.Context, walkErr error) error {
@@ -84,11 +91,12 @@ func WalkContextErr(ctx context.Context, walkErr error) error {
 }
 
 type repoWalker struct {
-	rootPath string
-	maxFiles int
-	skipDir  func(string) bool
-	visit    func(path string, entry fs.DirEntry) error
-	visited  int
+	rootPath  string
+	maxFiles  int
+	skipDir   func(string) bool
+	visit     func(path string, entry fs.DirEntry) error
+	visited   int
+	truncated bool
 }
 
 func (w *repoWalker) handle(ctx context.Context, path string, entry fs.DirEntry, walkErr error) error {
@@ -106,6 +114,7 @@ func (w *repoWalker) handle(ctx context.Context, path string, entry fs.DirEntry,
 	}
 	w.visited++
 	if w.maxFiles > 0 && w.visited > w.maxFiles {
+		w.truncated = true
 		return fs.SkipAll
 	}
 	return w.visit(path, entry)
