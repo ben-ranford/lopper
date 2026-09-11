@@ -1564,7 +1564,7 @@ func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
 	}
 
 	if got := graduationCandidatePreviewFlags(testRegistry(t).Flags()); len(got) != 1 || got[0].Code != "LOP-FEAT-0001" {
-		t.Fatalf("expected only unstamped preview flags as candidates, got %#v", got)
+		t.Fatalf("expected preview lifecycle flags as candidates, got %#v", got)
 	}
 }
 
