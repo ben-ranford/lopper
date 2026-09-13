@@ -168,7 +168,7 @@ func (m *staveTerminalModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *staveTerminalModel) completeAction(msg staveActionCompletion) (tea.Model, tea.Cmd) {
 	b := m.bridge
 	if b.context().Err() != nil {
-		// Signal cleanup publishes the one correlated cancellation result
+		// Terminal cleanup publishes the one correlated cancellation result
 		// with a fresh bounded context. Do not race that path by trying to
 		// publish the command completion through the canceled run context.
 		return m, nil
@@ -599,14 +599,17 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 }
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {
-	if runCtx.Err() != nil && ctx.Err() == nil {
-		cleanupStaveSignal(ctx, bridge, prepared, sendEvent)
+	if runCtx.Err() != nil {
+		cleanupStaveTerminalCancellation(ctx, bridge, prepared, sendEvent)
+	}
+	if ctx.Err() != nil {
+		if bridge.err != nil {
+			return errors.Join(bridge.err, context.Cause(ctx))
+		}
+		return context.Cause(ctx)
 	}
 	if bridge.err != nil {
 		return bridge.err
-	}
-	if ctx.Err() != nil {
-		return context.Cause(ctx)
 	}
 	if runCtx.Err() != nil {
 		return nil
@@ -617,7 +620,7 @@ func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, 
 	return nil
 }
 
-func cleanupStaveSignal(ctx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error) {
+func cleanupStaveTerminalCancellation(ctx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error) {
 	if bridge.actionCancel != nil {
 		bridge.actionCancel()
 		bridge.actionCancel = nil
@@ -625,7 +628,7 @@ func cleanupStaveSignal(ctx context.Context, bridge *staveTerminal, prepared any
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cleanupCancel()
 	if bridge.currentCallID != "" {
-		cancelled, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: bridge.currentCallID, Status: "cancelled", Error: "cancellation requested by signal; final action outcome unknown"})
+		cancelled, eventErr := event.New(event.EffectResult, event.EffectResultPayload{CallID: bridge.currentCallID, Status: "cancelled", Error: "cancellation requested; final action outcome unknown"})
 		if eventErr == nil {
 			if sendErr := sendEvent(cleanupCtx, prepared, cancelled); sendErr != nil && bridge.err == nil {
 				bridge.err = sendErr

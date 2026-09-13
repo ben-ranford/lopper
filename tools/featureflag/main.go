@@ -152,6 +152,7 @@ func runGraduate(args []string) error {
 	for i := range flags {
 		if flags[i].Code == target.Code {
 			flags[i].Lifecycle = featureflags.LifecycleStable
+			flags[i].ExplicitOnly = false
 			updated = true
 			break
 		}

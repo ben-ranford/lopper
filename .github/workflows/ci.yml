@@ -964,10 +964,10 @@ jobs:
         if: ${{ steps.tap.outputs.exists == 'true' }}
         run: |
           set -euo pipefail
-          tap_remote="file://${PWD}/homebrew-tap"
           brew untap ben-ranford/tap >/dev/null 2>&1 || true
-          brew trust --tap "$tap_remote"
-          brew tap --custom-remote ben-ranford/tap "$tap_remote"
+          tap_remote="file://${PWD}/homebrew-tap"
+          brew trust --tap "${tap_remote}"
+          brew tap --custom-remote ben-ranford/tap "${tap_remote}"
           brew audit --strict --online ben-ranford/tap/lopper
           export HOMEBREW_NO_SANDBOX_LINUX=1
           brew install --build-from-source ben-ranford/tap/lopper

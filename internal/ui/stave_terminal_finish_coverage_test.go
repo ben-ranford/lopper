@@ -16,7 +16,7 @@ func TestFinishStaveTerminalRunSignalCleanupAndResultPriority(t *testing.T) {
 
 	t.Run("shutdown send failure is retained after cancellation event", checkShutdownSendFailureIsRetainedAfterCancellationEvent)
 
-	t.Run("bridge error precedes parent cancellation", checkBridgeErrorPrecedesParentCancellation)
+	t.Run("bridge error retains parent cancellation", checkBridgeErrorRetainsParentCancellation)
 
 	t.Run("parent cause and program errors are preserved", checkParentCauseAndProgramErrorsArePreserved)
 }
@@ -80,15 +80,15 @@ func checkShutdownSendFailureIsRetainedAfterCancellationEvent(t *testing.T) {
 	}
 }
 
-func checkBridgeErrorPrecedesParentCancellation(t *testing.T) {
+func checkBridgeErrorRetainsParentCancellation(t *testing.T) {
 	t.Helper()
 	parent, cancelParent := context.WithCancelCause(context.Background())
 	parentCause := errors.New("parent cancelled")
 	cancelParent(parentCause)
 	bridgeErr := errors.New("bridge failed")
 	got := finishStaveTerminalRun(parent, parent, &staveTerminal{err: bridgeErr}, struct{}{}, func(context.Context, any, event.Event) error { return nil }, nil)
-	if !errors.Is(got, bridgeErr) {
-		t.Fatalf("bridge failure priority = %v", got)
+	if !errors.Is(got, bridgeErr) || !errors.Is(got, parentCause) {
+		t.Fatalf("bridge and parent cancellation = %v", got)
 	}
 }
 

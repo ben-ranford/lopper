@@ -109,14 +109,10 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 	}
 	sessionOpts := staveSessionOptions(opts, interactiveTTY)
 	fullScreen := supportsStaveFullScreen(sessionOpts.RuntimeDetected)
-	sessionCtx := ctx
-	var stopSession context.CancelFunc
-	if !fullScreen {
-		// Line-mode cancellation must publish its correlated action outcome
-		// before the session closes, so its lifecycle outlives the run context.
-		sessionCtx, stopSession = context.WithCancel(context.WithoutCancel(ctx))
-		defer stopSession()
-	}
+	// Session cancellation results must be published before the session closes,
+	// so its lifecycle outlives both line-mode and terminal run contexts.
+	sessionCtx, stopSession := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopSession()
 	prepared, err := program.NewSession(sessionCtx, sessionOpts)
 	if err != nil {
 		return err

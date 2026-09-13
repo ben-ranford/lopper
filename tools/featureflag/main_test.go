@@ -18,7 +18,8 @@ const graduateFeatureCatalog = `[
     "code": "LOP-FEAT-0001",
     "name": "preview-flag",
     "description": "Preview behavior",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "explicitOnly": true
   },
   {
     "code": "LOP-FEAT-0002",
@@ -1764,13 +1765,32 @@ func assertGraduateFeature(t *testing.T, ref string) {
 			t.Fatalf("run graduate: %v", err)
 		}
 		flags := readFeatureCatalog(t, catalogDir)
-		if flags[0].Code != "LOP-FEAT-0001" || flags[0].Lifecycle != featureflags.LifecycleStable {
+		if flags[0].Code != "LOP-FEAT-0001" || flags[0].Lifecycle != featureflags.LifecycleStable || flags[0].ExplicitOnly {
 			t.Fatalf("expected preview flag to graduate, got %#v", flags[0])
 		}
+		assertGraduatedFeatureDefaults(t, flags)
 		if !strings.Contains(output, "graduated LOP-FEAT-0001 preview-flag to stable") {
 			t.Fatalf("expected graduation output, got %q", output)
 		}
 	})
+}
+
+func assertGraduatedFeatureDefaults(t *testing.T, flags []featureflags.Flag) {
+	t.Helper()
+	registry, err := featureflags.NewRegistry(flags)
+	if err != nil {
+		t.Fatalf("read graduated registry: %v", err)
+	}
+	for _, channel := range []featureflags.Channel{featureflags.ChannelDev, featureflags.ChannelRolling, featureflags.ChannelRelease} {
+		resolved, err := registry.Resolve(featureflags.ResolveOptions{Channel: channel})
+		if err != nil || !resolved.Enabled("preview-flag") {
+			t.Fatalf("graduated feature default for %s: enabled=%t err=%v", channel, resolved.Enabled("preview-flag"), err)
+		}
+		resolved, err = registry.Resolve(featureflags.ResolveOptions{Channel: channel, Disable: []string{"preview-flag"}})
+		if err != nil || resolved.Enabled("preview-flag") {
+			t.Fatalf("graduated feature explicit disable for %s: enabled=%t err=%v", channel, resolved.Enabled("preview-flag"), err)
+		}
+	}
 }
 
 func assertRunErrorContains(t *testing.T, name string, args []string, want string) {

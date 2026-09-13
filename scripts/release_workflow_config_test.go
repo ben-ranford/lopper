@@ -5675,34 +5675,53 @@ func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
 func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
 	t.Parallel()
 
-	for path, trustCommand := range map[string]string{
-		".github/workflows/ci.yml":      `brew trust --tap "$tap_remote"`,
-		".github/workflows/release.yml": "brew trust ben-ranford/tap",
-		".github/workflows/rolling.yml": "brew trust ben-ranford/tap",
+	for _, tc := range []struct {
+		workflowPath string
+		jobName      string
+		stepName     string
+		remote       string
+		workingDir   string
+	}{
+		{".github/workflows/ci.yml", "homebrew-tap-verify", "Run Homebrew audit and test", `tap_remote="file://${PWD}/homebrew-tap"`, ""},
+		{".github/workflows/release.yml", "validate-homebrew-tap", "Validate formula", `tap_remote="file://${PWD}"`, "homebrew-tap"},
+		{".github/workflows/rolling.yml", "validate-homebrew-tap-rolling", "Validate rolling formula", `tap_remote="file://${PWD}"`, "homebrew-tap"},
 	} {
-		t.Run(path, func(t *testing.T) {
-			t.Parallel()
-			workflowText := readConfig(t, path)
-			for _, command := range []string{trustCommand, "export HOMEBREW_NO_SANDBOX_LINUX=1"} {
-				if !strings.Contains(workflowText, command) {
-					t.Fatalf("%s must retain formula validation command %q", path, command)
+		tc := tc
+		t.Run(tc.workflowPath, func(t *testing.T) {
+			var workflow struct {
+				Jobs map[string]workflowJobConfig `yaml:"jobs"`
+			}
+			readYAMLConfig(t, tc.workflowPath, &workflow)
+			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
+			if step.WorkingDirectory != tc.workingDir {
+				t.Fatalf("working directory = %q, want %q", step.WorkingDirectory, tc.workingDir)
+			}
+			trustCommand := `brew trust "${tap_remote}"`
+			if tc.workflowPath == ".github/workflows/ci.yml" {
+				trustCommand = `brew trust --tap "${tap_remote}"`
+			}
+			assertOrderedWorkflowCommands(t, step.Run, "brew untap ben-ranford/tap", tc.remote, trustCommand, `brew tap --custom-remote ben-ranford/tap "${tap_remote}"`)
+			for _, command := range []string{"brew audit --strict --online", "export HOMEBREW_NO_SANDBOX_LINUX=1", "brew install --build-from-source", "brew test "} {
+				if !strings.Contains(step.Run, command) {
+					t.Fatalf("validation step missing %q", command)
 				}
 			}
-			if path == ".github/workflows/ci.yml" {
-				assertHomebrewCustomRemoteTrustOrder(t, workflowText, trustCommand)
+			if strings.Contains(readConfig(t, tc.workflowPath), "HOMEBREW_NO_REQUIRE_TAP_TRUST") {
+				t.Fatal("workflow must not bypass Homebrew tap trust")
 			}
 		})
 	}
 }
 
-func assertHomebrewCustomRemoteTrustOrder(t *testing.T, workflowText, trustCommand string) {
+func assertOrderedWorkflowCommands(t *testing.T, run string, commands ...string) {
 	t.Helper()
-	remote := strings.Index(workflowText, `tap_remote="file://${PWD}/homebrew-tap"`)
-	untap := strings.Index(workflowText, "brew untap ben-ranford/tap")
-	trust := strings.Index(workflowText, trustCommand)
-	tap := strings.Index(workflowText, `brew tap --custom-remote ben-ranford/tap "$tap_remote"`)
-	if remote < 0 || untap < 0 || trust <= remote || trust <= untap || tap <= trust {
-		t.Fatal("CI must untap stale state and trust its exact local remote before loading the custom tap")
+	previous := -1
+	for _, command := range commands {
+		position := strings.Index(run, command)
+		if position < 0 || position <= previous {
+			t.Fatalf("command ordering missing or invalid for %q", command)
+		}
+		previous = position
 	}
 }
 

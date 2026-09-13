@@ -10,6 +10,10 @@ Flags are registered in `internal/featureflags/features.json`, can be enabled by
 | `preview` | Merged but still under validation, rollout, or API review. | Disabled in `dev` and `release` builds unless explicitly enabled. Enabled by default in `rolling` builds. |
 | `stable` | Accepted as normal behavior for all supported users. | Enabled by default in every build channel. |
 
+Preview flags with `explicitOnly: true` stay disabled by default in every build
+channel, including rolling. Users can still enable them explicitly. The
+graduation helper clears this restriction when promoting a flag to stable.
+
 Merging an implementation PR does not by itself graduate a feature.
 When a feature issue is targeted to a stable release, keep that issue open until its registry lifecycle changes from `preview` to `stable` and the behavior is ready to be a release default; do not split graduation into a second issue.
 
@@ -266,7 +270,8 @@ gh workflow run graduate-feature.yml \
   -f release_lock_notes="Remove future locks for this feature after the PR merges."
 ```
 
-The workflow changes only the registry lifecycle and opens a PR.
+The workflow promotes the registry lifecycle to stable, clears `explicitOnly`,
+and opens a PR.
 It does not merge the PR, remove release locks automatically, or infer stability from release-please.
 It defaults the graduation PR to the `v1.6.0` milestone and `target-series:1.6.x` label.
 Use the optional `issue` and `milestone` inputs when the graduation belongs somewhere other than the current feature flagging rollout issue.
