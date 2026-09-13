@@ -292,7 +292,7 @@ func TestStaveModelHashAndReducerPayloadBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if m.interaction.status != "ok" || m.interaction.viewport.Width != 1 {
+	if m.interaction.status != "" || !strings.Contains(m.interaction.error, "invalid action outcome") || m.interaction.viewport.Width != 1 {
 		t.Fatalf("unexpected reducer state: %+v", m.interaction)
 	}
 }
@@ -331,7 +331,7 @@ func TestStavePreviewStartCancelledAndRendererFlags(t *testing.T) {
 
 func TestLopperStaveInputActionBranches(t *testing.T) {
 	s := summaryState{page: 1}
-	for _, in := range []string{"q", "", "open go:alpha", "filter go", "sort name", "page 2", "size 5", "apply-codemod go:alpha --confirm", "baseline-save label", "baseline-compare"} {
+	for _, in := range []string{"q", "refresh", "open go:alpha", "filter go", "sort name", "page 2", "size 5", "apply-codemod go:alpha --confirm", "baseline-save label", "baseline-compare"} {
 		_, _, _, handled := lopperStaveInput(in, s)
 		if !handled {
 			t.Fatalf("input %q not handled", in)

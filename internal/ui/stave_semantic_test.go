@@ -85,7 +85,7 @@ func TestStaveSemanticStatusAndErrorAreTextual(t *testing.T) {
 	if model.interaction.error == "" || !strings.Contains(model.interaction.error, "unknown command") {
 		t.Fatalf("error lost semantic text: %q", model.interaction.error)
 	}
-	invoked, err := event.New(event.ActionInvoked, event.ActionInvokedPayload{CallID: "c1", ActionID: "test.action"})
+	invoked, err := event.New(event.ActionInvoked, event.ActionInvokedPayload{CallID: "c1", ActionID: staveActionRefresh})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +93,13 @@ func TestStaveSemanticStatusAndErrorAreTextual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: "c1", Status: "ok"})
+	value := validCoverageEnvelope(staveActionRefresh, map[string]any{"refreshed": true, "report": map[string]any{}})
+	ok, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: "c1", Status: "ok", Value: value})
 	if err != nil {
 		t.Fatal(err)
 	}
 	model, _, err = reduceStaveSummary(stave.ReduceContext{}, model, ok)
-	if err != nil || model.interaction.status != "ok" {
+	if err != nil || model.interaction.status != "Refreshed" || model.interaction.error != "" {
 		t.Fatalf("status semantics drifted: %+v %v", model.interaction, err)
 	}
 }

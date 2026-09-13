@@ -186,7 +186,7 @@ func TestLopperStaveInputRecognizesCanonicalCommandsAndMalformed(t *testing.T) {
 		input, id        string
 		handled, confirm bool
 	}{
-		{"q", staveActionQuit, true, false}, {"quit", staveActionQuit, true, false}, {"", staveActionRefresh, true, false}, {"refresh", staveActionRefresh, true, false}, {"open go:a", staveActionOpen, true, false},
+		{"q", staveActionQuit, true, false}, {"quit", staveActionQuit, true, false}, {"", "", false, false}, {"refresh", staveActionRefresh, true, false}, {"open go:a", staveActionOpen, true, false},
 		{"filter go", "lopper.summary.filter.v1", true, false}, {"sort name", "lopper.summary.sort.v1", true, false}, {"page 2", "lopper.summary.page.v1", true, false}, {"size 5", "lopper.summary.size.v1", true, false},
 		{"apply-codemod --confirm", staveActionApplyCodemod, true, true}, {"save-baseline x", staveActionSaveBaseline, true, false}, {"compare-baseline x", staveActionCompareBaseline, true, false}, {"not-a-command", "", false, false},
 	} {

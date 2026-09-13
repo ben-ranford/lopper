@@ -192,6 +192,9 @@ func (s *staveLineSession) writeFrame(ctx context.Context) error {
 }
 
 func (s *staveLineSession) command(ctx context.Context, input string) (bool, error) {
+	if strings.TrimSpace(input) == "" {
+		return false, nil
+	}
 	current, err := s.prepared.Session.Snapshot()
 	if err != nil {
 		return false, err
@@ -402,7 +405,7 @@ func lopperStaveInput(input string, state summaryState) (action.ID, any, bool, b
 	switch trimmed {
 	case "q", "quit":
 		return action.ID(staveActionQuit), map[string]any{}, false, true
-	case "", "refresh":
+	case "refresh":
 		return action.ID(staveActionRefresh), map[string]any{}, false, true
 	}
 	if dep, ok := isDetailCommand(trimmed); ok {

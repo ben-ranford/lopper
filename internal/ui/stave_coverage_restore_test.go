@@ -89,7 +89,7 @@ func TestStaveReducerHandlesEffectErrorsAndDependencyFocus(t *testing.T) {
 		t.Fatalf("valid open did not focus detail: %+v", opened.interaction)
 	}
 	missing := reduceCoverageEffect(t, staveActionOpen, validCoverageEnvelope(staveActionOpen, map[string]any{"dependency": "go:missing"}), "completed", "")
-	if missing.interaction.error != "No data for dependency go:missing" || missing.interaction.focusPane != "summary" {
+	if missing.interaction.error != "No data for dependency go:missing" || missing.interaction.status != "" || missing.interaction.focusPane != "summary" {
 		t.Fatalf("missing dependency was not rejected: %+v", missing.interaction)
 	}
 

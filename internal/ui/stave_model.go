@@ -229,6 +229,7 @@ func reduceStaveEffectResult(model *staveSummaryModel, payload event.EffectResul
 	model.interaction.status, model.interaction.error = payload.Status, ""
 	value, ok := validatedStaveEffectValue(pendingAction, payload.Value, model)
 	if !ok {
+		model.interaction.status = ""
 		return
 	}
 	applyStaveEffectValue(model, pendingAction, value)
@@ -267,7 +268,6 @@ func validatedStaveEffectValue(actionID string, outcome any, model *staveSummary
 		model.interaction.error = "invalid action outcome: " + validationErr
 		return nil, false
 	}
-	updateStaveOutcomeOptions(model, value)
 	return value, true
 }
 
@@ -288,10 +288,12 @@ func updateStaveOutcomeOptions(model *staveSummaryModel, value map[string]any) {
 }
 
 func applyStaveEffectValue(model *staveSummaryModel, actionID string, value map[string]any) {
-	model.interaction.status = staveActionStatus(actionID, value)
 	if !updateStaveOutcomeReport(model, actionID, value) {
+		model.interaction.status = ""
 		return
 	}
+	updateStaveOutcomeOptions(model, value)
+	model.interaction.status = staveActionStatus(actionID, value)
 	updateStaveOutcomeDependency(model, value)
 	if failure, ok := value["failure"].(string); ok {
 		model.interaction.status = ""
@@ -435,10 +437,28 @@ func staveCodemodOutcomeError(hasString, hasBool func(string) bool, value map[st
 }
 
 func staveRequiredTrueReportOptions(hasTrue func(string) bool, value map[string]any, action string) string {
-	if hasTrue("ok") && value["report"] != nil && value["options"] != nil {
-		return ""
+	if !hasTrue("ok") || value["report"] == nil || value["options"] == nil {
+		return action + " payload incomplete"
 	}
-	return action + " payload incomplete"
+	if !validStaveBaselineOutcomeOptions(value) {
+		return action + " options invalid"
+	}
+	return ""
+}
+
+func validStaveBaselineOutcomeOptions(value map[string]any) bool {
+	options, ok := value["options"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, key := range []string{"baselinePath", "baselineStorePath", "baselineKey"} {
+		if field, present := options[key]; present {
+			if _, ok := field.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func normalizeOutcomeMap(value any) (map[string]any, error) {
