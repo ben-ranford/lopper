@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,6 +108,7 @@ func TestHooksInstallRefusesManagedHookDirectoryBeforeActivation(t *testing.T) {
 		t.Fatalf("install with managed hook directory = %v\n%s", err, output)
 	}
 	assertNoHooksPath(t, repoDir, "--local", "local")
+	assertNoHookConfigBackups(t, repoDir)
 	if _, err := os.Stat(filepath.Join(managedHook, "sentinel")); err != nil {
 		t.Fatalf("managed hook directory was modified before refusal: %v", err)
 	}
@@ -353,7 +355,7 @@ exec %q "$@"
 `, mvPath), 0o755)
 
 	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err == nil || !strings.Contains(string(output), "Unable to restore hook configuration") {
+	if err == nil || !strings.Contains(string(output), "Unable to restore hook installation completely") {
 		t.Fatalf("install with failed config rollback = %v\n%s", err, output)
 	}
 	managedHook := managedHookPath(t, repoDir)
@@ -369,6 +371,57 @@ exec %q "$@"
 	}
 }
 
+func TestHooksInstallReportsManagedHookRollbackRemovalFailure(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	configPath := filepath.Join(gitDir, "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config before activation failure: %v", err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	rmPath, err := exec.LookPath("rm")
+	if err != nil {
+		t.Fatalf("find rm: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "--fixed-value" ]; then
+		echo "forced activation verification failure" >&2
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+	writeFileMode(t, filepath.Join(wrapperDir, "rm"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	case "$arg" in
+	*/lopper-hooks/pre-commit)
+		echo "forced managed hook rollback removal failure" >&2
+		exit 74
+		;;
+	esac
+done
+exec %q "$@"
+`, rmPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Unable to restore hook installation completely") || !strings.Contains(string(output), "forced managed hook rollback removal failure") {
+		t.Fatalf("install with failed managed hook rollback removal = %v\n%s", err, output)
+	}
+	assertFileEquals(t, configPath, string(configBefore))
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
+		t.Fatalf("managed hook was not retained for recovery: %v", err)
+	}
+}
+
 func TestHooksInstallCleansTemporaryHookAfterManagedHookMoveFailure(t *testing.T) {
 	t.Parallel()
 
@@ -380,25 +433,33 @@ func TestHooksInstallCleansTemporaryHookAfterManagedHookMoveFailure(t *testing.T
 		{name: "rollback fails", rollbackFails: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repoDir := newHookTestRepository(t)
-			runCommand(t, repoDir, "make", "hooks-install")
-			managedHook := managedHookPath(t, repoDir)
-			managedDir := filepath.Dir(managedHook)
-			configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
-			configBefore, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("read config before install failure: %v", err)
-			}
-			hookBefore, err := os.ReadFile(managedHook)
-			if err != nil {
-				t.Fatalf("read hook before install failure: %v", err)
-			}
-			mvPath, err := exec.LookPath("mv")
-			if err != nil {
-				t.Fatalf("find mv: %v", err)
-			}
-			wrapperDir := t.TempDir()
-			writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
+			assertHooksInstallCleansTemporaryHookAfterManagedHookMoveFailure(t, test.rollbackFails)
+		})
+	}
+}
+
+func assertHooksInstallCleansTemporaryHookAfterManagedHookMoveFailure(t *testing.T, rollbackFails bool) {
+	t.Helper()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config before install failure: %v", err)
+	}
+	hookBefore, err := os.ReadFile(managedHook)
+	if err != nil {
+		t.Fatalf("read hook before install failure: %v", err)
+	}
+	mvPath, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatalf("find mv: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
 for arg do
 	case "$arg" in
 	*.pre-commit.*.tmp)
@@ -414,26 +475,24 @@ for arg do
 	esac
 done
 exec %q "$@"
-`, test.rollbackFails, mvPath), 0o755)
+`, rollbackFails, mvPath), 0o755)
 
-			output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			if err == nil || !strings.Contains(string(output), "forced managed hook move failure") {
-				t.Fatalf("install with managed hook move failure = %v\n%s", err, output)
-			}
-			temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.*.tmp"))
-			if err != nil || len(temporaryHooks) != 0 {
-				t.Fatalf("temporary hooks after failure = %#v err=%v", temporaryHooks, err)
-			}
-			if !test.rollbackFails {
-				assertFileEquals(t, configPath, string(configBefore))
-				assertFileEquals(t, managedHook, string(hookBefore))
-				return
-			}
-			backups, err := filepath.Glob(filepath.Join(managedDir, ".config.*.backup"))
-			if err != nil || len(backups) == 0 {
-				t.Fatalf("config recovery backups after rollback failure = %#v err=%v", backups, err)
-			}
-		})
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "forced managed hook move failure") {
+		t.Fatalf("install with managed hook move failure = %v\n%s", err, output)
+	}
+	temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.*.tmp"))
+	if err != nil || len(temporaryHooks) != 0 {
+		t.Fatalf("temporary hooks after failure = %#v err=%v", temporaryHooks, err)
+	}
+	if !rollbackFails {
+		assertFileEquals(t, configPath, string(configBefore))
+		assertFileEquals(t, managedHook, string(hookBefore))
+		return
+	}
+	backups, err := filepath.Glob(filepath.Join(managedDir, ".config.*.backup"))
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("config recovery backups after rollback failure = %#v err=%v", backups, err)
 	}
 }
 
@@ -629,14 +688,16 @@ func TestHooksUninstallRefusesManagedHookDirectorySymlinkBeforeMutation(t *testi
 	}
 }
 
+type unsafeManagedHookTestCase struct {
+	name    string
+	prepare func(t *testing.T, path string)
+	verify  func(t *testing.T, path string)
+}
+
 func TestHooksUninstallRefusesUnsafeManagedHookBeforeConfigMutation(t *testing.T) {
 	t.Parallel()
 
-	for _, testCase := range []struct {
-		name    string
-		prepare func(t *testing.T, path string)
-		verify  func(t *testing.T, path string)
-	}{
+	for _, testCase := range []unsafeManagedHookTestCase{
 		{
 			name: "directory",
 			prepare: func(t *testing.T, path string) {
@@ -675,33 +736,38 @@ func TestHooksUninstallRefusesUnsafeManagedHookBeforeConfigMutation(t *testing.T
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			repoDir := newHookTestRepository(t)
-			runCommand(t, repoDir, "make", "hooks-install")
-
-			managedHook := managedHookPath(t, repoDir)
-			configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
-			configBefore, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("read hook config before unsafe uninstall: %v", err)
-			}
-			if err := os.Remove(managedHook); err != nil {
-				t.Fatalf("remove managed hook before unsafe setup: %v", err)
-			}
-			testCase.prepare(t, managedHook)
-
-			output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
-			if err == nil || !strings.Contains(string(output), "Refusing unsafe managed pre-commit hook") {
-				t.Fatalf("uninstall with unsafe managed hook = %v\n%s", err, output)
-			}
-			testCase.verify(t, managedHook)
-			configAfter, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("read hook config after unsafe uninstall: %v", err)
-			}
-			if string(configAfter) != string(configBefore) {
-				t.Fatalf("uninstall modified config before unsafe-hook refusal")
-			}
+			assertHooksUninstallRefusesUnsafeManagedHookBeforeConfigMutation(t, testCase)
 		})
+	}
+}
+
+func assertHooksUninstallRefusesUnsafeManagedHookBeforeConfigMutation(t *testing.T, testCase unsafeManagedHookTestCase) {
+	t.Helper()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hook config before unsafe uninstall: %v", err)
+	}
+	if err := os.Remove(managedHook); err != nil {
+		t.Fatalf("remove managed hook before unsafe setup: %v", err)
+	}
+	testCase.prepare(t, managedHook)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Refusing unsafe managed pre-commit hook") {
+		t.Fatalf("uninstall with unsafe managed hook = %v\n%s", err, output)
+	}
+	testCase.verify(t, managedHook)
+	configAfter, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hook config after unsafe uninstall: %v", err)
+	}
+	if string(configAfter) != string(configBefore) {
+		t.Fatalf("uninstall modified config before unsafe-hook refusal")
 	}
 }
 
@@ -1265,6 +1331,251 @@ func TestHooksUninstallFailsWhenConfigIsLockedWithoutRemovingManagedHook(t *test
 	}
 }
 
+type commonRemovalCase struct {
+	name                  string
+	dormant, commonLegacy bool
+}
+type regularConfigFixture struct {
+	repoDir, commonConfig, worktreeConfig string
+	commonBefore, worktreeBefore          []byte
+}
+
+func TestHooksUninstallRestoresWorktreeConfigurationAfterCommonRemovalFailure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []commonRemovalCase{{name: "active managed common"}, {name: "dormant managed common", dormant: true}, {name: "active legacy common", commonLegacy: true}, {name: "dormant legacy common", dormant: true, commonLegacy: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRegularConfigFixture(t, test)
+			writeFile(t, fixture.commonConfig+".lock", "locked\n")
+			output, err := runMakeWithEnv(fixture.repoDir, "hooks-uninstall")
+			if err == nil || !strings.Contains(string(output), "Unable to remove managed core.hooksPath") {
+				t.Fatalf("uninstall with common removal failure = %v\n%s", err, output)
+			}
+			fixture.assertRestored(t)
+		})
+	}
+}
+func newRegularConfigFixture(t *testing.T, test commonRemovalCase) *regularConfigFixture {
+	t.Helper()
+	repo := newHookTestRepository(t)
+	runCommand(t, repo, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repo, "make", "hooks-install")
+	runCommand(t, repo, "git", "config", "--worktree", "core.hooksPath", filepath.Dir(managedHookPath(t, repo)))
+	if test.commonLegacy {
+		runCommand(t, repo, "git", "config", "--local", "core.hooksPath", ".githooks")
+	}
+	if test.dormant {
+		runCommand(t, repo, "git", "config", "--local", "extensions.worktreeConfig", "false")
+	}
+	gitDir := gitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-dir")
+	common := filepath.Join(gitDir, "config")
+	worktree := filepath.Join(gitDir, "config.worktree")
+	commonBefore := readHookConfigBytes(t, common)
+	worktreeBefore := readHookConfigBytes(t, worktree)
+	return &regularConfigFixture{repo, common, worktree, commonBefore, worktreeBefore}
+}
+func readHookConfigBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	return data
+}
+func (f *regularConfigFixture) assertRestored(t *testing.T) {
+	t.Helper()
+	assertFileEquals(t, f.commonConfig, string(f.commonBefore))
+	assertFileEquals(t, f.worktreeConfig, string(f.worktreeBefore))
+	assertNoHookConfigBackups(t, f.repoDir)
+	if _, err := os.Stat(managedHookPath(t, f.repoDir)); err != nil {
+		t.Fatalf("uninstaller removed managed hook after rollback: %v", err)
+	}
+}
+
+type symlinkedConfigFixture struct {
+	repoDir, gitDir string
+	configs         []symlinkedConfig
+}
+type symlinkedConfig struct {
+	path, target string
+	before       []byte
+}
+
+func TestHooksUninstallRestoresSymlinkedConfigurationAfterCommonRemovalFailure(t *testing.T) {
+	t.Parallel()
+	for _, dormant := range []bool{false, true} {
+		t.Run(strconv.FormatBool(dormant), func(t *testing.T) {
+			fixture := newSymlinkedConfigFixture(t, dormant)
+			writeFile(t, fixture.configs[0].target+".lock", "locked\n")
+			if _, err := runMakeWithEnv(fixture.repoDir, "hooks-uninstall"); err == nil {
+				t.Fatal("uninstall with locked symlinked common config succeeded")
+			}
+			fixture.assertRestored(t)
+		})
+	}
+}
+func newSymlinkedConfigFixture(t *testing.T, dormant bool) *symlinkedConfigFixture {
+	t.Helper()
+	repo := newHookTestRepository(t)
+	runCommand(t, repo, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repo, "make", "hooks-install")
+	runCommand(t, repo, "git", "config", "--worktree", "core.hooksPath", filepath.Dir(managedHookPath(t, repo)))
+	if dormant {
+		runCommand(t, repo, "git", "config", "--local", "extensions.worktreeConfig", "false")
+	}
+	gitDir := gitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-dir")
+	configs := []symlinkedConfig{newSymlinkedConfig(t, filepath.Join(gitDir, "config")), newSymlinkedConfig(t, filepath.Join(gitDir, "config.worktree"))}
+	return &symlinkedConfigFixture{repo, gitDir, configs}
+}
+func newSymlinkedConfig(t *testing.T, path string) symlinkedConfig {
+	t.Helper()
+	target := path + ".target"
+	if err := os.Rename(path, target); err != nil {
+		t.Fatalf("rename %s: %v", path, err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("symlink %s: %v", path, err)
+	}
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read config target: %v", err)
+	}
+	return symlinkedConfig{path, target, before}
+}
+func (f *symlinkedConfigFixture) assertRestored(t *testing.T) {
+	t.Helper()
+	for _, c := range f.configs {
+		link, err := os.Readlink(c.path)
+		if err != nil || link != c.target {
+			t.Fatalf("config link=%q err=%v, want %q", link, err, c.target)
+		}
+		assertFileEquals(t, c.target, string(c.before))
+	}
+	assertNoHookConfigBackups(t, f.repoDir)
+}
+
+func TestHooksUninstallAttemptsWorktreeRestoreAfterCommonRestoreFailure(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", managedDir)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	commonConfig := filepath.Join(gitDir, "config")
+	worktreeConfig := filepath.Join(gitDir, "config.worktree")
+	commonBefore, err := os.ReadFile(commonConfig)
+	if err != nil {
+		t.Fatalf("read common config: %v", err)
+	}
+	worktreeBefore, err := os.ReadFile(worktreeConfig)
+	if err != nil {
+		t.Fatalf("read worktree config: %v", err)
+	}
+	writeFile(t, commonConfig+".lock", "locked\n")
+	mvPath, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatalf("find mv: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
+for arg do case "$arg" in *.lopper-hooks-config.worktree.*) ;; *.lopper-hooks-config.*) echo "forced common restore failure" >&2; exit 74;; esac; done
+exec %q "$@"
+`, mvPath), 0o755)
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Unable to restore hook configuration completely") || !strings.Contains(string(output), "forced common restore failure") {
+		t.Fatalf("uninstall with restore failure = %v\n%s", err, output)
+	}
+	assertFileEquals(t, commonConfig, string(commonBefore))
+	assertFileEquals(t, worktreeConfig, string(worktreeBefore))
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("managed hook missing after rollback failure: %v", err)
+	}
+	commonBackups, err := filepath.Glob(filepath.Join(gitDir, ".lopper-hooks-config.*"))
+	if err != nil || len(commonBackups) != 1 {
+		t.Fatalf("common recovery backup = %#v err=%v", commonBackups, err)
+	}
+	worktreeBackups, err := filepath.Glob(filepath.Join(gitDir, ".lopper-hooks-config.worktree.*"))
+	if err != nil || len(worktreeBackups) != 0 {
+		t.Fatalf("worktree recovery backups = %#v err=%v", worktreeBackups, err)
+	}
+}
+
+type snapshotFailureCase struct {
+	name          string
+	symlink       bool
+	command, body string
+}
+type snapshotFailureFixture struct {
+	repoDir, gitDir, configPath, targetPath string
+	before                                  []byte
+}
+
+func TestHooksUninstallCleansSnapshotsWhenSetupFails(t *testing.T) {
+	t.Parallel()
+	for _, test := range []snapshotFailureCase{
+		{name: "common copy", command: "cp", body: `echo "forced snapshot copy failure" >&2; exit 73`},
+		{name: "symlink readlink", symlink: true, command: "readlink", body: `echo "forced snapshot readlink failure" >&2; exit 74`},
+	} {
+		t.Run(test.name, func(t *testing.T) { assertSnapshotSetupFailure(t, test) })
+	}
+}
+
+func assertSnapshotSetupFailure(t *testing.T, test snapshotFailureCase) {
+	t.Helper()
+	fixture := newSnapshotFailureFixture(t, test.symlink)
+	toolPath, err := exec.LookPath(test.command)
+	if err != nil {
+		t.Fatalf("find %s: %v", test.command, err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, test.command), fmt.Sprintf("#!/bin/sh\n%s\nexec %q \"$@\"\n", test.body, toolPath), 0o755)
+	if _, err := runMakeWithEnv(fixture.repoDir, "hooks-uninstall", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH")); err == nil {
+		t.Fatal("uninstall setup failure succeeded")
+	}
+	fixture.assertUnchanged(t, test.symlink)
+}
+
+func newSnapshotFailureFixture(t *testing.T, symlink bool) *snapshotFailureFixture {
+	t.Helper()
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	configPath := filepath.Join(gitDir, "config")
+	targetPath := configPath
+	if symlink {
+		targetPath += ".target"
+		if err := os.Rename(configPath, targetPath); err != nil {
+			t.Fatalf("rename config: %v", err)
+		}
+		if err := os.Symlink(targetPath, configPath); err != nil {
+			t.Fatalf("symlink config: %v", err)
+		}
+	}
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	return &snapshotFailureFixture{repoDir, gitDir, configPath, targetPath, before}
+}
+
+func (f *snapshotFailureFixture) assertUnchanged(t *testing.T, symlink bool) {
+	t.Helper()
+	assertFileEquals(t, f.targetPath, string(f.before))
+	if symlink {
+		if link, err := os.Readlink(f.configPath); err != nil || link != f.targetPath {
+			t.Fatalf("config link=%q err=%v", link, err)
+		}
+	}
+	if backups, err := filepath.Glob(filepath.Join(f.gitDir, ".lopper-hooks-config.*")); err != nil || len(backups) != 0 {
+		t.Fatalf("snapshot backups=%#v err=%v", backups, err)
+	}
+	if _, err := os.Stat(managedHookPath(t, f.repoDir)); err != nil {
+		t.Fatalf("managed hook missing: %v", err)
+	}
+}
+
 func TestHooksUninstallLeavesLocalConfigurationWhenWorktreeConfigIsLocked(t *testing.T) {
 	t.Parallel()
 
@@ -1756,6 +2067,15 @@ func assertNoHooksPath(t *testing.T, repoDir, scope, scopeName string) {
 	}
 }
 
+func assertNoHookConfigBackups(t *testing.T, repoDir string) {
+	t.Helper()
+	commonDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	backups, err := filepath.Glob(filepath.Join(commonDir, ".lopper-hooks-config.*"))
+	if err != nil || len(backups) != 0 {
+		t.Fatalf("hook configuration backups = %#v err=%v", backups, err)
+	}
+}
+
 func assertNoHooksPathInFile(t *testing.T, configPath string) {
 	t.Helper()
 	command := exec.Command("git", "config", "--file", configPath, "--get", "core.hooksPath")
@@ -1799,5 +2119,31 @@ func runCommitWithHook(t *testing.T, repoDir, message string) {
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git commit -m %s: %v\n%s", message, err, output)
+	}
+}
+
+func TestHooksUninstallTerminatesDuringFirstSnapshot(t *testing.T) {
+	t.Parallel()
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	configPath := filepath.Join(gitDir, "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config before signal: %v", err)
+	}
+	cpPath, err := exec.LookPath("cp")
+	if err != nil {
+		t.Fatalf("find cp: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "cp"), fmt.Sprintf("#!/bin/sh\nkill -TERM \"$PPID\"\nexec %q \"$@\"\n", cpPath), 0o755)
+	if _, err := runMakeWithEnv(repoDir, "hooks-uninstall", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH")); err == nil {
+		t.Fatal("uninstall interrupted during first snapshot succeeded")
+	}
+	assertFileEquals(t, configPath, string(configBefore))
+	assertNoHookConfigBackups(t, repoDir)
+	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
+		t.Fatalf("managed hook missing after snapshot signal: %v", err)
 	}
 }
