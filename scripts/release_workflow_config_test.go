@@ -2864,19 +2864,33 @@ func renovateRuleHasNarrowingMatcher(rule map[string]json.RawMessage) bool {
 	return false
 }
 
-func TestRenovateCatchAllReviewRuleRejectsLegacyNarrowingMatchers(t *testing.T) {
+func TestRenovateCatchAllReviewRuleRejectsNarrowingMatchers(t *testing.T) {
 	t.Parallel()
 
 	for matcher := range renovateLegacyNarrowingMatchers {
 		t.Run(matcher, func(t *testing.T) {
-			rule := map[string]json.RawMessage{
-				"matchPackageNames": json.RawMessage(`["*"]`),
-				matcher:             json.RawMessage(`["hostile"]`),
-			}
-			if !renovateRuleHasNarrowingMatcher(rule) {
-				t.Fatalf("legacy %s matcher must prevent a catch-all review rule", matcher)
-			}
+			assertRenovateMatcherNarrowsCatchAllRule(t, matcher)
 		})
+	}
+	for _, matcher := range renovateGenericNarrowingMatchers {
+		t.Run(matcher, func(t *testing.T) { assertRenovateMatcherNarrowsCatchAllRule(t, matcher) })
+	}
+}
+
+var renovateGenericNarrowingMatchers = []string{
+	"matchManagers",
+	"matchFileNames",
+	"excludePackageNames",
+}
+
+func assertRenovateMatcherNarrowsCatchAllRule(t *testing.T, matcher string) {
+	t.Helper()
+	rule := map[string]json.RawMessage{
+		"matchPackageNames": json.RawMessage(`["*"]`),
+		matcher:             json.RawMessage(`["hostile"]`),
+	}
+	if !renovateRuleHasNarrowingMatcher(rule) {
+		t.Fatalf("%s matcher must prevent a catch-all review rule", matcher)
 	}
 }
 
