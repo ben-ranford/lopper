@@ -303,7 +303,7 @@ func closeRootCarthageSourceCursor(cursor *rootCarthageSourceCursor, err error) 
 	return errors.Join(err, closeErr)
 }
 
-func appendRootCarthageSourceDirectories(queue []rootCarthageSourceDirectory, children []rootCarthageSourceDirectory) []rootCarthageSourceDirectory {
+func appendRootCarthageSourceDirectories(queue, children []rootCarthageSourceDirectory) []rootCarthageSourceDirectory {
 	slices.SortFunc(children, func(left, right rootCarthageSourceDirectory) int {
 		return strings.Compare(left.path, right.path)
 	})
