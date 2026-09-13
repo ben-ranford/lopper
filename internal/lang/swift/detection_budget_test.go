@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -391,6 +392,66 @@ func TestSwiftNestedCarthageDetectionAllowsRequestedRootAlias(t *testing.T) {
 	wantRoot := filepath.Join(requested, "apps", "ios")
 	if !detection.Matched || !slices.Contains(detection.Roots, wantRoot) {
 		t.Fatalf("expected requested nested root to be retained, got %#v", detection)
+	}
+}
+
+func TestSwiftCarthageProbeIgnoresOnlyPureEMFILE(t *testing.T) {
+	emfile := &fs.PathError{Op: "open", Path: "nested", Err: syscall.EMFILE}
+	if isIgnorableNestedCarthageProbeError(emfile) || !isIgnorableCarthageProbeResourceError(emfile) {
+		t.Fatal("expected wrapped EMFILE to be ignorable for optional corroboration")
+	}
+	closeErr := errors.New("close failed")
+	joined := errors.Join(emfile, closeErr)
+	if isIgnorableNestedCarthageProbeError(joined) || isIgnorableCarthageProbeResourceError(joined) {
+		t.Fatalf("joined EMFILE cleanup error must propagate: %v", joined)
+	}
+	if isIgnorableNestedCarthageProbeError(syscall.ENFILE) || isIgnorableCarthageProbeResourceError(syscall.ENFILE) {
+		t.Fatal("ENFILE must remain operational")
+	}
+	if found, entries, err := probeSwiftSourceWithinTrustedRoot(context.Background(), &swiftEMFILEProbeRoot{}, "nested", 1); err != nil || found || entries != 0 {
+		t.Fatalf("EMFILE discovery probe = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+type swiftEMFILEProbeRoot struct{}
+
+func (*swiftEMFILEProbeRoot) Open(string) (safeio.File, error) {
+	return nil, errors.New("unexpected open")
+}
+func (*swiftEMFILEProbeRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
+	return nil, errors.New("unexpected open file")
+}
+func (*swiftEMFILEProbeRoot) OpenRoot(string) (safeio.Root, error) {
+	return nil, errors.New("unexpected open root")
+}
+func (*swiftEMFILEProbeRoot) Lstat(string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "lstat", Path: "nested", Err: syscall.EMFILE}
+}
+func (*swiftEMFILEProbeRoot) Mkdir(string, os.FileMode) error { return errors.New("unexpected mkdir") }
+func (*swiftEMFILEProbeRoot) Chmod(string, os.FileMode) error { return errors.New("unexpected chmod") }
+func (*swiftEMFILEProbeRoot) MkdirAll(string, os.FileMode) error {
+	return errors.New("unexpected mkdir all")
+}
+func (*swiftEMFILEProbeRoot) Link(string, string) error   { return errors.New("unexpected link") }
+func (*swiftEMFILEProbeRoot) Rename(string, string) error { return errors.New("unexpected rename") }
+func (*swiftEMFILEProbeRoot) Remove(string) error         { return errors.New("unexpected remove") }
+func (*swiftEMFILEProbeRoot) Close() error                { return nil }
+
+func TestSwiftNestedCarthageDetectionRetainsAlreadyCorroboratedDeepRoot(t *testing.T) {
+	repo := t.TempDir()
+	nested := repo
+	for index := 0; index < rootCarthageSourceSharedHandleLimit+1; index++ {
+		nested = filepath.Join(nested, "level"+strconv.Itoa(index))
+	}
+	testutil.MustWriteFile(t, filepath.Join(nested, carthageManifestName), "github \"owner/repo\"\n")
+	testutil.MustWriteFile(t, filepath.Join(nested, swiftMainFileName), "import Foundation\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect deep corroborated root: %v", err)
+	}
+	if !detection.Matched || !slices.Contains(detection.Roots, nested) {
+		t.Fatalf("deep corroborated detection = %#v", detection)
 	}
 }
 

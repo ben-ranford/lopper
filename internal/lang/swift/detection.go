@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -642,12 +643,22 @@ func nestedCarthageRootRelativePath(repoPath, candidate string) (string, bool) {
 
 func probeSwiftSourceWithinTrustedRoot(ctx context.Context, root safeio.Root, relativePath string, maxEntries int) (bool, int, error) {
 	directories, rootEntries, found, err := discoverSwiftSourceCandidatesWithinLimit(ctx, root, relativePath, maxEntries)
+	if isIgnorableCarthageProbeResourceError(err) {
+		return false, rootEntries, nil
+	}
 	if err != nil || found {
 		return found, rootEntries, err
 	}
 
 	found, entries, err := findSwiftSourceWithinRootDirectories(ctx, root, directories, maxEntries-rootEntries)
+	if isIgnorableCarthageProbeResourceError(err) {
+		return false, rootEntries + entries, nil
+	}
 	return found, rootEntries + entries, err
+}
+
+func isIgnorableCarthageProbeResourceError(err error) bool {
+	return shared.IsPureSentinelError(err, syscall.EMFILE)
 }
 
 func applyCarthageDetectionRoot(root string, confidence int, detection *language.Detection, roots map[string]struct{}) {
