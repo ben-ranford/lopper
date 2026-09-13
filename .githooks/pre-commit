@@ -25,24 +25,50 @@ else
 fi
 export PATH
 
-if ! git -c core.bare=false diff --cached --check --no-ext-diff --no-textconv; then
+resolve_hook_tool() {
+	tool_path=$(command -v "$1") || exit 1
+	case "$tool_path" in /*) ;; *) echo "Refusing unresolved hook tool: $1" >&2; exit 1 ;; esac
+	tool_links=0
+	while [ -L "$tool_path" ]; do
+		tool_links=$((tool_links + 1))
+		[ "$tool_links" -le 40 ] || { echo "Refusing cyclic hook tool symlink: $1" >&2; exit 1; }
+		tool_target=$(/usr/bin/readlink "$tool_path") || exit 1
+		case "$tool_target" in /*) tool_path=$tool_target ;; *) tool_path=${tool_path%/*}/$tool_target ;; esac
+	done
+	tool_dir=$(cd -P "${tool_path%/*}" && pwd -P) || exit 1
+	tool_path=$tool_dir/${tool_path##*/}
+	case "$tool_path" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: $1" >&2; exit 1 ;; esac
+	[ -f "$tool_path" ] && [ -x "$tool_path" ] || { echo "Refusing non-executable hook tool: $1" >&2; exit 1; }
+	resolved_tool=$tool_path
+}
+
+resolve_hook_tool git; git_path=$resolved_tool
+resolve_hook_tool mktemp; mktemp_path=$resolved_tool
+resolve_hook_tool xargs; xargs_path=$resolved_tool
+resolve_hook_tool sh; sh_path=$resolved_tool
+resolve_hook_tool rm; rm_path=$resolved_tool
+
+if ! "$git_path" --no-pager -c core.bare=false diff --cached --check --no-ext-diff --no-textconv; then
 	echo "[pre-commit] staged whitespace check failed" >&2
 	exit 1
 fi
 
 diff_status=0
-git -c core.bare=false diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' || diff_status=$?
+"$git_path" --no-pager -c core.bare=false diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' || diff_status=$?
 if [ "$diff_status" -eq 0 ]; then
 	staged_gofmt_diff=
 elif [ "$diff_status" -eq 1 ]; then
-	staged_names=$(mktemp "${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX") || exit 1
-	trap 'rm -f "$staged_names"' EXIT
+	resolve_hook_tool awk; awk_path=$resolved_tool
+	resolve_hook_tool gofmt; gofmt_path=$resolved_tool
+	resolve_hook_tool cat; cat_path=$resolved_tool
+	staged_names=
+	trap '"$rm_path" -f "$staged_names"' EXIT
 	trap 'exit 129' HUP
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
-	git -c core.bare=false diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$staged_names" || exit $?
-	gofmt_path=$(command -v gofmt) || exit 1
-	staged_gofmt_diff=$(xargs -0 -n 1 sh -c "gofmt_path=\$1; staged_entry=\$(git -c core.bare=false --literal-pathspecs ls-files --stage -- \"\$2\") || exit \$?; mode=\$(printf '%s\\n' \"\$staged_entry\" | awk '\$3 == 0 { print \$1; exit }') || exit \$?; case \"\$mode\" in 100644|100755) ;; *) exit 0 ;; esac; temp_file=; gofmt_output_file=; trap 'rm -f \"\$temp_file\" \"\$gofmt_output_file\"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; gofmt_output_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; git -c core.bare=false show \":0:\$2\" > \"\$temp_file\" || exit 1; status=0; \"\$gofmt_path\" -d \"\$temp_file\" >\"\$gofmt_output_file\" 2>&1 || status=\$?; gofmt_output=\$(cat \"\$gofmt_output_file\") || exit \$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$2\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$2\" \"\$gofmt_output\"; fi" sh "$gofmt_path" <"$staged_names")
+	staged_names=$("$mktemp_path" "${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX") || exit 1
+	"$git_path" --no-pager -c core.bare=false diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$staged_names" || exit $?
+	staged_gofmt_diff=$("$xargs_path" -0 -n 1 "$sh_path" -c "gofmt_path=\$1; git_path=\$2; awk_path=\$3; mktemp_path=\$4; cat_path=\$5; rm_path=\$6; staged_entry=\$(\"\$git_path\" --no-pager -c core.bare=false --literal-pathspecs ls-files --stage -- \"\$7\") || exit \$?; mode=\$(printf '%s\\n' \"\$staged_entry\" | \"\$awk_path\" '\$3 == 0 { print \$1; exit }') || exit \$?; case \"\$mode\" in 100644|100755) ;; *) exit 0 ;; esac; temp_file=; gofmt_output_file=; trap '\"\$rm_path\" -f \"\$temp_file\" \"\$gofmt_output_file\"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; temp_file=\$(\"\$mktemp_path\" \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; gofmt_output_file=\$(\"\$mktemp_path\" \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; \"\$git_path\" --no-pager -c core.bare=false show \":0:\$7\" > \"\$temp_file\" || exit 1; status=0; \"\$gofmt_path\" -d \"\$temp_file\" >\"\$gofmt_output_file\" 2>&1 || status=\$?; gofmt_output=\$(\"\$cat_path\" \"\$gofmt_output_file\") || exit \$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$7\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$7\" \"\$gofmt_output\"; fi" sh "$gofmt_path" "$git_path" "$awk_path" "$mktemp_path" "$cat_path" "$rm_path" <"$staged_names")
 else
 	exit "$diff_status"
 fi

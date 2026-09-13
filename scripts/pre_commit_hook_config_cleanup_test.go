@@ -41,7 +41,7 @@ func TestHooksInstallRefusesUnsafeManagedHookBeforeChangingDirectoryPermissions(
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("managed directory mode = %o, want 755", got)
 	}
-	if temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.*.tmp")); err != nil || len(temporaryHooks) != 0 {
+	if temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.tmp.*")); err != nil || len(temporaryHooks) != 0 {
 		t.Fatalf("temporary hooks = %#v err=%v", temporaryHooks, err)
 	}
 }

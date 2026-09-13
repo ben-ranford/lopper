@@ -342,7 +342,7 @@ exec %q "$@"
 	writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
 for arg do
 	case "$arg" in
-	*.config.*.backup)
+	*.config.backup.*)
 		echo "forced config rollback failure" >&2
 		exit 74
 		;;
@@ -362,7 +362,7 @@ exec %q "$@"
 	if got := gitOutput(t, repoDir, "config", "--local", "--get", "core.hooksPath"); got != filepath.Dir(managedHook) {
 		t.Fatalf("local core.hooksPath after failed rollback = %q, want %q", got, filepath.Dir(managedHook))
 	}
-	backups, err := filepath.Glob(filepath.Join(filepath.Dir(managedHook), ".config.*.backup"))
+	backups, err := filepath.Glob(filepath.Join(filepath.Dir(managedHook), ".config.backup.*"))
 	if err != nil || len(backups) == 0 {
 		t.Fatalf("config recovery backup was not retained: %v", err)
 	}
@@ -459,11 +459,11 @@ func assertHooksInstallCleansTemporaryHookAfterManagedHookMoveFailure(t *testing
 	writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
 for arg do
 	case "$arg" in
-	*.pre-commit.*.tmp)
+	*.pre-commit.tmp.*)
 		echo "forced managed hook move failure" >&2
 		exit 73
 		;;
-	*.config.*.backup)
+	*.config.backup.*)
 		if [ %t = true ]; then
 			echo "forced config rollback failure" >&2
 			exit 74
@@ -478,7 +478,7 @@ exec %q "$@"
 	if err == nil || !strings.Contains(string(output), "forced managed hook move failure") {
 		t.Fatalf("install with managed hook move failure = %v\n%s", err, output)
 	}
-	temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.*.tmp"))
+	temporaryHooks, err := filepath.Glob(filepath.Join(managedDir, ".pre-commit.tmp.*"))
 	if err != nil || len(temporaryHooks) != 0 {
 		t.Fatalf("temporary hooks after failure = %#v err=%v", temporaryHooks, err)
 	}
@@ -487,7 +487,7 @@ exec %q "$@"
 		assertFileEquals(t, managedHook, string(hookBefore))
 		return
 	}
-	backups, err := filepath.Glob(filepath.Join(managedDir, ".config.*.backup"))
+	backups, err := filepath.Glob(filepath.Join(managedDir, ".config.backup.*"))
 	if err != nil || len(backups) == 0 {
 		t.Fatalf("config recovery backups after rollback failure = %#v err=%v", backups, err)
 	}
@@ -529,8 +529,8 @@ func TestHooksInstallCleansSnapshotsWhenBackupCopyFails(t *testing.T) {
 	for _, testCase := range []struct {
 		name, backupPattern string
 	}{
-		{name: "common config", backupPattern: "*.config.*.backup"},
-		{name: "managed hook", backupPattern: "*.pre-commit.*.backup"},
+		{name: "common config", backupPattern: "*.config.backup.*"},
+		{name: "managed hook", backupPattern: "*.pre-commit.backup.*"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			fixture := newHookInstallSnapshot(t)
@@ -569,7 +569,7 @@ func TestHooksInstallCleansSnapshotsWhenBackupCopyGetsTerm(t *testing.T) {
 	writeFileMode(t, filepath.Join(wrapperDir, "cp"), fmt.Sprintf(`#!/bin/sh
 for arg do
 	case "$arg" in
-	*.pre-commit.*.backup) kill -TERM "$PPID"; exit 73 ;;
+	*.pre-commit.backup.*) kill -TERM "$PPID"; exit 73 ;;
 	esac
 done
 exec %q "$@"
@@ -648,7 +648,7 @@ func TestHooksInstallRetriesCompletedTransactionCleanup(t *testing.T) {
 	writeFileMode(t, filepath.Join(wrapperDir, "rm"), fmt.Sprintf(`#!/bin/sh
 for arg do
 	case "$arg" in
-	*.backup)
+	*.backup.*)
 		if [ ! -e %q ]; then : > %q; echo "forced completed cleanup failure" >&2; exit 73; fi
 		;;
 	esac
@@ -695,7 +695,7 @@ func (hi *hookInstallSnapshot) assertPreserved(t *testing.T) {
 func assertNoHookInstallArtifacts(t *testing.T, managedDir string) {
 	t.Helper()
 
-	for _, pattern := range []string{".pre-commit.*.tmp", ".pre-commit.*.backup", ".config.*.backup"} {
+	for _, pattern := range []string{".pre-commit.tmp.*", ".pre-commit.backup.*", ".config.backup.*"} {
 		artifacts, err := filepath.Glob(filepath.Join(managedDir, pattern))
 		if err != nil || len(artifacts) != 0 {
 			t.Fatalf("snapshot artifacts for %s = %#v err=%v", pattern, artifacts, err)
