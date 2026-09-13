@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,14 +54,59 @@ func TestHooksInstallSnapshotsTrustedHookAndRejectsUnsafeStagedContent(t *testin
 	assertCommitFailsWithEnv(t, repoDir, "broken.go", []string{"TMPDIR=" + tempDir})
 	runCommand(t, repoDir, "git", "reset", "--", "broken.go")
 
-	for _, name := range []string{": staged.go", "0:unformatted.go"} {
+	for _, name := range []string{": staged.go", "0:unformatted.go", ":(glob)literal.go"} {
 		writeFile(t, filepath.Join(repoDir, name), "package fixture\n\nfunc adversarialName(){}\n")
-		runCommand(t, repoDir, "git", "add", "--", "./"+name)
+		runCommand(t, repoDir, "git", "--literal-pathspecs", "add", "--", "./"+name)
 		output := assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
 		if !strings.Contains(output, name) {
 			t.Fatalf("gofmt diagnostic does not identify %q:\n%s", name, output)
 		}
 		runCommand(t, repoDir, "git", "reset", "--", "./"+name)
+	}
+}
+
+func TestHooksInstallSecuresManagedHookDirectory(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	managedDir := filepath.Dir(managedHookPath(t, repoDir))
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatalf("create managed hook directory: %v", err)
+	}
+	if err := os.Chmod(managedDir, 0o777); err != nil {
+		t.Fatalf("make managed hook directory permissive: %v", err)
+	}
+
+	output, err := runMakeWithUmask(repoDir, "hooks-install", "000")
+	if err != nil {
+		t.Fatalf("hooks-install with permissive umask = %v\n%s", err, output)
+	}
+	info, err := os.Stat(managedDir)
+	if err != nil {
+		t.Fatalf("stat managed hook directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("managed hook directory permissions = %o, want 700", got)
+	}
+}
+
+func TestHooksInstallRefusesManagedHookDirectoryBeforeActivation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	managedHook := managedHookPath(t, repoDir)
+	if err := os.MkdirAll(managedHook, 0o700); err != nil {
+		t.Fatalf("create managed hook directory: %v", err)
+	}
+	writeFile(t, filepath.Join(managedHook, "sentinel"), "preserve\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing to replace managed pre-commit hook directory") {
+		t.Fatalf("install with managed hook directory = %v\n%s", err, output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if _, err := os.Stat(filepath.Join(managedHook, "sentinel")); err != nil {
+		t.Fatalf("managed hook directory was modified before refusal: %v", err)
 	}
 }
 
@@ -181,6 +227,81 @@ func TestManagedHookChecksTrackedSymlinkReplacedByUnformattedGoFile(t *testing.T
 	writeFile(t, linkPath, "package fixture\n\nfunc unformatted(){}\n")
 	runCommand(t, repoDir, "git", "add", "replaced.go")
 	assertCommitFails(t, repoDir, "staged Go files must be gofmt-formatted")
+}
+
+func TestManagedHookSkipsNonRegularStagedGoEntries(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name  string
+		stage func(t *testing.T, repoDir string)
+	}{
+		{
+			name: "symlink",
+			stage: func(t *testing.T, repoDir string) {
+				goPath := filepath.Join(repoDir, "replacement.go")
+				writeFile(t, goPath, "package fixture\n")
+				runCommand(t, repoDir, "git", "add", "replacement.go")
+				runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "add regular Go file")
+				if err := os.Remove(goPath); err != nil {
+					t.Fatalf("remove regular Go file: %v", err)
+				}
+				if err := os.Symlink("tracked.txt", goPath); err != nil {
+					t.Fatalf("replace Go file with symlink: %v", err)
+				}
+				runCommand(t, repoDir, "git", "add", "replacement.go")
+			},
+		},
+		{
+			name: "gitlink",
+			stage: func(t *testing.T, repoDir string) {
+				treeID := gitOutput(t, repoDir, "rev-parse", "HEAD^{tree}")
+				runCommand(t, repoDir, "git", "update-index", "--add", "--cacheinfo", "160000,"+treeID+",gitlink.go")
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "make", "hooks-install")
+			testCase.stage(t, repoDir)
+			runCommitWithHook(t, repoDir, "allow non-regular Go entry")
+		})
+	}
+}
+
+func TestManagedHookFailsClosedWhenStagedEntryQueryFails(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	writeFile(t, filepath.Join(repoDir, "unformatted.go"), "package fixture\n\nfunc unformatted(){}\n")
+	runCommand(t, repoDir, "git", "add", "unformatted.go")
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "ls-files" ]; then
+		echo "forced staged-entry query failure" >&2
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+
+	command := exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = append(os.Environ(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "forced staged-entry query failure") {
+		t.Fatalf("hook with failed staged-entry query = %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "staged Go files must be gofmt-formatted") {
+		t.Fatalf("hook treated the failed staged-entry query as a formatting result:\n%s", output)
+	}
 }
 
 func TestManagedHookWorksWhenLinkedWorktreeSetsCoreBare(t *testing.T) {
@@ -742,6 +863,12 @@ func runMakeWithEnv(repoDir, target string, env ...string) ([]byte, error) {
 	command := exec.Command("make", target)
 	command.Dir = repoDir
 	command.Env = append(os.Environ(), env...)
+	return command.CombinedOutput()
+}
+
+func runMakeWithUmask(repoDir, target, mask string) ([]byte, error) {
+	command := exec.Command("sh", "-c", "umask \"$1\"; make \"$2\"", "sh", mask, target)
+	command.Dir = repoDir
 	return command.CombinedOutput()
 }
 

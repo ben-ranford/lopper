@@ -508,12 +508,17 @@ hooks-install:
 		check_hook_paths "effective" "$$current_git_dir" current; \
 		check_hook_paths "local" "$$current_git_dir" current --local; \
 		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" "$$current_git_dir" current --worktree; fi; \
+		umask 077; \
 		mkdir -p "$$managed_dir"; \
+		chmod 700 "$$managed_dir"; \
 		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
 		trap 'rm -f "$$temp_hook"' EXIT HUP INT TERM; \
-		umask 077; \
 		cp "$$source_hook" "$$temp_hook"; \
 		chmod 755 "$$temp_hook"; \
+		if [ -d "$$managed_hook" ]; then \
+			echo "Refusing to replace managed pre-commit hook directory: $$managed_hook" >&2; \
+			exit 1; \
+		fi; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		trap - EXIT HUP INT TERM; \
 		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
@@ -578,7 +583,7 @@ hooks-uninstall:
 		fi; \
 		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then \
 			if [ "$$managed_hook_still_referenced" = true ]; then \
-				echo "Preserved managed pre-commit hook because another configuration still uses it"; \
+				echo "Preserved managed pre-commit hook because a configuration may still reference it"; \
 			else \
 				rm -f "$$managed_hook"; \
 				rmdir "$$managed_dir" 2>/dev/null || :; \

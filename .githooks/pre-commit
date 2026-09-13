@@ -10,7 +10,7 @@ if git -c core.bare=false diff --cached --quiet --no-ext-diff --no-textconv --di
 	staged_gofmt_diff=
 else
 	staged_gofmt_diff=$(git -c core.bare=false diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' |
-		xargs -0 -n 1 sh -c "temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git -c core.bare=false show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt_output=\$(gofmt -d \"\$temp_file\" 2>&1); status=\$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\"; fi" sh)
+		xargs -0 -n 1 sh -c "staged_entry=\$(git -c core.bare=false --literal-pathspecs ls-files --stage -- \"\$1\") || exit \$?; mode=\$(printf '%s\\n' \"\$staged_entry\" | awk '\$3 == 0 { print \$1; exit }'); case \"\$mode\" in 100644|100755) ;; *) exit 0 ;; esac; temp_file=\$(mktemp \"\${TMPDIR:-/tmp}/lopper-pre-commit.XXXXXX\") || exit 1; trap 'rm -f \"\$temp_file\"' EXIT HUP INT TERM; git -c core.bare=false show \":0:\$1\" > \"\$temp_file\" || exit 1; gofmt_output=\$(gofmt -d \"\$temp_file\" 2>&1); status=\$?; if [ \"\$status\" -ne 0 ] && [ \"\$status\" -ne 1 ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\" >&2; exit \"\$status\"; fi; if [ -n \"\$gofmt_output\" ]; then printf '%s\\n%s\\n' \"\$1\" \"\$gofmt_output\"; fi" sh)
 fi
 if [ -n "$staged_gofmt_diff" ]; then
 	echo "[pre-commit] staged Go files must be gofmt-formatted:" >&2
