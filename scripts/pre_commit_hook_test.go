@@ -229,6 +229,227 @@ func TestHooksInstallLeavesConfigUnchangedWhenLegacyWorktreeConfigIsLocked(t *te
 	assertConfigValues(t, repoDir, "--worktree", ".githooks")
 }
 
+func TestHooksInstallRollsBackSnapshotWhenLocalConfigIsLocked(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "could not lock config file") {
+		t.Fatalf("install with locked local config = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", ".githooks")
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer retained a snapshot after local-config failure: %v", err)
+	}
+}
+
+func TestHooksInstallRollsBackWorktreeConfigWhenLocalConfigIsLocked(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name                       string
+		worktreeConfigStillEnabled bool
+	}{
+		{name: "active worktree config", worktreeConfigStillEnabled: true},
+		{name: "dormant worktree config", worktreeConfigStillEnabled: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+			runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+			if !testCase.worktreeConfigStillEnabled {
+				runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+			}
+			gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+			writeFile(t, filepath.Join(gitDir, "config.lock"), "locked\n")
+
+			output, err := runMakeWithEnv(repoDir, "hooks-install")
+			if err == nil || !strings.Contains(string(output), "could not lock config file") {
+				t.Fatalf("install with locked local config = %v\n%s", err, output)
+			}
+			if got := gitOutput(t, repoDir, "config", "--file", filepath.Join(gitDir, "config.worktree"), "--get", "core.hooksPath"); got != ".githooks" {
+				t.Fatalf("worktree core.hooksPath after rollback = %q, want .githooks", got)
+			}
+			assertNoHooksPath(t, repoDir, "--local", "local")
+			if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+				t.Fatalf("installer retained a snapshot after worktree-config rollback: %v", err)
+			}
+		})
+	}
+}
+
+func TestHooksInstallRollsBackAllConfigurationWhenActivationVerificationFails(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "--fixed-value" ]; then
+		echo "forced activation verification failure" >&2
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Managed core.hooksPath was not activated") {
+		t.Fatalf("install with activation verification failure = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", ".githooks")
+	assertConfigValues(t, repoDir, "--worktree", ".githooks")
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer retained a snapshot after activation-verification rollback: %v", err)
+	}
+}
+
+func TestHooksInstallPreservesRecoveryStateWhenConfigRollbackFails(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	mvPath, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatalf("find mv: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "--fixed-value" ]; then
+		echo "forced activation verification failure" >&2
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+	writeFileMode(t, filepath.Join(wrapperDir, "mv"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	case "$arg" in
+	*.config.*.backup)
+		echo "forced config rollback failure" >&2
+		exit 74
+		;;
+	esac
+done
+exec %q "$@"
+`, mvPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Unable to restore hook configuration") {
+		t.Fatalf("install with failed config rollback = %v\n%s", err, output)
+	}
+	managedHook := managedHookPath(t, repoDir)
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("installer removed reviewed hook after config rollback failure: %v", err)
+	}
+	if got := gitOutput(t, repoDir, "config", "--local", "--get", "core.hooksPath"); got != filepath.Dir(managedHook) {
+		t.Fatalf("local core.hooksPath after failed rollback = %q, want %q", got, filepath.Dir(managedHook))
+	}
+	backups, err := filepath.Glob(filepath.Join(filepath.Dir(managedHook), ".config.*.backup"))
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("config recovery backup was not retained: %v", err)
+	}
+}
+
+func TestHooksInstallTerminatesThroughRollbackOnActivationSignal(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "--fixed-value" ]; then
+		kill -TERM "$PPID"
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || strings.Contains(string(output), "Installed reviewed pre-commit hook") {
+		t.Fatalf("install interrupted during activation = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", ".githooks")
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer retained hook state after activation signal: %v", err)
+	}
+}
+
+func TestHooksInstallRefusesManagedHookSymlinkBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	managedHook := managedHookPath(t, repoDir)
+	target := filepath.Join(t.TempDir(), "pre-commit-target")
+	writeFileMode(t, target, "#!/bin/sh\nexit 0\n", 0o755)
+	if err := os.MkdirAll(filepath.Dir(managedHook), 0o700); err != nil {
+		t.Fatalf("create managed hook directory: %v", err)
+	}
+	if err := os.Symlink(target, managedHook); err != nil {
+		t.Fatalf("create managed hook symlink: %v", err)
+	}
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing to replace managed pre-commit hook symlink") {
+		t.Fatalf("install with managed hook symlink = %v\n%s", err, output)
+	}
+	if info, err := os.Lstat(managedHook); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("managed hook symlink was modified before refusal: %v", err)
+	}
+	assertFileEquals(t, target, "#!/bin/sh\nexit 0\n")
+	assertNoHooksPath(t, repoDir, "--local", "local")
+}
+
+func TestHooksInstallRefusesManagedHookFIFOBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	mkfifoPath, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is unavailable on this host")
+	}
+	repoDir := newHookTestRepository(t)
+	managedHook := managedHookPath(t, repoDir)
+	if err := os.MkdirAll(filepath.Dir(managedHook), 0o700); err != nil {
+		t.Fatalf("create managed hook directory: %v", err)
+	}
+	command := exec.Command(mkfifoPath, managedHook)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create managed hook FIFO: %v\n%s", err, output)
+	}
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing to replace non-regular managed pre-commit hook") {
+		t.Fatalf("install with managed hook FIFO = %v\n%s", err, output)
+	}
+	info, err := os.Lstat(managedHook)
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("managed hook FIFO was modified before refusal: %v", err)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+}
+
 func TestHooksInstallPreservesMaskedCustomLocalHooksPath(t *testing.T) {
 	t.Parallel()
 
@@ -626,6 +847,28 @@ func TestHooksUninstallFailsWhenConfigIsLockedWithoutRemovingManagedHook(t *test
 	assertConfigValues(t, repoDir, "--local", managedDir)
 	if _, err := os.Stat(managedHook); err != nil {
 		t.Fatalf("uninstaller removed managed hook while config was locked: %v", err)
+	}
+}
+
+func TestHooksUninstallLeavesLocalConfigurationWhenWorktreeConfigIsLocked(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedDir := filepath.Dir(managedHookPath(t, repoDir))
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", managedDir)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.worktree.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Unable to remove managed core.hooksPath") {
+		t.Fatalf("uninstall with locked worktree config = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", managedDir)
+	assertConfigValues(t, repoDir, "--worktree", managedDir)
+	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
+		t.Fatalf("uninstaller removed managed hook after worktree-config failure: %v", err)
 	}
 }
 

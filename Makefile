@@ -531,15 +531,33 @@ hooks-install:
 			echo "Refusing to replace managed pre-commit hook directory: $$managed_hook" >&2; \
 			exit 1; \
 		fi; \
+		if [ -L "$$managed_hook" ]; then \
+			echo "Refusing to replace managed pre-commit hook symlink: $$managed_hook" >&2; \
+			exit 1; \
+		fi; \
+		if { [ -e "$$managed_hook" ] || [ -b "$$managed_hook" ] || [ -c "$$managed_hook" ] || [ -p "$$managed_hook" ] || [ -S "$$managed_hook" ]; } && [ ! -f "$$managed_hook" ]; then \
+			echo "Refusing to replace non-regular managed pre-commit hook: $$managed_hook" >&2; \
+			exit 1; \
+		fi; \
+		managed_hook_existed=false; backup_hook="$$managed_dir/.pre-commit.$$$$.backup"; \
+		worktree_config_backup="$$managed_dir/.config.worktree.$$$$.backup"; worktree_config_existed=false; \
+		local_config_backup="$$managed_dir/.config.$$$$.backup"; local_config_existed=false; \
+		if [ -f "$$current_git_dir/config.worktree" ]; then cp -p "$$current_git_dir/config.worktree" "$$worktree_config_backup"; worktree_config_existed=true; fi; \
+		if [ -f "$$common_dir/config" ]; then cp -p "$$common_dir/config" "$$local_config_backup"; local_config_existed=true; fi; \
+		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then cp -p "$$managed_hook" "$$backup_hook"; managed_hook_existed=true; fi; \
+		rollback_install() { if [ "$$local_config_existed" = true ] && [ -f "$$local_config_backup" ] && ! mv -f "$$local_config_backup" "$$common_dir/config"; then return 1; fi; if [ "$$worktree_config_existed" = true ] && [ -f "$$worktree_config_backup" ] && ! mv -f "$$worktree_config_backup" "$$current_git_dir/config.worktree"; then return 1; fi; if [ "$$managed_hook_existed" = true ] && [ -f "$$backup_hook" ]; then mv -f "$$backup_hook" "$$managed_hook" || return 1; elif [ "$$managed_hook_existed" = false ]; then rm -f "$$managed_hook"; rmdir "$$managed_dir" 2>/dev/null || :; fi; }; \
+		transaction_complete=false; \
+		on_exit() { status=$$?; trap - EXIT; if [ "$$transaction_complete" != true ] && ! rollback_install; then echo "Unable to restore hook configuration; recovery backups were preserved" >&2; exit 1; fi; exit "$$status"; }; \
+		trap 'on_exit' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
-		trap - EXIT HUP INT TERM; \
-		if [ "$$current_dormant_legacy" = true ]; then git -c core.bare=false config --file "$$current_git_dir/config.worktree" --replace-all core.hooksPath "$$managed_dir"; fi; \
-		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
-		git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; \
+		if [ "$$current_dormant_legacy" = true ] && ! git -c core.bare=false config --file "$$current_git_dir/config.worktree" --replace-all core.hooksPath "$$managed_dir"; then exit 1; fi; \
+		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1 && ! git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; then exit 1; fi; \
+		if ! git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; then exit 1; fi; \
 		if ! git -c core.bare=false config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then \
 			echo "Managed core.hooksPath was not activated" >&2; \
 			exit 1; \
 		fi; \
+		transaction_complete=true; trap - EXIT HUP INT TERM; rm -f "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup"; \
 		echo "Installed reviewed pre-commit hook in $$managed_dir"
 
 hooks-uninstall:
@@ -582,8 +600,8 @@ hooks-uninstall:
 		done; \
 		if [ "$$worktree_config_enabled" = true ]; then for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do [ -d "$$foreign_git_dir" ] || continue; [ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; check_config_query "another worktree" "$$foreign_git_dir"; done; fi; \
 		check_config_query "effective" ""; \
-		remove_managed_paths --local; \
 		if [ "$$worktree_config_enabled" = true ]; then remove_managed_paths --worktree; fi; \
+		remove_managed_paths --local; \
 		managed_hook_still_referenced=false; \
 		if [ "$$includes_may_reference_managed_hook" = true ]; then managed_hook_still_referenced=true; fi; \
 		if managed_hook_is_referenced "effective" ""; then managed_hook_still_referenced=true; fi; \
