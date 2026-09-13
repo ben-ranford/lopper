@@ -11,16 +11,30 @@ export "GIT_CONFIG_KEY_${config_count}=core.bare"
 export "GIT_CONFIG_VALUE_${config_count}=false"
 export GIT_CONFIG_COUNT=$((config_count + 1))
 
-PATH=/usr/bin:/bin:${PATH-}
+caller_path=${PATH-}
+gofmt_bin=$(PATH=$caller_path command -v gofmt) || exit 1
+PATH=/usr/bin:/bin:$caller_path
 export PATH
 checkout_root=$(pwd -P) || exit 1
 git_bin=$(command -v git) || exit 1
-gofmt_bin=$(command -v gofmt) || exit 1
 mktemp_bin=$(command -v mktemp) || exit 1
 xargs_bin=$(command -v xargs) || exit 1
 case "$gofmt_bin" in /*) ;; *) echo "Refusing unresolved hook tool: gofmt" >&2; exit 1 ;; esac
-gofmt_dir=$(cd "${gofmt_bin%/*}" && pwd -P) || exit 1
+gofmt_reference=$gofmt_bin
+gofmt_link_depth=0
+while [ -L "$gofmt_bin" ]; do
+	gofmt_parent=$(CDPATH='' cd -P "$(dirname "$gofmt_bin")" && pwd -P) || exit 1
+	gofmt_target=$(readlink "$gofmt_bin") || exit 1
+	case "$gofmt_target" in
+		/*) gofmt_bin=$gofmt_target ;;
+		*) gofmt_bin=$gofmt_parent/$gofmt_target ;;
+	esac
+	gofmt_link_depth=$((gofmt_link_depth + 1))
+	[ "$gofmt_link_depth" -le 40 ] || { echo "Refusing cyclic gofmt symlink: $gofmt_reference" >&2; exit 1; }
+done
+gofmt_dir=$(CDPATH='' cd -P "$(dirname "$gofmt_bin")" && pwd -P) || exit 1
 gofmt_bin=$gofmt_dir/${gofmt_bin##*/}
+[ -f "$gofmt_bin" ] && [ -x "$gofmt_bin" ] || { echo "Refusing non-executable hook tool: gofmt" >&2; exit 1; }
 case "$gofmt_bin" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: gofmt" >&2; exit 1 ;; esac
 names_file=$("$mktemp_bin") || exit 1
 cleanup() { rm -f "$names_file"; }

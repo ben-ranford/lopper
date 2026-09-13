@@ -55,7 +55,42 @@ func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
 	}
 }
 
-func TestInstalledPreCommitDoesNotRunCheckoutControlledGofmt(t *testing.T) {
+func TestInstalledPreCommitRejectsExternalGofmtLinkIntoCheckout(t *testing.T) {
+	repoDir := newHookFixture(t)
+	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
+	toolsDir := filepath.Join(repoDir, "tools")
+	selectedDir := filepath.Join(filepath.Dir(repoDir), "selected")
+	chainDir := filepath.Join(filepath.Dir(repoDir), "chain")
+	writeFileMode(t, filepath.Join(toolsDir, "gofmt"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
+	if err := os.MkdirAll(selectedDir, 0o755); err != nil {
+		t.Fatalf("create selected formatter directory: %v", err)
+	}
+	if err := os.MkdirAll(chainDir, 0o755); err != nil {
+		t.Fatalf("create formatter chain directory: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "chain", "gofmt"), filepath.Join(selectedDir, "gofmt")); err != nil {
+		t.Fatalf("create selected formatter link: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "repo", "tools", "gofmt"), filepath.Join(chainDir, "gofmt")); err != nil {
+		t.Fatalf("create checkout formatter link: %v", err)
+	}
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("read managed hook path: %v", err)
+	}
+	env := []string{"PATH=" + selectedDir + ":/usr/bin:/bin"}
+	output, err := hookCommandWithEnv(repoDir, env, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
+	if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
+		t.Fatalf("expected checkout gofmt refusal, got %v:\n%s", err, output)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("checkout-controlled gofmt ran: %v", err)
+	}
+}
+
+func TestInstalledPreCommitRejectsDirectCheckoutGofmt(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
 	toolsDir := filepath.Join(repoDir, "tools")
@@ -66,21 +101,45 @@ func TestInstalledPreCommitDoesNotRunCheckoutControlledGofmt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read managed hook path: %v", err)
 	}
-	env := []string{"PATH=" + toolsDir + ":/usr/bin:/bin"}
-	selectedGofmt, err := hookCommandWithEnv(repoDir, env, "/bin/sh", "-c", "PATH=/usr/bin:/bin:$PATH; export PATH; command -v gofmt")
-	if err != nil {
-		t.Fatalf("resolve normalized gofmt: %v", err)
-	}
-	output, err := hookCommandWithEnv(repoDir, env, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
-	if strings.TrimSpace(selectedGofmt) == filepath.Join(toolsDir, "gofmt") {
-		if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
-			t.Fatalf("expected checkout gofmt refusal, got %v:\n%s", err, output)
-		}
-	} else if err != nil {
-		t.Fatalf("expected safe normalized gofmt to run, got %v:\n%s", err, output)
+	output, err := hookCommandWithEnv(repoDir, []string{"PATH=" + toolsDir + ":/usr/bin:/bin"}, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
+	if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
+		t.Fatalf("expected direct checkout gofmt refusal, got %v:\n%s", err, output)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Fatalf("checkout-controlled gofmt ran: %v", err)
+		t.Fatalf("direct checkout gofmt ran: %v", err)
+	}
+}
+
+func TestInstalledPreCommitUsesSelectedExternalGofmt(t *testing.T) {
+	repoDir := newHookFixture(t)
+	trustedDir := filepath.Join(filepath.Dir(repoDir), "trusted")
+	selectedDir := filepath.Join(filepath.Dir(repoDir), "selected")
+	staleDir := filepath.Join(filepath.Dir(repoDir), "stale")
+	usedMarker := filepath.Join(repoDir, "trusted-gofmt-ran")
+	hostGofmt, err := exec.LookPath("gofmt")
+	if err != nil {
+		t.Fatalf("find host gofmt: %v", err)
+	}
+	writeFileMode(t, filepath.Join(trustedDir, "gofmt"), "#!/bin/sh\nprintf trusted >"+usedMarker+"\nexec \""+hostGofmt+"\" \"$@\"\n", 0o755)
+	writeFileMode(t, filepath.Join(staleDir, "gofmt"), "#!/bin/sh\nexit 99\n", 0o755)
+	if err := os.MkdirAll(selectedDir, 0o755); err != nil {
+		t.Fatalf("create selected formatter directory: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "trusted", "gofmt"), filepath.Join(selectedDir, "gofmt")); err != nil {
+		t.Fatalf("create trusted formatter link: %v", err)
+	}
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("read managed hook path: %v", err)
+	}
+	output, err := hookCommandWithEnv(repoDir, []string{"PATH=" + selectedDir + ":" + staleDir + ":/usr/bin:/bin"}, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
+	if err != nil {
+		t.Fatalf("run selected external gofmt: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(usedMarker); err != nil {
+		t.Fatalf("expected selected trusted gofmt to run: %v", err)
 	}
 }
 
