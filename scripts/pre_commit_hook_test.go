@@ -135,6 +135,83 @@ func TestHooksInstallMigratesLegacyWorktreeHooksPath(t *testing.T) {
 	assertNoHooksPath(t, repoDir, "--worktree", "worktree")
 }
 
+func TestHooksInstallMigratesDormantCurrentWorktreeLegacyHookPath(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	if got := gitOutput(t, repoDir, "config", "--file", filepath.Join(gitDir, "config.worktree"), "--get", "core.hooksPath"); got != filepath.Dir(managedHook) {
+		t.Fatalf("dormant worktree core.hooksPath = %q, want %q", got, filepath.Dir(managedHook))
+	}
+
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "true")
+	markerPath := filepath.Join(repoDir, "dormant-worktree-marker")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\ntouch "+markerPath+"\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "dormant-worktree.txt"), "safe\n")
+	runCommand(t, repoDir, "git", "add", "dormant-worktree.txt")
+	runCommitWithHook(t, repoDir, "dormant worktree hook remains managed")
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("dormant worktree hook executed checkout content: %v", err)
+	}
+}
+
+func TestHooksInstallRefusesDormantCurrentWorktreeCustomHookPathBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	customDir := filepath.Join(repoDir, "dormant-custom-hooks")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", customDir)
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing to replace current worktree dormant core.hooksPath") {
+		t.Fatalf("install with dormant custom worktree hook = %v\n%s", err, output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	if got := gitOutput(t, repoDir, "config", "--file", filepath.Join(gitDir, "config.worktree"), "--get", "core.hooksPath"); got != customDir {
+		t.Fatalf("dormant custom worktree core.hooksPath = %q, want %q", got, customDir)
+	}
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created managed hook directory before dormant custom-path refusal: %v", err)
+	}
+}
+
+func TestHooksInstallRefusesDormantForeignWorktreeHookPathsBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, hooksPath := range []string{".githooks", "foreign dormant custom hooks"} {
+		t.Run(hooksPath, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			linkedDir := filepath.Join(t.TempDir(), "linked")
+			runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+			runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+			runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", hooksPath)
+			runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+
+			output, err := runMakeWithEnv(repoDir, "hooks-install")
+			if err == nil || !strings.Contains(string(output), "another worktree") || !strings.Contains(string(output), "dormant") {
+				t.Fatalf("install with dormant foreign worktree hook = %v\n%s", err, output)
+			}
+			assertNoHooksPath(t, repoDir, "--local", "local")
+			foreignGitDir := gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir")
+			if got := gitOutput(t, repoDir, "config", "--file", filepath.Join(foreignGitDir, "config.worktree"), "--get", "core.hooksPath"); got != hooksPath {
+				t.Fatalf("dormant foreign worktree core.hooksPath = %q, want %q", got, hooksPath)
+			}
+			if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+				t.Fatalf("installer created managed hook directory before dormant foreign-path refusal: %v", err)
+			}
+		})
+	}
+}
+
 func TestHooksInstallLeavesConfigUnchangedWhenLegacyWorktreeConfigIsLocked(t *testing.T) {
 	t.Parallel()
 

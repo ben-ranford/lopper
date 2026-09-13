@@ -492,15 +492,27 @@ hooks-install:
 			fi; \
 			rm -f "$$values_file" "$$error_file"; \
 		}; \
+		check_dormant_worktree_hook_paths() { \
+			label="$$1"; git_dir="$$2"; allow_legacy="$$3"; config_file="$$git_dir/config.worktree"; [ -f "$$config_file" ] || return 0; \
+			refuse_config_includes "$$config_file"; values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; markers_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file" "$$error_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$config_file" --show-origin --null --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -ne 0 ]; then if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file" "$$markers_file"; return 0; fi; cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file" "$$markers_file"; echo "Unable to inspect $$label dormant worktree core.hooksPath" >&2; exit 1; fi; \
+			if ! xargs -0 -n 2 sh -c 'label="$$1"; managed_dir="$$2"; allow_legacy="$$3"; path="$$5"; case "$$path" in "$$managed_dir") ;; .githooks) if [ "$$allow_legacy" != true ]; then echo "Refusing to install while $$label has a dormant legacy core.hooksPath" >&2; exit 1; fi; printf "%s\\n" legacy ;; *) echo "Refusing to replace $$label dormant core.hooksPath: $$path" >&2; exit 1 ;; esac' sh "$$label" "$$managed_dir" "$$allow_legacy" <"$$values_file" >"$$markers_file"; then rm -f "$$values_file" "$$error_file" "$$markers_file"; exit 1; fi; \
+			if [ -s "$$markers_file" ]; then current_dormant_legacy=true; fi; rm -f "$$values_file" "$$error_file" "$$markers_file"; \
+		}; \
+		current_dormant_legacy=false; \
 		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
 		refuse_config_includes "$$common_dir/config"; \
-		if [ "$$worktree_config_enabled" = true ]; then refuse_config_includes "$$current_git_dir/config.worktree"; fi; \
+		check_dormant_worktree_hook_paths "current worktree" "$$current_git_dir" true; \
+		for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
+			[ -d "$$foreign_git_dir" ] || continue; \
+			[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
+			check_dormant_worktree_hook_paths "another worktree" "$$foreign_git_dir" false; \
+			done; \
 		if [ "$$worktree_config_enabled" = true ]; then \
 			for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
 				[ -d "$$foreign_git_dir" ] || continue; \
 				[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
-				refuse_config_includes "$$foreign_git_dir/config.worktree"; \
 				check_hook_paths "another worktree" "$$foreign_git_dir" common; \
 				check_hook_paths "another worktree" "$$foreign_git_dir" none --worktree; \
 			done; \
@@ -521,6 +533,7 @@ hooks-install:
 		fi; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		trap - EXIT HUP INT TERM; \
+		if [ "$$current_dormant_legacy" = true ]; then git -c core.bare=false config --file "$$current_git_dir/config.worktree" --replace-all core.hooksPath "$$managed_dir"; fi; \
 		if [ "$$worktree_config_enabled" = true ] && git -c core.bare=false config --worktree --get-all core.hooksPath >/dev/null 2>&1; then git -c core.bare=false config --worktree --replace-all core.hooksPath "$$managed_dir"; fi; \
 		git -c core.bare=false config --local --replace-all core.hooksPath "$$managed_dir"; \
 		if ! git -c core.bare=false config --fixed-value --get-all core.hooksPath "$$managed_dir" >/dev/null 2>&1; then \
