@@ -159,7 +159,7 @@ func assertSnapshotPathObserved(t *testing.T, marker string) {
 	if err != nil {
 		t.Fatalf("read snapshot path marker: %v", err)
 	}
-	if path := strings.TrimSpace(string(contents)); path == "" {
+	if strings.TrimSpace(string(contents)) == "" {
 		t.Fatal("copy wrapper did not observe a snapshot path")
 	}
 }
