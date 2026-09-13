@@ -86,6 +86,13 @@ func (f *swiftCloseTrackingReadDirFile) Close() error {
 	return nil
 }
 
+type swiftCloseErrorReadDirFile struct {
+	swiftReadDirTestFile
+	closeErr error
+}
+
+func (f *swiftCloseErrorReadDirFile) Close() error { return f.closeErr }
+
 func (f *swiftReadDirTestFile) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
@@ -123,6 +130,114 @@ func TestSwiftRootCarthageSourceSubtreeSchedulingAndCleanup(t *testing.T) {
 	subtrees[0].current = &rootCarthageSourceCursor{directory: open}
 	if err := closeRootCarthageSourceSubtrees(subtrees); err != nil || !open.closed || subtrees[0].current.directory != nil {
 		t.Fatalf("close suspended cursor = closed=%v err=%v, want closed without error", open.closed, err)
+	}
+}
+
+func TestSwiftRootCarthageSourceHandleBudgetTracksPinnedPathCost(t *testing.T) {
+	repo := t.TempDir()
+	for _, path := range []string{"one/two", "one/two/three"} {
+		if err := os.MkdirAll(filepath.Join(repo, path), 0o750); err != nil {
+			t.Fatalf("make %q: %v", path, err)
+		}
+	}
+	root, err := safeio.OpenRootNoFollow(repo)
+	if err != nil {
+		t.Fatalf("open test root: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	handles := &rootCarthageSourceHandleBudget{}
+	first := &rootCarthageSourceCursor{candidate: rootCarthageSourceDirectory{path: "one/two", depth: 2}}
+	second := &rootCarthageSourceCursor{candidate: rootCarthageSourceDirectory{path: "one/two/three", depth: 3}}
+
+	if opened, err := openRootCarthageSourceCursor(root, first, handles); err != nil || !opened || handles.used != 2 {
+		t.Fatalf("open two-component cursor = opened=%v used=%d err=%v", opened, handles.used, err)
+	}
+	if opened, err := openRootCarthageSourceCursor(root, second, handles); err != nil || !opened || handles.used != 5 {
+		t.Fatalf("open three-component cursor = opened=%v used=%d err=%v", opened, handles.used, err)
+	}
+	if err := closeRootCarthageSourceCursor(first, nil); err != nil || handles.used != 3 {
+		t.Fatalf("close first cursor = used=%d err=%v", handles.used, err)
+	}
+	if err := closeRootCarthageSourceCursor(second, nil); err != nil || handles.used != 0 {
+		t.Fatalf("close second cursor = used=%d err=%v", handles.used, err)
+	}
+
+	if !handles.acquire(rootCarthageSourceSharedHandleLimit+1) || handles.used != rootCarthageSourceSharedHandleLimit+1 {
+		t.Fatalf("exclusive oversize lease = used=%d", handles.used)
+	}
+	if handles.acquire(1) {
+		t.Fatal("expected oversize lease to exclude additional cursors")
+	}
+	handles.release(rootCarthageSourceSharedHandleLimit + 1)
+
+	failed := &rootCarthageSourceCursor{candidate: rootCarthageSourceDirectory{path: "missing", depth: 1}}
+	if opened, err := openRootCarthageSourceCursor(root, failed, handles); err == nil || opened || handles.used != 0 {
+		t.Fatalf("failed open = opened=%v used=%d err=%v", opened, handles.used, err)
+	}
+}
+
+func TestSwiftRootCarthageSourceSchedulerResumesBlockedSubtree(t *testing.T) {
+	const crowdedDirectories = rootCarthageSourceSharedHandleLimit
+	repo := t.TempDir()
+	directories := make([]string, 0, crowdedDirectories+1)
+	for index := 0; index < crowdedDirectories; index++ {
+		path := "directory" + strconv.Itoa(index)
+		directories = append(directories, path)
+		writeSwiftProbeFiles(t, filepath.Join(repo, path), rootCarthageSourceReadBatchSize, false)
+	}
+	directories = append(directories, "late")
+	testutil.MustWriteFile(t, filepath.Join(repo, "late", "late.swift"), "import Foundation\n")
+	root, err := safeio.OpenRootNoFollow(repo)
+	if err != nil {
+		t.Fatalf("open test root: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
+	found, entries, err := findSwiftSourceWithinResumableSubtrees(context.Background(), root, newRootCarthageSourceSubtrees(directories), maxRootCarthageSourceTraversalEntries)
+	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
+		t.Fatalf("blocked subtree scheduler = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftRootCarthageSourceSchedulerResumesDeepBlockedSubtree(t *testing.T) {
+	repo := t.TempDir()
+	directories := make([]string, 0, 5)
+	for index := 0; index < 4; index++ {
+		path := filepath.Join("directory"+strconv.Itoa(index), "one", "two", "three")
+		directories = append(directories, path)
+		writeSwiftProbeFiles(t, filepath.Join(repo, path), rootCarthageSourceReadBatchSize, false)
+	}
+	late := filepath.Join("late", "one", "two", "three")
+	directories = append(directories, late)
+	testutil.MustWriteFile(t, filepath.Join(repo, late, "late.swift"), "import Foundation\n")
+	root, err := safeio.OpenRootNoFollow(repo)
+	if err != nil {
+		t.Fatalf("open test root: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
+	found, entries, err := findSwiftSourceWithinResumableSubtrees(context.Background(), root, newRootCarthageSourceSubtrees(directories), maxRootCarthageSourceTraversalEntries)
+	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
+		t.Fatalf("deep blocked subtree scheduler = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftRootCarthageSourceSchedulerReleasesLeaseOnCanceledCloseError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	handles := &rootCarthageSourceHandleBudget{}
+	cursor := &rootCarthageSourceCursor{
+		candidate: rootCarthageSourceDirectory{path: "deep/path", depth: 2},
+		directory: &swiftCloseErrorReadDirFile{closeErr: closeErr},
+		handles:   handles,
+		cost:      2,
+	}
+	if !handles.acquire(cursor.cost) {
+		t.Fatal("acquire test lease")
+	}
+	subtree := &rootCarthageSourceSubtree{current: cursor}
+	_, _, _, _, err := advanceRootCarthageSourceSubtree(testutil.CanceledContext(), nil, subtree, handles, 1)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, closeErr) || handles.used != 0 || cursor.directory != nil {
+		t.Fatalf("canceled close = used=%d directory=%v err=%v", handles.used, cursor.directory, err)
 	}
 }
 
@@ -185,6 +300,20 @@ func TestSwiftRootCarthageProbeAllowsRequestedRootAliases(t *testing.T) {
 			assertSwiftRootCarthageAliasMetadata(t, resolved, requested)
 			assertSwiftRootCarthageAliasSource(t, resolved, requested)
 		})
+	}
+}
+
+func TestSwiftRootCarthageProbeCanonicalizesTrailingSeparator(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), "github \"owner/repo\"\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", swiftMainFileName), "import Foundation\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo+string(os.PathSeparator))
+	if err != nil {
+		t.Fatalf("detect trailing root separator: %v", err)
+	}
+	if !slices.Equal(detection.Roots, []string{repo}) {
+		t.Fatalf("detection roots = %#v, want only %q", detection.Roots, repo)
 	}
 }
 
@@ -370,7 +499,7 @@ func TestSwiftRootCarthageProbeReusesBudgetReleasedByLaterEmptyDirectories(t *te
 
 func TestSwiftRootCarthageProbePreservesLateCandidateFairShareAboveCursorLimit(t *testing.T) {
 	repo := t.TempDir()
-	for directory := 0; directory < maxOpenRootCarthageSourceSubtrees; directory++ {
+	for directory := 0; directory < rootCarthageSourceSharedHandleLimit; directory++ {
 		writeSwiftProbeFiles(t, filepath.Join(repo, "directory"+strconv.Itoa(directory)), rootCarthageSourceReadBatchSize, false)
 	}
 	testutil.MustWriteFile(t, filepath.Join(repo, "late-source", swiftMainFileName), "import Foundation\n")
@@ -378,6 +507,32 @@ func TestSwiftRootCarthageProbePreservesLateCandidateFairShareAboveCursorLimit(t
 	found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, maxRootCarthageSourceTraversalEntries)
 	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
 		t.Fatalf("wide candidate probe = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftRootCarthageProbeReusesBudgetAboveCursorLimit(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < maxRootCarthageSourceTraversalEntries; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, "000-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	for index := 0; index < 131; index++ {
+		child := filepath.Join(repo, "Sources", "child"+strconv.Itoa(index))
+		if err := os.MkdirAll(child, 0o750); err != nil {
+			t.Fatalf("make source child %q: %v", child, err)
+		}
+		if index == 130 {
+			testutil.MustWriteFile(t, filepath.Join(child, swiftMainFileName), "import Foundation\n")
+		}
+	}
+	for index := 0; index < 15; index++ {
+		if err := os.Mkdir(filepath.Join(repo, "zz-empty"+strconv.Itoa(index)), 0o750); err != nil {
+			t.Fatalf("make later empty directory: %v", err)
+		}
+	}
+
+	found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, maxRootCarthageSourceTraversalEntries)
+	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
+		t.Fatalf("wide reuse probe = found=%v entries=%d err=%v", found, entries, err)
 	}
 }
 
