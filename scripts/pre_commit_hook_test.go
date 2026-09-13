@@ -2147,3 +2147,43 @@ func TestHooksUninstallTerminatesDuringFirstSnapshot(t *testing.T) {
 		t.Fatalf("managed hook missing after snapshot signal: %v", err)
 	}
 }
+
+func TestHooksInstallRefusesConditionalForeignGlobalHooksPathBeforeMutation(t *testing.T) {
+	t.Parallel()
+	repoDir := newHookTestRepository(t)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	commonConfig := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-common-dir"), "config")
+	commonBefore := readHookConfigBytes(t, commonConfig)
+	linkedGitDir := gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	customDir := filepath.Join(t.TempDir(), "custom-hooks")
+	includePath := filepath.Join(t.TempDir(), "linked-hooks.gitconfig")
+	writeFile(t, includePath, "[core]\n\thooksPath = "+customDir+"\n")
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	writeFile(t, globalConfig, "[includeIf \"gitdir:"+filepath.ToSlash(linkedGitDir)+"\"]\n\tpath = "+includePath+"\n")
+	env := []string{"GIT_CONFIG_GLOBAL=" + globalConfig, "GIT_CONFIG_NOSYSTEM=1"}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	command := exec.Command("git", "config", "--get", "core.hooksPath")
+	command.Dir = linkedDir
+	command.Env = append(hookTestEnv(), env...)
+	output, err := command.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != customDir {
+		t.Fatalf("linked conditional hooksPath=%q err=%v", output, err)
+	}
+	output, err = runMakeWithEnv(repoDir, "hooks-install", env...)
+	if err == nil || !strings.Contains(string(output), "another worktree") {
+		t.Fatalf("install with foreign conditional hooksPath=%v\n%s", err, output)
+	}
+	assertFileEquals(t, commonConfig, string(commonBefore))
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer created hook state: %v", err)
+	}
+	command = exec.Command("git", "config", "--get", "core.hooksPath")
+	command.Dir = linkedDir
+	command.Env = append(hookTestEnv(), env...)
+	output, err = command.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != customDir {
+		t.Fatalf("linked hooksPath changed=%q err=%v", output, err)
+	}
+}

@@ -512,14 +512,12 @@ hooks-install:
 			[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
 			check_dormant_worktree_hook_paths "another worktree" "$$foreign_git_dir" false; \
 			done; \
-		if [ "$$worktree_config_enabled" = true ]; then \
-			for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
-				[ -d "$$foreign_git_dir" ] || continue; \
-				[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
-				check_hook_paths "another worktree" "$$foreign_git_dir" common; \
-				check_hook_paths "another worktree" "$$foreign_git_dir" none --worktree; \
-			done; \
-		fi; \
+		for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
+			[ -d "$$foreign_git_dir" ] || continue; \
+			[ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; \
+			check_hook_paths "another worktree" "$$foreign_git_dir" common; \
+			if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "another worktree" "$$foreign_git_dir" none --worktree; fi; \
+		done; \
 		check_hook_paths "effective" "$$current_git_dir" current; \
 		check_hook_paths "local" "$$current_git_dir" current --local; \
 		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" "$$current_git_dir" current --worktree; fi; \
