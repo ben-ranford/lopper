@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -199,6 +200,21 @@ func TestStavePreviewStartUsesLineModeForDumbTerminal(t *testing.T) {
 	summary := NewSummary(terminalOutput, terminalOutput, &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Language: "go", Name: "alpha"}}}}, report.NewFormatter())
 	if err := NewStavePreview(summary).Start(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}); err != nil {
 		t.Fatalf("dumb-terminal preview start: %v", err)
+	}
+}
+
+func TestStavePreviewStartLineModeUsesEnvironmentWidth(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("LOPPER_TUI_WIDTH", "37")
+
+	var output bytes.Buffer
+	summary := NewSummary(&output, strings.NewReader("q\n"), &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Language: "go", Name: "alpha"}}}}, report.NewFormatter())
+	if err := NewStavePreview(summary).Start(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t)}); err != nil {
+		t.Fatalf("line-mode preview start: %v", err)
+	}
+	if width := maxStaveRenderedLineWidth(output.String()); width != 37 {
+		t.Fatalf("line-mode frame width = %d, want environment width 37", width)
 	}
 }
 

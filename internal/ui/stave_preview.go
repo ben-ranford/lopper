@@ -388,10 +388,7 @@ func sendLopperEvent(ctx context.Context, prepared *stave.Prepared[staveSummaryM
 }
 
 func staveSessionOptions(opts Options, tty bool) stave.SessionOptions {
-	width := opts.Width
-	if width == 0 {
-		width = 80
-	}
+	width := resolveStaveWidth(opts.Width)
 	return stave.SessionOptions{SessionID: "lopper-preview", RuntimeDetected: capability.DetectEnv(map[string]string{"TERM": os.Getenv("TERM"), "COLORTERM": os.Getenv("COLORTERM"), "NO_COLOR": os.Getenv("NO_COLOR")}, tty, width, 24), Viewport: layout.Size{Width: width, Height: 24}}
 }
 
@@ -820,15 +817,7 @@ type staveRenderer struct {
 }
 
 func newStaveRenderer(opts Options, tty bool) (staveRenderer, error) {
-	width := opts.Width
-	if width == 0 {
-		width = 80
-		if raw := strings.TrimSpace(os.Getenv("LOPPER_TUI_WIDTH")); raw != "" {
-			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-				width = parsed
-			}
-		}
-	}
+	width := resolveStaveWidth(opts.Width)
 	color := true
 	if opts.Color != nil {
 		color = *opts.Color
@@ -856,6 +845,18 @@ func newStaveRenderer(opts Options, tty bool) (staveRenderer, error) {
 		return staveRenderer{}, err
 	}
 	return staveRenderer{Caps: caps, Theme: resolved, ASCII: ascii}, nil
+}
+
+func resolveStaveWidth(width int) int {
+	if width > 0 {
+		return width
+	}
+	if raw := strings.TrimSpace(os.Getenv("LOPPER_TUI_WIDTH")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 80
 }
 
 func lopperTheme() theme.Theme {

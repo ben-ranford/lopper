@@ -66,9 +66,7 @@ func newLopperStaveProgram(summary *Summary, opts *Options, view *summaryReportV
 	if initial.cloneErr != nil {
 		return stave.Program[staveSummaryModel]{}, initial.cloneErr
 	}
-	if opts.Width > 0 {
-		initial.interaction.viewport.Width = opts.Width
-	}
+	initial.interaction.viewport.Width = resolveStaveWidth(opts.Width)
 	return stave.Program[staveSummaryModel]{
 		Initial: initial,
 		Reduce:  reduceStaveSummary,
