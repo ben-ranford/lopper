@@ -55,7 +55,7 @@ func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
 	}
 }
 
-func TestInstalledPreCommitRejectsCheckoutControlledGofmt(t *testing.T) {
+func TestInstalledPreCommitDoesNotRunCheckoutControlledGofmt(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
 	toolsDir := filepath.Join(repoDir, "tools")
@@ -66,9 +66,18 @@ func TestInstalledPreCommitRejectsCheckoutControlledGofmt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read managed hook path: %v", err)
 	}
-	output, err := hookCommandWithEnv(repoDir, []string{"PATH=" + toolsDir + ":/usr/bin:/bin"}, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
-	if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
-		t.Fatalf("expected checkout gofmt refusal, got %v:\n%s", err, output)
+	env := []string{"PATH=" + toolsDir + ":/usr/bin:/bin"}
+	selectedGofmt, err := hookCommandWithEnv(repoDir, env, "/bin/sh", "-c", "PATH=/usr/bin:/bin:$PATH; export PATH; command -v gofmt")
+	if err != nil {
+		t.Fatalf("resolve normalized gofmt: %v", err)
+	}
+	output, err := hookCommandWithEnv(repoDir, env, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
+	if strings.TrimSpace(selectedGofmt) == filepath.Join(toolsDir, "gofmt") {
+		if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
+			t.Fatalf("expected checkout gofmt refusal, got %v:\n%s", err, output)
+		}
+	} else if err != nil {
+		t.Fatalf("expected safe normalized gofmt to run, got %v:\n%s", err, output)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatalf("checkout-controlled gofmt ran: %v", err)
