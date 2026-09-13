@@ -77,6 +77,83 @@ type swiftReadDirTestFile struct {
 	readErr error
 }
 
+type swiftInfoErrorDirEntry struct {
+	name string
+	err  error
+	mode fs.FileMode
+}
+
+func (e *swiftInfoErrorDirEntry) Name() string               { return e.name }
+func (*swiftInfoErrorDirEntry) IsDir() bool                  { return false }
+func (e *swiftInfoErrorDirEntry) Type() fs.FileMode          { return e.mode }
+func (e *swiftInfoErrorDirEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+func TestSwiftRegularEntryInfoErrorsPropagateOrIgnoreSentinels(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		entry   fs.DirEntry
+		wantErr error
+	}{
+		{name: "EIO", entry: &swiftInfoErrorDirEntry{name: "source.swift", err: syscall.EIO}, wantErr: syscall.EIO},
+		{name: "disappeared", entry: &swiftInfoErrorDirEntry{name: "source.swift", err: fs.ErrNotExist}},
+		{name: "symlink", entry: &swiftInfoErrorDirEntry{name: "source.swift", err: syscall.EIO}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entry := test.entry
+			if test.name == "symlink" {
+				entry = &swiftInfoErrorDirEntry{name: "source.swift", err: syscall.EIO, mode: fs.ModeSymlink}
+			}
+			regular, err := isRegularSwiftSource(entry)
+			if regular || !errors.Is(err, test.wantErr) {
+				t.Fatalf("regular=%v err=%v, want err=%v", regular, err, test.wantErr)
+			}
+		})
+	}
+	entry := &swiftInfoErrorDirEntry{name: "Cartfile", err: syscall.EIO}
+	if _, _, err := carthageDetectionConfidence(entry); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Cartfile Info error = %v, want EIO", err)
+	}
+	if _, err := collectRootCarthageSourceCandidates([]fs.DirEntry{&swiftInfoErrorDirEntry{name: "source.swift", err: syscall.EIO}}, rootCarthageSourceDirectory{}, nil); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("cursor candidate Info error = %v, want EIO", err)
+	}
+}
+
+func TestSwiftSourceCursorPropagatesInfoErrorsWithEntryCounts(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		infoErr  error
+		closeErr error
+		wantErr  error
+	}{
+		{name: "EMFILE", infoErr: syscall.EMFILE, wantErr: syscall.EMFILE},
+		{name: "joined EMFILE and close", infoErr: syscall.EMFILE, closeErr: syscall.EIO, wantErr: syscall.EIO},
+		{name: "EIO", infoErr: syscall.EIO, wantErr: syscall.EIO},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handles := &rootCarthageSourceHandleBudget{used: 1}
+			cursor := &rootCarthageSourceCursor{
+				candidate: rootCarthageSourceDirectory{path: "Sources", depth: 1},
+				directory: &swiftCloseErrorReadDirFile{
+					swiftReadDirTestFile: swiftReadDirTestFile{entries: []fs.DirEntry{&swiftInfoErrorDirEntry{name: "source.swift", err: test.infoErr}}, readErr: io.EOF},
+					closeErr:             test.closeErr,
+				},
+				handles: handles,
+				cost:    1,
+			}
+			_, complete, blocked, entries, err := advanceRootCarthageSourceCursor(context.Background(), nil, cursor, handles, 1)
+			if !complete || blocked || entries != 1 || !errors.Is(err, test.infoErr) || (test.closeErr != nil && !errors.Is(err, test.wantErr)) {
+				t.Fatalf("cursor result complete=%v blocked=%v entries=%d err=%v", complete, blocked, entries, err)
+			}
+			if cursor.directory != nil {
+				t.Fatal("cursor directory remained open after Info error")
+			}
+			if handles.used != 0 {
+				t.Fatalf("retained handle cost = %d, want 0 after close", handles.used)
+			}
+		})
+	}
+}
+
 type swiftCloseTrackingReadDirFile struct {
 	swiftReadDirTestFile
 	closed bool
@@ -93,6 +170,13 @@ type swiftCloseErrorReadDirFile struct {
 }
 
 func (f *swiftCloseErrorReadDirFile) Close() error { return f.closeErr }
+
+type swiftInfoReadDirFile struct {
+	swiftCloseTrackingReadDirFile
+	info fs.FileInfo
+}
+
+func (f *swiftInfoReadDirFile) Stat() (fs.FileInfo, error) { return f.info, nil }
 
 func (f *swiftReadDirTestFile) Read([]byte) (int, error) {
 	return 0, io.EOF
@@ -413,9 +497,105 @@ func TestSwiftCarthageProbeIgnoresOnlyPureEMFILE(t *testing.T) {
 	}
 }
 
-type swiftEMFILEProbeRoot struct{}
+func TestSwiftOptionalProbeClassifiesDirectoryEntryInfoEMFILE(t *testing.T) {
+	repo := t.TempDir()
+	directoryInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatalf("stat probe directory: %v", err)
+	}
 
-func (*swiftEMFILEProbeRoot) Open(string) (safeio.File, error) {
+	for _, test := range []struct {
+		name    string
+		infoErr error
+		wantErr error
+	}{
+		{name: "pure EMFILE", infoErr: syscall.EMFILE},
+		{name: "joined EMFILE and EIO", infoErr: errors.Join(syscall.EMFILE, syscall.EIO), wantErr: syscall.EIO},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := &swiftInfoReadDirFile{
+				swiftCloseTrackingReadDirFile: swiftCloseTrackingReadDirFile{
+					swiftReadDirTestFile: swiftReadDirTestFile{
+						entries: []fs.DirEntry{&swiftInfoErrorDirEntry{name: "source.swift", err: test.infoErr}},
+						readErr: io.EOF,
+					},
+				},
+				info: directoryInfo,
+			}
+			root := &swiftEMFILEProbeRoot{info: directoryInfo, directory: directory}
+			found, entries, probeErr := probeSwiftSourceWithinTrustedRoot(context.Background(), root, ".", 1)
+			if found || entries != 1 || !errors.Is(probeErr, test.wantErr) {
+				t.Fatalf("probe result found=%v entries=%d err=%v", found, entries, probeErr)
+			}
+			if !directory.closed {
+				t.Fatal("probe directory was not closed")
+			}
+		})
+	}
+}
+
+func TestSwiftInfoErrorsReachDiscoveryAndRecording(t *testing.T) {
+	root := &swiftEMFILEProbeRoot{lstatErr: &fs.PathError{Op: "lstat", Path: "Sources", Err: syscall.EIO}}
+	if _, entries, _, err := discoverSwiftSourceCandidatesWithinLimit(context.Background(), root, "Sources", 1); entries != 0 || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("direct discovery result entries=%d err=%v, want EIO", entries, err)
+	}
+
+	detection := language.Detection{}
+	visited := 0
+	entry := &swiftInfoErrorDirEntry{name: "source.swift", err: syscall.EIO}
+	err := detectSwiftEntry(context.Background(), "source.swift", entry, &detection, map[string]struct{}{}, &visited)
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("broad recording entry error = %v, want EIO", err)
+	}
+}
+
+func TestSwiftDirectoryReadErrorsCloseAndReleaseHandles(t *testing.T) {
+	repo := t.TempDir()
+	directoryInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatalf("stat probe directory: %v", err)
+	}
+	directory := &swiftInfoReadDirFile{
+		swiftCloseTrackingReadDirFile: swiftCloseTrackingReadDirFile{
+			swiftReadDirTestFile: swiftReadDirTestFile{readErr: syscall.EIO},
+		},
+		info: directoryInfo,
+	}
+	root := &swiftEMFILEProbeRoot{info: directoryInfo, directory: directory}
+	if _, entries, _, err := discoverSwiftSourceCandidatesWithinLimit(context.Background(), root, ".", 1); entries != 0 || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("direct read error result entries=%d err=%v, want EIO", entries, err)
+	}
+	if !directory.closed {
+		t.Fatal("direct discovery directory was not closed")
+	}
+
+	handles := &rootCarthageSourceHandleBudget{used: 1}
+	cursor := &rootCarthageSourceCursor{
+		directory: &swiftCloseErrorReadDirFile{
+			swiftReadDirTestFile: swiftReadDirTestFile{readErr: syscall.EIO},
+		},
+		handles: handles,
+		cost:    1,
+	}
+	_, complete, blocked, entries, err := advanceRootCarthageSourceCursor(context.Background(), nil, cursor, handles, 1)
+	if !complete || blocked || entries != 0 || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("cursor read error result complete=%v blocked=%v entries=%d err=%v", complete, blocked, entries, err)
+	}
+	if cursor.directory != nil || handles.used != 0 {
+		t.Fatalf("cursor cleanup directory=%v retained handles=%d", cursor.directory, handles.used)
+	}
+}
+
+type swiftEMFILEProbeRoot struct {
+	lstatErr  error
+	info      fs.FileInfo
+	directory safeio.File
+}
+
+func (r *swiftEMFILEProbeRoot) Open(string) (safeio.File, error) {
+	if r.directory != nil {
+		return r.directory, nil
+	}
 	return nil, errors.New("unexpected open")
 }
 func (*swiftEMFILEProbeRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
@@ -424,7 +604,13 @@ func (*swiftEMFILEProbeRoot) OpenFile(string, int, os.FileMode) (safeio.File, er
 func (*swiftEMFILEProbeRoot) OpenRoot(string) (safeio.Root, error) {
 	return nil, errors.New("unexpected open root")
 }
-func (*swiftEMFILEProbeRoot) Lstat(string) (fs.FileInfo, error) {
+func (r *swiftEMFILEProbeRoot) Lstat(string) (fs.FileInfo, error) {
+	if r.lstatErr != nil {
+		return nil, r.lstatErr
+	}
+	if r.info != nil {
+		return r.info, nil
+	}
 	return nil, &fs.PathError{Op: "lstat", Path: "nested", Err: syscall.EMFILE}
 }
 func (*swiftEMFILEProbeRoot) Mkdir(string, os.FileMode) error { return errors.New("unexpected mkdir") }
@@ -795,7 +981,7 @@ func TestSwiftCaseVariantCarthageMetadataDoesNotInventRootConfidence(t *testing.
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("read case-variant metadata: entries=%#v err=%v", entries, err)
 	}
-	if confidence := carthageDetectionConfidence(entries[0]); confidence != 10 {
+	if confidence, _, err := carthageDetectionConfidence(entries[0]); err != nil || confidence != 10 {
 		t.Fatalf("case-variant metadata confidence = %d, want ordinary 10", confidence)
 	}
 }
