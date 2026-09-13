@@ -3,7 +3,7 @@ module github.com/ben-ranford/lopper
 go 1.27.1
 
 require (
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.9
 	github.com/ben-ranford/stave v1.0.0-rc.2
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/creack/pty v1.1.24
