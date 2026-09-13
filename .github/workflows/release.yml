@@ -1728,8 +1728,9 @@ jobs:
         run: |
           set -euo pipefail
           brew untap ben-ranford/tap >/dev/null 2>&1 || true
-          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
-          brew trust ben-ranford/tap
+          tap_remote="file://${PWD}"
+          brew trust "${tap_remote}"
+          brew tap --custom-remote ben-ranford/tap "${tap_remote}"
           brew audit --strict --online ben-ranford/tap/lopper
           export HOMEBREW_NO_SANDBOX_LINUX=1
           brew install --build-from-source ben-ranford/tap/lopper
