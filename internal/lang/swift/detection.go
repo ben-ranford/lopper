@@ -141,18 +141,31 @@ func discoverSwiftSourceCandidatesWithinLimit(ctx context.Context, root safeio.R
 }
 
 func findSwiftSourceWithinRootDirectory(ctx context.Context, root safeio.Root, directoryPath string, maxEntries int) (found bool, entriesSeen int, err error) {
-	queue := []rootCarthageSourceDirectory{{path: directoryPath, depth: 1}}
-	for len(queue) > 0 && entriesSeen < maxEntries {
-		if err := contextError(ctx); err != nil {
-			return false, entriesSeen, err
+	return findSwiftSourceWithinRootDirectories(ctx, root, []string{directoryPath}, maxEntries)
+}
+
+// findSwiftSourceWithinRootDirectories preserves each top-level candidate's
+// initial fair share, then resumes unfinished candidates without replaying
+// their prior reads.
+func findSwiftSourceWithinRootDirectories(ctx context.Context, root safeio.Root, directories []string, maxEntries int) (found bool, entriesSeen int, returnErr error) {
+	if len(directories) > maxOpenRootCarthageSourceSubtrees {
+		return findSwiftSourceWithinRootDirectoriesFairly(ctx, root, directories, maxEntries)
+	}
+	return findSwiftSourceWithinResumableSubtrees(ctx, root, newRootCarthageSourceSubtrees(directories), maxEntries)
+}
+
+const maxOpenRootCarthageSourceSubtrees = maxRootCarthageSourceTraversalEntries / rootCarthageSourceReadBatchSize
+
+func findSwiftSourceWithinRootDirectoriesFairly(ctx context.Context, root safeio.Root, directories []string, maxEntries int) (found bool, entriesSeen int, returnErr error) {
+	remaining := maxEntries
+	for index, directory := range directories {
+		if remaining == 0 {
+			break
 		}
-		candidate := queue[0]
-		queue = queue[1:]
-		if candidate.depth > maxRootCarthageSourceDepth {
-			continue
-		}
-		found, entries, err := walkCarthageSwiftSourceDirectory(ctx, root, candidate, &queue, maxEntries-entriesSeen)
+		budget := max(1, remaining/(len(directories)-index))
+		found, entries, err := findSwiftSourceWithinRootDirectory(ctx, root, directory, budget)
 		entriesSeen += entries
+		remaining -= entries
 		if err != nil || found {
 			return found, entriesSeen, err
 		}
@@ -160,34 +173,156 @@ func findSwiftSourceWithinRootDirectory(ctx context.Context, root safeio.Root, d
 	return false, entriesSeen, nil
 }
 
-func walkCarthageSwiftSourceDirectory(ctx context.Context, root safeio.Root, candidate rootCarthageSourceDirectory, queue *[]rootCarthageSourceDirectory, maxEntries int) (found bool, entriesSeen int, err error) {
-	directory, err := safeio.OpenPinnedDirectory(root, candidate.path)
-	if err != nil {
-		return false, 0, err
-	}
-	defer func() {
-		err = errors.Join(err, directory.Close())
-	}()
+type rootCarthageSourceSubtree struct {
+	current *rootCarthageSourceCursor
+	pending []rootCarthageSourceDirectory
+}
 
-	children := make([]rootCarthageSourceDirectory, 0)
-	for entriesSeen < maxEntries {
-		if err := contextError(ctx); err != nil {
-			return false, entriesSeen, err
-		}
-		entries, complete, err := readRootCarthageSourceBatch(directory, maxEntries-entriesSeen)
-		entriesSeen += len(entries)
-		if err != nil {
-			return false, entriesSeen, err
-		}
-		if collectRootCarthageSourceCandidates(entries, candidate, &children) {
-			return true, entriesSeen, nil
-		}
-		if complete {
+func newRootCarthageSourceSubtrees(directories []string) []*rootCarthageSourceSubtree {
+	subtrees := make([]*rootCarthageSourceSubtree, 0, len(directories))
+	for _, directory := range directories {
+		subtrees = append(subtrees, &rootCarthageSourceSubtree{pending: []rootCarthageSourceDirectory{{path: directory, depth: 1}}})
+	}
+	return subtrees
+}
+
+func findSwiftSourceWithinResumableSubtrees(ctx context.Context, root safeio.Root, subtrees []*rootCarthageSourceSubtree, maxEntries int) (found bool, entriesSeen int, returnErr error) {
+	remaining := maxEntries
+	unfinished := make([]*rootCarthageSourceSubtree, 0, len(subtrees))
+	for index, subtree := range subtrees {
+		if remaining == 0 {
 			break
 		}
+		budget := max(1, remaining/(len(subtrees)-index))
+		found, entries, complete, err := advanceRootCarthageSourceSubtree(ctx, root, subtree, budget)
+		entriesSeen += entries
+		remaining -= entries
+		if err != nil || found {
+			return found, entriesSeen, errors.Join(err, closeRootCarthageSourceSubtrees(subtrees))
+		}
+		if !complete {
+			unfinished = append(unfinished, subtree)
+		}
 	}
-	enqueueSortedRootCarthageSourceCandidates(queue, children)
-	return false, entriesSeen, nil
+	return resumeRootCarthageSourceSubtrees(ctx, root, unfinished, remaining, entriesSeen)
+}
+
+func resumeRootCarthageSourceSubtrees(ctx context.Context, root safeio.Root, subtrees []*rootCarthageSourceSubtree, remaining, entriesSeen int) (found bool, totalEntries int, returnErr error) {
+	for len(subtrees) > 0 && remaining > 0 {
+		subtree := subtrees[0]
+		subtrees = subtrees[1:]
+		budget := max(1, remaining/(len(subtrees)+1))
+		found, entries, complete, err := advanceRootCarthageSourceSubtree(ctx, root, subtree, budget)
+		totalEntries = entriesSeen + entries
+		remaining -= entries
+		if err != nil || found {
+			return found, totalEntries, errors.Join(err, closeRootCarthageSourceSubtrees(subtrees))
+		}
+		entriesSeen = totalEntries
+		if !complete {
+			subtrees = append(subtrees, subtree)
+		}
+	}
+	return false, entriesSeen, closeRootCarthageSourceSubtrees(subtrees)
+}
+
+type rootCarthageSourceCursor struct {
+	candidate rootCarthageSourceDirectory
+	directory safeio.ReadDirFile
+	children  []rootCarthageSourceDirectory
+}
+
+func advanceRootCarthageSourceSubtree(ctx context.Context, root safeio.Root, subtree *rootCarthageSourceSubtree, maxEntries int) (found bool, entriesSeen int, complete bool, returnErr error) {
+	for entriesSeen < maxEntries {
+		if err := contextError(ctx); err != nil {
+			return false, entriesSeen, true, closeRootCarthageSourceSubtree(subtree, err)
+		}
+		if subtree.current == nil {
+			if len(subtree.pending) == 0 {
+				return false, entriesSeen, true, nil
+			}
+			subtree.current = &rootCarthageSourceCursor{candidate: subtree.pending[0]}
+			subtree.pending = subtree.pending[1:]
+		}
+		found, cursorComplete, entries, err := advanceRootCarthageSourceCursor(ctx, root, subtree.current, maxEntries-entriesSeen)
+		entriesSeen += entries
+		if err != nil || found {
+			return found, entriesSeen, true, err
+		}
+		if cursorComplete {
+			subtree.pending = appendRootCarthageSourceDirectories(subtree.pending, subtree.current.children)
+			subtree.current = nil
+		}
+	}
+	return false, entriesSeen, subtree.current == nil && len(subtree.pending) == 0, nil
+}
+
+func advanceRootCarthageSourceCursor(ctx context.Context, root safeio.Root, cursor *rootCarthageSourceCursor, remaining int) (found, complete bool, entriesSeen int, returnErr error) {
+	if err := openRootCarthageSourceCursor(root, cursor); err != nil {
+		return false, true, 0, err
+	}
+	if err := contextError(ctx); err != nil {
+		return false, true, 0, closeRootCarthageSourceCursor(cursor, err)
+	}
+	entries, complete, err := readRootCarthageSourceBatch(cursor.directory, remaining)
+	entriesSeen = len(entries)
+	if err != nil {
+		return false, true, entriesSeen, closeRootCarthageSourceCursor(cursor, err)
+	}
+	if collectRootCarthageSourceCandidates(entries, cursor.candidate, &cursor.children) {
+		return true, true, entriesSeen, closeRootCarthageSourceCursor(cursor, nil)
+	}
+	if complete || len(entries) == 0 {
+		err := error(nil)
+		if !complete {
+			err = io.ErrNoProgress
+		}
+		return false, true, entriesSeen, closeRootCarthageSourceCursor(cursor, err)
+	}
+	return false, false, entriesSeen, nil
+}
+
+func openRootCarthageSourceCursor(root safeio.Root, cursor *rootCarthageSourceCursor) error {
+	if cursor.directory != nil {
+		return nil
+	}
+	directory, err := safeio.OpenPinnedDirectory(root, cursor.candidate.path)
+	if err != nil {
+		return err
+	}
+	cursor.directory = directory
+	return nil
+}
+
+func closeRootCarthageSourceCursor(cursor *rootCarthageSourceCursor, err error) error {
+	if cursor.directory == nil {
+		return err
+	}
+	closeErr := cursor.directory.Close()
+	cursor.directory = nil
+	return errors.Join(err, closeErr)
+}
+
+func appendRootCarthageSourceDirectories(queue []rootCarthageSourceDirectory, children []rootCarthageSourceDirectory) []rootCarthageSourceDirectory {
+	slices.SortFunc(children, func(left, right rootCarthageSourceDirectory) int {
+		return strings.Compare(left.path, right.path)
+	})
+	return append(queue, children...)
+}
+
+func closeRootCarthageSourceSubtree(subtree *rootCarthageSourceSubtree, err error) error {
+	if subtree.current == nil {
+		return err
+	}
+	return closeRootCarthageSourceCursor(subtree.current, err)
+}
+
+func closeRootCarthageSourceSubtrees(subtrees []*rootCarthageSourceSubtree) error {
+	var err error
+	for _, subtree := range subtrees {
+		err = closeRootCarthageSourceSubtree(subtree, err)
+	}
+	return err
 }
 
 func readRootCarthageSourceBatch(directory safeio.ReadDirFile, remaining int) ([]fs.DirEntry, bool, error) {
@@ -211,13 +346,6 @@ func collectRootCarthageSourceCandidates(entries []fs.DirEntry, candidate rootCa
 		}
 	}
 	return false
-}
-
-func enqueueSortedRootCarthageSourceCandidates(queue *[]rootCarthageSourceDirectory, candidates []rootCarthageSourceDirectory) {
-	slices.SortFunc(candidates, func(left, right rootCarthageSourceDirectory) int {
-		return strings.Compare(left.path, right.path)
-	})
-	*queue = append(*queue, candidates...)
 }
 
 func canDescendRootCarthageSourceCandidate(entry fs.DirEntry, depth int) bool {
@@ -355,22 +483,8 @@ func probeSwiftSourceWithinTrustedRoot(ctx context.Context, root safeio.Root, re
 		return found, rootEntries, err
 	}
 
-	remaining := maxEntries - rootEntries
-	for index, directory := range directories {
-		if remaining == 0 {
-			break
-		}
-		if err := contextError(ctx); err != nil {
-			return false, maxEntries - remaining, err
-		}
-		budget := max(1, remaining/(len(directories)-index))
-		found, entries, err := findSwiftSourceWithinRootDirectory(ctx, root, directory, budget)
-		if err != nil || found {
-			return found, maxEntries - remaining + entries, err
-		}
-		remaining -= entries
-	}
-	return false, maxEntries - remaining, nil
+	found, entries, err := findSwiftSourceWithinRootDirectories(ctx, root, directories, maxEntries-rootEntries)
+	return found, rootEntries + entries, err
 }
 
 func applyCarthageDetectionRoot(root string, confidence int, detection *language.Detection, roots map[string]struct{}) {

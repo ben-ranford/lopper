@@ -76,6 +76,16 @@ type swiftReadDirTestFile struct {
 	readErr error
 }
 
+type swiftCloseTrackingReadDirFile struct {
+	swiftReadDirTestFile
+	closed bool
+}
+
+func (f *swiftCloseTrackingReadDirFile) Close() error {
+	f.closed = true
+	return nil
+}
+
 func (f *swiftReadDirTestFile) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
@@ -98,6 +108,22 @@ func (f *swiftReadDirTestFile) Chmod(fs.FileMode) error {
 
 func (f *swiftReadDirTestFile) ReadDir(int) ([]fs.DirEntry, error) {
 	return f.entries, f.readErr
+}
+
+func TestSwiftRootCarthageSourceSubtreeSchedulingAndCleanup(t *testing.T) {
+	open := &swiftCloseTrackingReadDirFile{}
+	queue := appendRootCarthageSourceDirectories([]rootCarthageSourceDirectory{{path: "existing"}}, []rootCarthageSourceDirectory{{path: "z"}, {path: "a"}})
+	if got := []string{queue[1].path, queue[2].path}; !slices.Equal(got, []string{"a", "z"}) {
+		t.Fatalf("appended child order = %#v, want [a z]", got)
+	}
+	subtrees := newRootCarthageSourceSubtrees([]string{"first", "second"})
+	if len(subtrees) != 2 || subtrees[0].pending[0].path != "first" {
+		t.Fatalf("initial subtree state = %#v", subtrees)
+	}
+	subtrees[0].current = &rootCarthageSourceCursor{directory: open}
+	if err := closeRootCarthageSourceSubtrees(subtrees); err != nil || !open.closed || subtrees[0].current.directory != nil {
+		t.Fatalf("close suspended cursor = closed=%v err=%v, want closed without error", open.closed, err)
+	}
 }
 
 func TestSwiftRootCarthageProbeFindsRootSourceAndRejectsInvalidCandidate(t *testing.T) {
@@ -314,6 +340,62 @@ func TestSwiftNestedCarthageProbeSharesBudgetFairly(t *testing.T) {
 	}
 }
 
+func TestSwiftRootCarthageProbeReusesBudgetReleasedByLaterEmptyDirectories(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), "github \"owner/repo\"\n")
+	for index := 0; index < maxRootCarthageSourceTraversalEntries; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, "000-assets", "file"+strconv.Itoa(index)+".txt"), "ignored\n")
+	}
+	for index := 0; index < 682; index++ {
+		child := filepath.Join(repo, "Sources", "child"+strconv.Itoa(index))
+		if err := os.MkdirAll(child, 0o750); err != nil {
+			t.Fatalf("make source child %q: %v", child, err)
+		}
+		if index == 681 {
+			testutil.MustWriteFile(t, filepath.Join(child, swiftMainFileName), "import Foundation\n")
+		}
+	}
+	if err := os.Mkdir(filepath.Join(repo, "zz-empty"), 0o750); err != nil {
+		t.Fatalf("make later empty directory: %v", err)
+	}
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect root Carthage project: %v", err)
+	}
+	if !detection.Matched || !slices.Contains(detection.Roots, repo) {
+		t.Fatalf("expected resumable source probe to corroborate root metadata, got %#v", detection)
+	}
+}
+
+func TestSwiftRootCarthageProbePreservesLateCandidateFairShareAboveCursorLimit(t *testing.T) {
+	repo := t.TempDir()
+	for directory := 0; directory < maxOpenRootCarthageSourceSubtrees; directory++ {
+		writeSwiftProbeFiles(t, filepath.Join(repo, "directory"+strconv.Itoa(directory)), rootCarthageSourceReadBatchSize, false)
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "late-source", swiftMainFileName), "import Foundation\n")
+
+	found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, maxRootCarthageSourceTraversalEntries)
+	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
+		t.Fatalf("wide candidate probe = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftRootCarthageProbePreservesDeepCandidateFairShare(t *testing.T) {
+	repo := t.TempDir()
+	deep := filepath.Join(repo, "a-deep")
+	for level := 0; level < maxRootCarthageSourceDepth-1; level++ {
+		deep = filepath.Join(deep, "level"+strconv.Itoa(level))
+	}
+	testutil.MustWriteFile(t, filepath.Join(deep, swiftMainFileName), "import Foundation\n")
+	writeSwiftProbeFiles(t, filepath.Join(repo, "b-heavy"), maxRootCarthageSourceTraversalEntries, false)
+
+	found, entries, err := probeSwiftSourceWithinRoot(context.Background(), repo, maxRootCarthageSourceTraversalEntries)
+	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
+		t.Fatalf("deep candidate probe = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
 func TestSwiftNestedCarthageProbeRejectsReplacedCandidateSymlink(t *testing.T) {
 	repo := t.TempDir()
 	candidate := filepath.Join(repo, "Packages", "Library")
@@ -351,40 +433,6 @@ func TestSwiftNestedCarthageProbeRejectsUntrustedRoots(t *testing.T) {
 		map[string]int{filepath.Join(missingRepo, "Package"): 10}, map[string]struct{}{})
 	if err == nil {
 		t.Fatal("expected a missing trusted root to reject nested probing")
-	}
-}
-
-func TestSwiftRootCarthageProbeSortsChildrenAcrossReadBatches(t *testing.T) {
-	repo := t.TempDir()
-	candidate := filepath.Join(repo, "parent")
-	if err := os.Mkdir(candidate, 0o750); err != nil {
-		t.Fatalf("make candidate: %v", err)
-	}
-	for index := 0; index < rootCarthageSourceReadBatchSize+1; index++ {
-		name := "child" + strconv.Itoa(rootCarthageSourceReadBatchSize-index)
-		if err := os.Mkdir(filepath.Join(candidate, name), 0o750); err != nil {
-			t.Fatalf("make child %q: %v", name, err)
-		}
-	}
-	root, err := safeio.OpenRootNoFollow(repo)
-	if err != nil {
-		t.Fatalf("open repo root: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Errorf("close repo root: %v", closeErr)
-		}
-	})
-
-	queue := make([]rootCarthageSourceDirectory, 0, rootCarthageSourceReadBatchSize+1)
-	_, entries, err := walkCarthageSwiftSourceDirectory(context.Background(), root, rootCarthageSourceDirectory{path: "parent", depth: 1}, &queue, rootCarthageSourceReadBatchSize+1)
-	if err != nil || entries != rootCarthageSourceReadBatchSize+1 {
-		t.Fatalf("walk batched children: entries=%d err=%v", entries, err)
-	}
-	if !slices.IsSortedFunc(queue, func(left, right rootCarthageSourceDirectory) int {
-		return strings.Compare(left.path, right.path)
-	}) {
-		t.Fatalf("children spanning batches are not ordered: %#v", queue)
 	}
 }
 
