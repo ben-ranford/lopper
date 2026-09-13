@@ -16,7 +16,7 @@ import (
 )
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	repoPath = shared.DefaultRepoPath(repoPath)
+	repoPath = filepath.Clean(shared.DefaultRepoPath(repoPath))
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 	rootSignals := []shared.RootSignal{
@@ -203,39 +203,42 @@ func findSwiftSourceWithinResumableSubtrees(ctx context.Context, root safeio.Roo
 
 	remaining := maxEntries
 	unfinished := make([]*rootCarthageSourceSubtree, 0, len(subtrees))
+	blocked := make([]*rootCarthageSourceSubtree, 0, len(subtrees))
 	for index, subtree := range subtrees {
 		if remaining == 0 {
 			break
 		}
 		quota := max(1, remaining/(len(subtrees)-index))
-		found, entries, complete, _, err := advanceRootCarthageSourceSubtree(ctx, root, subtree, handles, quota)
+		found, entries, complete, wasBlocked, err := advanceRootCarthageSourceSubtree(ctx, root, subtree, handles, quota)
 		entriesSeen += entries
 		remaining -= entries
 		if err != nil || found {
 			return found, entriesSeen, err
 		}
-		if !complete {
+		if wasBlocked {
+			blocked = append(blocked, subtree)
+		} else if !complete {
 			unfinished = append(unfinished, subtree)
 		}
 	}
-	return resumeRootCarthageSourceSubtrees(ctx, root, unfinished, handles, remaining, entriesSeen)
+	return resumeRootCarthageSourceSubtrees(ctx, root, unfinished, blocked, handles, remaining, entriesSeen)
 }
 
-func resumeRootCarthageSourceSubtrees(ctx context.Context, root safeio.Root, subtrees []*rootCarthageSourceSubtree, handles *rootCarthageSourceHandleBudget, remaining, entriesSeen int) (found bool, totalEntries int, returnErr error) {
-	blocked := 0
-	drainForLease := false
-	for len(subtrees) > 0 && remaining > 0 {
-		subtree := subtrees[0]
-		subtrees = subtrees[1:]
-		budget := max(1, remaining/(len(subtrees)+1))
-		var entries int
-		var complete, wasBlocked bool
-		var err error
-		if drainForLease && subtree.current != nil && subtree.current.directory != nil {
-			found, entries, complete, err = drainRootCarthageSourceCursor(ctx, root, subtree, handles, remaining)
-			drainForLease = false
-		} else {
-			found, entries, complete, wasBlocked, err = advanceRootCarthageSourceSubtree(ctx, root, subtree, handles, budget)
+func resumeRootCarthageSourceSubtrees(ctx context.Context, root safeio.Root, subtrees, blockedSubtrees []*rootCarthageSourceSubtree, handles *rootCarthageSourceHandleBudget, remaining, entriesSeen int) (found bool, totalEntries int, returnErr error) {
+	state := newRootCarthageSourceResumeState(subtrees, blockedSubtrees)
+	for state.hasWork() && remaining > 0 {
+		subtree := state.next()
+		if subtree == nil {
+			return false, entriesSeen, errors.New("swift source traversal handle scheduler could not drain a blocked subtree")
+		}
+		options := rootCarthageSourceResumeOptions{
+			drainForLease: state.drainForLease,
+			remaining:     remaining,
+			budget:        max(1, remaining/(state.queueLength()+1)),
+		}
+		found, entries, complete, wasBlocked, drained, err := advanceResumedRootCarthageSourceSubtree(ctx, root, subtree, handles, options)
+		if drained {
+			state.drainForLease = false
 		}
 		totalEntries = entriesSeen + entries
 		remaining -= entries
@@ -243,20 +246,85 @@ func resumeRootCarthageSourceSubtrees(ctx context.Context, root safeio.Root, sub
 			return found, totalEntries, err
 		}
 		entriesSeen = totalEntries
-		if !complete {
-			subtrees = append(subtrees, subtree)
-		}
 		if wasBlocked {
-			blocked++
-			drainForLease = true
-			if blocked == len(subtrees) {
-				return false, entriesSeen, errors.New("swift source traversal handle scheduler made no progress")
-			}
-		} else {
-			blocked = 0
+			state.waitForLease(subtree)
+		} else if !complete {
+			state.queue = append(state.queue, subtree)
 		}
 	}
 	return false, entriesSeen, nil
+}
+
+type rootCarthageSourceResumeState struct {
+	queue         []*rootCarthageSourceSubtree
+	leaseWaiter   *rootCarthageSourceSubtree
+	drainForLease bool
+}
+
+func newRootCarthageSourceResumeState(subtrees, blockedSubtrees []*rootCarthageSourceSubtree) rootCarthageSourceResumeState {
+	state := rootCarthageSourceResumeState{queue: append([]*rootCarthageSourceSubtree(nil), subtrees...)}
+	if len(blockedSubtrees) == 0 {
+		return state
+	}
+	state.leaseWaiter = blockedSubtrees[0]
+	state.drainForLease = true
+	state.queue = append(state.queue, blockedSubtrees[1:]...)
+	return state
+}
+
+func (s *rootCarthageSourceResumeState) hasWork() bool {
+	return len(s.queue) > 0 || s.leaseWaiter != nil
+}
+
+func (s *rootCarthageSourceResumeState) queueLength() int {
+	return len(s.queue)
+}
+
+func (s *rootCarthageSourceResumeState) next() *rootCarthageSourceSubtree {
+	if s.drainForLease {
+		for index, subtree := range s.queue {
+			if subtree.current != nil && subtree.current.directory != nil {
+				s.queue = append(s.queue[:index], s.queue[index+1:]...)
+				return subtree
+			}
+		}
+		return nil
+	}
+	if s.leaseWaiter != nil {
+		subtree := s.leaseWaiter
+		s.leaseWaiter = nil
+		return subtree
+	}
+	if len(s.queue) == 0 {
+		return nil
+	}
+	subtree := s.queue[0]
+	s.queue = s.queue[1:]
+	return subtree
+}
+
+func (s *rootCarthageSourceResumeState) waitForLease(subtree *rootCarthageSourceSubtree) {
+	s.drainForLease = true
+	if s.leaseWaiter == nil {
+		s.leaseWaiter = subtree
+		return
+	}
+	s.queue = append(s.queue, subtree)
+}
+
+type rootCarthageSourceResumeOptions struct {
+	drainForLease bool
+	remaining     int
+	budget        int
+}
+
+func advanceResumedRootCarthageSourceSubtree(ctx context.Context, root safeio.Root, subtree *rootCarthageSourceSubtree, handles *rootCarthageSourceHandleBudget, options rootCarthageSourceResumeOptions) (found bool, entriesSeen int, complete bool, blocked bool, drained bool, returnErr error) {
+	if options.drainForLease && subtree.current != nil && subtree.current.directory != nil {
+		found, entriesSeen, complete, returnErr = drainRootCarthageSourceCursor(ctx, root, subtree, handles, options.remaining)
+		return found, entriesSeen, complete, false, true, returnErr
+	}
+	found, entriesSeen, complete, blocked, returnErr = advanceRootCarthageSourceSubtree(ctx, root, subtree, handles, options.budget)
+	return found, entriesSeen, complete, blocked, false, returnErr
 }
 
 // drainRootCarthageSourceCursor completes only the already-open cursor. It is
@@ -294,12 +362,8 @@ func advanceRootCarthageSourceSubtree(ctx context.Context, root safeio.Root, sub
 		if err := contextError(ctx); err != nil {
 			return false, entriesSeen, true, false, closeRootCarthageSourceSubtree(subtree, err)
 		}
-		if subtree.current == nil {
-			if len(subtree.pending) == 0 {
-				return false, entriesSeen, true, false, nil
-			}
-			subtree.current = &rootCarthageSourceCursor{candidate: subtree.pending[0]}
-			subtree.pending = subtree.pending[1:]
+		if complete := prepareRootCarthageSourceCursor(subtree); complete {
+			return false, entriesSeen, true, false, nil
 		}
 		found, cursorComplete, cursorBlocked, entries, err := advanceRootCarthageSourceCursor(ctx, root, subtree.current, handles, maxEntries-entriesSeen)
 		entriesSeen += entries
@@ -315,6 +379,18 @@ func advanceRootCarthageSourceSubtree(ctx context.Context, root safeio.Root, sub
 		}
 	}
 	return false, entriesSeen, subtree.current == nil && len(subtree.pending) == 0, false, nil
+}
+
+func prepareRootCarthageSourceCursor(subtree *rootCarthageSourceSubtree) bool {
+	if subtree.current != nil {
+		return false
+	}
+	if len(subtree.pending) == 0 {
+		return true
+	}
+	subtree.current = &rootCarthageSourceCursor{candidate: subtree.pending[0]}
+	subtree.pending = subtree.pending[1:]
+	return false
 }
 
 func advanceRootCarthageSourceCursor(ctx context.Context, root safeio.Root, cursor *rootCarthageSourceCursor, handles *rootCarthageSourceHandleBudget, remaining int) (found, complete, blocked bool, entriesSeen int, returnErr error) {

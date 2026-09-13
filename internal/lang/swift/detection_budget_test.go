@@ -134,6 +134,9 @@ func TestSwiftRootCarthageSourceSubtreeSchedulingAndCleanup(t *testing.T) {
 }
 
 func TestSwiftRootCarthageSourceHandleBudgetTracksPinnedPathCost(t *testing.T) {
+	if got := rootCarthageSourcePathCost("."); got != 1 {
+		t.Fatalf("root path cost = %d, want 1", got)
+	}
 	repo := t.TempDir()
 	for _, path := range []string{"one/two", "one/two/three"} {
 		if err := os.MkdirAll(filepath.Join(repo, path), 0o750); err != nil {
@@ -144,7 +147,11 @@ func TestSwiftRootCarthageSourceHandleBudgetTracksPinnedPathCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test root: %v", err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close test root: %v", err)
+		}
+	})
 	handles := &rootCarthageSourceHandleBudget{}
 	first := &rootCarthageSourceCursor{candidate: rootCarthageSourceDirectory{path: "one/two", depth: 2}}
 	second := &rootCarthageSourceCursor{candidate: rootCarthageSourceDirectory{path: "one/two/three", depth: 3}}
@@ -191,7 +198,11 @@ func TestSwiftRootCarthageSourceSchedulerResumesBlockedSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test root: %v", err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close test root: %v", err)
+		}
+	})
 
 	found, entries, err := findSwiftSourceWithinResumableSubtrees(context.Background(), root, newRootCarthageSourceSubtrees(directories), maxRootCarthageSourceTraversalEntries)
 	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
@@ -214,11 +225,59 @@ func TestSwiftRootCarthageSourceSchedulerResumesDeepBlockedSubtree(t *testing.T)
 	if err != nil {
 		t.Fatalf("open test root: %v", err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close test root: %v", err)
+		}
+	})
 
 	found, entries, err := findSwiftSourceWithinResumableSubtrees(context.Background(), root, newRootCarthageSourceSubtrees(directories), maxRootCarthageSourceTraversalEntries)
 	if err != nil || !found || entries > maxRootCarthageSourceTraversalEntries {
 		t.Fatalf("deep blocked subtree scheduler = found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftRootCarthageSourceSchedulerPrioritizesLeaseWaiterAfterDrain(t *testing.T) {
+	waiter := &rootCarthageSourceSubtree{}
+	unopened := &rootCarthageSourceSubtree{}
+	owner := &rootCarthageSourceSubtree{current: &rootCarthageSourceCursor{directory: &swiftReadDirTestFile{}}}
+	later := &rootCarthageSourceSubtree{}
+	state := rootCarthageSourceResumeState{
+		queue:         []*rootCarthageSourceSubtree{unopened, owner, later},
+		leaseWaiter:   waiter,
+		drainForLease: true,
+	}
+
+	next := state.next()
+	if next != owner || state.leaseWaiter != waiter || len(state.queue) != 2 || state.queue[0] != unopened {
+		t.Fatalf("lease drain selection = next=%p waiter=%p queue=%#v", next, state.leaseWaiter, state.queue)
+	}
+	state.drainForLease = false
+	next = state.next()
+	if next != waiter || state.leaseWaiter != nil || len(state.queue) != 2 || state.queue[0] != unopened {
+		t.Fatalf("post-drain waiter selection = next=%p waiter=%p queue=%#v", next, state.leaseWaiter, state.queue)
+	}
+}
+
+func TestSwiftRootCarthageSourceResumeStateQueuesAdditionalLeaseWaiters(t *testing.T) {
+	state := newRootCarthageSourceResumeState(nil, nil)
+	if state.hasWork() || state.queueLength() != 0 {
+		t.Fatalf("empty resume state = %#v", state)
+	}
+	first := &rootCarthageSourceSubtree{}
+	second := &rootCarthageSourceSubtree{}
+	state.waitForLease(first)
+	state.waitForLease(second)
+	if !state.drainForLease || state.leaseWaiter != first || len(state.queue) != 1 || state.queue[0] != second {
+		t.Fatalf("lease waiters = %#v", state)
+	}
+}
+
+func TestSwiftRootCarthageSourceSchedulerRejectsUndrainableLeaseWaiter(t *testing.T) {
+	_, _, err := resumeRootCarthageSourceSubtrees(context.Background(), nil, nil,
+		[]*rootCarthageSourceSubtree{{}}, &rootCarthageSourceHandleBudget{}, 1, 0)
+	if err == nil || !strings.Contains(err.Error(), "could not drain a blocked subtree") {
+		t.Fatalf("undrainable lease waiter error = %v", err)
 	}
 }
 
@@ -303,8 +362,10 @@ func TestSwiftRootCarthageProbeAllowsRequestedRootAliases(t *testing.T) {
 	}
 }
 
-func TestSwiftRootCarthageProbeCanonicalizesTrailingSeparator(t *testing.T) {
+func TestSwiftDetectionCanonicalizesTrailingSeparatorAcrossRootSignals(t *testing.T) {
 	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, packageManifestName), "// swift-tools-version: 6.0\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), "platform :ios, '17.0'\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, carthageManifestName), "github \"owner/repo\"\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", swiftMainFileName), "import Foundation\n")
 
