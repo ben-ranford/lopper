@@ -1,6 +1,9 @@
+//go:build !windows
+
 package scripts
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestHooksInstallRefusesUnsafeManagedHookBeforeChangingDirectoryPermissions(t *testing.T) {
@@ -46,6 +50,145 @@ func TestHooksUninstallRejectsNonRegularDormantWorktreeConfigBeforeSnapshot(t *t
 	t.Parallel()
 	for _, useSymlink := range []bool{false, true} {
 		t.Run(fmt.Sprintf("symlink=%t", useSymlink), func(t *testing.T) { assertNonRegularDormantConfigIsRejected(t, useSymlink) })
+	}
+}
+
+func TestHooksRejectForeignWorktreeFIFOConfigBeforeQueries(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		target  string
+		symlink bool
+	}{{"hooks-install", false}, {"hooks-install", true}, {"hooks-uninstall", false}, {"hooks-uninstall", true}} {
+		t.Run(fmt.Sprintf("%s/symlink=%t", test.target, test.symlink), func(t *testing.T) { assertForeignWorktreeFIFORefusal(t, test.target, test.symlink) })
+	}
+}
+
+func assertForeignWorktreeFIFORefusal(t *testing.T, target string, symlink bool) {
+	t.Helper()
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	if target == "hooks-uninstall" {
+		runCommand(t, repoDir, "make", "hooks-install")
+	}
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	foreignConfig := filepath.Join(gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config.worktree")
+	if err := os.Remove(foreignConfig); err != nil {
+		t.Fatalf("remove foreign worktree config: %v", err)
+	}
+	fifo := foreignConfig + ".fifo"
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("create foreign worktree config FIFO: %v", err)
+	}
+	if symlink {
+		if err := os.Symlink(fifo, foreignConfig); err != nil {
+			t.Fatalf("link foreign worktree config FIFO: %v", err)
+		}
+	} else if err := os.Rename(fifo, foreignConfig); err != nil {
+		t.Fatalf("move foreign worktree config FIFO: %v", err)
+	}
+	output, err := runMakeWithTimeout(t, repoDir, target)
+	if err == nil || !strings.Contains(string(output), "another worktree") {
+		t.Fatalf("%s with foreign FIFO config = %v\n%s", target, err, output)
+	}
+	managedHook := managedHookPath(t, repoDir)
+	if target == "hooks-install" {
+		if _, err := os.Stat(filepath.Dir(managedHook)); !os.IsNotExist(err) {
+			t.Fatalf("installer mutated managed hook state before foreign FIFO refusal: %v", err)
+		}
+	} else if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook before foreign FIFO refusal: %v", err)
+	}
+}
+
+func runMakeWithTimeout(t *testing.T, repoDir, target string) ([]byte, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "make", target)
+	command.Dir = repoDir
+	command.Env = hookTestEnv()
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s timed out: %v\n%s", target, err, output)
+	}
+	return output, err
+}
+
+func TestHooksInstallAllowsForeignRegularWorktreeConfigSymlink(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	foreignGitDir := gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	foreignConfig := filepath.Join(foreignGitDir, "config.worktree")
+	target := filepath.Join(t.TempDir(), "foreign-config")
+	writeFile(t, target, "")
+	if err := os.Remove(foreignConfig); err != nil {
+		t.Fatalf("remove foreign worktree config: %v", err)
+	}
+	if err := os.Symlink(target, foreignConfig); err != nil {
+		t.Fatalf("link foreign worktree config: %v", err)
+	}
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err != nil {
+		t.Fatalf("install with foreign regular config symlink = %v\n%s", err, output)
+	}
+}
+
+func TestHooksUninstallFailsClosedWhenEffectiveReferenceScannerFails(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"xargs", "grep"} {
+		t.Run(command, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "make", "hooks-install")
+			managedHook := managedHookPath(t, repoDir)
+			globalConfig := filepath.Join(t.TempDir(), "global-config")
+			writeFile(t, globalConfig, "[core]\n\thooksPath = /unrelated/hooks\n")
+			wrapperDir := t.TempDir()
+			writeFileMode(t, filepath.Join(wrapperDir, command), "#!/bin/sh\necho forced effective reference scanner failure >&2\nexit 73\n", 0o755)
+
+			output, err := runMakeWithEnv(repoDir, "hooks-uninstall", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+globalConfig)
+			if err == nil || !strings.Contains(string(output), "Unable to inspect effective core.hooksPath") {
+				t.Fatalf("uninstall with effective %s failure = %v\n%s", command, err, output)
+			}
+			if _, err := os.Stat(managedHook); err != nil {
+				t.Fatalf("uninstaller removed managed hook after effective %s failure: %v", command, err)
+			}
+		})
+	}
+}
+
+func TestHooksUninstallFailsClosedWhenReferenceScannerFails(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"xargs", "grep"} {
+		t.Run(command, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+			runCommand(t, repoDir, "make", "hooks-install")
+			managedHook := managedHookPath(t, repoDir)
+			linkedDir := filepath.Join(t.TempDir(), "linked")
+			runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+			runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+			wrapperDir := t.TempDir()
+			writeFileMode(t, filepath.Join(wrapperDir, command), "#!/bin/sh\necho forced reference scanner failure >&2\nexit 73\n", 0o755)
+
+			output, err := runMakeWithEnv(repoDir, "hooks-uninstall", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err == nil || !strings.Contains(string(output), "Unable to inspect worktree config worktree core.hooksPath") {
+				t.Fatalf("uninstall with %s failure = %v\n%s", command, err, output)
+			}
+			if _, err := os.Stat(managedHook); err != nil {
+				t.Fatalf("uninstaller removed managed hook after %s failure: %v", command, err)
+			}
+		})
 	}
 }
 
@@ -223,6 +366,34 @@ exec %q "$@"
 	}
 }
 
+func TestHooksUninstallRollsBackNonExecutableOriginalManagedHookWhenConfigLocked(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	if err := os.Chmod(managedHook, 0o600); err != nil {
+		t.Fatalf("make managed hook non-executable: %v", err)
+	}
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Unable to remove managed core.hooksPath") || strings.Contains(string(output), "Unable to restore hook configuration completely") {
+		t.Fatalf("uninstall with non-executable original hook and config lock = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", filepath.Dir(managedHook))
+	info, err := os.Stat(managedHook)
+	if err != nil {
+		t.Fatalf("stat original managed hook: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("original managed hook mode = %v, want 600", info.Mode())
+	}
+	assertNoHookConfigBackups(t, repoDir)
+	assertNoManagedHookBackups(t, managedHook)
+}
+
 func TestHooksUninstallRefusesConfigurationRestoreAfterManagedHookReplacement(t *testing.T) {
 	t.Parallel()
 	for _, replacement := range []string{"symlink", "different regular file", "identical non-executable regular file"} {
@@ -269,15 +440,16 @@ exec %q "$@"
 
 func assertManagedHookRecoveryState(t *testing.T, managedHook, replacement string) {
 	t.Helper()
-	if replacement == "symlink" {
+	switch replacement {
+	case "symlink":
 		if _, err := os.Readlink(managedHook); err != nil {
 			t.Fatalf("replacement symlink missing: %v", err)
 		}
-	} else if replacement == "different regular file" {
+	case "different regular file":
 		if got := string(readHookConfigBytes(t, managedHook)); got != "replacement\n" {
 			t.Fatalf("replacement hook = %q", got)
 		}
-	} else {
+	case "identical non-executable regular file":
 		info, err := os.Stat(managedHook)
 		if err != nil {
 			t.Fatalf("stat identical replacement hook: %v", err)
@@ -285,6 +457,8 @@ func assertManagedHookRecoveryState(t *testing.T, managedHook, replacement strin
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("identical replacement hook mode = %v, want 600", info.Mode())
 		}
+	default:
+		t.Fatalf("unknown managed hook replacement %q", replacement)
 	}
 	if backups, err := filepath.Glob(filepath.Join(filepath.Dir(managedHook), ".pre-commit.*.uninstall-backup.*")); err != nil || len(backups) != 1 {
 		t.Fatalf("managed hook recovery backups = %#v err=%v", backups, err)

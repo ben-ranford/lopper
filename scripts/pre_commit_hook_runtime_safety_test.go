@@ -1,3 +1,5 @@
+//go:build !windows
+
 package scripts
 
 import (
@@ -111,6 +113,30 @@ exec %q "$@"
 	}
 	if leftovers, err := filepath.Glob(filepath.Join(tempDir, "lopper-pre-commit.*")); err != nil || len(leftovers) != 0 {
 		t.Fatalf("temporary files after second child mktemp failure = %#v err=%v", leftovers, err)
+	}
+}
+
+func TestManagedHookRejectsChildOutputProcessingFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, tool := range []string{"awk", "cat"} {
+		t.Run(tool, func(t *testing.T) { assertManagedHookRejectsChildOutputProcessingFailure(t, tool) })
+	}
+}
+
+func assertManagedHookRejectsChildOutputProcessingFailure(t *testing.T, tool string) {
+	t.Helper()
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	writeFile(t, filepath.Join(repoDir, "unformatted.go"), "package fixture\n\nfunc unformatted(){}\n")
+	runCommand(t, repoDir, "git", "add", "unformatted.go")
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, tool), "#!/bin/sh\necho forced "+tool+" failure >&2\nexit 73\n", 0o755)
+	command := exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = append(hookTestEnv(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), "forced "+tool+" failure") {
+		t.Fatalf("hook with failed child %s = %v\n%s", tool, err, output)
 	}
 }
 
