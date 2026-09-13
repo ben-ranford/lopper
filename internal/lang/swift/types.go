@@ -3,26 +3,32 @@ package swift
 import "github.com/ben-ranford/lopper/internal/lang/shared"
 
 const (
-	swiftAdapterID               = "swift"
-	swiftCarthagePreviewFlagName = "swift-carthage"
-	packageManifestName          = "Package.swift"
-	packageResolvedName          = "Package.resolved"
-	podManifestName              = "Podfile"
-	podLockName                  = "Podfile.lock"
-	carthageManifestName         = "Cartfile"
-	carthageResolvedName         = "Cartfile.resolved"
-	maxDetectFiles               = 2048
-	maxScanFiles                 = 4096
-	maxScannableSwiftFile        = 2 * 1024 * 1024
-	maxManifestDeclarations      = 512
-	maxPodDeclarations           = 512
-	maxCarthageDeclarations      = 512
-	maxWarningSamples            = 5
-	ambiguousDependencyKey       = "\x00"
-	swiftPackageManager          = "swiftpm"
-	cocoaPodsManager             = "cocoapods"
-	carthageManager              = "carthage"
+	swiftAdapterID                        = "swift"
+	swiftCarthagePreviewFlagName          = "swift-carthage"
+	packageManifestName                   = "Package.swift"
+	packageResolvedName                   = "Package.resolved"
+	podManifestName                       = "Podfile"
+	podLockName                           = "Podfile.lock"
+	carthageManifestName                  = "Cartfile"
+	carthageResolvedName                  = "Cartfile.resolved"
+	swiftSourceExtension                  = ".swift"
+	maxDetectFiles                        = 2048
+	maxRootCarthageSourceTraversalEntries = 2048
+	maxRootCarthageSourceDepth            = 32
+	rootCarthageSourceReadBatchSize       = 128
+	maxScanFiles                          = 4096
+	maxScannableSwiftFile                 = 2 * 1024 * 1024
+	maxManifestDeclarations               = 512
+	maxPodDeclarations                    = 512
+	maxCarthageDeclarations               = 512
+	maxWarningSamples                     = 5
+	ambiguousDependencyKey                = "\x00"
+	swiftPackageManager                   = "swiftpm"
+	cocoaPodsManager                      = "cocoapods"
+	carthageManager                       = "carthage"
 )
+
+const maxNestedCarthageSourceTraversalEntries = 2048
 
 type importBinding = shared.ImportRecord
 
