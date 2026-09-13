@@ -134,6 +134,9 @@ func (m *staveTerminalModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		b.quit = true
 		return m, tea.Quit
 	}
+	if b.inflight && (msg.Key().Code == tea.KeyEnter || msg.Key().Code == tea.KeyKpEnter) {
+		return m, nil
+	}
 	command, selectedAction, selectedDep := b.keyAction(msg)
 	if err := b.key(msg); err != nil {
 		var inputErr *staveInputError
