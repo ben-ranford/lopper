@@ -524,6 +524,46 @@ func TestSwiftCarthageProbeIgnoresOnlyPureEMFILE(t *testing.T) {
 	}
 }
 
+func TestSwiftOptionalProbeOpenIgnoresOnlyDirectEMFILE(t *testing.T) {
+	direct := &fs.PathError{Op: "open", Path: "repo", Err: syscall.EMFILE}
+	if !isIgnorableOptionalCarthageProbeOpenError(direct) {
+		t.Fatal("direct optional open EMFILE must be inconclusive")
+	}
+	for _, err := range []error{
+		errors.Join(direct, syscall.EMFILE),
+		errors.Join(direct, syscall.EIO),
+		syscall.ENFILE,
+		context.Canceled,
+	} {
+		if isIgnorableOptionalCarthageProbeOpenError(err) {
+			t.Fatalf("optional open error was ignored: %v", err)
+		}
+	}
+}
+
+func TestSwiftOptionalProbePropagatesRootOpenError(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	found, entries, err := probeSwiftSourceWithinRoot(context.Background(), missingRoot, 1)
+	if found || entries != 0 || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("root open result found=%v entries=%d err=%v", found, entries, err)
+	}
+}
+
+func TestSwiftCarthageProbeNeverIgnoresCleanupSentinels(t *testing.T) {
+	if err := joinSwiftCarthageProbeCleanupError(nil, nil); err != nil {
+		t.Fatalf("successful cleanup produced an error: %v", err)
+	}
+	for _, sentinel := range []error{safeio.ErrTargetPathSymlink, fs.ErrNotExist, syscall.EMFILE} {
+		cleanupErr := joinSwiftCarthageProbeCleanupError(nil, sentinel)
+		if isIgnorableNestedCarthageProbeError(cleanupErr) || isIgnorableCarthageProbeResourceError(cleanupErr) {
+			t.Fatalf("cleanup sentinel was ignored: %v", sentinel)
+		}
+		if !strings.Contains(cleanupErr.Error(), "cleanup failed") || !errors.Is(cleanupErr, sentinel) {
+			t.Fatalf("cleanup sentinel context or cause was lost: %v", cleanupErr)
+		}
+	}
+}
+
 func TestSwiftOptionalProbePropagatesNoSourceCursorCloseEMFILE(t *testing.T) {
 	repo := t.TempDir()
 	directoryInfo, err := os.Stat(repo)
@@ -633,6 +673,46 @@ func TestSwiftOptionalProbePropagatesFoundChildCursorCloseEMFILE(t *testing.T) {
 	}
 }
 
+func TestSwiftOptionalProbePropagatesChildOpenError(t *testing.T) {
+	repo := t.TempDir()
+	directoryInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatalf("stat probe directory: %v", err)
+	}
+	rootDirectory := &swiftInfoReadDirFile{
+		swiftCloseTrackingReadDirFile: swiftCloseTrackingReadDirFile{
+			swiftReadDirTestFile: swiftReadDirTestFile{entries: []fs.DirEntry{fs.FileInfoToDirEntry(directoryInfo)}, readErr: io.EOF},
+		},
+		info: directoryInfo,
+	}
+	root := &swiftEMFILEProbeRoot{info: directoryInfo, directories: []safeio.File{rootDirectory}, openErr: syscall.EIO}
+
+	found, entries, probeErr := probeSwiftSourceWithinTrustedRoot(context.Background(), root, ".", 2)
+	if found || entries != 1 || !errors.Is(probeErr, syscall.EIO) || !rootDirectory.closed {
+		t.Fatalf("child open result found=%v entries=%d closed=%v err=%v", found, entries, rootDirectory.closed, probeErr)
+	}
+}
+
+func TestSwiftOptionalProbeIgnoresNestedSourceOpenEMFILE(t *testing.T) {
+	repo := t.TempDir()
+	directoryInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatalf("stat probe directory: %v", err)
+	}
+	rootDirectory := &swiftInfoReadDirFile{
+		swiftCloseTrackingReadDirFile: swiftCloseTrackingReadDirFile{
+			swiftReadDirTestFile: swiftReadDirTestFile{entries: []fs.DirEntry{fs.FileInfoToDirEntry(directoryInfo)}, readErr: io.EOF},
+		},
+		info: directoryInfo,
+	}
+	root := &swiftEMFILEProbeRoot{info: directoryInfo, directories: []safeio.File{rootDirectory}, openErr: syscall.EMFILE}
+
+	found, entries, probeErr := probeSwiftSourceWithinTrustedRoot(context.Background(), root, ".", 2)
+	if found || entries != 1 || probeErr != nil || !rootDirectory.closed {
+		t.Fatalf("nested source open result found=%v entries=%d closed=%v err=%v", found, entries, rootDirectory.closed, probeErr)
+	}
+}
+
 func TestSwiftOptionalProbeClassifiesDirectoryEntryInfoEMFILE(t *testing.T) {
 	repo := t.TempDir()
 	directoryInfo, err := os.Stat(repo)
@@ -727,6 +807,7 @@ type swiftEMFILEProbeRoot struct {
 	info        fs.FileInfo
 	directory   safeio.File
 	directories []safeio.File
+	openErr     error
 }
 
 func (r *swiftEMFILEProbeRoot) Open(string) (safeio.File, error) {
@@ -737,6 +818,9 @@ func (r *swiftEMFILEProbeRoot) Open(string) (safeio.File, error) {
 	}
 	if r.directory != nil {
 		return r.directory, nil
+	}
+	if r.openErr != nil {
+		return nil, r.openErr
 	}
 	return nil, errors.New("unexpected open")
 }

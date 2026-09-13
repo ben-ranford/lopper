@@ -87,6 +87,9 @@ func probeSwiftSourceWithinRoot(ctx context.Context, repoPath string, maxEntries
 		return false, 0, err
 	}
 	root, err := openSwiftSourceProbeRoot(repoPath)
+	if isIgnorableOptionalCarthageProbeOpenError(err) {
+		return false, 0, nil
+	}
 	if err != nil {
 		return false, 0, err
 	}
@@ -615,6 +618,9 @@ func applyCarthageDetectionRoots(ctx context.Context, repoPath string, detection
 		return nil
 	}
 	trustedRoot, err := openSwiftSourceProbeRoot(repoPath)
+	if isIgnorableOptionalCarthageProbeOpenError(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -648,7 +654,7 @@ func applyCarthageDetectionRoots(ctx context.Context, repoPath string, detection
 }
 
 func isIgnorableNestedCarthageProbeError(err error) bool {
-	return shared.IsPureSentinelError(err, safeio.ErrTargetPathSymlink, fs.ErrNotExist)
+	return !isSwiftCarthageProbeCleanupError(err) && shared.IsPureSentinelError(err, safeio.ErrTargetPathSymlink, fs.ErrNotExist)
 }
 
 func swiftDetectionPathForRequestedRoot(repoPath, resolvedRepoPath, path string) (string, error) {
@@ -702,8 +708,17 @@ func probeSwiftSourceWithinTrustedRoot(ctx context.Context, root safeio.Root, re
 }
 
 func isIgnorableCarthageProbeResourceError(err error) bool {
+	return !isSwiftCarthageProbeCleanupError(err) && shared.IsPureSentinelError(err, syscall.EMFILE)
+}
+
+func isIgnorableOptionalCarthageProbeOpenError(err error) bool {
+	var joined safeio.UnwrapAller
+	return !errors.As(err, &joined) && isIgnorableCarthageProbeResourceError(err)
+}
+
+func isSwiftCarthageProbeCleanupError(err error) bool {
 	var cleanupErr *swiftCarthageProbeCleanupError
-	return !errors.As(err, &cleanupErr) && shared.IsPureSentinelError(err, syscall.EMFILE)
+	return errors.As(err, &cleanupErr)
 }
 
 func applyCarthageDetectionRoot(root string, confidence int, detection *language.Detection, roots map[string]struct{}) {
