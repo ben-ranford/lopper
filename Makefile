@@ -522,10 +522,15 @@ hooks-install:
 		check_hook_paths "local" "$$current_git_dir" current --local; \
 		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" "$$current_git_dir" current --worktree; fi; \
 		umask 077; \
+		managed_dir_existed=false; if [ -d "$$managed_dir" ]; then managed_dir_existed=true; fi; \
 		mkdir -p "$$managed_dir"; \
-		chmod 700 "$$managed_dir"; \
 		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
-		trap 'rm -f "$$temp_hook"' EXIT HUP INT TERM; \
+		managed_hook_existed=false; backup_hook="$$managed_dir/.pre-commit.$$$$.backup"; \
+		worktree_config_backup="$$managed_dir/.config.worktree.$$$$.backup"; worktree_config_existed=false; \
+		local_config_backup="$$managed_dir/.config.$$$$.backup"; local_config_existed=false; \
+		cleanup_snapshots() { status=$$?; trap - EXIT HUP INT TERM; rm -f "$$temp_hook" "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup" || :; if [ "$$managed_dir_existed" = false ]; then rmdir "$$managed_dir" 2>/dev/null || :; fi; exit "$$status"; }; \
+		trap 'cleanup_snapshots' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		chmod 700 "$$managed_dir"; \
 		cp "$$source_hook" "$$temp_hook"; \
 		chmod 755 "$$temp_hook"; \
 		if [ -d "$$managed_hook" ]; then \
@@ -540,15 +545,12 @@ hooks-install:
 			echo "Refusing to replace non-regular managed pre-commit hook: $$managed_hook" >&2; \
 			exit 1; \
 		fi; \
-		managed_hook_existed=false; backup_hook="$$managed_dir/.pre-commit.$$$$.backup"; \
-		worktree_config_backup="$$managed_dir/.config.worktree.$$$$.backup"; worktree_config_existed=false; \
-		local_config_backup="$$managed_dir/.config.$$$$.backup"; local_config_existed=false; \
 		if [ -f "$$current_git_dir/config.worktree" ]; then cp -p "$$current_git_dir/config.worktree" "$$worktree_config_backup"; worktree_config_existed=true; fi; \
 		if [ -f "$$common_dir/config" ]; then cp -p "$$common_dir/config" "$$local_config_backup"; local_config_existed=true; fi; \
 		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then cp -p "$$managed_hook" "$$backup_hook"; managed_hook_existed=true; fi; \
-		rollback_install() { if [ "$$local_config_existed" = true ] && [ -f "$$local_config_backup" ] && ! mv -f "$$local_config_backup" "$$common_dir/config"; then return 1; fi; if [ "$$worktree_config_existed" = true ] && [ -f "$$worktree_config_backup" ] && ! mv -f "$$worktree_config_backup" "$$current_git_dir/config.worktree"; then return 1; fi; if [ "$$managed_hook_existed" = true ] && [ -f "$$backup_hook" ]; then mv -f "$$backup_hook" "$$managed_hook" || return 1; elif [ "$$managed_hook_existed" = false ]; then rm -f "$$managed_hook" || return 1; rmdir "$$managed_dir" 2>/dev/null || :; fi; }; \
+		rollback_install() { if [ "$$local_config_existed" = true ] && [ -f "$$local_config_backup" ] && ! mv -f "$$local_config_backup" "$$common_dir/config"; then return 1; fi; if [ "$$worktree_config_existed" = true ] && [ -f "$$worktree_config_backup" ] && ! mv -f "$$worktree_config_backup" "$$current_git_dir/config.worktree"; then return 1; fi; if [ "$$managed_hook_existed" = true ] && [ -f "$$backup_hook" ]; then mv -f "$$backup_hook" "$$managed_hook" || return 1; elif [ "$$managed_hook_existed" = false ]; then rm -f "$$managed_hook" || return 1; if [ "$$managed_dir_existed" = false ]; then rmdir "$$managed_dir" 2>/dev/null || :; fi; fi; }; \
 		transaction_complete=false; \
-		on_exit() { status=$$?; trap - EXIT; rm -f "$$temp_hook" || :; if [ "$$transaction_complete" != true ] && ! rollback_install; then echo "Unable to restore hook installation completely; any remaining recovery backups were preserved" >&2; exit 1; fi; exit "$$status"; }; \
+		on_exit() { status=$$?; trap - EXIT HUP INT TERM; if [ "$$transaction_complete" = true ]; then rm -f "$$temp_hook" "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup" || :; else rm -f "$$temp_hook" || :; if ! rollback_install; then echo "Unable to restore hook installation completely; any remaining recovery backups were preserved" >&2; exit 1; fi; fi; exit "$$status"; }; \
 		trap 'on_exit' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		if [ "$$current_dormant_legacy" = true ] && ! git -c core.bare=false config --file "$$current_git_dir/config.worktree" --replace-all core.hooksPath "$$managed_dir"; then exit 1; fi; \
@@ -558,7 +560,7 @@ hooks-install:
 			echo "Managed core.hooksPath was not activated" >&2; \
 			exit 1; \
 		fi; \
-		transaction_complete=true; trap - EXIT HUP INT TERM; rm -f "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup"; \
+		transaction_complete=true; rm -f "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup"; trap - EXIT HUP INT TERM; \
 		echo "Installed reviewed pre-commit hook in $$managed_dir"
 
 hooks-uninstall:

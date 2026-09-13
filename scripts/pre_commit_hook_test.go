@@ -526,6 +526,186 @@ exec %q "$@"
 	}
 }
 
+func TestHooksInstallCleansSnapshotsWhenBackupCopyFails(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name, backupPattern string
+	}{
+		{name: "common config", backupPattern: "*.config.*.backup"},
+		{name: "managed hook", backupPattern: "*.pre-commit.*.backup"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newHookInstallSnapshot(t)
+			cpPath, err := exec.LookPath("cp")
+			if err != nil {
+				t.Fatalf("find cp: %v", err)
+			}
+			wrapperDir := t.TempDir()
+			writeFileMode(t, filepath.Join(wrapperDir, "cp"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	case "$arg" in
+	%s) echo "forced backup copy failure" >&2; exit 73 ;;
+	esac
+done
+exec %q "$@"
+`, testCase.backupPattern, cpPath), 0o755)
+
+			output, err := runMakeWithEnv(fixture.repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err == nil || !strings.Contains(string(output), "forced backup copy failure") {
+				t.Fatalf("install with failed backup copy = %v\n%s", err, output)
+			}
+			fixture.assertPreserved(t)
+		})
+	}
+}
+
+func TestHooksInstallCleansSnapshotsWhenBackupCopyGetsTerm(t *testing.T) {
+	t.Parallel()
+
+	fixture := newHookInstallSnapshot(t)
+	cpPath, err := exec.LookPath("cp")
+	if err != nil {
+		t.Fatalf("find cp: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "cp"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	case "$arg" in
+	*.pre-commit.*.backup) kill -TERM "$PPID"; exit 73 ;;
+	esac
+done
+exec %q "$@"
+`, cpPath), 0o755)
+
+	if output, err := runMakeWithEnv(fixture.repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH")); err == nil || strings.Contains(string(output), "Installed reviewed pre-commit hook") {
+		t.Fatalf("install interrupted during backup copy = %v\n%s", err, output)
+	}
+	fixture.assertPreserved(t)
+}
+
+func TestHooksInstallRemovesNewManagedDirectoryWhenInitialHookCopyFails(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "cp"), `#!/bin/sh
+echo "forced initial hook copy failure" >&2
+exit 73
+`, 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "forced initial hook copy failure") {
+		t.Fatalf("install with failed initial hook copy = %v\n%s", err, output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if _, err := os.Stat(filepath.Dir(managedHookPath(t, repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("installer retained newly created managed hook directory: %v", err)
+	}
+}
+
+func TestHooksInstallPreservesExistingEmptyManagedDirectoryOnActivationRollback(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	managedDir := filepath.Dir(managedHookPath(t, repoDir))
+	if err := os.MkdirAll(managedDir, 0o700); err != nil {
+		t.Fatalf("create managed hook directory: %v", err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "--fixed-value" ]; then
+		echo "forced activation verification failure" >&2
+		exit 73
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Managed core.hooksPath was not activated") {
+		t.Fatalf("install with activation failure = %v\n%s", err, output)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	entries, err := os.ReadDir(managedDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("managed hook directory entries = %#v err=%v", entries, err)
+	}
+}
+
+func TestHooksInstallRetriesCompletedTransactionCleanup(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	rmPath, err := exec.LookPath("rm")
+	if err != nil {
+		t.Fatalf("find rm: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	markerPath := filepath.Join(wrapperDir, "cleanup-failed")
+	writeFileMode(t, filepath.Join(wrapperDir, "rm"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	case "$arg" in
+	*.backup)
+		if [ ! -e %q ]; then : > %q; echo "forced completed cleanup failure" >&2; exit 73; fi
+		;;
+	esac
+done
+exec %q "$@"
+`, markerPath, markerPath, rmPath), 0o755)
+
+	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "forced completed cleanup failure") {
+		t.Fatalf("install with completed cleanup failure = %v\n%s", err, output)
+	}
+	managedHook := managedHookPath(t, repoDir)
+	assertConfigEquals(t, repoDir, filepath.Dir(managedHook))
+	assertFileEquals(t, managedHook, readRepositoryHook(t))
+	assertNoHookInstallArtifacts(t, filepath.Dir(managedHook))
+}
+
+type hookInstallSnapshot struct {
+	repoDir, configPath, managedDir, managedHook string
+	config, hook                                 []byte
+}
+
+func newHookInstallSnapshot(t *testing.T) *hookInstallSnapshot {
+	t.Helper()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+	return &hookInstallSnapshot{
+		repoDir: repoDir, configPath: configPath, managedDir: filepath.Dir(managedHook), managedHook: managedHook,
+		config: readHookConfigBytes(t, configPath), hook: readHookConfigBytes(t, managedHook),
+	}
+}
+
+func (hi *hookInstallSnapshot) assertPreserved(t *testing.T) {
+	t.Helper()
+
+	assertFileEquals(t, hi.configPath, string(hi.config))
+	assertFileEquals(t, hi.managedHook, string(hi.hook))
+	assertNoHookInstallArtifacts(t, hi.managedDir)
+}
+
+func assertNoHookInstallArtifacts(t *testing.T, managedDir string) {
+	t.Helper()
+
+	for _, pattern := range []string{".pre-commit.*.tmp", ".pre-commit.*.backup", ".config.*.backup"} {
+		artifacts, err := filepath.Glob(filepath.Join(managedDir, pattern))
+		if err != nil || len(artifacts) != 0 {
+			t.Fatalf("snapshot artifacts for %s = %#v err=%v", pattern, artifacts, err)
+		}
+	}
+}
+
 func TestHooksInstallRefusesManagedHookSymlinkBeforeMutation(t *testing.T) {
 	t.Parallel()
 
