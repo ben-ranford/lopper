@@ -725,12 +725,12 @@ func staveDetailNodes(dep summaryDependencyView, focused, ascii bool) ([]semanti
 func staveFeedbackNode(interaction staveSummaryInteraction, width int, ascii bool) (semantic.Node, error) {
 	name, text, style := "Keys", staveKeyHint(width), staveStyleUnknown
 	switch {
+	case interaction.commandMode:
+		name, text, style = "Command", safeDisplay(interaction.filterBuffer, ascii), staveStylePrimary
 	case interaction.error != "":
 		name, text, style = "Error", safeDisplay(interaction.error, ascii), "status.failure"
 	case interaction.pendingConfirm != "":
 		name, text, style = "Confirm", safeDisplay(interaction.pendingConfirm, ascii), staveStyleAdvisory
-	case interaction.commandMode:
-		name, text, style = "Command", safeDisplay(interaction.filterBuffer, ascii), staveStylePrimary
 	case interaction.status != "":
 		name, text, style = "Update", safeDisplay(interaction.status, ascii), "status.success"
 	}

@@ -225,15 +225,15 @@ func TestStaveTreeForInteractionBranches(t *testing.T) {
 	if root.ChildCount() < 4 {
 		t.Fatalf("compact tree lost child nodes: %d", root.ChildCount())
 	}
-	var statusFound bool
+	var commandFound bool
 	for i := 0; i < root.ChildCount(); i++ {
 		n, _ := root.Child(i)
-		if n.Name() == "Status" || n.Name() == "Error" {
-			statusFound = true
+		if n.Name() == "Command" && n.Description() == "filter go" {
+			commandFound = true
 		}
 	}
-	if !statusFound {
-		t.Fatal("status/error node missing")
+	if !commandFound {
+		t.Fatal("active command editor missing")
 	}
 	// Row ordering and labels are validated by semantic/golden tests; this test
 	// only exercises compact interaction-node construction.
