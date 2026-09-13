@@ -51,12 +51,12 @@ func TestWriteStaveLineFrameAddsNewlineAndPropagatesWriterErrors(t *testing.T) {
 
 func TestStavePreviewRenderHonorsCancellationAndReportsAnalyzerErrors(t *testing.T) {
 	p := NewStavePreview(NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{err: errors.New("analysis failed")}, nil)).(*StavePreview)
-	if _, err := p.render(context.Background(), Options{UseStavePreview: true}); err == nil || !strings.Contains(err.Error(), "analysis failed") {
+	if _, err := p.render(context.Background(), Options{UseStavePreview: true}, false); err == nil || !strings.Contains(err.Error(), "analysis failed") {
 		t.Fatalf("analyzer error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := p.renderView(ctx, Options{}, summaryReportView{}, summaryState{}); !errors.Is(err, context.Canceled) {
+	if _, err := p.renderView(ctx, Options{}, summaryReportView{}, summaryState{}, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("render cancellation = %v", err)
 	}
 }

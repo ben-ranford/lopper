@@ -32,12 +32,16 @@ func TestExecuteTUIStartAndSnapshot(t *testing.T) {
 	req.TUI.Filter = "lod"
 	req.TUI.Sort = "name"
 	req.TUI.PageSize = 3
+	req.TUI.Features = mustEnabledPreviewFeatureSet(t)
 
 	if _, err := application.Execute(context.Background(), req); err != nil {
 		t.Fatalf("execute tui start: %v", err)
 	}
 	if !tui.startCalled || tui.snapshotCalled {
 		t.Fatalf("expected Start to be called only once")
+	}
+	if !tui.lastOptions.Features.Enabled("dart-source-attribution") {
+		t.Fatalf("expected TUI start options to retain resolved features, got %#v", tui.lastOptions)
 	}
 
 	req.TUI.SnapshotPath = testSnapshotPath

@@ -262,7 +262,7 @@ func checkPreviewRenderviewReturnsRenderErrorsFromTheRenderer(t *testing.T, prev
 	t.Helper()
 	ctx := &countingContext{cancelAfter: 2}
 	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
-	if _, err := preview.renderView(ctx, Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}, view, summaryState{page: 1, pageSize: 10}); !errors.Is(err, context.Canceled) {
+	if _, err := preview.renderView(ctx, Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 80}, view, summaryState{page: 1, pageSize: 10}, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected render cancellation from render.Render, got %v", err)
 	}
 }

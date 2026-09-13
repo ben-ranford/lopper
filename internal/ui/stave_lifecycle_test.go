@@ -88,7 +88,7 @@ func TestStaveActionRunsOffLoopAfterPendingEvent(t *testing.T) {
 func TestStaveRefreshReanalyzesAndPreservesInteractionState(t *testing.T) {
 	analyzer := &stubAnalyzer{report: report.Report{SchemaVersion: report.SchemaVersion, Dependencies: []report.DependencyReport{{Language: "go", Name: "before"}}}}
 	summary := NewSummary(io.Discard, strings.NewReader(""), analyzer, report.NewFormatter())
-	opts := summary.applyDefaults(Options{Width: 80})
+	opts := summary.applyDefaults(Options{Features: previewFeatures(t), Width: 80})
 	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "before"}}}
 	state := summaryState{filter: "go", sortMode: sortByName, page: 9, pageSize: 1}
 	program, err := newLopperStaveProgram(summary, &opts, &view, &state)
@@ -110,6 +110,9 @@ func TestStaveRefreshReanalyzesAndPreservesInteractionState(t *testing.T) {
 	}
 	if snap.Model.view == nil || len(snap.Model.view.Dependencies) != 1 || snap.Model.view.Dependencies[0].Name != "after" {
 		t.Fatalf("refresh did not replace session view: %+v", snap.Model.view)
+	}
+	if !analyzer.lastReq.Features.Enabled(staveTUIFeature) {
+		t.Fatalf("refresh analysis did not retain resolved features: %#v", analyzer.lastReq)
 	}
 	if got := snap.Model.interaction.summary; got.filter != "go" || got.sortMode != sortByName || got.page != 1 || got.pageSize != 1 {
 		t.Fatalf("refresh changed interaction state unexpectedly: %+v", got)

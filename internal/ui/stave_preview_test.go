@@ -385,7 +385,7 @@ func TestStavePreviewRenderContainsRowsAndHonorsNarrowWidth(t *testing.T) {
 	data := report.Report{Dependencies: []report.DependencyReport{{Language: "js-ts", Name: "lodash", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
 	summary := NewSummary(&strings.Builder{}, strings.NewReader(""), &stubAnalyzer{report: data}, report.NewFormatter())
 	preview := NewStavePreview(summary).(*StavePreview)
-	output, err := preview.render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 30, ASCII: true, Color: boolPtr(false)})
+	output, err := preview.render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 30, ASCII: true, Color: boolPtr(false)}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

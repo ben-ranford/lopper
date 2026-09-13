@@ -340,14 +340,14 @@ func checkPreviewRenderReturnsAnalyzerErrors(t *testing.T) {
 	t.Helper()
 	renderErr := errors.New("analysis failed")
 	broken := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{err: renderErr}, report.NewFormatter())
-	if _, err := NewStavePreview(broken).(*StavePreview).render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}); !errors.Is(err, renderErr) {
+	if _, err := NewStavePreview(broken).(*StavePreview).render(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}, false); !errors.Is(err, renderErr) {
 		t.Fatalf("render analyzer error was not returned: %v", err)
 	}
 }
 
 func checkPreviewRenderviewReturnsTreeFailures(t *testing.T, preview *StavePreview) {
 	t.Helper()
-	_, err := preview.renderView(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}, summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "\xff"}}}, summaryState{page: 1, pageSize: 10})
+	_, err := preview.renderView(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80}, summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "\xff"}}}, summaryState{page: 1, pageSize: 10}, false)
 	if err == nil {
 		t.Fatal("expected invalid tree to fail")
 	}
@@ -359,13 +359,13 @@ func checkPreviewRenderviewReturnsPostRenderCancellation(t *testing.T, preview *
 	state := summaryState{page: 1, pageSize: 1}
 	view := summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha", UsedPercent: 50, EstimatedUnusedBytes: 10}}}
 	ctxCount := &countingContext{}
-	if output, err := preview.renderView(ctxCount, opts, view, state); err != nil {
+	if output, err := preview.renderView(ctxCount, opts, view, state, false); err != nil {
 		t.Fatalf("renderView success: %v", err)
 	} else if !strings.Contains(output, "alpha") || !strings.Contains(output, "Stave preview") {
 		t.Fatalf("renderView output missing content: %q", output)
 	}
 	ctxCancel := &countingContext{cancelAfter: ctxCount.calls}
-	if _, err := preview.renderView(ctxCancel, opts, view, state); !errors.Is(err, context.Canceled) {
+	if _, err := preview.renderView(ctxCancel, opts, view, state, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("renderView cancellation was not returned: %v", err)
 	}
 }

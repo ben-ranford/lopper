@@ -240,6 +240,7 @@ func (s *Summary) runSummaryCodemodApply(ctx context.Context, opts *Options, rep
 		TopN:       opts.TopN,
 		Language:   languageID,
 		AllowDirty: action.allowDirty,
+		Features:   opts.Features,
 	})
 	applyReport := findCodemodApplyReport(reportData, action.dependency)
 	if applyReport != nil && reportView != nil {
@@ -323,6 +324,7 @@ func buildSummaryBaselineSaveRequest(opts Options, action summaryAction) (Baseli
 		BaselineStorePath: storePath,
 		BaselineKey:       key,
 		BaselineLabel:     label,
+		Features:          opts.Features,
 	}, displayKey, nil
 }
 

@@ -470,6 +470,7 @@ func (s *Summary) analyseSummaryView(ctx context.Context, opts Options) (summary
 		RepoPath: opts.RepoPath,
 		TopN:     opts.TopN,
 		Language: opts.Language,
+		Features: opts.Features,
 	})
 	if err != nil {
 		return summaryReportView{}, err

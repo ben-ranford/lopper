@@ -228,7 +228,7 @@ func testStaveSignalRestore(t *testing.T, bin, root, fixture, name string, sig o
 		t.Fatalf("send %s: %v", name, err)
 	}
 	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
-		t.Fatalf("%s did not terminate within bound: %v", name, err)
+		t.Fatalf("%s did not terminate within bound: %v; output=%q", name, err, output.String())
 	}
 	if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
 		t.Logf("set signal PTY read deadline: %v", err)
@@ -286,7 +286,7 @@ func closePTYProcess(t *testing.T, ptmx *os.File, cmd *exec.Cmd) {
 	if err := ptmx.Close(); err != nil {
 		t.Logf("close pty: %v", err)
 	}
-	if err := cmd.Process.Kill(); err != nil {
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Logf("kill process: %v", err)
 	}
 }

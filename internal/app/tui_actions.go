@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
 )
@@ -21,7 +22,7 @@ func (a *App) tuiActionRunner() ui.ActionRunner {
 }
 
 func (r *appTUIActionRunner) ApplyCodemod(ctx context.Context, req ui.CodemodApplyRequest) (report.Report, error) {
-	appReq := newTUIAnalyseRequest(req.RepoPath, req.TopN, req.Language)
+	appReq := newTUIAnalyseRequest(req.RepoPath, req.TopN, req.Language, req.Features)
 	appReq.Analyse.Dependency = strings.TrimSpace(req.Dependency)
 	appReq.Analyse.ApplyCodemod = true
 	appReq.Analyse.AllowDirty = req.AllowDirty
@@ -29,7 +30,7 @@ func (r *appTUIActionRunner) ApplyCodemod(ctx context.Context, req ui.CodemodApp
 }
 
 func (r *appTUIActionRunner) SaveBaseline(ctx context.Context, req ui.BaselineSaveRequest) (report.Report, string, error) {
-	appReq := newTUIAnalyseRequest(req.RepoPath, req.TopN, req.Language)
+	appReq := newTUIAnalyseRequest(req.RepoPath, req.TopN, req.Language, req.Features)
 	appReq.Analyse.SaveBaseline = true
 	appReq.Analyse.BaselineStorePath = strings.TrimSpace(req.BaselineStorePath)
 	if strings.TrimSpace(req.BaselineLabel) == "" {
@@ -41,12 +42,13 @@ func (r *appTUIActionRunner) SaveBaseline(ctx context.Context, req ui.BaselineSa
 	return reportData, savedSnapshotPath(reportData.Warnings, baselineSaveWarningPrefix), err
 }
 
-func newTUIAnalyseRequest(repoPath string, topN int, language string) Request {
+func newTUIAnalyseRequest(repoPath string, topN int, language string, features featureflags.Set) Request {
 	appReq := DefaultRequest()
 	appReq.Mode = ModeAnalyse
 	appReq.RepoPath = repoPath
 	appReq.Analyse.TopN = topN
 	appReq.Analyse.Format = report.FormatJSON
+	appReq.Analyse.Features = features
 	if trimmedLanguage := strings.TrimSpace(language); trimmedLanguage != "" {
 		appReq.Analyse.Language = trimmedLanguage
 	}

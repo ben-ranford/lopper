@@ -15,15 +15,30 @@ import (
 )
 
 type stubAnalyzer struct {
-	report report.Report
-	err    error
+	report  report.Report
+	err     error
+	lastReq analysis.Request
 }
 
 func (s *stubAnalyzer) Analyse(ctx context.Context, req analysis.Request) (report.Report, error) {
+	s.lastReq = req
 	if s.err != nil {
 		return report.Report{}, s.err
 	}
 	return s.report, nil
+}
+
+func TestSummaryAnalysisForwardsFeatures(t *testing.T) {
+	features := previewFeatures(t)
+	analyzer := &stubAnalyzer{}
+	summary := NewSummary(io.Discard, strings.NewReader(""), analyzer, report.NewFormatter())
+
+	if _, err := summary.analyseSummaryView(context.Background(), Options{RepoPath: ".", Language: "go", Features: features}); err != nil {
+		t.Fatalf("analyse summary view: %v", err)
+	}
+	if !analyzer.lastReq.Features.Enabled(staveTUIFeature) {
+		t.Fatalf("expected summary analysis to retain resolved features, got %#v", analyzer.lastReq)
+	}
 }
 
 func TestSummarySnapshotGolden(t *testing.T) {

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 
+	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -17,6 +18,7 @@ type CodemodApplyRequest struct {
 	TopN       int
 	Language   string
 	AllowDirty bool
+	Features   featureflags.Set
 }
 
 type BaselineSaveRequest struct {
@@ -26,4 +28,5 @@ type BaselineSaveRequest struct {
 	BaselineStorePath string
 	BaselineKey       string
 	BaselineLabel     string
+	Features          featureflags.Set
 }

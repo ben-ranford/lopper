@@ -194,7 +194,7 @@ func (s *staveSummaryShared) codemodAction(ctx context.Context, raw any) (any, e
 		return nil, fmt.Errorf("codemod apply is unavailable")
 	}
 	languageID, dependencyName := parseDependencyLanguage(s.opts.Language, dep)
-	result, runErr := s.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: s.opts.RepoPath, Dependency: dependencyName, TopN: s.opts.TopN, Language: languageID, AllowDirty: dirty})
+	result, runErr := s.summary.Actions.ApplyCodemod(ctx, CodemodApplyRequest{RepoPath: s.opts.RepoPath, Dependency: dependencyName, TopN: s.opts.TopN, Language: languageID, AllowDirty: dirty, Features: s.opts.Features})
 	applyReport := findCodemodApplyReport(result, languageID+":"+dependencyName)
 	if applyReport == nil {
 		if runErr != nil {

@@ -73,7 +73,7 @@ func TestSummaryCodemodApplyCommandRequiresConfirmationAndMergesResults(t *testi
 			},
 		},
 	})
-	opts := Options{RepoPath: ".", TopN: 20, Language: "all"}
+	opts := Options{RepoPath: ".", TopN: 20, Language: "all", Features: previewFeatures(t)}
 	state := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste, selectedDependency: "js-ts:lodash"}
 
 	if quit, err := summary.handleSummaryInputMutable(context.Background(), &opts, &reportView, &state, "apply-codemod"); err != nil || quit {
@@ -93,7 +93,7 @@ func TestSummaryCodemodApplyCommandRequiresConfirmationAndMergesResults(t *testi
 	if actions.applyCalls != 1 {
 		t.Fatalf("expected one apply call, got %d", actions.applyCalls)
 	}
-	if actions.applyReq.Dependency != "lodash" || actions.applyReq.Language != "js-ts" || !actions.applyReq.AllowDirty {
+	if actions.applyReq.Dependency != "lodash" || actions.applyReq.Language != "js-ts" || !actions.applyReq.AllowDirty || !actions.applyReq.Features.Enabled(staveTUIFeature) {
 		t.Fatalf("unexpected apply request: %#v", actions.applyReq)
 	}
 	if reportView.Dependencies[0].CodemodApply != applyReport {
@@ -120,7 +120,7 @@ func TestSummarySaveBaselineCommandSupportsLabelAndDefaultCommitKey(t *testing.T
 	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
 	summary.Actions = actions
 	reportView := summaryReportView{}
-	opts := Options{RepoPath: ".", TopN: 20, Language: "all"}
+	opts := Options{RepoPath: ".", TopN: 20, Language: "all", Features: previewFeatures(t)}
 	state := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
 
 	if quit, err := summary.handleSummaryInputMutable(context.Background(), &opts, &reportView, &state, "save-baseline nightly"); err != nil || quit {
@@ -128,6 +128,9 @@ func TestSummarySaveBaselineCommandSupportsLabelAndDefaultCommitKey(t *testing.T
 	}
 	if actions.saveReq.BaselineStorePath != defaultTUIBaselineStorePath || actions.saveReq.BaselineLabel != "nightly" {
 		t.Fatalf("unexpected label save request: %#v", actions.saveReq)
+	}
+	if !actions.saveReq.Features.Enabled(staveTUIFeature) {
+		t.Fatalf("expected baseline save to retain resolved features, got %#v", actions.saveReq)
 	}
 	if opts.BaselineStorePath != defaultTUIBaselineStorePath {
 		t.Fatalf("expected options to remember baseline store, got %q", opts.BaselineStorePath)
@@ -185,9 +188,10 @@ func TestSummaryCompareBaselineCommandRefreshesReportAndDetailDeltas(t *testing.
 	}
 
 	var out bytes.Buffer
-	summary := NewSummary(&out, strings.NewReader(""), &stubAnalyzer{report: currentReport}, report.NewFormatter())
+	analyzer := &stubAnalyzer{report: currentReport}
+	summary := NewSummary(&out, strings.NewReader(""), analyzer, report.NewFormatter())
 	reportView := mapSummaryReportView(currentReport)
-	opts := Options{RepoPath: ".", TopN: 20, Language: "all"}
+	opts := Options{RepoPath: ".", TopN: 20, Language: "all", Features: previewFeatures(t)}
 	state := summaryState{page: 1, pageSize: 10, sortMode: sortByWaste}
 
 	if quit, err := summary.handleSummaryInputMutable(context.Background(), &opts, &reportView, &state, "compare-baseline --file "+baselinePath); err != nil || quit {
@@ -195,6 +199,9 @@ func TestSummaryCompareBaselineCommandRefreshesReportAndDetailDeltas(t *testing.
 	}
 	if reportView.BaselineComparison == nil {
 		t.Fatalf("expected baseline comparison to refresh current view")
+	}
+	if !analyzer.lastReq.Features.Enabled(staveTUIFeature) {
+		t.Fatalf("baseline comparison analysis did not retain resolved features: %#v", analyzer.lastReq)
 	}
 	if !strings.Contains(out.String(), "Baseline comparison refreshed") {
 		t.Fatalf("expected compare refresh message, got %q", out.String())

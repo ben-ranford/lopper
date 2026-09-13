@@ -58,15 +58,15 @@ func (p *StavePreview) Snapshot(ctx context.Context, opts Options, outputPath st
 	if outputPath == "" {
 		return fmt.Errorf("snapshot output path is required")
 	}
-	output, err := p.render(ctx, opts)
+	writer := p.legacy.Out
+	if writer == nil {
+		writer = os.Stdout
+	}
+	output, err := p.render(ctx, opts, outputPath == "-" && staveTerminalFile(writer))
 	if err != nil {
 		return err
 	}
 	if outputPath == "-" {
-		writer := p.legacy.Out
-		if writer == nil {
-			writer = os.Stdout
-		}
 		_, err = io.WriteString(writer, output)
 		return err
 	}
@@ -430,7 +430,7 @@ func lopperStaveInput(input string, state summaryState) (action.ID, any, bool, b
 	return "", nil, false, false
 }
 
-func (p *StavePreview) render(ctx context.Context, opts Options) (string, error) {
+func (p *StavePreview) render(ctx context.Context, opts Options, tty bool) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -440,14 +440,14 @@ func (p *StavePreview) render(ctx context.Context, opts Options) (string, error)
 		return "", err
 	}
 	state := buildSummaryState(opts)
-	return p.renderView(ctx, opts, view, state)
+	return p.renderView(ctx, opts, view, state, tty)
 }
 
-func (p *StavePreview) renderView(ctx context.Context, opts Options, view summaryReportView, state summaryState) (string, error) {
+func (p *StavePreview) renderView(ctx context.Context, opts Options, view summaryReportView, state summaryState, tty bool) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	renderer, err := newStaveRenderer(opts, supportsScreenRefresh(p.legacy.Out))
+	renderer, err := newStaveRenderer(opts, tty)
 	if err != nil {
 		return "", err
 	}

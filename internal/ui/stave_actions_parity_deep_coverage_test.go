@@ -75,7 +75,7 @@ func TestActionRegistryAndProgramHandlerBranches(t *testing.T) {
 	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: current}, report.NewFormatter())
 	summary.Actions = runner
 
-	opts := summary.applyDefaults(Options{RepoPath: ".", BaselineStorePath: store, Width: 96})
+	opts := summary.applyDefaults(Options{RepoPath: ".", BaselineStorePath: store, Features: previewFeatures(t), Width: 96})
 	view := mapSummaryReportView(current)
 	program, err := newLopperStaveProgram(summary, &opts, &view, nil)
 	if err != nil {
@@ -294,7 +294,7 @@ func requireRegistryBaselineHandlers(t *testing.T, prepared *stave.Prepared[stav
 	if err := invokeLopperAction(context.Background(), prepared, action.ID(staveActionSaveBaseline), preparedLopperActionArgs(t, prepared, action.ID(staveActionSaveBaseline), map[string]any{"label": "nightly", "store": store}), "lopper-preview", false); err != nil {
 		t.Fatalf("save baseline failed: %v", err)
 	}
-	if runner.saveCalls != 1 || runner.saveReq.BaselineStorePath != store || runner.saveReq.BaselineLabel != "nightly" {
+	if runner.saveCalls != 1 || runner.saveReq.BaselineStorePath != store || runner.saveReq.BaselineLabel != "nightly" || !runner.saveReq.Features.Enabled(staveTUIFeature) {
 		t.Fatalf("save baseline request not preserved: %+v", runner.saveReq)
 	}
 	if runner.savePath == "" {
@@ -328,7 +328,7 @@ func requireRegistryCodemodHandler(t *testing.T, prepared *stave.Prepared[staveS
 	if _, err := completeLopperAction(context.Background(), t, prepared, action.ID(staveActionApplyCodemod), map[string]any{"dependency": "go:alpha", "confirm": true, "allowDirty": true}, staveTestActionCall{sessionID: "lopper-preview", callID: "codemod", confirm: true}); err != nil {
 		t.Fatalf("confirmed codemod failed: %v", err)
 	}
-	if runner.applyCalls != 1 || runner.applyReq.Dependency != "alpha" || !runner.applyReq.AllowDirty || runner.applyReq.Language != "go" {
+	if runner.applyCalls != 1 || runner.applyReq.Dependency != "alpha" || !runner.applyReq.AllowDirty || runner.applyReq.Language != "go" || !runner.applyReq.Features.Enabled(staveTUIFeature) {
 		t.Fatalf("confirmed codemod request not recorded: %+v", runner.applyReq)
 	}
 }
