@@ -501,8 +501,10 @@ hooks-install:
 			if [ -s "$$markers_file" ]; then current_dormant_legacy=true; fi; rm -f "$$values_file" "$$error_file" "$$markers_file"; \
 		}; \
 		current_dormant_legacy=false; \
-		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
+		if [ -L "$$common_dir/config" ]; then echo "Refusing unsafe common Git config symlink: $$common_dir/config" >&2; exit 1; fi; \
+		if [ -L "$$current_git_dir/config.worktree" ]; then echo "Refusing unsafe current worktree Git config symlink: $$current_git_dir/config.worktree" >&2; exit 1; fi; \
+		read_worktree_config; \
 		refuse_config_includes "$$common_dir/config"; \
 		check_dormant_worktree_hook_paths "current worktree" "$$current_git_dir" true; \
 		for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
@@ -548,7 +550,7 @@ hooks-install:
 		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then cp -p "$$managed_hook" "$$backup_hook"; managed_hook_existed=true; fi; \
 		rollback_install() { if [ "$$local_config_existed" = true ] && [ -f "$$local_config_backup" ] && ! mv -f "$$local_config_backup" "$$common_dir/config"; then return 1; fi; if [ "$$worktree_config_existed" = true ] && [ -f "$$worktree_config_backup" ] && ! mv -f "$$worktree_config_backup" "$$current_git_dir/config.worktree"; then return 1; fi; if [ "$$managed_hook_existed" = true ] && [ -f "$$backup_hook" ]; then mv -f "$$backup_hook" "$$managed_hook" || return 1; elif [ "$$managed_hook_existed" = false ]; then rm -f "$$managed_hook"; rmdir "$$managed_dir" 2>/dev/null || :; fi; }; \
 		transaction_complete=false; \
-		on_exit() { status=$$?; trap - EXIT; if [ "$$transaction_complete" != true ] && ! rollback_install; then echo "Unable to restore hook configuration; recovery backups were preserved" >&2; exit 1; fi; exit "$$status"; }; \
+		on_exit() { status=$$?; trap - EXIT; rm -f "$$temp_hook" || :; if [ "$$transaction_complete" != true ] && ! rollback_install; then echo "Unable to restore hook configuration; recovery backups were preserved" >&2; exit 1; fi; exit "$$status"; }; \
 		trap 'on_exit' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		mv -f "$$temp_hook" "$$managed_hook"; \
 		if [ "$$current_dormant_legacy" = true ] && ! git -c core.bare=false config --file "$$current_git_dir/config.worktree" --replace-all core.hooksPath "$$managed_dir"; then exit 1; fi; \
@@ -609,6 +611,7 @@ hooks-uninstall:
 		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
 		includes_may_reference_managed_hook=false; \
+		error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; if [ "$$status" -eq 0 ]; then includes_may_reference_managed_hook=true; rm -f "$$error_file"; elif [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; else cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect effective config includes" >&2; exit 1; fi; \
 		for config_file in "$$common_dir/config" "$$common_dir/config.worktree" "$$common_dir"/worktrees/*/config.worktree; do \
 			[ -f "$$config_file" ] || continue; \
 			error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --file "$$config_file" --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; if [ "$$status" -eq 0 ]; then includes_may_reference_managed_hook=true; rm -f "$$error_file"; elif [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; else cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect includes in $$config_file" >&2; exit 1; fi; \
