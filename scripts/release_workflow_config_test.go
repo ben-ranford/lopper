@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -2776,39 +2777,160 @@ func TestReleaseWorkflowManualReleaseVerifiesExistingTagsViaGitHubAPI(t *testing
 	}
 }
 
-func TestRenovateDoesNotAutomergeMajorUpdates(t *testing.T) {
+type renovateReviewRule struct {
+	MatchPackageNames []string `json:"matchPackageNames"`
+	MatchUpdateTypes  []string `json:"matchUpdateTypes"`
+	Enabled           *bool    `json:"enabled"`
+	Automerge         *bool    `json:"automerge"`
+}
+
+func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
-		PackageRules []struct {
-			MatchUpdateTypes []string `json:"matchUpdateTypes"`
-			Automerge        *bool    `json:"automerge"`
-		} `json:"packageRules"`
+		Enabled           *bool                `json:"enabled"`
+		Automerge         *bool                `json:"automerge"`
+		PlatformAutomerge *bool                `json:"platformAutomerge"`
+		PackageRules      []renovateReviewRule `json:"packageRules"`
 	}
 	readJSONConfig(t, "renovate.json", &config)
 
-	automergeByUpdateType := map[string][]bool{}
-	for _, rule := range config.PackageRules {
-		if rule.Automerge == nil {
-			continue
-		}
-		for _, updateType := range rule.MatchUpdateTypes {
-			automergeByUpdateType[updateType] = append(automergeByUpdateType[updateType], *rule.Automerge)
-		}
-	}
+	assertRenovateGlobalReviewSettings(t, config.Enabled, config.Automerge, config.PlatformAutomerge)
 
-	for _, enabled := range automergeByUpdateType["major"] {
-		if enabled {
-			t.Fatal("major updates must not be covered by an automerge=true Renovate rule")
+	var matcherConfig struct {
+		PackageRules []map[string]json.RawMessage `json:"packageRules"`
+	}
+	readJSONConfig(t, "renovate.json", &matcherConfig)
+
+	if err := validateRenovatePackageRules(config.PackageRules, matcherConfig.PackageRules); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge, platformAutomerge *bool) {
+	t.Helper()
+
+	if enabled != nil && !*enabled {
+		t.Fatal("Renovate must not globally disable dependency update PR creation")
+	}
+	if automerge != nil && *automerge {
+		t.Fatal("Renovate must not enable global unattended automerge")
+	}
+	if platformAutomerge == nil || *platformAutomerge {
+		t.Fatal("Renovate platformAutomerge must be explicitly disabled so dependency updates require human review")
+	}
+}
+
+func validateRenovatePackageRules(rules []renovateReviewRule, rawRules []map[string]json.RawMessage) error {
+	if len(rules) != len(rawRules) {
+		return errors.New("renovate package rule metadata is inconsistent")
+	}
+	hasCatchAllReviewRule := false
+	for index, rule := range rules {
+		if rule.Enabled != nil && !*rule.Enabled {
+			return fmt.Errorf("renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
+		}
+		if rule.Automerge != nil && *rule.Automerge {
+			return fmt.Errorf("renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
+		}
+		if renovateRuleHasRuleLevelExtends(rawRules[index]) {
+			return fmt.Errorf("renovate package rule for packages %v must not use extends", rule.MatchPackageNames)
+		}
+		if renovateRuleRequiresHumanReview(rule, rawRules[index]) {
+			hasCatchAllReviewRule = true
 		}
 	}
-	if !hasAutomerge(automergeByUpdateType["major"], false) {
-		t.Fatal("major updates should have an explicit automerge=false Renovate rule")
+	if !hasCatchAllReviewRule {
+		return errors.New("renovate must include a catch-all automerge=false rule to override inherited automerge settings")
 	}
-	for _, updateType := range []string{"minor", "patch"} {
-		if !hasAutomerge(automergeByUpdateType[updateType], true) {
-			t.Fatalf("%s updates should retain Renovate automerge=true", updateType)
+	return nil
+}
+
+func renovateRuleRequiresHumanReview(rule renovateReviewRule, rawRule map[string]json.RawMessage) bool {
+	return len(rule.MatchPackageNames) == 1 && rule.MatchPackageNames[0] == "*" &&
+		rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(rawRule) && !renovateRuleHasRuleLevelExtends(rawRule)
+}
+
+func renovateRuleHasRuleLevelExtends(rule map[string]json.RawMessage) bool {
+	_, hasExtends := rule["extends"]
+	return hasExtends
+}
+
+var renovateLegacyNarrowingMatchers = map[string]struct{}{
+	"paths":             {},
+	"languages":         {},
+	"baseBranchList":    {},
+	"managers":          {},
+	"datasources":       {},
+	"depTypeList":       {},
+	"packageNames":      {},
+	"packagePatterns":   {},
+	"sourceUrlPrefixes": {},
+	"updateTypes":       {},
+}
+
+func renovateRuleHasNarrowingMatcher(rule map[string]json.RawMessage) bool {
+	for key := range rule {
+		if (strings.HasPrefix(key, "match") && key != "matchPackageNames") || strings.HasPrefix(key, "exclude") {
+			return true
 		}
+		if _, isLegacyMatcher := renovateLegacyNarrowingMatchers[key]; isLegacyMatcher {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRenovateCatchAllReviewRuleRejectsNarrowingMatchers(t *testing.T) {
+	t.Parallel()
+
+	for matcher := range renovateLegacyNarrowingMatchers {
+		t.Run(matcher, func(t *testing.T) {
+			assertRenovateMatcherNarrowsCatchAllRule(t, matcher)
+		})
+	}
+	for _, matcher := range renovateGenericNarrowingMatchers {
+		t.Run(matcher, func(t *testing.T) { assertRenovateMatcherNarrowsCatchAllRule(t, matcher) })
+	}
+}
+
+func TestRenovatePackageRulesRejectRuleLevelExtends(t *testing.T) {
+	t.Parallel()
+
+	automerge := false
+	rules := []renovateReviewRule{
+		{MatchPackageNames: []string{"*"}, Automerge: &automerge},
+		{MatchPackageNames: []string{"minor"}},
+	}
+	rawRules := []map[string]json.RawMessage{
+		{"matchPackageNames": json.RawMessage(`["*"]`), "automerge": json.RawMessage(`false`)},
+		{"matchPackageNames": json.RawMessage(`["minor"]`), "extends": json.RawMessage(`[":automergeMinor"]`)},
+	}
+	if err := validateRenovatePackageRules(rules, rawRules); err == nil || !strings.Contains(err.Error(), "must not use extends") {
+		t.Fatalf("package rule preset = %v, want rule-level extends rejection", err)
+	}
+}
+
+var renovateGenericNarrowingMatchers = []string{
+	"matchManagers",
+	"matchFileNames",
+	"excludePackageNames",
+}
+
+func assertRenovateMatcherNarrowsCatchAllRule(t *testing.T, matcher string) {
+	t.Helper()
+	rawRule := map[string]json.RawMessage{
+		"matchPackageNames": json.RawMessage(`["*"]`),
+		"automerge":         json.RawMessage(`false`),
+		matcher:             json.RawMessage(`["hostile"]`),
+	}
+	if !renovateRuleHasNarrowingMatcher(rawRule) {
+		t.Fatalf("%s matcher must prevent a catch-all review rule", matcher)
+	}
+	automerge := false
+	rules := []renovateReviewRule{{MatchPackageNames: []string{"*"}, Automerge: &automerge}}
+	if err := validateRenovatePackageRules(rules, []map[string]json.RawMessage{rawRule}); err == nil || !strings.Contains(err.Error(), "must include a catch-all") {
+		t.Fatalf("%s matcher validation = %v, want catch-all rejection", matcher, err)
 	}
 }
 
@@ -2828,59 +2950,36 @@ func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("Go module updates must run gomodTidy before CI and automerge")
+	t.Fatal("Go module updates must run gomodTidy before CI and human review")
 }
 
-func TestRenovatePRsSatisfyMetadataRequirements(t *testing.T) {
+func TestRenovatePRsAreExemptFromMetadataValidation(t *testing.T) {
 	t.Parallel()
 
-	const regressionProofTemplate = "{{#if (equals semanticCommitType 'fix')}}\nRegression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements\n{{/if}}"
-	const regressionProof = "Regression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements"
-
 	var config struct {
-		Labels         []string `json:"labels"`
-		PRBodyTemplate string   `json:"prBodyTemplate"`
+		Labels            []string `json:"labels"`
+		PlatformAutomerge *bool    `json:"platformAutomerge"`
 	}
 	readJSONConfig(t, "renovate.json", &config)
 
 	if !slices.Contains(config.Labels, "dependencies") {
 		t.Fatalf("Renovate PR labels = %v, want dependencies", config.Labels)
 	}
-	if !strings.Contains(config.PRBodyTemplate, regressionProofTemplate) {
-		t.Fatal("Renovate PR body must declare a regression test only for fix semantic titles")
+	if config.PlatformAutomerge == nil || *config.PlatformAutomerge {
+		t.Fatal("Renovate platformAutomerge must remain explicitly disabled so dependency updates require human review")
 	}
 
-	for _, test := range []struct {
-		name  string
-		title string
-		body  string
-	}{
-		{
-			name:  "chore title omits regression proof",
-			title: "chore(deps): update dependencies",
-			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, "", 1),
-		},
-		{
-			name:  "fix title includes regression proof",
-			title: "fix(deps): update dependencies",
-			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, regressionProof, 1),
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			bodyPath := filepath.Join(t.TempDir(), "renovate-pr-body.md")
-			if err := os.WriteFile(bodyPath, []byte(test.body), 0o600); err != nil {
-				t.Fatalf("write Renovate PR body template: %v", err)
-			}
-			command := exec.Command("go", "run", "./tools/prcheck",
-				"--title", test.title,
-				"--head-ref", "renovate/example-dependency",
-				"--body-file", bodyPath,
-			)
-			command.Dir = filepath.Dir(repoPath(t, "renovate.json"))
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("Renovate PR body must satisfy metadata validation: %v\n%s", err, output)
-			}
-		})
+	var fields map[string]json.RawMessage
+	readJSONConfig(t, "renovate.json", &fields)
+	if _, ok := fields["prBodyTemplate"]; ok {
+		t.Fatal("Renovate must not carry a human PR metadata body template")
+	}
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/pr-metadata.yml", &workflow)
+	validate := workflowJobByName(t, workflow.Jobs, "validate")
+	if got, want := validate.If, "${{ github.event.pull_request.user.login != 'renovate[bot]' }}"; got != want {
+		t.Fatalf("pr metadata validation job condition = %q, want %q", got, want)
 	}
 }
 
@@ -6260,15 +6359,6 @@ func assertImmutableSourceBinding(t *testing.T, workflowPath string, run string,
 			t.Fatalf("%s step must not contain %q", workflowPath, forbidden)
 		}
 	}
-}
-
-func hasAutomerge(values []bool, want bool) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func runReleaseImageTagScript(t *testing.T, imageTags string, suffix string) string {
