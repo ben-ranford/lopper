@@ -38,7 +38,10 @@ resolve_hook_tool() {
 	tool_dir=$(cd -P "${tool_path%/*}" && pwd -P) || exit 1
 	tool_path=$tool_dir/${tool_path##*/}
 	case "$tool_path" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: $1" >&2; exit 1 ;; esac
-	[ -f "$tool_path" ] && [ -x "$tool_path" ] || { echo "Refusing non-executable hook tool: $1" >&2; exit 1; }
+	if [ ! -f "$tool_path" ] || [ ! -x "$tool_path" ]; then
+		echo "Refusing non-executable hook tool: $1" >&2
+		exit 1
+	fi
 	resolved_tool=$tool_path
 }
 
