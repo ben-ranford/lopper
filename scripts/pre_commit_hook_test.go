@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 func TestHooksInstallSnapshotsTrustedHookAndRejectsUnsafeStagedContent(t *testing.T) {
@@ -422,6 +424,27 @@ func TestHooksInstallRefusesManagedHookSymlinkBeforeMutation(t *testing.T) {
 	assertNoHooksPath(t, repoDir, "--local", "local")
 }
 
+func TestHooksInstallRefusesManagedHookDirectorySymlinkBeforeMutation(t *testing.T) {
+	t.Parallel()
+	repoDir := newHookTestRepository(t)
+	commonDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	targetDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.Mkdir(targetDir, 0o700); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := os.Symlink(targetDir, filepath.Join(commonDir, "lopper-hooks")); err != nil {
+		t.Fatalf("symlink managed directory: %v", err)
+	}
+	output, err := runMakeWithEnv(repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing unsafe managed hook directory") {
+		t.Fatalf("install with managed directory symlink = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "pre-commit")); !os.IsNotExist(err) {
+		t.Fatalf("installer wrote through managed directory symlink: %v", err)
+	}
+	assertNoHooksPath(t, repoDir, "--local", "local")
+}
+
 func TestHooksInstallRefusesManagedHookFIFOBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -462,6 +485,7 @@ func TestHooksInstallPreservesMaskedCustomLocalHooksPath(t *testing.T) {
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
 		t.Fatalf("masked custom hook install = %v\n%s", err, output)
@@ -489,6 +513,7 @@ func TestHooksInstallUsesCommonGitDirectoryForLinkedWorktree(t *testing.T) {
 	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
 	command := exec.Command("make", "hooks-install")
 	command.Dir = linkedDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err != nil || strings.Contains(string(output), "cannot be used with multiple working trees") {
 		t.Fatalf("linked worktree install = %v\n%s", err, output)
@@ -501,6 +526,7 @@ func TestHooksInstallUsesCommonGitDirectoryForLinkedWorktree(t *testing.T) {
 	runCommitWithHook(t, linkedDir, "linked commit")
 	command = exec.Command("make", "hooks-uninstall")
 	command.Dir = linkedDir
+	command.Env = hookTestEnv()
 	output, err = command.CombinedOutput()
 	if err != nil || strings.Contains(string(output), "cannot be used with multiple working trees") {
 		t.Fatalf("linked worktree uninstall = %v\n%s", err, output)
@@ -592,13 +618,138 @@ exec %q "$@"
 
 	command := exec.Command(managedHookPath(t, repoDir))
 	command.Dir = repoDir
-	command.Env = append(os.Environ(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command.Env = append(hookTestEnv(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "forced staged-entry query failure") {
 		t.Fatalf("hook with failed staged-entry query = %v\n%s", err, output)
 	}
 	if strings.Contains(string(output), "staged Go files must be gofmt-formatted") {
 		t.Fatalf("hook treated the failed staged-entry query as a formatting result:\n%s", output)
+	}
+}
+
+func TestManagedHookFailsClosedWhenGitQueriesFail(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		failure string
+		want    string
+	}{
+		{name: "quiet", failure: "quiet", want: "forced quiet query failure"},
+		{name: "names", failure: "names", want: "forced name query failure"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "make", "hooks-install")
+			writeFile(t, filepath.Join(repoDir, "unformatted.go"), "package fixture\n\nfunc unformatted(){}\n")
+			runCommand(t, repoDir, "git", "add", "unformatted.go")
+
+			gitPath, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatalf("find git: %v", err)
+			}
+			wrapperDir := t.TempDir()
+			writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$HOOK_TEST_GIT_FAILURE" = quiet ] && [ "$arg" = "--quiet" ]; then
+		echo "forced quiet query failure" >&2
+		exit 73
+	fi
+	if [ "$HOOK_TEST_GIT_FAILURE" = names ] && [ "$arg" = "--name-only" ]; then
+		echo "forced name query failure" >&2
+		exit 74
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+
+			command := exec.Command(managedHookPath(t, repoDir))
+			command.Dir = repoDir
+			command.Env = append(hookTestEnv(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"), "HOOK_TEST_GIT_FAILURE="+testCase.failure)
+			output, err := command.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), testCase.want) {
+				t.Fatalf("hook with failed %s query = %v\n%s", testCase.name, err, output)
+			}
+			if strings.Contains(string(output), "staged Go files must be gofmt-formatted") {
+				t.Fatalf("hook treated the failed %s query as a formatting result:\n%s", testCase.name, output)
+			}
+		})
+	}
+}
+
+func TestManagedHookSkipsGofmtWhenNoGoFilesAreStaged(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	writeFile(t, filepath.Join(repoDir, "only.txt"), "staged\n")
+	runCommand(t, repoDir, "git", "add", "only.txt")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	writeFileMode(t, filepath.Join(wrapperDir, "git"), fmt.Sprintf(`#!/bin/sh
+for arg do
+	if [ "$arg" = "ls-files" ]; then
+		echo "unexpected staged-entry query" >&2
+		exit 75
+	fi
+done
+exec %q "$@"
+`, gitPath), 0o755)
+	command := exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = append(hookTestEnv(), "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("hook without staged Go files = %v\n%s", err, output)
+	}
+}
+
+func TestManagedHookUsesExplicitAlternateIndex(t *testing.T) {
+	t.Parallel()
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	writeFile(t, filepath.Join(repoDir, "alternate.go"), "package fixture\n\nfunc alternate() {}\n")
+	runCommand(t, repoDir, "git", "add", "alternate.go")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "formatted main")
+	writeFile(t, filepath.Join(repoDir, "alternate.go"), "package fixture\n\nfunc alternate(){}\n")
+	indexPath := filepath.Join(t.TempDir(), "alternate.index")
+	runCommandWithEnv(t, repoDir, []string{"GIT_INDEX_FILE=" + indexPath}, "git", "read-tree", "HEAD")
+	runCommandWithEnv(t, repoDir, []string{"GIT_INDEX_FILE=" + indexPath}, "git", "add", "alternate.go")
+	command := exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = append(hookTestEnv(), "GIT_INDEX_FILE="+indexPath)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "staged Go files must be gofmt-formatted") {
+		t.Fatalf("hook with alternate unformatted index = %v\n%s", err, output)
+	}
+	command = exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = hookTestEnv()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("hook with formatted main index = %v\n%s", err, output)
+	}
+
+	runCommand(t, repoDir, "git", "add", "alternate.go")
+	writeFile(t, filepath.Join(repoDir, "alternate.go"), "package fixture\n\nfunc alternate() {}\n")
+	formattedAlternateIndex := filepath.Join(t.TempDir(), "formatted-alternate.index")
+	runCommandWithEnv(t, repoDir, []string{"GIT_INDEX_FILE=" + formattedAlternateIndex}, "git", "read-tree", "HEAD")
+	runCommandWithEnv(t, repoDir, []string{"GIT_INDEX_FILE=" + formattedAlternateIndex}, "git", "add", "alternate.go")
+	writeFile(t, filepath.Join(repoDir, "alternate.go"), "package fixture\n\nfunc alternate(){}\n")
+	command = exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = append(hookTestEnv(), "GIT_INDEX_FILE="+formattedAlternateIndex)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("hook with formatted alternate index = %v\n%s", err, output)
+	}
+	command = exec.Command(managedHookPath(t, repoDir))
+	command.Dir = repoDir
+	command.Env = hookTestEnv()
+	output, err = command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "staged Go files must be gofmt-formatted") {
+		t.Fatalf("hook with unformatted main index = %v\n%s", err, output)
 	}
 }
 
@@ -616,6 +767,7 @@ func TestManagedHookWorksWhenLinkedWorktreeSetsCoreBare(t *testing.T) {
 
 	command := exec.Command(managedHookPath(t, linkedDir))
 	command.Dir = linkedDir
+	command.Env = hookTestEnv()
 	outputBytes, err := command.CombinedOutput()
 	output := string(outputBytes)
 	if err == nil || !strings.Contains(output, "staged Go files must be gofmt-formatted") {
@@ -663,6 +815,7 @@ func TestHooksInstallRefusesLinkedWorktreeOverrideBeforeMutationAndSucceedsAfter
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "another worktree") {
 		t.Fatalf("linked worktree install = %v\n%s", err, output)
@@ -700,6 +853,7 @@ func TestHooksInstallAndUninstallPreserveCustomHooks(t *testing.T) {
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
 		t.Fatalf("custom hook install = %v\n%s", err, output)
@@ -757,6 +911,7 @@ func assertHooksInstallRefusesMultiValueHooksPaths(t *testing.T, scope, customDi
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
 		t.Fatalf("multi-value %s install = %v\n%s", scope, err, output)
@@ -862,13 +1017,85 @@ func TestHooksUninstallLeavesLocalConfigurationWhenWorktreeConfigIsLocked(t *tes
 	writeFile(t, filepath.Join(gitDir, "config.worktree.lock"), "locked\n")
 
 	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
-	if err == nil || !strings.Contains(string(output), "Unable to remove managed core.hooksPath") {
+	if err == nil || !strings.Contains(string(output), "Unable to remove managed current worktree core.hooksPath") {
 		t.Fatalf("uninstall with locked worktree config = %v\n%s", err, output)
 	}
 	assertConfigValues(t, repoDir, "--local", managedDir)
 	assertConfigValues(t, repoDir, "--worktree", managedDir)
 	if _, err := os.Stat(managedHookPath(t, repoDir)); err != nil {
 		t.Fatalf("uninstaller removed managed hook after worktree-config failure: %v", err)
+	}
+}
+
+func TestHooksUninstallRemovesDormantCurrentWorktreeLegacyHookPath(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	assertNoHooksPathInFile(t, filepath.Join(gitDir, "config.worktree"))
+	if _, err := os.Stat(managedHookPath(t, repoDir)); !os.IsNotExist(err) {
+		t.Fatalf("uninstall retained unreferenced managed hook: %v", err)
+	}
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "true")
+	markerPath := filepath.Join(repoDir, "dormant-uninstall-marker")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\ntouch "+markerPath+"\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "dormant-uninstall.txt"), "safe\n")
+	runCommand(t, repoDir, "git", "add", "dormant-uninstall.txt")
+	runCommitWithHook(t, repoDir, "dormant worktree uninstall")
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("dormant worktree hook executed after uninstall: %v", err)
+	}
+}
+
+func TestHooksUninstallPreservesStateWhenDormantCurrentWorktreeConfigIsLocked(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "config", "--worktree", "core.hooksPath", ".githooks")
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+	gitDir := gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir")
+	writeFile(t, filepath.Join(gitDir, "config.worktree.lock"), "locked\n")
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Unable to remove managed current worktree core.hooksPath") {
+		t.Fatalf("uninstall with locked dormant worktree config = %v\n%s", err, output)
+	}
+	assertConfigValues(t, repoDir, "--local", managedDir)
+	if got := gitOutput(t, repoDir, "config", "--file", filepath.Join(gitDir, "config.worktree"), "--get", "core.hooksPath"); got != ".githooks" {
+		t.Fatalf("dormant worktree core.hooksPath = %q, want .githooks", got)
+	}
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook before dormant worktree failure: %v", err)
+	}
+}
+
+func TestHooksUninstallPreservesManagedHookForDormantForeignWorktreeReference(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runCommand(t, repoDir, "git", "config", "extensions.worktreeConfig", "true")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "git", "config", "--worktree", "core.hooksPath", managedDir)
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	assertNoHooksPath(t, repoDir, "--local", "local")
+	if _, err := os.Stat(managedHook); err != nil {
+		t.Fatalf("uninstaller removed managed hook used by dormant foreign worktree: %v", err)
 	}
 }
 
@@ -929,6 +1156,7 @@ func TestHooksInstallRefusesIncludedAndNewlineHooksPathsWithoutMutation(t *testi
 
 	command := exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "includes another config") {
 		t.Fatalf("included worktree install = %v\n%s", err, output)
@@ -942,6 +1170,7 @@ func TestHooksInstallRefusesIncludedAndNewlineHooksPathsWithoutMutation(t *testi
 	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", newlinePath)
 	command = exec.Command("make", "hooks-install")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err = command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "Refusing to replace") {
 		t.Fatalf("newline hook path install = %v\n%s", err, output)
@@ -973,6 +1202,7 @@ func TestHooksInstallUninstallPreservesCustomMultiValuePathsAndSharedHook(t *tes
 
 	command := exec.Command("make", "hooks-uninstall")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("hooks-uninstall = %v\n%s", err, output)
@@ -1172,6 +1402,7 @@ func gitOutput(t *testing.T, repoDir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
@@ -1182,13 +1413,28 @@ func gitOutput(t *testing.T, repoDir string, args ...string) string {
 func runMakeWithEnv(repoDir, target string, env ...string) ([]byte, error) {
 	command := exec.Command("make", target)
 	command.Dir = repoDir
-	command.Env = append(os.Environ(), env...)
+	command.Env = append(hookTestEnv(), env...)
 	return command.CombinedOutput()
+}
+
+func hookTestEnv() []string {
+	return append(gitexec.SanitizedEnv(), "PATH="+os.Getenv("PATH"))
+}
+
+func runCommandWithEnv(t *testing.T, repoDir string, env []string, name string, args ...string) {
+	t.Helper()
+	command := exec.Command(name, args...)
+	command.Dir = repoDir
+	command.Env = append(hookTestEnv(), env...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
+	}
 }
 
 func runMakeWithUmask(repoDir, target, mask string) ([]byte, error) {
 	command := exec.Command("sh", "-c", "umask \"$1\"; make \"$2\"", "sh", mask, target)
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	return command.CombinedOutput()
 }
 
@@ -1196,9 +1442,20 @@ func assertNoHooksPath(t *testing.T, repoDir, scope, scopeName string) {
 	t.Helper()
 	command := exec.Command("git", "config", scope, "--get", "core.hooksPath")
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err == nil || len(output) != 0 {
 		t.Fatalf("%s core.hooksPath remains: %v\n%s", scopeName, err, output)
+	}
+}
+
+func assertNoHooksPathInFile(t *testing.T, configPath string) {
+	t.Helper()
+	command := exec.Command("git", "config", "--file", configPath, "--get", "core.hooksPath")
+	command.Env = hookTestEnv()
+	output, err := command.CombinedOutput()
+	if err == nil || len(output) != 0 {
+		t.Fatalf("%s core.hooksPath remains: %v\n%s", configPath, err, output)
 	}
 }
 
@@ -1219,7 +1476,7 @@ func assertCommitFailsWithEnv(t *testing.T, repoDir, wantOutput string, env []st
 	t.Helper()
 	command := exec.Command("git", "commit", "-m", "must fail")
 	command.Dir = repoDir
-	command.Env = append(os.Environ(), env...)
+	command.Env = append(hookTestEnv(), env...)
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), wantOutput) {
 		t.Fatalf("commit = %v\n%s", err, output)
@@ -1231,6 +1488,7 @@ func runCommitWithHook(t *testing.T, repoDir, message string) {
 	t.Helper()
 	command := exec.Command("git", "commit", "-m", message)
 	command.Dir = repoDir
+	command.Env = hookTestEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git commit -m %s: %v\n%s", message, err, output)

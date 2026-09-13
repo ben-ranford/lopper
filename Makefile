@@ -464,6 +464,7 @@ hooks-install:
 		common_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-common-dir)"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
+		if [ -L "$$managed_dir" ] || { [ -e "$$managed_dir" ] && [ ! -d "$$managed_dir" ]; }; then echo "Refusing unsafe managed hook directory: $$managed_dir" >&2; exit 1; fi; \
 		common_config_origin="file:$$common_dir/config"; \
 		run_config() { git_dir="$$1"; shift; if [ -n "$$git_dir" ]; then git -c core.bare=false --git-dir="$$git_dir" config "$$@"; else git -c core.bare=false config "$$@"; fi; }; \
 		read_worktree_config() { \
@@ -582,6 +583,13 @@ hooks-uninstall:
 			status=0; git -c core.bare=false config "$$@" --fixed-value --unset-all core.hooksPath "$$managed_dir" >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove managed core.hooksPath" >&2; exit 1; fi; \
 			status=0; git -c core.bare=false config "$$@" --fixed-value --unset-all core.hooksPath .githooks >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove legacy core.hooksPath" >&2; exit 1; fi; \
 		}; \
+		remove_current_worktree_paths() { \
+			config_file="$$current_git_dir/config.worktree"; [ -f "$$config_file" ] || return 0; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --file "$$config_file" --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then rm -f "$$error_file"; echo "Refusing to uninstall while current worktree config includes another config" >&2; exit 1; fi; if [ "$$status" -ne 1 ] || [ -s "$$error_file" ]; then cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect current worktree config includes" >&2; exit 1; fi; rm -f "$$error_file"; \
+			error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --file "$$config_file" --null --get-all core.hooksPath >/dev/null 2>"$$error_file" || status=$$?; if [ "$$status" -ne 0 ] && { [ "$$status" -ne 1 ] || [ -s "$$error_file" ]; }; then cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect current worktree core.hooksPath" >&2; exit 1; fi; rm -f "$$error_file"; \
+			status=0; git -c core.bare=false config --file "$$config_file" --fixed-value --unset-all core.hooksPath "$$managed_dir" >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove managed current worktree core.hooksPath" >&2; exit 1; fi; \
+			status=0; git -c core.bare=false config --file "$$config_file" --fixed-value --unset-all core.hooksPath .githooks >/dev/null 2>&1 || status=$$?; if [ "$$status" -ne 0 ] && [ "$$status" -ne 5 ]; then echo "Unable to remove legacy current worktree core.hooksPath" >&2; exit 1; fi; \
+		}; \
 		managed_hook_is_referenced() { \
 			label="$$1"; git_dir="$$2"; values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; status=0; run_config "$$git_dir" --includes --null --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
 			if [ "$$status" -eq 0 ]; then \
@@ -590,6 +598,11 @@ hooks-uninstall:
 			fi; \
 			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file"; return 1; fi; \
 			cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file"; echo "Unable to inspect $$label core.hooksPath" >&2; exit 1; \
+		}; \
+		managed_hook_is_referenced_in_worktree_config() { \
+			label="$$1"; config_file="$$2"; [ -f "$$config_file" ] || return 1; values_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$values_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$config_file" --null --get-all core.hooksPath >"$$values_file" 2>"$$error_file" || status=$$?; \
+			if [ "$$status" -eq 0 ]; then if xargs -0 -n 1 sh -c 'managed_dir="$$1"; path="$$2"; case "$$path" in "$$managed_dir"|"$$managed_dir"/) printf "%s\\n" referenced ;; /*) if [ -e "$$path" ] && [ "$$path" -ef "$$managed_dir" ]; then printf "%s\\n" referenced; fi ;; *) printf "%s\\n" referenced ;; esac' sh "$$managed_dir" <"$$values_file" | grep -q .; then rm -f "$$values_file" "$$error_file"; return 0; fi; rm -f "$$values_file" "$$error_file"; return 1; fi; \
+			if [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$values_file" "$$error_file"; return 1; fi; cat "$$error_file" >&2; rm -f "$$values_file" "$$error_file"; echo "Unable to inspect $$label worktree core.hooksPath" >&2; exit 1; \
 		}; \
 		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
@@ -600,11 +613,12 @@ hooks-uninstall:
 		done; \
 		if [ "$$worktree_config_enabled" = true ]; then for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do [ -d "$$foreign_git_dir" ] || continue; [ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; check_config_query "another worktree" "$$foreign_git_dir"; done; fi; \
 		check_config_query "effective" ""; \
-		if [ "$$worktree_config_enabled" = true ]; then remove_managed_paths --worktree; fi; \
+		remove_current_worktree_paths; \
 		remove_managed_paths --local; \
 		managed_hook_still_referenced=false; \
 		if [ "$$includes_may_reference_managed_hook" = true ]; then managed_hook_still_referenced=true; fi; \
 		if managed_hook_is_referenced "effective" ""; then managed_hook_still_referenced=true; fi; \
+		for worktree_config_file in "$$common_dir/config.worktree" "$$common_dir"/worktrees/*/config.worktree; do [ -f "$$worktree_config_file" ] || continue; if managed_hook_is_referenced_in_worktree_config "worktree config" "$$worktree_config_file"; then managed_hook_still_referenced=true; fi; done; \
 		if [ "$$worktree_config_enabled" = true ]; then \
 			for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do \
 				[ -d "$$foreign_git_dir" ] || continue; \
