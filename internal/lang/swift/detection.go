@@ -367,7 +367,7 @@ func advanceRootCarthageSourceSubtree(ctx context.Context, root safeio.Root, sub
 		if err := contextError(ctx); err != nil {
 			return false, entriesSeen, true, false, closeRootCarthageSourceSubtree(subtree, err)
 		}
-		if complete := prepareRootCarthageSourceCursor(subtree); complete {
+		if prepareRootCarthageSourceCursor(subtree) {
 			return false, entriesSeen, true, false, nil
 		}
 		found, cursorComplete, cursorBlocked, entries, err := advanceRootCarthageSourceCursor(ctx, root, subtree.current, handles, maxEntries-entriesSeen)
