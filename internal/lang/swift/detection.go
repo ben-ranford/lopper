@@ -113,7 +113,7 @@ func discoverSwiftSourceCandidatesWithinLimit(ctx context.Context, root safeio.R
 		return nil, 0, false, err
 	}
 	defer func() {
-		err = errors.Join(err, directory.Close())
+		err = joinSwiftCarthageProbeCleanupError(err, directory.Close())
 	}()
 
 	for entriesSeen < maxEntries {
@@ -472,7 +472,26 @@ func closeRootCarthageSourceCursor(cursor *rootCarthageSourceCursor, err error) 
 		cursor.handles = nil
 		cursor.cost = 0
 	}
-	return errors.Join(err, closeErr)
+	return joinSwiftCarthageProbeCleanupError(err, closeErr)
+}
+
+type swiftCarthageProbeCleanupError struct {
+	err error
+}
+
+func (e *swiftCarthageProbeCleanupError) Error() string {
+	return "swift source probe cleanup failed: " + e.err.Error()
+}
+
+func (e *swiftCarthageProbeCleanupError) Unwrap() error {
+	return e.err
+}
+
+func joinSwiftCarthageProbeCleanupError(err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return err
+	}
+	return errors.Join(err, &swiftCarthageProbeCleanupError{err: cleanupErr})
 }
 
 func appendRootCarthageSourceDirectories(queue, children []rootCarthageSourceDirectory) []rootCarthageSourceDirectory {
@@ -683,7 +702,8 @@ func probeSwiftSourceWithinTrustedRoot(ctx context.Context, root safeio.Root, re
 }
 
 func isIgnorableCarthageProbeResourceError(err error) bool {
-	return shared.IsPureSentinelError(err, syscall.EMFILE)
+	var cleanupErr *swiftCarthageProbeCleanupError
+	return !errors.As(err, &cleanupErr) && shared.IsPureSentinelError(err, syscall.EMFILE)
 }
 
 func applyCarthageDetectionRoot(root string, confidence int, detection *language.Detection, roots map[string]struct{}) {
