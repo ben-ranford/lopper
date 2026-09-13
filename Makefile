@@ -521,18 +521,6 @@ hooks-install:
 		check_hook_paths "effective" "$$current_git_dir" current; \
 		check_hook_paths "local" "$$current_git_dir" current --local; \
 		if [ "$$worktree_config_enabled" = true ]; then check_hook_paths "worktree" "$$current_git_dir" current --worktree; fi; \
-		umask 077; \
-		managed_dir_existed=false; if [ -d "$$managed_dir" ]; then managed_dir_existed=true; fi; \
-		mkdir -p "$$managed_dir"; \
-		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
-		managed_hook_existed=false; backup_hook="$$managed_dir/.pre-commit.$$$$.backup"; \
-		worktree_config_backup="$$managed_dir/.config.worktree.$$$$.backup"; worktree_config_existed=false; \
-		local_config_backup="$$managed_dir/.config.$$$$.backup"; local_config_existed=false; \
-		cleanup_snapshots() { status=$$?; trap - EXIT HUP INT TERM; rm -f "$$temp_hook" "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup" || :; if [ "$$managed_dir_existed" = false ]; then rmdir "$$managed_dir" 2>/dev/null || :; fi; exit "$$status"; }; \
-		trap 'cleanup_snapshots' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-		chmod 700 "$$managed_dir"; \
-		cp "$$source_hook" "$$temp_hook"; \
-		chmod 755 "$$temp_hook"; \
 		if [ -d "$$managed_hook" ]; then \
 			echo "Refusing to replace managed pre-commit hook directory: $$managed_hook" >&2; \
 			exit 1; \
@@ -545,6 +533,18 @@ hooks-install:
 			echo "Refusing to replace non-regular managed pre-commit hook: $$managed_hook" >&2; \
 			exit 1; \
 		fi; \
+		umask 077; \
+		managed_dir_existed=false; if [ -d "$$managed_dir" ]; then managed_dir_existed=true; fi; \
+		mkdir -p "$$managed_dir"; \
+		temp_hook="$$managed_dir/.pre-commit.$$$$.tmp"; \
+		managed_hook_existed=false; backup_hook="$$managed_dir/.pre-commit.$$$$.backup"; \
+		worktree_config_backup="$$managed_dir/.config.worktree.$$$$.backup"; worktree_config_existed=false; \
+		local_config_backup="$$managed_dir/.config.$$$$.backup"; local_config_existed=false; \
+		cleanup_snapshots() { status=$$?; trap - EXIT HUP INT TERM; rm -f "$$temp_hook" "$$backup_hook" "$$worktree_config_backup" "$$local_config_backup" || :; if [ "$$managed_dir_existed" = false ]; then rmdir "$$managed_dir" 2>/dev/null || :; fi; exit "$$status"; }; \
+		trap 'cleanup_snapshots' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		chmod 700 "$$managed_dir"; \
+		cp "$$source_hook" "$$temp_hook"; \
+		chmod 755 "$$temp_hook"; \
 		if [ -f "$$current_git_dir/config.worktree" ]; then cp -p "$$current_git_dir/config.worktree" "$$worktree_config_backup"; worktree_config_existed=true; fi; \
 		if [ -f "$$common_dir/config" ]; then cp -p "$$common_dir/config" "$$local_config_backup"; local_config_existed=true; fi; \
 		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then cp -p "$$managed_hook" "$$backup_hook"; managed_hook_existed=true; fi; \
@@ -570,6 +570,8 @@ hooks-uninstall:
 		managed_hook="$$managed_dir/pre-commit"; \
 		if [ -L "$$managed_dir" ] || { [ -e "$$managed_dir" ] && [ ! -d "$$managed_dir" ]; }; then echo "Refusing unsafe managed hook directory: $$managed_dir" >&2; exit 1; fi; \
 		if [ -L "$$managed_hook" ] || { [ -e "$$managed_hook" ] && [ ! -f "$$managed_hook" ]; }; then echo "Refusing unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; fi; \
+		assert_regular_config_file() { path="$$1"; label="$$2"; if [ -L "$$path" ]; then [ -f "$$path" ] || { echo "Refusing unsafe $$label Git config: $$path" >&2; exit 1; }; elif [ -e "$$path" ] && [ ! -f "$$path" ]; then echo "Refusing unsafe $$label Git config: $$path" >&2; exit 1; fi; }; \
+		assert_regular_config_file "$$common_dir/config" "common"; \
 		run_config() { git_dir="$$1"; shift; if [ -n "$$git_dir" ]; then git -c core.bare=false --git-dir="$$git_dir" config "$$@"; else git -c core.bare=false config "$$@"; fi; }; \
 		read_worktree_config() { \
 			value_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$value_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$common_dir/config" --bool --get extensions.worktreeConfig >"$$value_file" 2>"$$error_file" || status=$$?; \
@@ -610,6 +612,7 @@ hooks-uninstall:
 		}; \
 		read_worktree_config; \
 		current_git_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-dir)"; \
+		assert_regular_config_file "$$current_git_dir/config.worktree" "current worktree"; \
 		includes_may_reference_managed_hook=false; \
 		error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; status=0; git -c core.bare=false config --name-only --get-regexp '^include.*\.path$$' >/dev/null 2>"$$error_file" || status=$$?; if [ "$$status" -eq 0 ]; then includes_may_reference_managed_hook=true; rm -f "$$error_file"; elif [ "$$status" -eq 1 ] && [ ! -s "$$error_file" ]; then rm -f "$$error_file"; else cat "$$error_file" >&2; rm -f "$$error_file"; echo "Unable to inspect effective config includes" >&2; exit 1; fi; \
 		for config_file in "$$common_dir/config" "$$common_dir/config.worktree" "$$common_dir"/worktrees/*/config.worktree; do \
@@ -618,11 +621,12 @@ hooks-uninstall:
 		done; \
 		if [ "$$worktree_config_enabled" = true ]; then for foreign_git_dir in "$$common_dir" "$$common_dir"/worktrees/*; do [ -d "$$foreign_git_dir" ] || continue; [ "$$foreign_git_dir" = "$$current_git_dir" ] && continue; check_config_query "another worktree" "$$foreign_git_dir"; done; fi; \
 		check_config_query "effective" ""; \
-		umask 077; common_config_backup="$$(mktemp "$$common_dir/.lopper-hooks-config.XXXXXX")" || exit 1; worktree_config_backup=""; cleanup_uninstall_snapshots() { rm -f "$$common_config_backup" "$$worktree_config_backup"; }; trap 'cleanup_uninstall_snapshots' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; common_config_symlink=false; common_config_link=""; if [ -L "$$common_dir/config" ]; then common_config_symlink=true; common_config_link="$$(readlink "$$common_dir/config")"; fi; cp -p "$$common_dir/config" "$$common_config_backup"; if [ "$$common_config_symlink" = true ] && { [ ! -L "$$common_dir/config" ] || [ "$$(readlink "$$common_dir/config")" != "$$common_config_link" ]; }; then exit 1; elif [ "$$common_config_symlink" = false ] && [ -L "$$common_dir/config" ]; then exit 1; fi; \
+		umask 077; common_config_backup="$$(mktemp "$$common_dir/.lopper-hooks-config.XXXXXX")" || exit 1; worktree_config_backup=""; hook_backup=""; managed_hook_existed=false; cleanup_uninstall_snapshots() { rm -f "$$common_config_backup" "$$worktree_config_backup" "$$hook_backup"; }; trap 'cleanup_uninstall_snapshots' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; common_config_symlink=false; common_config_link=""; if [ -L "$$common_dir/config" ]; then common_config_symlink=true; common_config_link="$$(readlink "$$common_dir/config")"; fi; cp -p "$$common_dir/config" "$$common_config_backup"; if [ "$$common_config_symlink" = true ] && { [ ! -L "$$common_dir/config" ] || [ "$$(readlink "$$common_dir/config")" != "$$common_config_link" ]; }; then exit 1; elif [ "$$common_config_symlink" = false ] && [ -L "$$common_dir/config" ]; then exit 1; fi; \
 		worktree_config_path="$$current_git_dir/config.worktree"; worktree_config_backup=""; worktree_config_existed=false; worktree_config_symlink=false; worktree_config_link=""; if [ -e "$$worktree_config_path" ] || [ -L "$$worktree_config_path" ]; then worktree_config_backup="$$(mktemp "$$common_dir/.lopper-hooks-config.worktree.XXXXXX")" || { rm -f "$$common_config_backup"; exit 1; }; worktree_config_existed=true; if [ -L "$$worktree_config_path" ]; then worktree_config_symlink=true; worktree_config_link="$$(readlink "$$worktree_config_path")"; fi; cp -p "$$worktree_config_path" "$$worktree_config_backup"; if [ "$$worktree_config_symlink" = true ] && { [ ! -L "$$worktree_config_path" ] || [ "$$(readlink "$$worktree_config_path")" != "$$worktree_config_link" ]; }; then exit 1; elif [ "$$worktree_config_symlink" = false ] && [ -L "$$worktree_config_path" ]; then exit 1; fi; fi; \
+		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then hook_backup="$$(mktemp "$$managed_dir/.pre-commit.$$$$.uninstall-backup.XXXXXX")" || exit 1; cp -p "$$managed_hook" "$$hook_backup"; managed_hook_existed=true; fi; \
 		restore_uninstall_config() { path="$$1"; backup="$$2"; was_symlink="$$3"; link_target="$$4"; [ -f "$$backup" ] || return 1; if [ "$$was_symlink" = true ]; then [ -L "$$path" ] && [ "$$(readlink "$$path")" = "$$link_target" ] || return 1; cp -p "$$backup" "$$path" || return 1; [ -L "$$path" ] && [ "$$(readlink "$$path")" = "$$link_target" ] || return 1; rm -f "$$backup" || return 1; return 0; fi; [ ! -L "$$path" ] || return 1; mv -f "$$backup" "$$path"; }; \
-		rollback_uninstall() { restore_failed=false; restore_uninstall_config "$$common_dir/config" "$$common_config_backup" "$$common_config_symlink" "$$common_config_link" || restore_failed=true; if [ "$$worktree_config_existed" = true ]; then restore_uninstall_config "$$worktree_config_path" "$$worktree_config_backup" "$$worktree_config_symlink" "$$worktree_config_link" || restore_failed=true; fi; [ "$$restore_failed" = false ]; }; \
-		uninstall_transaction_complete=false; on_uninstall_exit() { status=$$?; trap - EXIT; if [ "$$uninstall_transaction_complete" = true ]; then cleanup_uninstall_snapshots; exit "$$status"; fi; if ! rollback_uninstall; then echo "Unable to restore hook configuration completely; remaining recovery backups were preserved" >&2; exit 1; fi; exit "$$status"; }; \
+		rollback_uninstall() { if [ "$$managed_hook_existed" = true ] && [ -f "$$hook_backup" ]; then if [ ! -e "$$managed_hook" ] && [ ! -L "$$managed_hook" ]; then mv -f "$$hook_backup" "$$managed_hook" || return 1; elif [ -L "$$managed_hook" ] || [ ! -f "$$managed_hook" ] || [ ! -x "$$managed_hook" ] || ! cmp -s "$$hook_backup" "$$managed_hook"; then return 1; fi; fi; restore_failed=false; restore_uninstall_config "$$common_dir/config" "$$common_config_backup" "$$common_config_symlink" "$$common_config_link" || restore_failed=true; if [ "$$worktree_config_existed" = true ]; then restore_uninstall_config "$$worktree_config_path" "$$worktree_config_backup" "$$worktree_config_symlink" "$$worktree_config_link" || restore_failed=true; fi; [ "$$restore_failed" = false ]; }; \
+		uninstall_transaction_complete=false; on_uninstall_exit() { status=$$?; trap - EXIT; if [ "$$uninstall_transaction_complete" = true ]; then cleanup_uninstall_snapshots; exit "$$status"; fi; if ! rollback_uninstall; then echo "Unable to restore hook configuration completely; remaining recovery backups were preserved" >&2; exit 1; fi; cleanup_uninstall_snapshots; exit "$$status"; }; \
 		trap 'on_uninstall_exit' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		remove_current_worktree_paths; \
 		remove_managed_paths --local; \
@@ -637,18 +641,18 @@ hooks-uninstall:
 				if managed_hook_is_referenced "another worktree" "$$foreign_git_dir"; then managed_hook_still_referenced=true; fi; \
 			done; \
 		fi; \
-		uninstall_transaction_complete=true; cleanup_uninstall_snapshots; trap - EXIT HUP INT TERM; \
 		if [ -e "$$managed_hook" ] || [ -L "$$managed_hook" ]; then \
 			if [ "$$managed_hook_still_referenced" = true ]; then \
 				echo "Preserved managed pre-commit hook because a configuration may still reference it"; \
 			else \
 				rm -f "$$managed_hook"; \
-				rmdir "$$managed_dir" 2>/dev/null || :; \
 				echo "Removed managed pre-commit hook"; \
 			fi; \
 		else \
 			echo "No managed pre-commit hook to remove"; \
 		fi; \
+		uninstall_transaction_complete=true; cleanup_uninstall_snapshots; trap - EXIT HUP INT TERM; \
+		rmdir "$$managed_dir" 2>/dev/null || :; \
 		:
 
 vscode-extension-install:
