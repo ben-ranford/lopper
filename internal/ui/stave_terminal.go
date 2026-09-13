@@ -599,7 +599,15 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 }
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {
-	if runCtx.Err() != nil {
+	if runCancellation := runCtx.Err(); runCancellation != nil {
+		// Bubble Tea can dispatch a queued resize or quit after the terminal
+		// run context is cancelled. That dispatch reports this exact sentinel
+		// through sendAndWait; cleanup below republishes with a fresh context.
+		// Keep the unwrapped run error first: errors.Is only accepts the exact
+		// bridge error here, preserving wrapped and joined real errors.
+		if errors.Is(runCancellation, bridge.err) {
+			bridge.err = nil
+		}
 		cleanupStaveTerminalCancellation(ctx, bridge, prepared, sendEvent)
 	}
 	if ctx.Err() != nil {

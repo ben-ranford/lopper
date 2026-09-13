@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,14 @@ func TestFinishStaveTerminalRunSignalCleanupAndResultPriority(t *testing.T) {
 	t.Run("cleanup send failure wins", checkCleanupSendFailureWins)
 
 	t.Run("shutdown send failure is retained after cancellation event", checkShutdownSendFailureIsRetainedAfterCancellationEvent)
+
+	t.Run("terminal dispatch cancellation is normalized before cleanup", checkTerminalDispatchCancellationIsNormalizedBeforeCleanup)
+
+	t.Run("cancellation during terminal dispatch is normalized before cleanup", checkCancellationDuringTerminalDispatchIsNormalizedBeforeCleanup)
+
+	t.Run("cleanup failure and parent cause are retained", checkCleanupFailureAndParentCauseAreRetained)
+
+	t.Run("wrapped and joined cancellation errors are retained", checkWrappedAndJoinedCancellationErrorsAreRetained)
 
 	t.Run("bridge error retains parent cancellation", checkBridgeErrorRetainsParentCancellation)
 
@@ -77,6 +86,101 @@ func checkShutdownSendFailureIsRetainedAfterCancellationEvent(t *testing.T) {
 	got := finishStaveTerminalRun(context.Background(), runCtx, bridge, struct{}{}, sendEvent, nil)
 	if !errors.Is(got, want) || calls != 2 {
 		t.Fatalf("shutdown failure = %v calls=%d", got, calls)
+	}
+}
+
+func checkTerminalDispatchCancellationIsNormalizedBeforeCleanup(t *testing.T) {
+	t.Helper()
+	for _, message := range []tea.Msg{tea.WindowSizeMsg{Width: 100, Height: 30}, tea.QuitMsg{}} {
+		t.Run(fmt.Sprintf("%T", message), func(t *testing.T) {
+			runCtx, cancelRun := context.WithCancel(context.Background())
+			cancelRun()
+			var events []event.Event
+			sendEvent := terminalCancellationDispatchSender(runCtx, &events)
+			bridge := &staveTerminal{ctx: runCtx, prepared: struct{}{}, sendEvent: sendEvent}
+			if _, command := (&staveTerminalModel{bridge: bridge}).Update(message); command == nil || !errors.Is(bridge.err, context.Canceled) {
+				t.Fatalf("post-cancellation %T bridge state = %+v", message, bridge)
+			}
+			if err := finishStaveTerminalRun(context.Background(), runCtx, bridge, struct{}{}, sendEvent, nil); err != nil {
+				t.Fatalf("post-cancellation %T result = %v", message, err)
+			}
+			assertTerminalCancellationCleanup(t, events)
+		})
+	}
+}
+
+func checkCancellationDuringTerminalDispatchIsNormalizedBeforeCleanup(t *testing.T) {
+	t.Helper()
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	var events []event.Event
+	sendEvent := func(ctx context.Context, _ any, ev event.Event) error {
+		if ev.Kind == event.Resize {
+			cancelRun()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		events = append(events, ev)
+		return nil
+	}
+	bridge := &staveTerminal{ctx: runCtx, prepared: struct{}{}, sendEvent: sendEvent}
+	if _, command := (&staveTerminalModel{bridge: bridge}).Update(tea.WindowSizeMsg{Width: 100, Height: 30}); command == nil || !errors.Is(bridge.err, context.Canceled) {
+		t.Fatalf("cancellation-during-dispatch bridge state = %+v", bridge)
+	}
+	if err := finishStaveTerminalRun(context.Background(), runCtx, bridge, struct{}{}, sendEvent, nil); err != nil {
+		t.Fatalf("cancellation-during-dispatch result = %v", err)
+	}
+	assertTerminalCancellationCleanup(t, events)
+}
+
+func terminalCancellationDispatchSender(runCtx context.Context, events *[]event.Event) func(context.Context, any, event.Event) error {
+	return func(ctx context.Context, _ any, ev event.Event) error {
+		if ctx == runCtx {
+			return ctx.Err()
+		}
+		*events = append(*events, ev)
+		return nil
+	}
+}
+
+func assertTerminalCancellationCleanup(t *testing.T, events []event.Event) {
+	t.Helper()
+	if len(events) != 1 || events[0].Kind != event.Shutdown {
+		t.Fatalf("cancellation cleanup events = %#v", events)
+	}
+}
+
+func checkCleanupFailureAndParentCauseAreRetained(t *testing.T) {
+	t.Helper()
+	parent, cancelParent := context.WithCancelCause(context.Background())
+	parentCause := errors.New("parent cancelled")
+	cancelParent(parentCause)
+	cleanupErr := errors.New("cleanup failed")
+	bridge := &staveTerminal{err: context.Canceled, currentCallID: "call-cleanup"}
+	got := finishStaveTerminalRun(parent, parent, bridge, struct{}{}, func(context.Context, any, event.Event) error { return cleanupErr }, nil)
+	if !errors.Is(got, parentCause) || !errors.Is(got, cleanupErr) {
+		t.Fatalf("cleanup and parent cancellation = %v", got)
+	}
+}
+
+func checkWrappedAndJoinedCancellationErrorsAreRetained(t *testing.T) {
+	t.Helper()
+	realErr := errors.New("real failure")
+	for _, bridgeErr := range []error{
+		fmt.Errorf("wrapped cancellation: %w", context.Canceled),
+		errors.Join(context.Canceled, realErr),
+	} {
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		cancelRun()
+		bridge := &staveTerminal{err: bridgeErr}
+		got := finishStaveTerminalRun(context.Background(), runCtx, bridge, struct{}{}, func(context.Context, any, event.Event) error { return nil }, nil)
+		if !errors.Is(got, bridgeErr) || got.Error() != bridgeErr.Error() || !errors.Is(got, context.Canceled) {
+			t.Fatalf("wrapped or joined cancellation = %v, want %v", got, bridgeErr)
+		}
+		if errors.Is(bridgeErr, realErr) && !errors.Is(got, realErr) {
+			t.Fatalf("joined real failure was lost: %v", got)
+		}
 	}
 }
 
