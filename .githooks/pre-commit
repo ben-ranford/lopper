@@ -1,33 +1,64 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
-# Git runs hooks with repository-location variables set. Clearing them lets
-# nested git commands rediscover the current worktree instead of leaking the
-# hook context into child processes. Keep GIT_INDEX_FILE: partial commits use
-# it to identify the exact content being committed.
 unset GIT_DIR GIT_WORK_TREE GIT_PREFIX
 
-# Some linked-worktree setups inherit shared Git config with core.bare=true.
-# Append a worktree-mode override without discarding caller runtime config.
-git_config_count=${GIT_CONFIG_COUNT:-0}
-case "$git_config_count" in
-	''|*[!0-9]*)
-		echo "[pre-commit] invalid GIT_CONFIG_COUNT: $git_config_count" >&2
-		exit 1
-		;;
-esac
-while [ "${git_config_count#0}" != "$git_config_count" ]; do
-	git_config_count=${git_config_count#0}
-done
-git_config_count=${git_config_count:-0}
-export "GIT_CONFIG_KEY_${git_config_count}=core.bare"
-export "GIT_CONFIG_VALUE_${git_config_count}=false"
-export GIT_CONFIG_COUNT=$((git_config_count + 1))
+config_count=${GIT_CONFIG_COUNT:-0}
+case "$config_count" in ''|*[!0-9]*) exit 1 ;; esac
+while [ "${config_count#0}" != "$config_count" ]; do config_count=${config_count#0}; done
+config_count=${config_count:-0}
+export "GIT_CONFIG_KEY_${config_count}=core.bare"
+export "GIT_CONFIG_VALUE_${config_count}=false"
+export GIT_CONFIG_COUNT=$((config_count + 1))
 
-echo "[pre-commit] running make fmt"
-make fmt
+PATH=/usr/bin:/bin:${PATH-}
+export PATH
+checkout_root=$(pwd -P) || exit 1
+git_bin=$(command -v git) || exit 1
+gofmt_bin=$(command -v gofmt) || exit 1
+mktemp_bin=$(command -v mktemp) || exit 1
+xargs_bin=$(command -v xargs) || exit 1
+case "$gofmt_bin" in /*) ;; *) echo "Refusing unresolved hook tool: gofmt" >&2; exit 1 ;; esac
+gofmt_dir=$(cd "${gofmt_bin%/*}" && pwd -P) || exit 1
+gofmt_bin=$gofmt_dir/${gofmt_bin##*/}
+case "$gofmt_bin" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: gofmt" >&2; exit 1 ;; esac
+names_file=$("$mktemp_bin") || exit 1
+cleanup() { rm -f "$names_file"; }
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-echo "[pre-commit] running make ci (module, lint, workflow, shell, duplication, inline suppressions, security, vuln, test, goleak, race, memory delta, build, coverage checks)"
-make ci
+if ! "$git_bin" diff --cached --check --no-ext-diff --no-textconv; then
+	echo "[pre-commit] staged whitespace check failed" >&2
+	exit 1
+fi
+"$git_bin" diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$names_file"
 
-echo "[pre-commit] checks passed"
+# shellcheck disable=SC2016
+if ! "$xargs_bin" -0 -n 1 sh -c '
+		file=${4-}
+		[ -n "$file" ] || exit 0
+		stage_file=$("$1") || exit 1
+		tmp=
+		cleanup() { rm -f "$stage_file" "$tmp"; }
+		trap cleanup EXIT
+		trap "exit 129" HUP
+		trap "exit 130" INT
+		trap "exit 143" TERM
+		"$2" --literal-pathspecs ls-files --stage -- "$file" >"$stage_file" || exit 1
+		IFS=" " read -r mode _ <"$stage_file" || exit 1
+		case "$mode" in 100644|100755) ;; *) exit 0 ;; esac
+		tmp=$("$1") || exit 1
+		"$2" show ":$file" >"$tmp" || exit 1
+		status=0
+		diff=$("$3" -d "$tmp") || status=$?
+		if [ -n "$diff" ]; then
+			echo "[pre-commit] staged Go file must be gofmt-formatted: $file" >&2
+			printf "%s\\n" "$diff" >&2
+			exit 1
+		fi
+		[ "$status" -eq 0 ] || { echo "[pre-commit] gofmt failed for $file" >&2; exit "$status"; }
+	' sh "$mktemp_bin" "$git_bin" "$gofmt_bin" <"$names_file"; then
+	exit 1
+fi

@@ -8,109 +8,181 @@ import (
 	"testing"
 )
 
-func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	repoDir := filepath.Join(tempDir, "repo")
-	worktreeDir := filepath.Join(tempDir, "linked")
-	binDir := filepath.Join(tempDir, "bin")
-	logPath := filepath.Join(tempDir, "make-env.log")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
+func TestHooksInstallUsesImmutableSnapshot(t *testing.T) {
+	repoDir := newHookFixture(t)
+	sentinel := filepath.Join(repoDir, "branch-command-ran")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "fmt:\n\t@printf branch >"+sentinel+"\nci:\n\t@printf branch >"+sentinel+"\nhooks-install:\n\t@printf branch >"+sentinel+"\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "Makefile", ".githooks/pre-commit", "sample.go")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "revision B")
+	if err != nil {
+		t.Fatalf("commit revision B: %v\n%s", err, output)
 	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("checkout-controlled command ran: %v", err)
+	}
+}
 
-	runCommand(t, tempDir, "git", "init", "-b", "main", repoDir)
-	runCommand(t, repoDir, "git", "config", "user.name", "Test User")
-	runCommand(t, repoDir, "git", "config", "user.email", "test@example.com")
-	writeFile(t, filepath.Join(repoDir, "tracked.txt"), "baseline\n")
-	runCommand(t, repoDir, "git", "add", "tracked.txt")
-	runCommand(t, repoDir, "git", "commit", "-m", "baseline")
-	runCommand(t, repoDir, "git", "worktree", "add", worktreeDir)
+func TestInstalledPreCommitRejectsUnformattedStagedGo(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int {return 2}\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "unformatted")
+	if err == nil || !strings.Contains(output, "gofmt-formatted") {
+		t.Fatalf("expected staged gofmt rejection, got %v:\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitRejectsStagedWhitespace(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "notes.txt"), "trailing space \n")
+	runCommand(t, repoDir, "git", "add", "notes.txt")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "whitespace")
+	if err == nil || !strings.Contains(output, "trailing whitespace") {
+		t.Fatalf("expected staged whitespace rejection, got %v:\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int {return 3}\n")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "staged formatting")
+	if err != nil {
+		t.Fatalf("commit staged formatting: %v\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitRejectsCheckoutControlledGofmt(t *testing.T) {
+	repoDir := newHookFixture(t)
+	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
+	toolsDir := filepath.Join(repoDir, "tools")
+	writeFileMode(t, filepath.Join(toolsDir, "gofmt"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("read managed hook path: %v", err)
+	}
+	output, err := hookCommandWithEnv(repoDir, []string{"PATH=" + toolsDir + ":/usr/bin:/bin"}, filepath.Join(strings.TrimSpace(hookDir), "pre-commit"))
+	if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
+		t.Fatalf("expected checkout gofmt refusal, got %v:\n%s", err, output)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("checkout-controlled gofmt ran: %v", err)
+	}
+}
+
+func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	runCommand(t, repoDir, "git", "config", "core.hooksPath", "/custom/hooks")
+	output, err := hookCommand(repoDir, "make", "hooks-install")
+	if err == nil || !strings.Contains(output, "Refusing to replace") {
+		t.Fatalf("expected custom hook path refusal, got %v:\n%s", err, output)
+	}
+	got, getErr := hookCommand(repoDir, "git", "config", "--get-all", "core.hooksPath")
+	if getErr != nil || got != "/custom/hooks\n" {
+		t.Fatalf("custom hook path changed: %v, %q", getErr, got)
+	}
+	runCommand(t, repoDir, "git", "config", "--unset", "core.hooksPath")
+	runCommand(t, repoDir, "make", "hooks-install")
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	output, err = hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err == nil || output != "" {
+		t.Fatalf("expected managed hook path to be removed, got %v: %q", err, output)
+	}
+}
+
+func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	linkedDir := filepath.Join(filepath.Dir(repoDir), "linked")
+	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	runCommand(t, linkedDir, "make", "hooks-install")
 	runCommand(t, repoDir, "git", "config", "core.bare", "true")
-	indexPath := filepath.Join(repoDir, ".git", "worktrees", filepath.Base(worktreeDir), "index")
-
-	hookDir := filepath.Join(worktreeDir, ".githooks")
-	if err := os.MkdirAll(hookDir, 0o755); err != nil {
-		t.Fatalf("mkdir hook dir: %v", err)
+	writeFile(t, filepath.Join(linkedDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, linkedDir, "git", "add", "sample.go")
+	output, err := hookCommandWithEnv(linkedDir, []string{"GIT_CONFIG_COUNT=01", "GIT_CONFIG_KEY_0=advice.detachedHead", "GIT_CONFIG_VALUE_0=false"}, "git", "-c", "core.bare=false", "commit", "-m", "linked hook")
+	if err != nil {
+		t.Fatalf("commit from linked worktree: %v\n%s", err, output)
 	}
+}
 
+func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
+	repoDir := newHookFixture(t)
+	indexPath := filepath.Join(repoDir, "alternate-index")
+	_, err := hookCommandWithEnv(repoDir, []string{"GIT_INDEX_FILE=" + indexPath}, "git", "read-tree", "HEAD")
+	if err != nil {
+		t.Fatalf("prepare alternate index: %v", err)
+	}
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int {return 2}\n")
+	_, err = hookCommandWithEnv(repoDir, []string{"GIT_INDEX_FILE=" + indexPath}, "git", "add", "sample.go")
+	if err != nil {
+		t.Fatalf("stage alternate index: %v", err)
+	}
+	hookPath, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("read managed hook path: %v", err)
+	}
+	hookPath = filepath.Join(strings.TrimSpace(hookPath), "pre-commit")
+	output, err := hookCommandWithEnv(repoDir, []string{"GIT_INDEX_FILE=" + indexPath, "GIT_CONFIG_COUNT=01", "GIT_CONFIG_KEY_0=advice.detachedHead", "GIT_CONFIG_VALUE_0=false"}, hookPath)
+	if err == nil || !strings.Contains(output, "gofmt-formatted") {
+		t.Fatalf("expected alternate index formatting rejection, got %v:\n%s", err, output)
+	}
+}
+
+func newHookFixture(t *testing.T) string {
+	t.Helper()
+	repoDir := filepath.Join(t.TempDir(), "repo")
+	runCommand(t, filepath.Dir(repoDir), "git", "init", "-b", "main", repoDir)
+	runCommand(t, repoDir, "git", "config", "user.name", "Hook Test")
+	runCommand(t, repoDir, "git", "config", "user.email", "hook-test@example.com")
 	cwd, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("get working directory: %v", err)
 	}
-	hookSource := filepath.Join(cwd, "..", ".githooks", "pre-commit")
-	hookData, err := os.ReadFile(hookSource)
+	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "Makefile"), filepath.Join(repoDir, "Makefile"), 0o644)
+	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
+	runCommand(t, repoDir, "git", "add", ".")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "revision A")
+	runCommand(t, repoDir, "make", "hooks-install")
+	return repoDir
+}
+
+func copyHookFixtureFile(t *testing.T, source, destination string, mode os.FileMode) {
+	t.Helper()
+	contents, err := os.ReadFile(source)
 	if err != nil {
-		t.Fatalf("read hook: %v", err)
+		t.Fatalf("read fixture source %s: %v", source, err)
 	}
-	writeFileMode(t, filepath.Join(hookDir, "pre-commit"), string(hookData), 0o755)
+	writeFileMode(t, destination, string(contents), mode)
+}
 
-	fakeMake := "#!/usr/bin/env sh\n" +
-		"set -eu\n" +
-		"printf 'GIT_DIR=%s\\nGIT_WORK_TREE=%s\\nGIT_INDEX_FILE=%s\\nGIT_PREFIX=%s\\nGIT_CONFIG_COUNT=%s\\nGIT_CONFIG_KEY_0=%s\\nGIT_CONFIG_VALUE_0=%s\\nGIT_CONFIG_KEY_1=%s\\nGIT_CONFIG_VALUE_1=%s\\n' " +
-		"\"${GIT_DIR-}\" \"${GIT_WORK_TREE-}\" \"${GIT_INDEX_FILE-}\" \"${GIT_PREFIX-}\" " +
-		"\"${GIT_CONFIG_COUNT-}\" \"${GIT_CONFIG_KEY_0-}\" \"${GIT_CONFIG_VALUE_0-}\" " +
-		"\"${GIT_CONFIG_KEY_1-}\" \"${GIT_CONFIG_VALUE_1-}\" >>\"" + logPath + "\"\n" +
-		"git status --short >>\"" + logPath + "\"\n" +
-		"repo_tmp=$(mktemp -d)\n" +
-		"git init -b main \"$repo_tmp/fresh\" >/dev/null\n" +
-		"(unset GIT_INDEX_FILE; cd \"$repo_tmp/fresh\" && git status --short) >>\"" + logPath + "\"\n" +
-		"printf '%s\\n' '--' >>\"" + logPath + "\"\n"
-	writeFileMode(t, filepath.Join(binDir, "make"), fakeMake, 0o755)
+func hookCommand(dir, name string, args ...string) (string, error) {
+	return hookCommandWithEnv(dir, nil, name, args...)
+}
 
-	cmd := exec.Command(filepath.Join(hookDir, "pre-commit"))
-	cmd.Dir = worktreeDir
+func hookCommandWithEnv(dir string, env []string, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
 	cmd.Env = withoutGitEnv()
-	additionalEnv := []string{
-		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"GIT_DIR=/tmp/hook-git-dir",
-		"GIT_WORK_TREE=/tmp/hook-worktree",
-		"GIT_INDEX_FILE=" + indexPath,
-		"GIT_PREFIX=subdir/",
-		"GIT_CONFIG_COUNT=01",
-		"GIT_CONFIG_KEY_0=advice.detachedHead",
-		"GIT_CONFIG_VALUE_0=false",
+	for _, setting := range env {
+		name, _, _ := strings.Cut(setting, "=")
+		for index, existing := range cmd.Env {
+			if strings.HasPrefix(existing, name+"=") {
+				cmd.Env[index] = setting
+				setting = ""
+				break
+			}
+		}
+		if setting != "" {
+			cmd.Env = append(cmd.Env, setting)
+		}
 	}
-	cmd.Env = append(cmd.Env, additionalEnv...)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run pre-commit hook: %v\n%s", err, output)
-	}
-
-	logData, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read fake make log: %v", err)
-	}
-	logOutput := string(logData)
-	if strings.Count(logOutput, "--\n") != 2 {
-		t.Fatalf("expected two make invocations, got log:\n%s", logOutput)
-	}
-	for _, forbidden := range []string{
-		"GIT_DIR=/tmp/hook-git-dir",
-		"GIT_WORK_TREE=/tmp/hook-worktree",
-		"GIT_PREFIX=subdir/",
-	} {
-		if strings.Contains(logOutput, forbidden) {
-			t.Fatalf("expected hook to clear %q before running make, got log:\n%s", forbidden, logOutput)
-		}
-	}
-	for _, required := range []string{
-		"GIT_INDEX_FILE=" + indexPath,
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=advice.detachedHead",
-		"GIT_CONFIG_VALUE_0=false",
-		"GIT_CONFIG_KEY_1=core.bare",
-		"GIT_CONFIG_VALUE_1=false",
-	} {
-		if !strings.Contains(logOutput, required) {
-			t.Fatalf("expected hook to export %q before running make, got log:\n%s", required, logOutput)
-		}
-	}
-	if strings.Contains(logOutput, "fatal: this operation must be run in a work tree") {
-		t.Fatalf("expected linked worktree git commands to succeed with core.bare override, got log:\n%s", logOutput)
-	}
-	if strings.Contains(logOutput, "fatal: not a git repository") {
-		t.Fatalf("expected temporary repo git commands to succeed with hook env, got log:\n%s", logOutput)
-	}
+	return string(output), err
 }
