@@ -510,6 +510,9 @@ func TestFilterFindingsByConfidencePreservesSecurityRiskCues(t *testing.T) {
 	if len(deps[0].RiskCues) != 2 || deps[0].RiskCues[0].Code != "dynamic-loader" || deps[0].RiskCues[1].Code != "runtime-eval" {
 		t.Fatalf("expected only high and medium risk cues to survive low confidence filtering, got %#v", deps[0].RiskCues)
 	}
+	if deps[0].RiskCues[0].Severity != "high" || deps[0].RiskCues[1].Severity != "medium" {
+		t.Fatalf("expected retained security risk severities to be canonical, got %#v", deps[0].RiskCues)
+	}
 	if len(deps[0].UnusedExports) != 0 || len(deps[0].Recommendations) != 0 {
 		t.Fatalf("expected low-confidence unused/removal findings to remain filtered, got %#v", deps[0])
 	}
