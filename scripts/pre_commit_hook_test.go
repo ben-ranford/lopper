@@ -445,6 +445,49 @@ func TestHooksInstallRefusesManagedHookDirectorySymlinkBeforeMutation(t *testing
 	assertNoHooksPath(t, repoDir, "--local", "local")
 }
 
+func TestHooksUninstallRefusesManagedHookDirectorySymlinkBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newHookTestRepository(t)
+	runCommand(t, repoDir, "make", "hooks-install")
+
+	managedHook := managedHookPath(t, repoDir)
+	managedDir := filepath.Dir(managedHook)
+	configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hook config before unsafe uninstall: %v", err)
+	}
+	if err := os.Remove(managedHook); err != nil {
+		t.Fatalf("remove managed hook before symlink setup: %v", err)
+	}
+	if err := os.Remove(managedDir); err != nil {
+		t.Fatalf("remove managed hook directory before symlink setup: %v", err)
+	}
+	victimDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.Mkdir(victimDir, 0o700); err != nil {
+		t.Fatalf("create external hook directory: %v", err)
+	}
+	victimHook := filepath.Join(victimDir, "pre-commit")
+	writeFileMode(t, victimHook, "#!/bin/sh\nexit 0\n", 0o755)
+	if err := os.Symlink(victimDir, managedDir); err != nil {
+		t.Fatalf("symlink managed hook directory: %v", err)
+	}
+
+	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+	if err == nil || !strings.Contains(string(output), "Refusing unsafe managed hook directory") {
+		t.Fatalf("uninstall with managed directory symlink = %v\n%s", err, output)
+	}
+	assertFileEquals(t, victimHook, "#!/bin/sh\nexit 0\n")
+	configAfter, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hook config after unsafe uninstall: %v", err)
+	}
+	if string(configAfter) != string(configBefore) {
+		t.Fatalf("uninstall modified config before unsafe-directory refusal")
+	}
+}
+
 func TestHooksInstallRefusesManagedHookFIFOBeforeMutation(t *testing.T) {
 	t.Parallel()
 

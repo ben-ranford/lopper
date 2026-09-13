@@ -566,6 +566,7 @@ hooks-uninstall:
 		common_dir="$$(git -c core.bare=false rev-parse --path-format=absolute --git-common-dir)"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
+		if [ -L "$$managed_dir" ] || { [ -e "$$managed_dir" ] && [ ! -d "$$managed_dir" ]; }; then echo "Refusing unsafe managed hook directory: $$managed_dir" >&2; exit 1; fi; \
 		run_config() { git_dir="$$1"; shift; if [ -n "$$git_dir" ]; then git -c core.bare=false --git-dir="$$git_dir" config "$$@"; else git -c core.bare=false config "$$@"; fi; }; \
 		read_worktree_config() { \
 			value_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || exit 1; error_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-config.XXXXXX")" || { rm -f "$$value_file"; exit 1; }; status=0; git -c core.bare=false config --file "$$common_dir/config" --bool --get extensions.worktreeConfig >"$$value_file" 2>"$$error_file" || status=$$?; \
