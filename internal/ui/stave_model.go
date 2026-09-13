@@ -605,10 +605,12 @@ func reduceStaveGlobalKey(model *staveSummaryModel, key string) bool {
 		return true
 	case "/":
 		model.interaction.commandMode = true
+		model.interaction.error = ""
 		model.interaction.filterBuffer = "filter "
 		return true
 	case ":":
 		model.interaction.commandMode = true
+		model.interaction.error = ""
 		model.interaction.filterBuffer = ""
 		return true
 	case "r":

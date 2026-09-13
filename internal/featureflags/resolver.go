@@ -77,6 +77,9 @@ func (r *Registry) applyReleaseLockDefaults(channel Channel, lock *ReleaseLock, 
 	}
 	for _, ref := range lock.DefaultOn {
 		flag, _ := r.Lookup(ref)
+		if flag.ExplicitOnly {
+			continue
+		}
 		enabled[flag.Code] = true
 	}
 }
