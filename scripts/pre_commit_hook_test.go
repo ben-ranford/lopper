@@ -25,22 +25,22 @@ func TestHooksInstallUsesImmutableSnapshot(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsUnformattedStagedGo(t *testing.T) {
-	repoDir := newHookFixture(t)
-	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int {return 2}\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
-	output, err := hookCommand(repoDir, "git", "commit", "-m", "unformatted")
-	if err == nil || !strings.Contains(output, "gofmt-formatted") {
-		t.Fatalf("expected staged gofmt rejection, got %v:\n%s", err, output)
-	}
+	assertInstalledPreCommitRejects(t, "sample.go", "package sample\n\nfunc Value() int {return 2}\n", "unformatted", "gofmt-formatted")
 }
 
 func TestInstalledPreCommitRejectsStagedWhitespace(t *testing.T) {
+	assertInstalledPreCommitRejects(t, "notes.txt", "trailing space \n", "whitespace", "trailing whitespace")
+}
+
+func assertInstalledPreCommitRejects(t *testing.T, path, contents, message, expected string) {
+	t.Helper()
+
 	repoDir := newHookFixture(t)
-	writeFile(t, filepath.Join(repoDir, "notes.txt"), "trailing space \n")
-	runCommand(t, repoDir, "git", "add", "notes.txt")
-	output, err := hookCommand(repoDir, "git", "commit", "-m", "whitespace")
-	if err == nil || !strings.Contains(output, "trailing whitespace") {
-		t.Fatalf("expected staged whitespace rejection, got %v:\n%s", err, output)
+	writeFile(t, filepath.Join(repoDir, path), contents)
+	runCommand(t, repoDir, "git", "add", path)
+	output, err := hookCommand(repoDir, "git", "commit", "-m", message)
+	if err == nil || !strings.Contains(output, expected) {
+		t.Fatalf("expected staged %s rejection, got %v:\n%s", expected, err, output)
 	}
 }
 
