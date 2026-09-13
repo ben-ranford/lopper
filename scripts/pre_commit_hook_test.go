@@ -105,6 +105,26 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	}
 }
 
+func TestHooksInstallRejectsNonExecutableManagedHook(t *testing.T) {
+	repoDir := newHookFixture(t)
+	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("read retained managed hook path: %v", err)
+	}
+	managedHook := filepath.Join(strings.TrimSpace(hookDir), "pre-commit")
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	if err := os.Chmod(managedHook, 0o644); err != nil {
+		t.Fatalf("make managed hook non-executable: %v", err)
+	}
+	output, err := hookCommand(repoDir, "make", "hooks-install")
+	if err == nil || !strings.Contains(output, "executable") {
+		t.Fatalf("expected non-executable managed hook rejection, got %v:\n%s", err, output)
+	}
+	if output, err := hookCommand(repoDir, "git", "config", "--local", "--get", "core.hooksPath"); err == nil || output != "" {
+		t.Fatalf("expected failed reinstall to leave hooks path unset, got %v: %q", err, output)
+	}
+}
+
 func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
@@ -140,6 +160,32 @@ func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
 	output, err := hookCommandWithEnv(repoDir, []string{"GIT_INDEX_FILE=" + indexPath, "GIT_CONFIG_COUNT=01", "GIT_CONFIG_KEY_0=advice.detachedHead", "GIT_CONFIG_VALUE_0=false"}, hookPath)
 	if err == nil || !strings.Contains(output, "gofmt-formatted") {
 		t.Fatalf("expected alternate index formatting rejection, got %v:\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "0:formatted.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "0:formatted.go")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "stage-like formatted filename")
+	if err != nil {
+		t.Fatalf("commit formatted stage-like filename: %v\n%s", err, output)
+	}
+
+	writeFile(t, filepath.Join(repoDir, "1:unformatted.go"), "package sample\n\nfunc Value() int {return 3}\n")
+	runCommand(t, repoDir, "git", "add", "1:unformatted.go")
+	output, err = hookCommand(repoDir, "git", "commit", "-m", "stage-like unformatted filename")
+	if err == nil || !strings.Contains(output, "gofmt-formatted") {
+		t.Fatalf("expected unformatted stage-like filename rejection, got %v:\n%s", err, output)
+	}
+
+	repoDir = newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "foo.go"), "package sample\n\nfunc Value() int { return 4 }\n")
+	writeFile(t, filepath.Join(repoDir, "0:foo.go"), "package sample\n\nfunc Value() int {return 5}\n")
+	runCommand(t, repoDir, "git", "add", "foo.go", "0:foo.go")
+	output, err = hookCommand(repoDir, "git", "commit", "-m", "stage-like sibling filename")
+	if err == nil || !strings.Contains(output, "gofmt-formatted") {
+		t.Fatalf("expected unformatted stage-like sibling rejection, got %v:\n%s", err, output)
 	}
 }
 

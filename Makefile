@@ -488,6 +488,7 @@ hooks-install:
 			echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; \
 		elif [ -e "$$managed_hook" ]; then \
 			[ -f "$$managed_hook" ] && [ ! -L "$$managed_hook" ] || { echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; }; \
+			[ -x "$$managed_hook" ] || { echo "Managed pre-commit hook is not executable: $$managed_hook" >&2; exit 1; }; \
 		else \
 			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
 			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; created_hook=1; \
