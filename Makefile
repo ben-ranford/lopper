@@ -228,7 +228,7 @@ test-race:
 test-race-lockfiledrift-head:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
-# Focused proof for the opt-in Stave UI. Keep this bounded and deterministic:
+# Focused tests for the opt-in Stave UI:
 # the regular test/race/leak/coverage targets remain the repository-wide gates.
 stave-ui-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui -run '^(TestStave|TestCompareParity|TestLopperStave|TestNewStaveRenderer)'

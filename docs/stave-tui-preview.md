@@ -1,8 +1,7 @@
 # Stave TUI preview
 
-`stave-tui-preview` is an opt-in proving client for the Stave terminal UI
-runtime. It renders the existing Lopper summary report through a typed Stave
-program while keeping summary analysis, command parsing, and consequential
+`stave-tui-preview` is an opt-in preview of the Stave terminal UI runtime.
+It renders the existing Lopper summary report through a typed Stave program while keeping summary analysis, command parsing, and consequential
 side effects in Lopper. The legacy summary TUI remains the default and is the
 rollback path.
 
@@ -26,8 +25,8 @@ Omitting `--enable-feature stave-tui-preview`, or disabling the feature,
 selects the existing Summary implementation. No report, baseline, or action
 state is shared with a previous preview process.
 
-The preview uses `github.com/ben-ranford/stave v1.0.0-rc.2`. This proving client
-is deliberately Lopper-owned; it does not require a local Stave checkout or a
+The preview uses `github.com/ben-ranford/stave v1.0.0-rc.2`. The integration
+is maintained in Lopper; it does not require a local Stave checkout or a
 module replacement. The root module is published through the public Go proxy
 and checksum database. Lopper retains its terminal bridge; Stave's nested
 adapter modules are not part of this dependency.
@@ -134,12 +133,11 @@ static-analysis gates. Coverage is checked against the repository's current
 total and per-package thresholds on each change. Focused tests are
 intentionally bounded and do not replace the repository-wide gates.
 
-The preview is still a proving client. Automated evidence covers async action
+The preview remains experimental. Automated tests cover async action
 lifecycle, value isolation, strict result schemas, Diagnostic input rejection,
 responsive line/full-screen rendering, and in-flight process signals.
 [Issue #1492](https://github.com/ben-ranford/lopper/issues/1492) tracks the separate
 graduation backlog: full report/detail parity, consequential codemod interruption
 through an external PTY, manual screen-reader/emulator review, and comparative
-visual/usability evidence. Merging this preview does not close that backlog or
-graduate the feature. Immutable published Lopper parity and rollback evidence
-remain a separate release requirement.
+visual/usability checks. Feature graduation also requires published, immutable
+Lopper parity and rollback results.
