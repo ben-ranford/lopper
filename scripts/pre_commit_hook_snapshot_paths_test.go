@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestHooksInstallSnapshotTempCannotRedirectCopy(t *testing.T) {
+func TestHooksInstallSnapshotTempIsAllocatedBeforeCopy(t *testing.T) {
 	t.Parallel()
 
 	repoDir := newHookTestRepository(t)
@@ -18,15 +18,13 @@ func TestHooksInstallSnapshotTempCannotRedirectCopy(t *testing.T) {
 	if err := os.MkdirAll(managedDir, 0o777); err != nil {
 		t.Fatalf("create writable managed directory: %v", err)
 	}
-	victim := filepath.Join(t.TempDir(), "victim")
-	writeFile(t, victim, "unchanged\n")
-
-	wrapperDir := snapshotPathWrapper(t, victim, "*.pre-commit.tmp.*")
+	marker := filepath.Join(t.TempDir(), "snapshot-path")
+	wrapperDir := snapshotPathWrapper(t, marker, "*.pre-commit.tmp.*")
 	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err != nil {
 		t.Fatalf("hooks-install = %v\n%s", err, output)
 	}
-	assertFileEquals(t, victim, "unchanged\n")
+	assertSnapshotPathObserved(t, marker)
 	info, err := os.Lstat(managedHookPath(t, repoDir))
 	if err != nil {
 		t.Fatalf("lstat installed hook: %v", err)
@@ -84,7 +82,7 @@ func TestHooksInstallRejectsSymlinkedReviewedHookDirectory(t *testing.T) {
 	}
 }
 
-func TestHooksInstallSnapshotBackupCannotRedirectCopy(t *testing.T) {
+func TestHooksInstallSnapshotBackupIsAllocatedBeforeCopy(t *testing.T) {
 	t.Parallel()
 
 	repoDir := newHookTestRepository(t)
@@ -94,15 +92,13 @@ func TestHooksInstallSnapshotBackupCannotRedirectCopy(t *testing.T) {
 		t.Fatalf("create writable managed directory: %v", err)
 	}
 	writeFileMode(t, managedHook, "#!/bin/sh\nexit 0\n", 0o755)
-	victim := filepath.Join(t.TempDir(), "victim")
-	writeFile(t, victim, "unchanged\n")
-
-	wrapperDir := snapshotPathWrapper(t, victim, "*.backup")
+	marker := filepath.Join(t.TempDir(), "snapshot-path")
+	wrapperDir := snapshotPathWrapper(t, marker, "*.pre-commit.backup.*")
 	output, err := runMakeWithEnv(repoDir, "hooks-install", "PATH="+wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err != nil {
 		t.Fatalf("hooks-install = %v\n%s", err, output)
 	}
-	assertFileEquals(t, victim, "unchanged\n")
+	assertSnapshotPathObserved(t, marker)
 	assertFileEquals(t, managedHook, readRepositoryHook(t))
 }
 
@@ -157,7 +153,18 @@ func assertIndependentHookFixture(t *testing.T, repoDir string) {
 	}
 }
 
-func snapshotPathWrapper(t *testing.T, victim, pattern string) string {
+func assertSnapshotPathObserved(t *testing.T, marker string) {
+	t.Helper()
+	contents, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read snapshot path marker: %v", err)
+	}
+	if path := strings.TrimSpace(string(contents)); path == "" {
+		t.Fatal("copy wrapper did not observe a snapshot path")
+	}
+}
+
+func snapshotPathWrapper(t *testing.T, marker, pattern string) string {
 	t.Helper()
 	cpPath, err := exec.LookPath("cp")
 	if err != nil {
@@ -167,9 +174,9 @@ func snapshotPathWrapper(t *testing.T, victim, pattern string) string {
 	writeFileMode(t, filepath.Join(wrapperDir, "cp"), fmt.Sprintf(`#!/bin/sh
 for destination do :; done
 case "$destination" in
-%s) ln -s %q "$destination" 2>/dev/null || : ;;
+%s) [ -f "$destination" ] && [ ! -L "$destination" ] || exit 74; printf '%%s\n' "$destination" > %q ;;
 esac
 exec %q "$@"
-`, pattern, victim, cpPath), 0o755)
+`, pattern, marker, cpPath), 0o755)
 	return wrapperDir
 }
