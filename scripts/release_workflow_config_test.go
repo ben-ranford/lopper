@@ -2790,7 +2790,7 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	var config struct {
 		Enabled           *bool                `json:"enabled"`
 		Automerge         *bool                `json:"automerge"`
-		PlatformAutomerge bool                 `json:"platformAutomerge"`
+		PlatformAutomerge *bool                `json:"platformAutomerge"`
 		PackageRules      []renovateReviewRule `json:"packageRules"`
 	}
 	readJSONConfig(t, "renovate.json", &config)
@@ -2807,7 +2807,7 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	}
 }
 
-func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge *bool, platformAutomerge bool) {
+func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge, platformAutomerge *bool) {
 	t.Helper()
 
 	if enabled != nil && !*enabled {
@@ -2816,8 +2816,8 @@ func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge *bool, 
 	if automerge != nil && *automerge {
 		t.Fatal("Renovate must not enable global unattended automerge")
 	}
-	if platformAutomerge {
-		t.Fatal("Renovate platformAutomerge must be disabled so dependency updates require human review")
+	if platformAutomerge == nil || *platformAutomerge {
+		t.Fatal("Renovate platformAutomerge must be explicitly disabled so dependency updates require human review")
 	}
 }
 
@@ -2958,15 +2958,15 @@ func TestRenovatePRsAreExemptFromMetadataValidation(t *testing.T) {
 
 	var config struct {
 		Labels            []string `json:"labels"`
-		PlatformAutomerge bool     `json:"platformAutomerge"`
+		PlatformAutomerge *bool    `json:"platformAutomerge"`
 	}
 	readJSONConfig(t, "renovate.json", &config)
 
 	if !slices.Contains(config.Labels, "dependencies") {
 		t.Fatalf("Renovate PR labels = %v, want dependencies", config.Labels)
 	}
-	if config.PlatformAutomerge {
-		t.Fatal("Renovate platformAutomerge must remain disabled so dependency updates require human review")
+	if config.PlatformAutomerge == nil || *config.PlatformAutomerge {
+		t.Fatal("Renovate platformAutomerge must remain explicitly disabled so dependency updates require human review")
 	}
 
 	var fields map[string]json.RawMessage
