@@ -188,12 +188,18 @@ func TestValidateDeniedLicensesBaselineNewDeniedBranch(t *testing.T) {
 		t.Fatalf("expected denied license error from baseline new-denied branch, got %v", err)
 	}
 
-	reportData.BaselineComparison.NewDeniedLicenses = nil
-	reportData.Dependencies = []report.DependencyReport{
-		{Name: "existing-denied", License: &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true}},
+}
+
+func TestValidateDeniedLicensesBaselineDoesNotBypassCurrentDenial(t *testing.T) {
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "existing-denied", License: &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true}},
+		},
+		BaselineComparison: &report.BaselineComparison{},
 	}
-	if err := validateDeniedLicenses(reportData, true); err != nil {
-		t.Fatalf("expected no denied-license error for baseline mode without newly introduced denied licenses, got %v", err)
+
+	if err := validateDeniedLicenses(reportData, true); !errors.Is(err, ErrDeniedLicenses) {
+		t.Fatalf("expected current denied license to fail even when the baseline has no new denied licenses, got %v", err)
 	}
 }
 
@@ -437,6 +443,38 @@ func TestExecuteAnalyseDeniedLicensesError(t *testing.T) {
 	}
 	if !strings.Contains(output, `"effectivePolicy"`) {
 		t.Fatalf("expected formatted output on denied-license failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseBaselineDoesNotBypassDeniedLicenses(t *testing.T) {
+	baselinePath := filepath.Join(t.TempDir(), testBaselinePath)
+	baseline := `{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[{"name":"copyleft","usedExportsCount":1,"totalExportsCount":1,"usedPercent":100,"license":{"spdx":"GPL-3.0-ONLY","denied":true}}]}` + "\n"
+	if err := os.WriteFile(baselinePath, []byte(baseline), 0o600); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+
+	analyzer := &fakeAnalyzer{report: report.Report{
+		RepoPath: ".",
+		Dependencies: []report.DependencyReport{{
+			Name:              "copyleft",
+			UsedExportsCount:  1,
+			TotalExportsCount: 1,
+			UsedPercent:       100,
+			License:           &report.DependencyLicense{SPDX: deniedLicenseSPDX, Denied: true},
+		}},
+	}}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.BaselinePath = baselinePath
+	req.Analyse.Thresholds.LicenseFailOnDeny = true
+
+	_, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, ErrDeniedLicenses) {
+		t.Fatalf("expected baseline comparison to preserve denied-license failure, got %v", err)
 	}
 }
 

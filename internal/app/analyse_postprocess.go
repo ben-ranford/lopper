@@ -269,7 +269,6 @@ func validateDeniedLicenses(reportData report.Report, failOnDeny bool) error {
 		if len(reportData.BaselineComparison.NewDeniedLicenses) > 0 {
 			return ErrDeniedLicenses
 		}
-		return nil
 	}
 	if report.CountDeniedLicenses(reportData.Dependencies) > 0 {
 		return ErrDeniedLicenses
