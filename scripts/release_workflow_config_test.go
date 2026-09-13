@@ -2919,12 +2919,18 @@ var renovateGenericNarrowingMatchers = []string{
 
 func assertRenovateMatcherNarrowsCatchAllRule(t *testing.T, matcher string) {
 	t.Helper()
-	rule := map[string]json.RawMessage{
+	rawRule := map[string]json.RawMessage{
 		"matchPackageNames": json.RawMessage(`["*"]`),
+		"automerge":         json.RawMessage(`false`),
 		matcher:             json.RawMessage(`["hostile"]`),
 	}
-	if !renovateRuleHasNarrowingMatcher(rule) {
+	if !renovateRuleHasNarrowingMatcher(rawRule) {
 		t.Fatalf("%s matcher must prevent a catch-all review rule", matcher)
+	}
+	automerge := false
+	rules := []renovateReviewRule{{MatchPackageNames: []string{"*"}, Automerge: &automerge}}
+	if err := validateRenovatePackageRules(rules, []map[string]json.RawMessage{rawRule}); err == nil || !strings.Contains(err.Error(), "must include a catch-all") {
+		t.Fatalf("%s matcher validation = %v, want catch-all rejection", matcher, err)
 	}
 }
 
