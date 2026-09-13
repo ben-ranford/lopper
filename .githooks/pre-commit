@@ -34,7 +34,10 @@ while [ -L "$gofmt_bin" ]; do
 done
 gofmt_dir=$(CDPATH='' cd -P "$(dirname "$gofmt_bin")" && pwd -P) || exit 1
 gofmt_bin=$gofmt_dir/${gofmt_bin##*/}
-[ -f "$gofmt_bin" ] && [ -x "$gofmt_bin" ] || { echo "Refusing non-executable hook tool: gofmt" >&2; exit 1; }
+if [ ! -f "$gofmt_bin" ] || [ ! -x "$gofmt_bin" ]; then
+	echo "Refusing non-executable hook tool: gofmt" >&2
+	exit 1
+fi
 case "$gofmt_bin" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: gofmt" >&2; exit 1 ;; esac
 names_file=$("$mktemp_bin") || exit 1
 cleanup() { rm -f "$names_file"; }
