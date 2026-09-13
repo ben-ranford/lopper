@@ -5675,44 +5675,34 @@ func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
 func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
 	t.Parallel()
 
-	testCases := []struct {
-		name    string
-		command string
-		message string
-	}{
-		{
-			name:    "trust local tap",
-			command: "brew trust ben-ranford/tap",
-			message: "must trust the local Homebrew tap before auditing formulae",
-		},
-		{
-			name:    "disable linux sandbox",
-			command: "export HOMEBREW_NO_SANDBOX_LINUX=1",
-			message: "must disable the Linux Homebrew sandbox before build-from-source formula validation",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for path, trustCommand := range map[string]string{
+		".github/workflows/ci.yml":      `brew trust --tap "$tap_remote"`,
+		".github/workflows/release.yml": "brew trust ben-ranford/tap",
+		".github/workflows/rolling.yml": "brew trust ben-ranford/tap",
+	} {
+		t.Run(path, func(t *testing.T) {
 			t.Parallel()
-
-			for _, path := range []string{
-				".github/workflows/ci.yml",
-				".github/workflows/release.yml",
-				".github/workflows/rolling.yml",
-			} {
-				path := path
-				t.Run(path, func(t *testing.T) {
-					t.Parallel()
-
-					workflowText := readConfig(t, path)
-					if !strings.Contains(workflowText, tc.command) {
-						t.Fatalf("%s %s", path, tc.message)
-					}
-				})
+			workflowText := readConfig(t, path)
+			for _, command := range []string{trustCommand, "export HOMEBREW_NO_SANDBOX_LINUX=1"} {
+				if !strings.Contains(workflowText, command) {
+					t.Fatalf("%s must retain formula validation command %q", path, command)
+				}
+			}
+			if path == ".github/workflows/ci.yml" {
+				assertHomebrewCustomRemoteTrustOrder(t, workflowText, trustCommand)
 			}
 		})
+	}
+}
+
+func assertHomebrewCustomRemoteTrustOrder(t *testing.T, workflowText, trustCommand string) {
+	t.Helper()
+	remote := strings.Index(workflowText, `tap_remote="file://${PWD}/homebrew-tap"`)
+	untap := strings.Index(workflowText, "brew untap ben-ranford/tap")
+	trust := strings.Index(workflowText, trustCommand)
+	tap := strings.Index(workflowText, `brew tap --custom-remote ben-ranford/tap "$tap_remote"`)
+	if remote < 0 || untap < 0 || trust <= remote || trust <= untap || tap <= trust {
+		t.Fatal("CI must untap stale state and trust its exact local remote before loading the custom tap")
 	}
 }
 
