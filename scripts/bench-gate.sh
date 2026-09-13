@@ -335,9 +335,39 @@ if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is missing or invalid.";
 fi;
+pending_merge_head_matches_base() {
+	candidate_base_commit="$1";
+	if ! merge_head_path=$(git rev-parse --git-path MERGE_HEAD 2>/dev/null); then
+		return 1;
+	fi;
+	if [ ! -f "$merge_head_path" ]; then
+		return 1;
+	fi;
+	if ! merge_head_line_count=$(wc -l < "$merge_head_path" | tr -d '[:space:]'); then
+		return 1;
+	fi;
+	if [ "$merge_head_line_count" != "1" ]; then
+		return 1;
+	fi;
+	pending_merge_head=$(cat "$merge_head_path") || return 1;
+	if [ -z "$pending_merge_head" ]; then
+		return 1;
+	fi;
+	if ! pending_merge_commit=$(git rev-parse --verify -q --end-of-options "$pending_merge_head^{commit}"); then
+		return 1;
+	fi;
+	if [ "$pending_merge_head" != "$pending_merge_commit" ]; then
+		return 1;
+	fi;
+	[ "$candidate_base_commit" = "$pending_merge_commit" ];
+};
 if ! git merge-base --is-ancestor "$base_commit" HEAD >/dev/null 2>&1; then
-	echo "Memory benchmark base ref '$base_ref' is not an ancestor of HEAD; failing closed.";
-	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not an ancestor of HEAD.";
+	if pending_merge_head_matches_base "$base_commit"; then
+		echo "Memory benchmark base ref '$base_ref' matches the pending merge head $base_commit; accepting the in-progress merge comparison.";
+	else
+		echo "Memory benchmark base ref '$base_ref' is not an ancestor of HEAD; failing closed.";
+		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not an ancestor of HEAD.";
+	fi;
 fi;
 base_ref="$base_commit";
 bench_dir=$(mktemp -d);

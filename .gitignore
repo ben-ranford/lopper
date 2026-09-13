@@ -12,6 +12,13 @@ scripts/runtime/__pycache__/
 .idea/vcs.xml
 /lopper
 
+# Local oh-my-codex workflow state and audit artifacts.
+/.omx/
+
+# Local cross-repository Stave development link; never commit an absolute path.
+go.work
+go.work.sum
+
 .lopper-cache/
 extensions/vscode-lopper/out/
 extensions/vscode-lopper/.vscode-test/

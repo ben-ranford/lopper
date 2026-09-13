@@ -139,6 +139,7 @@ func TestFeatureDeprecationWarningsByMode(t *testing.T) {
 		{Mode: app.ModeProfile, Profile: app.ProfileRequest{Features: features}},
 		{Mode: app.ModeMCP, MCP: app.MCPRequest{Features: features}},
 		{Mode: app.ModeAdvisory, Advisory: app.AdvisoryRequest{Features: features}},
+		{Mode: app.ModeTUI, TUI: app.TUIRequest{Features: features}},
 	}
 	for _, req := range cases {
 		if warnings := featureDeprecationWarnings(req); len(warnings) != 1 {
@@ -147,6 +148,30 @@ func TestFeatureDeprecationWarningsByMode(t *testing.T) {
 	}
 	if warnings := featureDeprecationWarnings(app.Request{Mode: app.ModeFeatures}); len(warnings) != 0 {
 		t.Fatalf("expected no feature warnings for features mode, got %#v", warnings)
+	}
+}
+
+func TestRunTUIWarnsOnDeprecatedFeatureNames(t *testing.T) {
+	for _, override := range []string{"--enable-feature", "--disable-feature"} {
+		t.Run(override, func(t *testing.T) { checkTUIDeprecatedFeatureWarning(t, override) })
+	}
+}
+
+func checkTUIDeprecatedFeatureWarning(t *testing.T, override string) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	runner := &fakeRunner{}
+	command := New(runner, &out, &errOut)
+	code := command.Run(context.Background(), []string{"tui", override, "mcp-server-preview"})
+	if code != 0 {
+		t.Fatalf("TUI exit = %d, stderr=%q", code, errOut.String())
+	}
+	if runner.request.Mode != app.ModeTUI || runner.request.TUI.Features.Enabled("mcp-server") != (override == "--enable-feature") {
+		t.Fatalf("TUI feature override not forwarded: %+v", runner.request)
+	}
+	want := `warning: feature flag "mcp-server-preview" is deprecated; use "mcp-server" instead`
+	if strings.Count(errOut.String(), want) != 1 || out.Len() != 0 {
+		t.Fatalf("expected one stderr migration warning: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -12,16 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_build_notes
 
 
+def fixture_git_env() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith("GIT_"):
+            del environment[key]
+    return environment
+
+
 class ReleaseBuildNotesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q", self.repo], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.name", "Test"], check=True)
-        subprocess.run(["git", "-C", self.repo, "config", "user.email", "test@example.com"], check=True)
+        self.git("init", "-q", self.repo)
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.com")
         self.write("1.27.0", "1.0.0", self.changelog("1.0.0", "* Historical note.\n"))
         self.commit("initial release")
-        subprocess.run(["git", "-C", self.repo, "tag", "v1.0.0"], check=True)
+        self.git("tag", "v1.0.0")
         self.write("1.27.1", "1.0.1", self.changelog("1.0.1", "* Current note.\n", "1.0.0", "* Historical note.\n"))
 
     def tearDown(self) -> None:
@@ -43,12 +53,34 @@ class ReleaseBuildNotesTest(unittest.TestCase):
         (self.repo / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
 
     def commit(self, subject) -> None:
-        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", subject], check=True)
+        self.git("add", ".")
+        self.git("commit", "-qm", subject)
+
+    def git(self, *args) -> None:
+        if args[0] == "init":
+            command = ["git", *args]
+        else:
+            command = ["git", "-C", self.repo, *args]
+        subprocess.run(command, check=True, env=fixture_git_env())
 
     def generate(self) -> str:
         release_build_notes.generate(self.repo, "v1.0.0")
         return (self.repo / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def test_commit_ignores_inherited_git_index(self) -> None:
+        with tempfile.TemporaryDirectory() as marker_temp:
+            marker_repo = Path(marker_temp)
+            self.git("init", "-q", marker_repo)
+            marker_file = marker_repo / "marker.txt"
+            marker_file.write_text("marker\n", encoding="utf-8")
+            subprocess.run(["git", "-C", marker_repo, "add", "marker.txt"], check=True, env=fixture_git_env())
+            marker_index = marker_repo / ".git" / "index"
+            before = marker_index.read_bytes()
+
+            with mock.patch.dict("os.environ", {"GIT_INDEX_FILE": str(marker_index)}):
+                self.commit("ignore inherited index")
+
+            self.assertEqual(marker_index.read_bytes(), before)
 
     def test_adds_changed_patch_requirement_and_preserves_history(self) -> None:
         before = (self.repo / "CHANGELOG.md").read_text(encoding="utf-8")

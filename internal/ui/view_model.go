@@ -1,6 +1,11 @@
 package ui
 
-import "github.com/ben-ranford/lopper/internal/report"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 type summaryDependencyView struct {
 	Language               string
@@ -29,6 +34,31 @@ type summaryReportView struct {
 	BaselineComparison  *report.BaselineComparison
 	Warnings            []string
 	Dependencies        []summaryDependencyView
+}
+
+// cloneSummaryReportView takes a value snapshot through the public report
+// representation. This deliberately avoids marshaling summaryReportView
+// directly: its private detail field is derived data and would otherwise be
+// silently lost. The mapper reconstructs that detail deterministically.
+func cloneSummaryReportView(view summaryReportView) (summaryReportView, error) {
+	data, err := json.Marshal(report.Report{
+		UsageUncertainty:    view.UsageUncertainty,
+		Scope:               view.Scope,
+		Cache:               view.Cache,
+		EffectiveThresholds: view.EffectiveThresholds,
+		EffectivePolicy:     view.EffectivePolicy,
+		BaselineComparison:  view.BaselineComparison,
+		Warnings:            append([]string(nil), view.Warnings...),
+		Dependencies:        summaryViewDependenciesToReport(view.Dependencies),
+	})
+	if err != nil {
+		return summaryReportView{}, fmt.Errorf("summary report snapshot is not JSON-safe: %w", err)
+	}
+	var cloned report.Report
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return summaryReportView{}, fmt.Errorf("summary report snapshot decode failed: %w", err)
+	}
+	return mapSummaryReportView(cloned), nil
 }
 
 type summaryDisplayView struct {
@@ -66,6 +96,10 @@ func mapSummaryReportView(reportData report.Report) summaryReportView {
 		Warnings:            append([]string(nil), reportData.Warnings...),
 		Dependencies:        mapSummaryDependencies(reportData.Dependencies, reportData.BaselineComparison),
 	}
+}
+
+func summaryViewToReport(view summaryReportView) report.Report {
+	return report.Report{UsageUncertainty: view.UsageUncertainty, Scope: view.Scope, Cache: view.Cache, EffectiveThresholds: view.EffectiveThresholds, EffectivePolicy: view.EffectivePolicy, BaselineComparison: view.BaselineComparison, Warnings: append([]string(nil), view.Warnings...), Dependencies: summaryViewDependenciesToReport(view.Dependencies)}
 }
 
 func mapSummaryDependencies(dependencies []report.DependencyReport, comparison *report.BaselineComparison) []summaryDependencyView {

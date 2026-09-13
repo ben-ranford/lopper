@@ -84,6 +84,8 @@ type TUIRequest struct {
 	BaselinePath      string
 	BaselineStorePath string
 	BaselineKey       string
+	Features          featureflags.Set
+	UseStavePreview   bool
 }
 
 type DashboardRepo struct {

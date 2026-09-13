@@ -635,6 +635,88 @@ func TestEnabledFlag(t *testing.T) {
 	assertNilFeatureSet(t)
 }
 
+func TestExplicitOnlyPreviewNeverDefaultsOn(t *testing.T) {
+	registry, err := NewRegistry([]Flag{{Code: "LOP-FEAT-0001", Name: "opt-in", Lifecycle: LifecyclePreview, ExplicitOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, channel := range []Channel{ChannelDev, ChannelRolling, ChannelRelease} {
+		resolved, err := registry.Resolve(ResolveOptions{Channel: channel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Enabled("opt-in") {
+			t.Fatalf("explicit-only feature defaulted on for %s", channel)
+		}
+	}
+	resolved, err := registry.Resolve(ResolveOptions{Channel: ChannelRolling, Enable: []string{"opt-in"}})
+	if err != nil || !resolved.Enabled("opt-in") {
+		t.Fatalf("explicit enable failed: enabled=%t err=%v", resolved.Enabled("opt-in"), err)
+	}
+}
+
+func TestReleaseLockDoesNotDefaultExplicitOnlyFeatures(t *testing.T) {
+	registry := explicitOnlyReleaseLockRegistry(t)
+	for _, reference := range []string{"opt-in", "LOP-FEAT-0001"} {
+		t.Run(reference, func(t *testing.T) {
+			lock := &ReleaseLock{Release: "v1.4.2", DefaultOn: []string{reference, "ordinary-preview"}}
+			assertExplicitOnlyReleaseLockDefaults(t, registry, lock, reference)
+		})
+	}
+}
+
+func explicitOnlyReleaseLockRegistry(t *testing.T) *Registry {
+	t.Helper()
+	registry, err := NewRegistry([]Flag{
+		{Code: "LOP-FEAT-0001", Name: "opt-in", Lifecycle: LifecyclePreview, ExplicitOnly: true},
+		{Code: "LOP-FEAT-0002", Name: "ordinary-preview", Lifecycle: LifecyclePreview},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func assertExplicitOnlyReleaseLockDefaults(t *testing.T, registry *Registry, lock *ReleaseLock, reference string) {
+	t.Helper()
+	for _, channel := range []Channel{ChannelDev, ChannelRolling, ChannelRelease} {
+		resolved, err := registry.Resolve(ResolveOptions{Channel: channel, Lock: lock})
+		if err != nil {
+			t.Fatalf("resolve %s lock: %v", channel, err)
+		}
+		if resolved.Enabled("opt-in") {
+			t.Fatalf("explicit-only feature defaulted on in %s", channel)
+		}
+		manifest, err := registry.Manifest(ResolveOptions{Channel: channel, Lock: lock})
+		if err != nil {
+			t.Fatalf("manifest %s lock: %v", channel, err)
+		}
+		assertManifestFlag(t, manifest, "opt-in", false)
+	}
+
+	locked, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease, Lock: lock})
+	if err != nil {
+		t.Fatalf("resolve ordinary lock default: %v", err)
+	}
+	if !locked.Enabled("ordinary-preview") {
+		t.Fatal("release lock did not activate ordinary preview feature")
+	}
+	enabled, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease, Lock: lock, Enable: []string{reference}})
+	if err != nil {
+		t.Fatalf("resolve explicit enable: %v", err)
+	}
+	if !enabled.Enabled("opt-in") {
+		t.Fatal("explicit enable did not activate explicit-only feature")
+	}
+	disabled, err := registry.Resolve(ResolveOptions{Channel: ChannelRelease, Lock: lock, Disable: []string{reference}})
+	if err != nil {
+		t.Fatalf("resolve explicit disable: %v", err)
+	}
+	if disabled.Enabled("opt-in") {
+		t.Fatal("explicit disable did not keep explicit-only feature off")
+	}
+}
+
 func assertEnabledFlag(t *testing.T, set Set, ref string) {
 	t.Helper()
 	enabled, err := set.EnabledFlag(ref)

@@ -15,10 +15,10 @@ func TestCIMakeTargetsRetainAndPartitionTheCIPrerequisiteGraph(t *testing.T) {
 	wantCI := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
 		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
-		"security", "vuln-check", "test", "test-leaks", "test-race", "bench-gate", "build", "cov",
+		"security", "vuln-check", "stave-ui-check", "test", "test-leaks", "test-race", "bench-gate", "build", "cov",
 		runtimePycacheCheck,
 	}
-	wantTests := []string{"test", "test-leaks", runtimePycacheCheck}
+	wantTests := []string{"stave-ui-check", "test", "test-leaks", runtimePycacheCheck}
 	wantChecks := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
 		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
@@ -64,11 +64,28 @@ func TestCIMakePartitionsCannotBeOverridden(t *testing.T) {
 		"CI_TEST_TARGETS":  "skipped-test",
 		"CI_CHECK_TARGETS": "skipped-check",
 	}
-	if got := makePrerequisites(t, "ci-tests", overrides); !sameStrings(got, []string{"test", "test-leaks", "runtime-pycache-check"}) {
+	if got := makePrerequisites(t, "ci-tests", overrides); !sameStrings(got, []string{"stave-ui-check", "test", "test-leaks", "runtime-pycache-check"}) {
 		t.Fatalf("ci-tests prerequisites changed through overrides: %q", got)
 	}
 	if got := makePrerequisites(t, "ci-checks", overrides); strings.Contains(strings.Join(got, " "), "skipped-") {
 		t.Fatalf("ci-checks prerequisites changed through overrides: %q", got)
+	}
+}
+
+func TestStaveUICheckSelectsEveryPreviewCommandTest(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("make", "-n", "stave-ui-check")
+	cmd.Dir = repoPath(t, ".")
+	cmd.Env = makeTestEnvironment(nil)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run stave-ui-check: %v\n%s", err, output)
+	}
+
+	want := "./cmd/lopper -run '^(TestStaveTUI.*|TestTUIWithoutStaveFlagUsesLegacyLinePath)$'"
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("stave-ui-check command selector missing or changed:\n%s", output)
 	}
 }
 

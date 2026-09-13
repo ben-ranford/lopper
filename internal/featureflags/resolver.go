@@ -66,7 +66,7 @@ func (r *Registry) channelDefaults(channel Channel) map[string]bool {
 	enabled := make(map[string]bool, len(r.flags))
 	enableAll := channel == ChannelRolling
 	for _, flag := range r.flags {
-		enabled[flag.Code] = enableAll || flag.Lifecycle == LifecycleStable
+		enabled[flag.Code] = !flag.ExplicitOnly && (enableAll || flag.Lifecycle == LifecycleStable)
 	}
 	return enabled
 }
@@ -77,6 +77,9 @@ func (r *Registry) applyReleaseLockDefaults(channel Channel, lock *ReleaseLock, 
 	}
 	for _, ref := range lock.DefaultOn {
 		flag, _ := r.Lookup(ref)
+		if flag.ExplicitOnly {
+			continue
+		}
 		enabled[flag.Code] = true
 	}
 }

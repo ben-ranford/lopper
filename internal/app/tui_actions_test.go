@@ -17,16 +17,18 @@ func TestTUIActionRunnerUsesAnalysePipelineForCodemodApply(t *testing.T) {
 	}
 	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
 	runner := application.tuiActionRunner()
+	features := mustEnabledPreviewFeatureSet(t)
 
 	if _, err := runner.ApplyCodemod(context.Background(), ui.CodemodApplyRequest{
 		RepoPath:   t.TempDir(),
 		Dependency: "lodash",
 		TopN:       7,
 		Language:   "js-ts",
+		Features:   features,
 	}); err != nil {
 		t.Fatalf("apply codemod action: %v", err)
 	}
-	if !analyzer.lastReq.SuggestOnly || analyzer.lastReq.Dependency != "lodash" || analyzer.lastReq.TopN != 7 || analyzer.lastReq.Language != "js-ts" {
+	if !analyzer.lastReq.SuggestOnly || analyzer.lastReq.Dependency != "lodash" || analyzer.lastReq.TopN != 7 || analyzer.lastReq.Language != "js-ts" || !analyzer.lastReq.Features.Enabled("dart-source-attribution") {
 		t.Fatalf("expected TUI codemod action to use analyse apply pipeline, got %#v", analyzer.lastReq)
 	}
 }
@@ -40,6 +42,7 @@ func TestTUIActionRunnerNilAppReturnsNil(t *testing.T) {
 
 func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 	analyzer, runner := baselineTUIActionRunner()
+	features := mustEnabledPreviewFeatureSet(t)
 
 	store := t.TempDir()
 	_, savedPath, err := runner.SaveBaseline(context.Background(), ui.BaselineSaveRequest{
@@ -48,6 +51,7 @@ func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 		Language:          "all",
 		BaselineStorePath: store,
 		BaselineLabel:     "nightly",
+		Features:          features,
 	})
 	if err != nil {
 		t.Fatalf("save baseline action: %v", err)
@@ -58,7 +62,7 @@ func TestTUIActionRunnerSavesBaselineWithLabel(t *testing.T) {
 	if _, err := os.Stat(savedPath); err != nil {
 		t.Fatalf("expected saved snapshot to exist: %v", err)
 	}
-	if analyzer.lastReq.TopN != 5 || analyzer.lastReq.Language != "all" {
+	if analyzer.lastReq.TopN != 5 || analyzer.lastReq.Language != "all" || !analyzer.lastReq.Features.Enabled("dart-source-attribution") {
 		t.Fatalf("expected TUI baseline save to forward summary options, got %#v", analyzer.lastReq)
 	}
 }

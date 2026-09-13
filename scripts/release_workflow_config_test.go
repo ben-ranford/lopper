@@ -5675,38 +5675,52 @@ func assertManifestImageTagStep(t *testing.T, manifestStep workflowStepConfig) {
 func TestHomebrewTapWorkflowsContainRequiredFormulaValidationCommands(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		workflowPath string
-		jobName      string
-		stepName     string
-		remote       string
-		workingDir   string
-	}{
+	for _, tc := range []homebrewFormulaValidationCase{
 		{".github/workflows/ci.yml", "homebrew-tap-verify", "Run Homebrew audit and test", `tap_remote="file://${PWD}/homebrew-tap"`, ""},
 		{".github/workflows/release.yml", "validate-homebrew-tap", "Validate formula", `tap_remote="file://${PWD}"`, "homebrew-tap"},
 		{".github/workflows/rolling.yml", "validate-homebrew-tap-rolling", "Validate rolling formula", `tap_remote="file://${PWD}"`, "homebrew-tap"},
 	} {
 		tc := tc
 		t.Run(tc.workflowPath, func(t *testing.T) {
-			var workflow struct {
-				Jobs map[string]workflowJobConfig `yaml:"jobs"`
-			}
-			readYAMLConfig(t, tc.workflowPath, &workflow)
-			step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
-			if step.WorkingDirectory != tc.workingDir {
-				t.Fatalf("working directory = %q, want %q", step.WorkingDirectory, tc.workingDir)
-			}
-			assertOrderedWorkflowCommands(t, step.Run, tc.remote, `brew trust "${tap_remote}"`, `brew tap --custom-remote ben-ranford/tap "${tap_remote}"`)
-			for _, command := range []string{"brew audit --strict --online", "export HOMEBREW_NO_SANDBOX_LINUX=1", "brew install --build-from-source", "brew test "} {
-				if !strings.Contains(step.Run, command) {
-					t.Fatalf("validation step missing %q", command)
-				}
-			}
-			if strings.Contains(readConfig(t, tc.workflowPath), "HOMEBREW_NO_REQUIRE_TAP_TRUST") {
-				t.Fatal("workflow must not bypass Homebrew tap trust")
-			}
+			assertHomebrewFormulaValidationCommands(t, tc)
 		})
 	}
+}
+
+type homebrewFormulaValidationCase struct {
+	workflowPath string
+	jobName      string
+	stepName     string
+	remote       string
+	workingDir   string
+}
+
+func assertHomebrewFormulaValidationCommands(t *testing.T, tc homebrewFormulaValidationCase) {
+	t.Helper()
+	var workflow struct {
+		Jobs map[string]workflowJobConfig `yaml:"jobs"`
+	}
+	readYAMLConfig(t, tc.workflowPath, &workflow)
+	step := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.stepName)
+	if step.WorkingDirectory != tc.workingDir {
+		t.Fatalf("working directory = %q, want %q", step.WorkingDirectory, tc.workingDir)
+	}
+	assertOrderedWorkflowCommands(t, step.Run, "brew untap ben-ranford/tap", tc.remote, homebrewTrustCommand(tc.workflowPath), `brew tap --custom-remote ben-ranford/tap "${tap_remote}"`)
+	for _, command := range []string{"brew audit --strict --online", "export HOMEBREW_NO_SANDBOX_LINUX=1", "brew install --build-from-source", "brew test "} {
+		if !strings.Contains(step.Run, command) {
+			t.Fatalf("validation step missing %q", command)
+		}
+	}
+	if strings.Contains(readConfig(t, tc.workflowPath), "HOMEBREW_NO_REQUIRE_TAP_TRUST") {
+		t.Fatal("workflow must not bypass Homebrew tap trust")
+	}
+}
+
+func homebrewTrustCommand(workflowPath string) string {
+	if workflowPath == ".github/workflows/ci.yml" {
+		return `brew trust --tap "${tap_remote}"`
+	}
+	return `brew trust "${tap_remote}"`
 }
 
 func assertOrderedWorkflowCommands(t *testing.T, run string, commands ...string) {
