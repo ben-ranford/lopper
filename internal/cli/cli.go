@@ -85,6 +85,8 @@ func featureDeprecationWarnings(req app.Request) []string {
 		return req.MCP.Features.DeprecationWarnings()
 	case app.ModeAdvisory:
 		return req.Advisory.Features.DeprecationWarnings()
+	case app.ModeTUI:
+		return req.TUI.Features.DeprecationWarnings()
 	default:
 		return nil
 	}
