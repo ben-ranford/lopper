@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -2801,14 +2802,8 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 	}
 	readJSONConfig(t, "renovate.json", &matcherConfig)
 
-	hasCatchAllReviewRule := false
-	for index, rule := range config.PackageRules {
-		if renovateRuleRequiresHumanReview(t, rule, matcherConfig.PackageRules[index]) {
-			hasCatchAllReviewRule = true
-		}
-	}
-	if !hasCatchAllReviewRule {
-		t.Fatal("Renovate must include a catch-all automerge=false rule to override inherited automerge settings")
+	if err := validateRenovatePackageRules(config.PackageRules, matcherConfig.PackageRules); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2826,17 +2821,39 @@ func assertRenovateGlobalReviewSettings(t *testing.T, enabled, automerge *bool, 
 	}
 }
 
-func renovateRuleRequiresHumanReview(t *testing.T, rule renovateReviewRule, rawRule map[string]json.RawMessage) bool {
-	t.Helper()
+func validateRenovatePackageRules(rules []renovateReviewRule, rawRules []map[string]json.RawMessage) error {
+	if len(rules) != len(rawRules) {
+		return errors.New("renovate package rule metadata is inconsistent")
+	}
+	hasCatchAllReviewRule := false
+	for index, rule := range rules {
+		if rule.Enabled != nil && !*rule.Enabled {
+			return fmt.Errorf("renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
+		}
+		if rule.Automerge != nil && *rule.Automerge {
+			return fmt.Errorf("renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
+		}
+		if renovateRuleHasRuleLevelExtends(rawRules[index]) {
+			return fmt.Errorf("renovate package rule for packages %v must not use extends", rule.MatchPackageNames)
+		}
+		if renovateRuleRequiresHumanReview(rule, rawRules[index]) {
+			hasCatchAllReviewRule = true
+		}
+	}
+	if !hasCatchAllReviewRule {
+		return errors.New("renovate must include a catch-all automerge=false rule to override inherited automerge settings")
+	}
+	return nil
+}
 
-	if rule.Enabled != nil && !*rule.Enabled {
-		t.Fatalf("Renovate rule for packages %v must not disable dependency update PR creation", rule.MatchPackageNames)
-	}
-	if rule.Automerge != nil && *rule.Automerge {
-		t.Fatalf("Renovate rule for packages %v and update types %v must not enable unattended automerge", rule.MatchPackageNames, rule.MatchUpdateTypes)
-	}
+func renovateRuleRequiresHumanReview(rule renovateReviewRule, rawRule map[string]json.RawMessage) bool {
 	return len(rule.MatchPackageNames) == 1 && rule.MatchPackageNames[0] == "*" &&
-		rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(rawRule)
+		rule.Automerge != nil && !*rule.Automerge && !renovateRuleHasNarrowingMatcher(rawRule) && !renovateRuleHasRuleLevelExtends(rawRule)
+}
+
+func renovateRuleHasRuleLevelExtends(rule map[string]json.RawMessage) bool {
+	_, hasExtends := rule["extends"]
+	return hasExtends
 }
 
 var renovateLegacyNarrowingMatchers = map[string]struct{}{
@@ -2874,6 +2891,23 @@ func TestRenovateCatchAllReviewRuleRejectsNarrowingMatchers(t *testing.T) {
 	}
 	for _, matcher := range renovateGenericNarrowingMatchers {
 		t.Run(matcher, func(t *testing.T) { assertRenovateMatcherNarrowsCatchAllRule(t, matcher) })
+	}
+}
+
+func TestRenovatePackageRulesRejectRuleLevelExtends(t *testing.T) {
+	t.Parallel()
+
+	automerge := false
+	rules := []renovateReviewRule{
+		{MatchPackageNames: []string{"*"}, Automerge: &automerge},
+		{MatchPackageNames: []string{"minor"}},
+	}
+	rawRules := []map[string]json.RawMessage{
+		{"matchPackageNames": json.RawMessage(`["*"]`), "automerge": json.RawMessage(`false`)},
+		{"matchPackageNames": json.RawMessage(`["minor"]`), "extends": json.RawMessage(`[":automergeMinor"]`)},
+	}
+	if err := validateRenovatePackageRules(rules, rawRules); err == nil || !strings.Contains(err.Error(), "must not use extends") {
+		t.Fatalf("package rule preset = %v, want rule-level extends rejection", err)
 	}
 }
 
