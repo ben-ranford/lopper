@@ -108,12 +108,21 @@ func (p *StavePreview) Start(ctx context.Context, opts Options) error {
 		return err
 	}
 	sessionOpts := staveSessionOptions(opts, interactiveTTY)
-	prepared, err := program.NewSession(ctx, sessionOpts)
+	fullScreen := supportsStaveFullScreen(sessionOpts.RuntimeDetected)
+	sessionCtx := ctx
+	var stopSession context.CancelFunc
+	if !fullScreen {
+		// Line-mode cancellation must publish its correlated action outcome
+		// before the session closes, so its lifecycle outlives the run context.
+		sessionCtx, stopSession = context.WithCancel(context.WithoutCancel(ctx))
+		defer stopSession()
+	}
+	prepared, err := program.NewSession(sessionCtx, sessionOpts)
 	if err != nil {
 		return err
 	}
 	defer prepared.Session.Close()
-	if supportsStaveFullScreen(sessionOpts.RuntimeDetected) {
+	if fullScreen {
 		return p.runStaveTerminal(ctx, opts, prepared, p.legacy.In, writer, sessionOpts.RuntimeDetected.AlternateScreen)
 	}
 	input := newStaveLineInput(p.legacy.In)
@@ -221,11 +230,39 @@ func (s *staveLineSession) command(ctx context.Context, input string) (bool, err
 		return false, err
 	}
 	// Serialize frames while executing the action off-loop after its invocation is recorded.
-	completed := <-startLopperAction(ctx, s.prepared, id, args, "lopper-preview", confirm, callID)
-	if err := completeStaveLineAction(ctx, s.prepared, callID, completed); err != nil {
+	execution := startLopperAction(ctx, s.prepared, id, args, "lopper-preview", confirm, callID)
+	if err := waitForStaveLineAction(ctx, s.prepared, callID, execution); err != nil {
 		return false, err
 	}
 	return id == action.ID(staveActionQuit), nil
+}
+
+func waitForStaveLineAction(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], callID string, execution <-chan staveActionExecution) error {
+	select {
+	case completed := <-execution:
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, cancelStaveLineAction(ctx, prepared, callID))
+		}
+		if err := completeStaveLineAction(ctx, prepared, callID, completed); err != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return errors.Join(err, cancelErr, cancelStaveLineAction(ctx, prepared, callID))
+			}
+			return err
+		}
+	case <-ctx.Done():
+		return errors.Join(ctx.Err(), cancelStaveLineAction(ctx, prepared, callID))
+	}
+	return nil
+}
+
+func cancelStaveLineAction(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], callID string) error {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cleanupCancel()
+	cancelled, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: callID, Status: "cancelled", Error: "cancellation requested; final action outcome unknown"})
+	if err != nil {
+		return err
+	}
+	return sendLopperEvent(cleanupCtx, prepared, cancelled)
 }
 
 func completeStaveLineAction(ctx context.Context, prepared *stave.Prepared[staveSummaryModel], callID string, completed staveActionExecution) error {

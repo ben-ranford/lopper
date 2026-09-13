@@ -104,6 +104,10 @@ returns an authoritative result. This status must not be read as proof that a
 consequential operation rolled back, nor as proof that it committed. The UI
 does not claim success or retry automatically from that state.
 
+In line mode, cancellation stops waiting for the action handler. A handler
+that does not promptly observe its context may continue after the preview
+returns; the same indeterminate-outcome contract applies.
+
 ## Coverage contract
 
 New UI changes must add evidence at the layer they affect:
