@@ -488,6 +488,82 @@ func TestHooksUninstallRefusesManagedHookDirectorySymlinkBeforeMutation(t *testi
 	}
 }
 
+func TestHooksUninstallRefusesUnsafeManagedHookBeforeConfigMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+		verify  func(t *testing.T, path string)
+	}{
+		{
+			name: "directory",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatalf("create managed hook directory: %v", err)
+				}
+			},
+			verify: func(t *testing.T, path string) {
+				t.Helper()
+				info, err := os.Lstat(path)
+				if err != nil || !info.IsDir() {
+					t.Fatalf("managed hook directory was modified before refusal: %v", err)
+				}
+			},
+		},
+		{
+			name: "FIFO",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				mkfifoPath, err := exec.LookPath("mkfifo")
+				if err != nil {
+					t.Skip("mkfifo is unavailable on this host")
+				}
+				if output, err := exec.Command(mkfifoPath, path).CombinedOutput(); err != nil {
+					t.Fatalf("create managed hook FIFO: %v\n%s", err, output)
+				}
+			},
+			verify: func(t *testing.T, path string) {
+				t.Helper()
+				info, err := os.Lstat(path)
+				if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+					t.Fatalf("managed hook FIFO was modified before refusal: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repoDir := newHookTestRepository(t)
+			runCommand(t, repoDir, "make", "hooks-install")
+
+			managedHook := managedHookPath(t, repoDir)
+			configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+			configBefore, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("read hook config before unsafe uninstall: %v", err)
+			}
+			if err := os.Remove(managedHook); err != nil {
+				t.Fatalf("remove managed hook before unsafe setup: %v", err)
+			}
+			testCase.prepare(t, managedHook)
+
+			output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
+			if err == nil || !strings.Contains(string(output), "Refusing unsafe managed pre-commit hook") {
+				t.Fatalf("uninstall with unsafe managed hook = %v\n%s", err, output)
+			}
+			testCase.verify(t, managedHook)
+			configAfter, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("read hook config after unsafe uninstall: %v", err)
+			}
+			if string(configAfter) != string(configBefore) {
+				t.Fatalf("uninstall modified config before unsafe-hook refusal")
+			}
+		})
+	}
+}
+
 func TestHooksInstallRefusesManagedHookFIFOBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -1152,6 +1228,12 @@ func TestHooksUninstallRejectsMalformedForeignWorktreeConfigBeforeDeletingManage
 	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
 	foreignGitDir := gitOutput(t, linkedDir, "rev-parse", "--path-format=absolute", "--git-dir")
 	writeFile(t, filepath.Join(foreignGitDir, "config.worktree"), "[broken\n")
+	runCommand(t, repoDir, "git", "config", "--local", "extensions.worktreeConfig", "false")
+	configPath := filepath.Join(gitOutput(t, repoDir, "rev-parse", "--path-format=absolute", "--git-dir"), "config")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read local config before malformed foreign worktree refusal: %v", err)
+	}
 
 	output, err := runMakeWithEnv(repoDir, "hooks-uninstall")
 	if err == nil {
@@ -1161,6 +1243,13 @@ func TestHooksUninstallRejectsMalformedForeignWorktreeConfigBeforeDeletingManage
 	assertConfigValues(t, repoDir, "--local", filepath.Dir(managedHook))
 	if _, err := os.Stat(managedHook); err != nil {
 		t.Fatalf("uninstaller removed managed hook before foreign-config refusal: %v", err)
+	}
+	configAfter, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read local config after malformed foreign worktree refusal: %v", err)
+	}
+	if string(configAfter) != string(configBefore) {
+		t.Fatalf("uninstall modified config before malformed foreign worktree refusal")
 	}
 }
 
