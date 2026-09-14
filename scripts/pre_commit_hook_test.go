@@ -151,6 +151,7 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	if err == nil || !strings.Contains(output, "Refusing to replace") {
 		t.Fatalf("expected custom hook path refusal, got %v:\n%s", err, output)
 	}
+	runCommand(t, repoDir, "make", "hooks-uninstall")
 	got, getErr := hookCommand(repoDir, "git", "config", "--get-all", "core.hooksPath")
 	if getErr != nil || got != "/custom/hooks\n" {
 		t.Fatalf("custom hook path changed: %v, %q", getErr, got)
@@ -161,6 +162,29 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	output, err = hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
 	if err == nil || output != "" {
 		t.Fatalf("expected managed hook path to be removed, got %v: %q", err, output)
+	}
+}
+
+func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
+	repoDir := newHookFixture(t)
+	sentinel := filepath.Join(repoDir, "legacy-hook-ran")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf legacy >"+sentinel+"\n", 0o755)
+	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	output, err := hookCommand(repoDir, "git", "config", "--local", "--get", "core.hooksPath")
+	if err == nil || output != "" {
+		t.Fatalf("expected legacy managed hook path to be removed, got %v: %q", err, output)
+	}
+
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	output, err = hookCommand(repoDir, "git", "commit", "-m", "uninstall legacy hook")
+	if err != nil {
+		t.Fatalf("commit after legacy hook uninstall: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("legacy checkout hook ran after uninstall: %v", err)
 	}
 }
 
