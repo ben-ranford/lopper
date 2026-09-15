@@ -334,6 +334,146 @@ test('recognizes supported inline suppression marker forms without matching quot
   }
 });
 
+test('recognizes grammar-valid adjacent comments after a Go label', () => {
+  // A Go label ends with a colon, but a URL scheme uses the same final
+  // character. The Go-specific label boundary must therefore be explicit;
+  // a blanket colon exception would regress the URL control below.
+  const goLabel = 'retry://' + 'nolint:staticcheck rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(goLabel, 'retry.go'), true, goLabel);
+  const goBlockLabel = 'retry:/*' + 'nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(goBlockLabel, 'retry.go'), true, goBlockLabel);
+
+  for (const line of ['retry://NOLINT', 'réessayer:/*NoSoNaR', 'default:/**NOSEC']) {
+    assert.equal(testables.hasInlineSuppressionMarker(line, 'retry.go'), true, line);
+  }
+
+  assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
+
+  // Go statement boundaries introduce same-line labels, including Unicode
+  // identifiers. A real earlier comment still owns the rest of its line.
+  assert.equal(testables.hasInlineSuppressionMarker('goto retry; retry://' + 'nolint', 'retry.go'), true);
+  assert.equal(testables.hasInlineSuppressionMarker('réessayer://' + 'nolint', 'retry.go'), true);
+  assert.equal(testables.hasInlineSuppressionMarker('case 1://' + 'nolint', 'retry.go'), true);
+  assert.equal(testables.hasInlineSuppressionMarker('default:/*' + 'nolint', 'retry.go'), true);
+  assert.equal(testables.hasInlineSuppressionMarker('// docs http://' + 'nolint.example.test', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('retry:// docs http://' + 'nolint.example.test', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('/* docs http://' + 'nolint.example.test */ _ = 1', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('retry:/* docs http://' + 'nolint.example.test */ _ = 1', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('`http://' + 'nolint.example.test`', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('"http://' + 'nolint.example.test"', 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker("'http://" + 'nolint.example.test' + "'", 'retry.go'), false);
+
+});
+
+test('carries Go colon comments across lines without reinterpreting comment prose', async () => {
+  const marker = 'nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard';
+  const harness = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'added',
+      patch: `@@ -0,0 +1,2 @@\n+retry:// don't use this path\n+value := unsafe() //${marker}\n`,
+    }],
+  });
+  await trackInlineSuppressions(harness.args);
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `retry\.go:2`/);
+
+  const prose = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'added',
+      patch: `@@ -0,0 +1,1 @@\n+retry:// docs http://${marker}\n`,
+    }],
+  });
+  await trackInlineSuppressions(prose.args);
+  assert.equal(prose.calls.created.length, 0);
+
+  const blockProse = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'modified',
+      patch: `@@ -0,0 +2 @@\n+http://${marker}\n`,
+    }],
+    fullFileContents: {
+      'retry.go': `/* docs begin\nhttp://${marker}\n*/\nretry://${marker}\n`,
+    },
+  });
+  await trackInlineSuppressions(blockProse.args);
+  assert.equal(blockProse.calls.created.length, 0);
+
+  const afterBlock = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'modified',
+      patch: `@@ -0,0 +4 @@\n+retry://${marker}\n`,
+    }],
+    fullFileContents: {
+      'retry.go': `/* docs begin\nhttp://${marker}\n*/\nretry://${marker}\n`,
+    },
+  });
+  await trackInlineSuppressions(afterBlock.args);
+  assert.equal(afterBlock.calls.created.length, 1);
+  assert.match(afterBlock.calls.created[0].body, /Location: `retry\.go:4`/);
+
+  const lineCommentWithBlockDelimiter = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'added',
+      patch: `@@ -0,0 +1,2 @@\n+// docs /*\n+retry://${marker}\n`,
+    }],
+  });
+  await trackInlineSuppressions(lineCommentWithBlockDelimiter.args);
+  assert.equal(lineCommentWithBlockDelimiter.calls.created.length, 1);
+  assert.match(lineCommentWithBlockDelimiter.calls.created[0].body, /Location: `retry\.go:2`/);
+  assert.ok(lineCommentWithBlockDelimiter.calls.created[0].body.includes(`Source line:\n\n\`\`\`text\nretry://${marker}`));
+
+  const apostropheInBlock = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'added',
+      patch: `@@ -0,0 +1,3 @@\n+/* don't treat this prose as a quote\n+*/\n+retry://${marker}\n`,
+    }],
+  });
+  await trackInlineSuppressions(apostropheInBlock.args);
+  assert.equal(apostropheInBlock.calls.created.length, 1);
+  assert.match(apostropheInBlock.calls.created[0].body, /Location: `retry\.go:3`/);
+
+  const rawLiteralSeed = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'modified',
+      patch: `@@ -5 +5 @@\n-old\n+retry://${marker}\n`,
+    }],
+    fullFileContents: {
+      'retry.go': ['package retry', 'func f() {', 'raw := `literal backslash \\\\', 'closed`', `retry://${marker}`, '}'].join('\n'),
+    },
+  });
+  await trackInlineSuppressions(rawLiteralSeed.args);
+  assert.equal(rawLiteralSeed.calls.created.length, 1);
+  assert.match(rawLiteralSeed.calls.created[0].body, /Location: `retry\.go:5`/);
+});
+
+test('seeds colon-line comment quote reset from the complete Go blob', async () => {
+  const marker = 'nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard';
+  const target = `value := unsafe() //${marker}`;
+  const harness = makeHarness({
+    files: [{
+      filename: 'retry.go',
+      status: 'modified',
+      patch: `@@ -5,0 +5 @@\n+${target}\n`,
+    }],
+    fullFileContents: {
+      'retry.go': ['package retry', "retry:// don't use this path", 'var preserved = 1', 'var still = 2', target].join('\n'),
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `retry\.go:5`/);
+  assert.ok(harness.calls.created[0].body.includes(`Source line:\n\n\`\`\`text\n${target}`));
+});
+
 test('recognizes a marker following a Rust lifetime without treating it as an open string', () => {
   // Rust has no multi-character single-quoted strings, so a leading "'" is
   // either a self-contained char literal or a lifetime that never closes.

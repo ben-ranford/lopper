@@ -309,8 +309,8 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${file_sha}" --jq '.content' | base64 -d >"${content_tmp}"`,
 		"FNR == NR {",
 		"full_lines[FNR] = $0",
-		"function seed_quote_state(   idx, prior_count, seed)",
-		`quote_state = seed_quote_state()`,
+		"function seed_scan_states(",
+		`quote_state = seeded_quote_state`,
 		`' "${content_tmp}" -`,
 		`rm -f "${content_tmp}"`,
 		// An apostrophe inside a genuine line comment (e.g. "don't") is
@@ -395,6 +395,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`suspect_pattern_hash_strict="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_hash_lenient="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_go_marker_pattern="^(//|/[*]+)`,
 		`strict_hash_file_pattern=`,
 		`lenient_hash_file_pattern=`,
 		`slash_style_file_pattern=`,
@@ -402,7 +403,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`active_suspect_pattern="${suspect_pattern_hash_lenient}"`,
 		`active_suspect_pattern="${suspect_pattern_slash}"`,
 		`active_suspect_pattern="${suspect_pattern_all}"`,
-		`awk -v pat="${active_suspect_pattern}" -v fname="${filename}"`,
+		`awk -v pat="${active_suspect_pattern}" -v go_pat="${suspect_go_marker_pattern}" -v fname="${filename}"`,
 	})
 	// SUPPRESSIONS_FILE is PR-controlled, and each fingerprint from it is
 	// later interpolated directly into a `gh issue list --jq` expression;
@@ -715,13 +716,14 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
-	cases := []struct {
+	type scanCase struct {
 		name     string
 		filename string
 		blob     string
 		patch    string
 		want     string
-	}{
+	}
+	cases := []scanCase{
 		{
 			// The opening backtick sits 3 lines above the hunk -- further
 			// back than the patch's own 3-line context window reveals (the
@@ -763,6 +765,26 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			patch:    "@@ -1 +1 @@\r\n-package main\r\n+package main //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\r\n",
 			want:     "main.go\x011\x01package main //nolint:staticcheck",
 		},
+	}
+
+	// Each adjacency case adds one line; derive its matching blob, patch,
+	// and record prefix so those representations cannot drift apart.
+	for _, adjacent := range []struct {
+		name     string
+		filename string
+		content  string
+	}{
+		{"detects a slash marker after a Go label", "retry.go", "retry://nolint:staticcheck"},
+		{"detects a block marker after a Go label", "retry.go", "retry:/*nolint"},
+	} {
+		line := adjacent.content + " rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+		cases = append(cases, scanCase{
+			name:     adjacent.name,
+			filename: adjacent.filename,
+			blob:     line,
+			patch:    "@@ -0,0 +1 @@\n+" + line,
+			want:     adjacent.filename + "\x011\x01" + adjacent.content,
+		})
 	}
 
 	for _, tc := range cases {
@@ -815,6 +837,157 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	}
 	if !strings.Contains(output, "deploy.yaml\x01") {
 		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanDetectsGoColonCommentBoundaries(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	for _, line := range []string{
+		"réessayer://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+		"goto retry; retry://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+		"case 1://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+		"default:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+	} {
+		output, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+line, line)
+		if err != nil {
+			t.Fatalf("expected the Go colon-comment scan to run, output:\n%s", output)
+		}
+		if !strings.Contains(output, "retry.go\x01") {
+			t.Fatalf("expected a suspect for a Go colon-comment boundary, output:\n%q", output)
+		}
+	}
+}
+
+func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	for _, line := range goColonCaseVariantLines() {
+		out, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+line+"\n", line+"\n")
+		if err != nil || !strings.Contains(out, "retry.go\x011\x01"+line) {
+			t.Fatalf("expected original case-variant suspect, got %v: %q", err, out)
+		}
+	}
+}
+
+func TestCIWorkflowSuspectScanCarriesGoColonLineComments(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	lineComment := "retry:// don't use this path\nvalue := unsafe() //nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	patch := "@@ -0,0 +1,2 @@\n+retry:// don't use this path\n+value := unsafe() //nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", patch, lineComment)
+	if err != nil {
+		t.Fatalf("expected the Go colon line-comment scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "retry.go\x012\x01") {
+		t.Fatalf("expected the second-line suspect after a Go colon line comment, output:\n%q", output)
+	}
+
+	prose := "retry:// docs http://nolint.example.test\n"
+	output, err = runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+prose, prose)
+	if err != nil {
+		t.Fatalf("expected the Go colon comment-prose scan to run, output:\n%s", output)
+	}
+	if strings.Contains(output, "retry.go\x01") {
+		t.Fatalf("expected no suspect for a URL in Go colon comment prose, output:\n%q", output)
+	}
+
+	for _, prose := range []string{
+		"/* docs http://nolint.example.test */ _ = 1\n",
+		"retry:/* docs http://nolint.example.test */ _ = 1\n",
+	} {
+		output, err = runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+prose, prose)
+		if err != nil {
+			t.Fatalf("expected the Go block-comment prose scan to run, output:\n%s", output)
+		}
+		if strings.Contains(output, "retry.go\x01") {
+			t.Fatalf("expected no suspect for a URL in Go block-comment prose, output:\n%q", output)
+		}
+	}
+
+	marker := "nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	blockBlob := "/* docs begin\nhttp://" + marker + "\n*/\nretry://" + marker + "\n"
+	output, err = runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -2 +2 @@\n+http://"+marker+"\n", blockBlob)
+	if err != nil {
+		t.Fatalf("expected the seeded Go block-comment scan to run, output:\n%s", output)
+	}
+	if strings.Contains(output, "retry.go\x01") {
+		t.Fatalf("expected no suspect inside a Go block comment opened before the hunk, output:\n%q", output)
+	}
+
+	output, err = runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -4 +4 @@\n+retry://"+marker+"\n", blockBlob)
+	if err != nil {
+		t.Fatalf("expected the post-block Go colon scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "retry.go\x014\x01") {
+		t.Fatalf("expected a suspect after a seeded Go block comment closes, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanKeepsIndependentGoLexicalState(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	marker := "nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+
+	cases := []struct {
+		name  string
+		patch string
+		blob  string
+		want  string
+	}{
+		{
+			name:  "line-comment block delimiter does not open a block",
+			patch: "@@ -0,0 +1,2 @@\n+// docs /*\n+retry://" + marker + "\n",
+			blob:  "// docs /*\nretry://" + marker + "\n",
+			want:  "retry.go\x012\x01retry://nolint",
+		},
+		{
+			name:  "context line-comment delimiter does not seed a block",
+			patch: "@@ -1,2 +1,2 @@\n // docs /*\n-old\n+retry://" + marker + "\n",
+			blob:  "// docs /*\nretry://" + marker + "\n",
+			want:  "retry.go\x012\x01retry://nolint",
+		},
+		{
+			name:  "apostrophe in block prose does not keep state open",
+			patch: "@@ -0,0 +1,3 @@\n+/* don't treat this as a quote\n+*/\n+retry://" + marker + "\n",
+			blob:  "/* don't treat this as a quote\n*/\nretry://" + marker + "\n",
+			want:  "retry.go\x013\x01retry://nolint",
+		},
+		{
+			name:  "seeded raw backslash closes at its backtick",
+			patch: "@@ -5 +5 @@\n-old\n+retry://" + marker + "\n",
+			blob:  "package retry\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nretry://" + marker + "\n}\n",
+			want:  "retry.go\x015\x01retry://nolint",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", tc.patch, tc.blob)
+			if err != nil {
+				t.Fatalf("expected the independent Go-state scan to run, output:\n%s", output)
+			}
+			if !strings.Contains(output, tc.want) {
+				t.Fatalf("expected %q in the workflow suspect output, got:\n%q", tc.want, output)
+			}
+		})
 	}
 }
 

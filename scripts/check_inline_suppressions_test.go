@@ -898,6 +898,27 @@ func assertSuppressionDetectedForFileAndLine(t *testing.T, filename string, line
 	}
 }
 
+func assertSuppressionDetectedWithContext(t *testing.T, filename, before, after, wantContent string) {
+	t.Helper()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	writeFile(t, filepath.Join(repoDir, filename), before)
+	runCommand(t, repoDir, "git", "add", filename)
+	runCommand(t, repoDir, "git", "commit", "-m", "add context source")
+	writeFile(t, filepath.Join(repoDir, filename), after)
+	runCommand(t, repoDir, "git", "add", filename)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected context-seeded suppression to be detected, output:\n%s", output)
+	}
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 || records.Suppressions[0].Content != wantContent {
+		t.Fatalf("expected one record for %q, got %#v", wantContent, records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDoesNotRequireAFreeStandingHashInPythonOrRuby(t *testing.T) {
 	t.Parallel()
 
@@ -1011,6 +1032,81 @@ func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.
 	marker := "nolint:staticcheck"
 	line := "call();//" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
 	assertSuppressionDetectedForLine(t, line)
+}
+
+func TestInlineSuppressionCheckDetectsAdjacentCommentsAfterGoLabels(t *testing.T) {
+	t.Parallel()
+
+	// A Go label may be immediately followed by a slash-style comment. This
+	// is distinct from a URL scheme, which remains covered by the URL control.
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "retry://nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	// The detector already supports block-style suppression comments, so the
+	// label rule must preserve that prefix too.
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "goto retry; retry://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "réessayer://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "case 1://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "default:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "// docs http://nolint.example.test\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "retry:// docs http://nolint.example.test\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "/* docs http://nolint.example.test */ _ = 1\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "retry:/* docs http://nolint.example.test */ _ = 1\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "/* docs begin\nhttp://nolint.example.test\n*/\n")
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "/* docs begin\n*/\nretry://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "retry:// don't use this path\nvalue := unsafe() //nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+}
+
+func goColonCaseVariantLines() []string {
+	return []string{"retry://NOLINT", "réessayer:/*NoSoNaR", "default:/**NOSEC"}
+}
+
+func TestInlineSuppressionCheckDetectsCaseVariantGoColonMarkers(t *testing.T) {
+	t.Parallel()
+	for _, source := range goColonCaseVariantLines() {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			writeFile(t, filepath.Join(repoDir, "retry.go"), source+"\n")
+			runCommand(t, repoDir, "git", "add", "retry.go")
+			out, err := runSuppressionCheck(repoDir)
+			if err == nil || !strings.Contains(out, "Missing inline suppression tracking metadata") {
+				t.Fatalf("expected missing-metadata rejection, got %v: %s", err, out)
+			}
+			line := source + " rationale=temporary scanner false positive; owner=@security; remove-when=analyzer fixed"
+			writeFile(t, filepath.Join(repoDir, "retry.go"), line+"\n")
+			runCommand(t, repoDir, "git", "add", "retry.go")
+			outputPath := filepath.Join(repoDir, "records.json")
+			out, err = runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+			if err != nil {
+				t.Fatalf("expected tracked marker to pass, got %v: %s", err, out)
+			}
+			records := readSuppressionRecords(t, outputPath).Suppressions
+			if len(records) != 1 || records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("retry.go", line, 1) {
+				t.Fatalf("original marker content/fingerprint not preserved: %#v", records)
+			}
+		})
+	}
+}
+
+func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
+	t.Parallel()
+
+	marker := "nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	// The block opener is line-comment prose. It cannot suppress the real
+	// colon-adjacent marker on the next physical line.
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "// docs /*\nretry://"+marker+"\n")
+	// An apostrophe inside block prose cannot leak quote state past the close.
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", "/* don't treat this as a quote\n*/\nretry://"+marker+"\n")
+
+	// Raw-string backslashes are literal. The closing backtick ends the raw
+	// string, so the following grammar-valid Go label is a real marker.
+	rawClosed := "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nretry://" + marker + "\n}\n"
+	assertSuppressionDetectedForFileAndLine(t, "retry.go", rawClosed)
+	assertSuppressionDetectedWithContext(t, "retry.go", "// docs /*\nold\n", "// docs /*\nretry://"+marker+"\n", "retry://"+marker)
+	assertSuppressionDetectedWithContext(t, "retry.go", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nold\n}\n", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nretry://"+marker+"\n}\n", "retry://"+marker)
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\nraw := `http://nolint.example.test`\n_ = raw\n}\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\ns := \"http://nolint.example.test and \\\\\"quoted\\\\\"\"\nr := '/'\n_, _ = s, r\n}\n")
 }
 
 func TestInlineSuppressionCheckIgnoresPythonFloorDivisionAsACommentPrefix(t *testing.T) {
