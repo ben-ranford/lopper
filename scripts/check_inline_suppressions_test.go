@@ -1150,8 +1150,21 @@ func TestInlineSuppressionCheckDoesNotCarryShellMarkerIntoGoFile(t *testing.T) {
 	}
 }
 
-func shellBoundaryCases() []shellBoundaryCase {
+func subshellBoundaryCases() []shellBoundaryCase {
 	return []shellBoundaryCase{
+		{"subshell case literal suffix", "", "v=$( ( case x in x) printf hi;; esac ) )#", "", false},
+		{"subshell case comment", "v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true},
+		{"subshell optional pattern comment", "v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true},
+		{"subshell optional pattern suffix", "", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false},
+		{"subshell case arguments", "", "v=$( ( printf %s case in x ) )#", "", false},
+		{"subshell nested case suffix", "", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false},
+		{"subshell multiline case suffix", "v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false},
+		{"subshell group close comment", "v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true},
+	}
+}
+
+func shellBoundaryCases() []shellBoundaryCase {
+	return append([]shellBoundaryCase{
 		{"command", "", "v=$(printf hi)#", "", false},
 		{"arithmetic", "", "v=$((1+2))#", "", false},
 		{"nested command", "", "v=$(printf %s $(printf hi))#", "", false},
@@ -1177,14 +1190,6 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"case words as arguments", "", "v=$(printf %s case in x)#", "", false},
 		{"quoted case word", "", "v=$(ca\"\"se x in y)#", "", false},
 		{"case after empty quoted command", "", "v=$(\"\"; case x in x) printf hi;; esac)#", "", false},
-		{"subshell case literal suffix", "", "v=$( ( case x in x) printf hi;; esac ) )#", "", false},
-		{"subshell case comment", "v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true},
-		{"subshell optional pattern comment", "v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true},
-		{"subshell optional pattern suffix", "", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false},
-		{"subshell case arguments", "", "v=$( ( printf %s case in x ) )#", "", false},
-		{"subshell nested case suffix", "", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false},
-		{"subshell multiline case suffix", "v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false},
-		{"subshell group close comment", "v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true},
 		{"nested grouping", "", "v=$( (printf hi) )#", "", false},
 		{"group comment", "", "(printf hi)#", "", true},
 		{"case comment", "", "case x in x)#", "printf hi;; esac\n", true},
@@ -1224,7 +1229,7 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"case after brace", "v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true},
 		{"compound case literal suffix", "", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false},
 		{"reserved-looking case patterns", "v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true},
-	}
+	}, subshellBoundaryCases()...)
 }
 
 func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {

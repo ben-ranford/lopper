@@ -577,6 +577,19 @@ test('honors shell single-quote escaping rules', () => {
   assert.equal(testables.hasInlineSuppressionMarker(line, 'build.js'), false, line);
 });
 
+function subshellBoundaryCases() {
+  return [
+    ["", "v=$( ( case x in x) printf hi;; esac ) )#", "", false],
+    ["v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true],
+    ["v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true],
+    ["", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false],
+    ["", "v=$( ( printf %s case in x ) )#", "", false],
+    ["", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false],
+    ["v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false],
+    ["v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true],
+  ];
+}
+
 test('distinguishes shell expansion closers from comment boundaries across diff gaps', async () => {
   const marker = 'nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed';
   const cases = [
@@ -605,14 +618,7 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['', "v=$(printf %s case in x)#", '', false],
     ['', 'v=$(ca""se x in y)#', '', false],
     ['', 'v=$(""; case x in x) printf hi;; esac)#', '', false],
-    ["", "v=$( ( case x in x) printf hi;; esac ) )#", "", false],
-    ["v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true],
-    ["v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true],
-    ["", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false],
-    ["", "v=$( ( printf %s case in x ) )#", "", false],
-    ["", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false],
-    ["v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false],
-    ["v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true],
+    ...subshellBoundaryCases(),
     ['', 'v=$( (printf hi) )#', '', false],
     ['', '(printf hi)#', '', true],
     ['', 'case x in x)#', 'printf hi;; esac\n', true],
