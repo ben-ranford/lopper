@@ -3,6 +3,7 @@ package scripts
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -299,7 +300,8 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// closing delimiter looks like it opens a fresh quoted region and
 		// masks a real suppression comment following it -- silently, since
 		// the scan then reports no suspects rather than failing loudly.
-		`masked = mask_quoted_regions(content, quote_state)`,
+		`shell_masked = shell_mask_expansion_closers(content, shell_state)`,
+		`masked = mask_quoted_regions(shell_masked, quote_state)`,
 		`quote_state = final_quote_state`,
 		// GitHub's default 3-line patch context still cannot reveal a
 		// construct opened further above a hunk than that window reaches;
@@ -392,14 +394,17 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// and Ruby further need the lenient "#" boundary while YAML/shell need
 	// the strict one, mirroring STRICT_HASH_BOUNDARY_EXTENSIONS.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`suspect_pattern_hash_strict="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_hash_yaml="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_hash_shell="(^|[[:space:];|&()])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_hash_lenient="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_go_marker_pattern="^(//|/[*]+)`,
-		`strict_hash_file_pattern=`,
+		`yaml_file_pattern=`,
+		`shell_file_pattern=`,
 		`lenient_hash_file_pattern=`,
 		`slash_style_file_pattern=`,
-		`active_suspect_pattern="${suspect_pattern_hash_strict}"`,
+		`active_suspect_pattern="${suspect_pattern_hash_yaml}"`,
+		`active_suspect_pattern="${suspect_pattern_hash_shell}"`,
 		`active_suspect_pattern="${suspect_pattern_hash_lenient}"`,
 		`active_suspect_pattern="${suspect_pattern_slash}"`,
 		`active_suspect_pattern="${suspect_pattern_all}"`,
@@ -805,6 +810,19 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 	}
 }
 
+func TestCIWorkflowSuspectScanDetectsShellOperatorComment(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	line := "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	out, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -0,0 +1 @@\n+"+line, line)
+	if err != nil || !strings.Contains(out, "build.sh\x011\x01echo hi;#nolint") {
+		t.Fatalf("expected shell comment suspect, output=%q err=%v", out, err)
+	}
+}
+
 // TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage
 // actually runs the embedded per-file suspect scan against a YAML file
 // whose added line contains "#" only as part of a URL fragment identifier,
@@ -837,6 +855,60 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	}
 	if !strings.Contains(output, "deploy.yaml\x01") {
 		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanRespectsShellOperatorEscapes(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	escaped := "echo hi\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -0,0 +1 @@\n+"+escaped, escaped)
+	if err != nil {
+		t.Fatalf("expected the escaped shell operator scan to run, output:\n%s", output)
+	}
+	if strings.Contains(output, "build.sh\x01") {
+		t.Fatalf("expected no suspect after an escaped shell operator, output:\n%q", output)
+	}
+
+	doubleEscaped := "echo hi\\\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err = runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -0,0 +1 @@\n+"+doubleEscaped, doubleEscaped)
+	if err != nil {
+		t.Fatalf("expected the double-escaped shell operator scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "build.sh\x01") {
+		t.Fatalf("expected a suspect after an unescaped shell operator, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanDistinguishesShellSubstitutionClosers(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	for _, tc := range shellBoundaryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			line := tc.target + "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
+			linePos := strings.Count(tc.prefix, "\n") + 1
+			patch := fmt.Sprintf("@@ -%d +%d @@\n-old\n+%s\n", linePos, linePos, line)
+			out, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", patch, tc.prefix+line+"\n"+tc.suffix)
+			if err != nil {
+				t.Fatalf("suspect scan failed: %v\n%s", err, out)
+			}
+			want := fmt.Sprintf("build.sh\x01%d\x01%s", linePos, line)
+			if got := strings.Contains(out, want); got != tc.wantComment {
+				t.Fatalf("comment detected=%v, want %v: %q", got, tc.wantComment, out)
+			}
+			if !tc.wantComment && strings.Contains(out, "build.sh\x01") {
+				t.Fatalf("unexpected suspect record: %q", out)
+			}
+		})
 	}
 }
 
@@ -874,6 +946,21 @@ func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
 		out, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+line+"\n", line+"\n")
 		if err != nil || !strings.Contains(out, "retry.go\x011\x01"+line) {
 			t.Fatalf("expected original case-variant suspect, got %v: %q", err, out)
+		}
+	}
+}
+
+func TestCIWorkflowSuspectScanDetectsQuotedShellMarkerCaseVariants(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	for _, line := range quotedShellMarkerCaseVariants() {
+		content := "v=\"$(\n" + line + "\n)\"\n"
+		out, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -2 +2 @@\n-old\n+"+line+"\n", content)
+		if err != nil || !strings.Contains(out, "build.sh\x012\x01"+line) {
+			t.Fatalf("expected original shell suspect, got %v: %q", err, out)
 		}
 	}
 }

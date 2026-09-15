@@ -347,8 +347,6 @@ test('recognizes grammar-valid adjacent comments after a Go label', () => {
     assert.equal(testables.hasInlineSuppressionMarker(line, 'retry.go'), true, line);
   }
 
-  assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
-
   // Go statement boundaries introduce same-line labels, including Unicode
   // identifiers. A real earlier comment still owns the rest of its line.
   assert.equal(testables.hasInlineSuppressionMarker('goto retry; retry://' + 'nolint', 'retry.go'), true);
@@ -362,7 +360,18 @@ test('recognizes grammar-valid adjacent comments after a Go label', () => {
   assert.equal(testables.hasInlineSuppressionMarker('`http://' + 'nolint.example.test`', 'retry.go'), false);
   assert.equal(testables.hasInlineSuppressionMarker('"http://' + 'nolint.example.test"', 'retry.go'), false);
   assert.equal(testables.hasInlineSuppressionMarker("'http://" + 'nolint.example.test' + "'", 'retry.go'), false);
+  assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
 
+});
+
+test('recognizes shell comments after unescaped list operators', () => {
+  const shellOperator = 'echo hi;#' + 'nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(shellOperator, 'build.sh'), true, shellOperator);
+  const escapedShellOperator = 'echo hi\\;#' + 'nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(escapedShellOperator, 'build.sh'), false, escapedShellOperator);
+  const doubleEscapedShellOperator = 'echo hi\\\\;#' + 'nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(doubleEscapedShellOperator, 'build.sh'), true, doubleEscapedShellOperator);
+  assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
 });
 
 test('carries Go colon comments across lines without reinterpreting comment prose', async () => {
@@ -566,6 +575,135 @@ test('honors shell single-quote escaping rules', () => {
   // inside an (in this snippet, unterminated) string for JS, where a
   // backslash genuinely does escape the following quote.
   assert.equal(testables.hasInlineSuppressionMarker(line, 'build.js'), false, line);
+});
+
+function subshellBoundaryCases() {
+  return [
+    ["", "v=$( ( case x in x) printf hi;; esac ) )#", "", false],
+    ["v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true],
+    ["v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true],
+    ["", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false],
+    ["", "v=$( ( printf %s case in x ) )#", "", false],
+    ["", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false],
+    ["v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false],
+    ["v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true],
+  ];
+}
+
+function esacBoundaryCases() {
+  return [
+    ["v=$(case esac in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case y in x) printf esac;;\n", "y)#", "printf hi;; esac)\n", true],
+    ["", "v=$(case x in esac)#", "", false],
+    ["", "v=$(case x in x) printf hi; esac)#", "", false],
+    ["v=$(case esac in\n", "x|esac)#", "printf hi;; esac)\n", true],
+    ["v=$(case esac in\n", "(esac)#", "printf hi;; esac)\n", true],
+    ["v=$(case 'esac' in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case e\\sac in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case esac in\n", "\"esac\")#", "printf hi;; esac)\n", true],
+    ["v=$(case esac in\n", "e\\sac)#", "printf hi;; esac)\n", true],
+  ];
+}
+
+test('distinguishes shell expansion closers from comment boundaries across diff gaps', async () => {
+  const marker = 'nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed';
+  const cases = [
+    ['', 'v=$(printf hi)#', '', false],
+    ['', 'v=$((1+2))#', '', false],
+    ['', 'v=$(printf %s $(printf hi))#', '', false],
+    ['', 'v=$((1+(2*3)))#', '', false],
+    ['', 'v=$(printf %s $((1+2)))#', '', false],
+    ['', "v=$(printf '%s' ')')#", '', false],
+    ['', 'v=$(printf hi\\))#', '', false],
+    ['', 'v=$(printf %s ${value:-")"})#', '', false],
+    ['', 'v=${value:-$(printf hi)}#', '', false],
+    ['', 'v=${x:-foo;#', '}\n', false],
+    ['', 'v=${x:-foo(;#', ')}\n', false],
+    ['v=${x:-foo;#literal"\n', '#', '"}\n', false],
+    ['', 'v=${x:-${y:-foo;#', '}}\n', false],
+    ['v=${x:-$(\n', 'printf hi;#', ')}\n', true],
+    ['', "v=$(printf %s \"(\")#", '', false],
+    ['', "v=$(printf %s \")\")#", '', false],
+    ['', "v=$(case x in x) printf hi;; esac)#", '', false],
+    ['v=$(\ncase y in x) printf no;;\n', 'y)#', 'printf hi;; esac\n)\n', true],
+    ['', 'v=$(case y in x) printf no;; y) printf hi;; esac)#', '', false],
+    ['', "v=$(printf hi)#literal$(printf bye)#", '', false],
+    ['', "v=$(printf a\\;#literal; printf b)#", '', false],
+    ['', "v=$(printf %s \"${x:-)}\")#", '', false],
+    ['', "v=$(printf %s case in x)#", '', false],
+    ['', 'v=$(ca""se x in y)#', '', false],
+    ['', 'v=$(""; case x in x) printf hi;; esac)#', '', false],
+    ...subshellBoundaryCases(),
+    ...esacBoundaryCases(),
+    ['', 'v=$( (printf hi) )#', '', false],
+    ['', '(printf hi)#', '', true],
+    ['', 'case x in x)#', 'printf hi;; esac\n', true],
+    ['', 'echo hi;#', '', true],
+    ['', 'echo hi|#', 'cat\n', true],
+    ['v=$(\n', 'printf hi;#', ')\n', true],
+    ['v=$(\n', '(printf hi)#', ')\n', true],
+    ['v="$(\n', 'printf hi;#', ')"\n', true],
+    ['v="$(\n', '(printf hi);#', ')"\n', true],
+    ['v=$(\ncase x in\nx) printf hi;;\nesac\n', ')#', '', false],
+    ['v=$(\nca\\\nse x in x) printf hi;; esac\n', ')#', '', false],
+    ['v=$(printf %s ca\\\nse in x\n', ')#', '', false],
+    ["v=$(\nprintf %s \\\\\ncase x in x) printf hi;; esac\n", ")#", "", false],
+    ["v=$(\nprintf hi # prose \\\ncase x in x) printf bye;; esac\n", ")#", "", false],
+    ['v=$(\nprintf hi\nprintf there\nprintf again\nprintf end\n', ')#', '', false],
+    ['v=$((\n1+\n2+\n3+\n4\n', '))#', '', false],
+    ['v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n', ')#', '', false],
+    ['v=$(printf hi)#literal"\n', '#', '"\n', false],
+    ['', "value=$'literal\\';#", "'\n", false],
+    ['', "value=$'literal' ;#", '', true],
+    ["value=$'literal\\'\n", '#', "'\n", false],
+    ["value=$'literal\\'\n", "end';#", '', true],
+    ['', "value=\\$'literal\\';#", '', true],
+    ['', 'value="$\'literal;#', '"\n', false],
+    ['', "value='literal\\';#", '', true],
+    ["v=$(if true; then case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(for x in x; do case x in\n", "x)#", "printf hi;; esac; done)\nprintf %s \"$v\"\n", true],
+    ["v=$(if false; then :; else case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(if case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(if false; then :; elif case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(until case x in\n", "x)#", "printf hi;; esac; do :; done)\nprintf %s \"$v\"\n", true],
+    ["v=$(while case x in\n", "x)#", "printf hi; false;; esac; do :; done)\nprintf %s \"$v\"\n", true],
+    ["", "v=$(printf %s then do else if elif while until case in x)#", "", false],
+    ["", "v=$(\"then\" case in x)#", "", false],
+    ["", "v=$(th\\en case in x)#", "", false],
+    ["v=$(! case x in\n", "x)#", "printf hi;; esac)\n", true],
+    ["v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true],
+    ["", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false],
+    ["v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true],
+  ];
+  for (const [prefix, target, suffix, wantComment] of cases) {
+    const line = target + marker;
+    const lineNumber = prefix.split('\n').length;
+    const harness = makeHarness({
+      files: [{ filename: 'build.sh', status: 'modified', patch: `@@ -${lineNumber} +${lineNumber} @@\n-old\n+${line}\n` }],
+      fullFileContents: { 'build.sh': `${prefix}${line}\n${suffix}` },
+    });
+    await trackInlineSuppressions(harness.args);
+    assert.equal(harness.calls.created.length, Number(wantComment), `${prefix}${line}`);
+    if (wantComment) {
+      const body = harness.calls.created[0].body;
+      assert.ok(body.includes(`Location: \`build.sh:${lineNumber}\``));
+      assert.ok(body.includes(`Source line:\n\n\`\`\`text\n${line}`));
+      assert.match(body, /Owner: @security/);
+    }
+  }
+});
+
+test('detects case-variant markers inside quoted shell substitutions', async () => {
+  for (const marker of ['NOLINT', 'NoSoNaR', 'NOSEC']) {
+    const line = `printf hi;#${marker} rationale=temporary parser false positive; owner=@security; remove-when=parser fixed`;
+    const harness = makeHarness({
+      files: [{ filename: 'build.sh', status: 'modified', patch: `@@ -2 +2 @@\n-old\n+${line}\n` }],
+      fullFileContents: { 'build.sh': `v="$(\n${line}\n)"\n` },
+    });
+    await trackInlineSuppressions(harness.args);
+    assert.equal(harness.calls.created.length, 1);
+    assert.ok(harness.calls.created[0].body.includes(line));
+  }
 });
 
 test('does not require a free-standing "#" in Python or Ruby', () => {
@@ -1404,4 +1542,8 @@ test('rejects path traversal before issue mutation', async () => {
     message: /Invalid inline suppression file path/,
   });
   assert.equal(harness.calls.created.length, 0);
+});
+
+test('ignores suppression-shaped text inside ANSI-C quotes', () => {
+  assert.equal(testables.hasInlineSuppressionMarker("value=$'literal\\';#nolint'", 'build.bash'), false);
 });

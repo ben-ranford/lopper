@@ -1089,6 +1089,13 @@ func TestInlineSuppressionCheckDetectsCaseVariantGoColonMarkers(t *testing.T) {
 	}
 }
 
+func TestInlineSuppressionCheckDetectsCommentsAfterShellOperators(t *testing.T) {
+	t.Parallel()
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo hi\\;#nolint\n")
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi\\\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+}
+
 func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
 	t.Parallel()
 
@@ -1107,6 +1114,177 @@ func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
 	assertSuppressionDetectedWithContext(t, "retry.go", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nold\n}\n", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nretry://"+marker+"\n}\n", "retry://"+marker)
 	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\nraw := `http://nolint.example.test`\n_ = raw\n}\n")
 	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\ns := \"http://nolint.example.test and \\\\\"quoted\\\\\"\"\nr := '/'\n_, _ = s, r\n}\n")
+}
+
+type shellBoundaryCase struct {
+	name, prefix, target, suffix string
+	wantComment                  bool
+}
+
+func quotedShellMarkerCaseVariants() []string {
+	return []string{"printf hi;#NOLINT", "printf hi;#NoSoNaR", "printf hi;#NOSEC"}
+}
+
+func TestInlineSuppressionCheckDetectsQuotedShellMarkerCaseVariants(t *testing.T) {
+	t.Parallel()
+	for _, line := range quotedShellMarkerCaseVariants() {
+		assertSuppressionDetectedForFileAndLine(t, "build.sh", "v=\"$(\n"+line+" rationale=temporary parser false positive; owner=@security; remove-when=parser fixed\n)\"\n")
+	}
+}
+
+func TestInlineSuppressionCheckDoesNotCarryShellMarkerIntoGoFile(t *testing.T) {
+	t.Parallel()
+	repoDir := newInlineSuppressionRepo(t)
+	marker := "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
+	writeFile(t, filepath.Join(repoDir, "a.sh"), "#"+marker+"\n")
+	writeFile(t, filepath.Join(repoDir, "z.go"), "package p\nvar text = \"//"+marker+"\"\n")
+	runCommand(t, repoDir, "git", "add", "a.sh", "z.go")
+	outputPath := filepath.Join(repoDir, "records.json")
+	out, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("scanner failed: %v: %s", err, out)
+	}
+	records := readSuppressionRecords(t, outputPath).Suppressions
+	if len(records) != 1 || records[0].File != "a.sh" {
+		t.Fatalf("expected only the real shell comment, got %#v", records)
+	}
+}
+
+func subshellBoundaryCases() []shellBoundaryCase {
+	return []shellBoundaryCase{
+		{"subshell case literal suffix", "", "v=$( ( case x in x) printf hi;; esac ) )#", "", false},
+		{"subshell case comment", "v=$( ( case x in\n", "x)#", "printf hi;; esac ) )\n", true},
+		{"subshell optional pattern comment", "v=$( ( case x in\n", "(x)#", "printf hi;; esac ) )\n", true},
+		{"subshell optional pattern suffix", "", "v=$( ( case x in (x) printf hi;; esac ) )#", "", false},
+		{"subshell case arguments", "", "v=$( ( printf %s case in x ) )#", "", false},
+		{"subshell nested case suffix", "", "v=$( ( ( case x in x) printf hi;; esac ) ) )#", "", false},
+		{"subshell multiline case suffix", "v=$( (\ncase x in\nx) printf hi;;\nesac\n)\n", ")#", "", false},
+		{"subshell group close comment", "v=$( ( case x in x) printf hi;; esac\n", ")#", ")\n", true},
+	}
+}
+
+func esacBoundaryCases() []shellBoundaryCase {
+	return []shellBoundaryCase{
+		{"esac subject", "v=$(case esac in\n", "x)#", ":;; esac)\n", true},
+		{"esac argument", "v=$(case y in x) printf esac;;\n", "y)#", "printf hi;; esac)\n", true},
+		{"esac empty case", "", "v=$(case x in esac)#", "", false},
+		{"esac last arm without terminator", "", "v=$(case x in x) printf hi; esac)#", "", false},
+		{"esac alternative pattern", "v=$(case esac in\n", "x|esac)#", "printf hi;; esac)\n", true},
+		{"esac optional pattern", "v=$(case esac in\n", "(esac)#", "printf hi;; esac)\n", true},
+		{"esac quoted subject", "v=$(case 'esac' in\n", "x)#", ":;; esac)\n", true},
+		{"esac escaped subject", "v=$(case e\\sac in\n", "x)#", ":;; esac)\n", true},
+		{"esac quoted pattern", "v=$(case esac in\n", "\"esac\")#", "printf hi;; esac)\n", true},
+		{"esac escaped pattern", "v=$(case esac in\n", "e\\sac)#", "printf hi;; esac)\n", true},
+	}
+}
+
+func shellBoundaryCases() []shellBoundaryCase {
+	return append([]shellBoundaryCase{
+		{"command", "", "v=$(printf hi)#", "", false},
+		{"arithmetic", "", "v=$((1+2))#", "", false},
+		{"nested command", "", "v=$(printf %s $(printf hi))#", "", false},
+		{"nested arithmetic", "", "v=$((1+(2*3)))#", "", false},
+		{"arithmetic in command", "", "v=$(printf %s $((1+2)))#", "", false},
+		{"quoted closer", "", "v=$(printf '%s' ')')#", "", false},
+		{"escaped closer", "", "v=$(printf hi\\))#", "", false},
+		{"parameter in command", "", "v=$(printf %s ${value:-\")\"})#", "", false},
+		{"command in parameter", "", "v=${value:-$(printf hi)}#", "", false},
+		{"parameter literal operator", "", "v=${x:-foo;#", "}\n", false},
+		{"parameter literal grouping", "", "v=${x:-foo(;#", ")}\n", false},
+		{"parameter literal quote carry", "v=${x:-foo;#literal\"\n", "#", "\"}\n", false},
+		{"nested parameter literal operator", "", "v=${x:-${y:-foo;#", "}}\n", false},
+		{"command comment inside parameter", "v=${x:-$(\n", "printf hi;#", ")}\n", true},
+		{"double quoted opener", "", "v=$(printf %s \"(\")#", "", false},
+		{"double quoted closer", "", "v=$(printf %s \")\")#", "", false},
+		{"case in command", "", "v=$(case x in x) printf hi;; esac)#", "", false},
+		{"later case arm comment", "v=$(\ncase y in x) printf no;;\n", "y)#", "printf hi;; esac\n)\n", true},
+		{"multiple case arms literal suffix", "", "v=$(case y in x) printf no;; y) printf hi;; esac)#", "", false},
+		{"embedded hash between expansions", "", "v=$(printf hi)#literal$(printf bye)#", "", false},
+		{"escaped operator before literal hash", "", "v=$(printf a\\;#literal; printf b)#", "", false},
+		{"quoted parameter expansion", "", "v=$(printf %s \"${x:-)}\")#", "", false},
+		{"case words as arguments", "", "v=$(printf %s case in x)#", "", false},
+		{"quoted case word", "", "v=$(ca\"\"se x in y)#", "", false},
+		{"case after empty quoted command", "", "v=$(\"\"; case x in x) printf hi;; esac)#", "", false},
+		{"nested grouping", "", "v=$( (printf hi) )#", "", false},
+		{"group comment", "", "(printf hi)#", "", true},
+		{"case comment", "", "case x in x)#", "printf hi;; esac\n", true},
+		{"list comment", "", "echo hi;#", "", true},
+		{"pipe comment", "", "echo hi|#", "cat\n", true},
+		{"inner comment", "v=$(\n", "printf hi;#", ")\n", true},
+		{"inner group comment", "v=$(\n", "(printf hi)#", ")\n", true},
+		{"outer quoted inner comment", "v=\"$(\n", "printf hi;#", ")\"\n", true},
+		{"outer quoted inner group comment", "v=\"$(\n", "(printf hi);#", ")\"\n", true},
+		{"multiline case pattern", "v=$(\ncase x in\nx) printf hi;;\nesac\n", ")#", "", false},
+		{"continued case keyword", "v=$(\nca\\\nse x in x) printf hi;; esac\n", ")#", "", false},
+		{"continued case argument", "v=$(printf %s ca\\\nse in x\n", ")#", "", false},
+		{"even trailing backslashes", "v=$(\nprintf %s \\\\\ncase x in x) printf hi;; esac\n", ")#", "", false},
+		{"comment trailing backslash", "v=$(\nprintf hi # prose \\\ncase x in x) printf bye;; esac\n", ")#", "", false},
+		{"multiline command", "v=$(\nprintf hi\nprintf there\nprintf again\nprintf end\n", ")#", "", false},
+		{"multiline arithmetic", "v=$((\n1+\n2+\n3+\n4\n", "))#", "", false},
+		{"comment closer ignored", "v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n", ")#", "", false},
+		{"multiline quoted literal", "v=$(printf hi)#literal\"\n", "#", "\"\n", false},
+		{"ANSI literal escaped apostrophe", "", "value=$'literal\\';#", "'\n", false},
+		{"ANSI closed comment", "", "value=$'literal' ;#", "", true},
+		{"ANSI carried literal", "value=$'literal\\'\n", "#", "'\n", false},
+		{"ANSI carried close comment", "value=$'literal\\'\n", "end';#", "", true},
+		{"escaped dollar POSIX close", "", "value=\\$'literal\\';#", "", true},
+		{"double quoted ANSI opener literal", "", "value=\"$'literal;#", "\"\n", false},
+		{"POSIX escaped apostrophe closes", "", "value='literal\\';#", "", true},
+		{"case after then", "v=$(if true; then case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true},
+		{"case after do", "v=$(for x in x; do case x in\n", "x)#", "printf hi;; esac; done)\nprintf %s \"$v\"\n", true},
+		{"case after else", "v=$(if false; then :; else case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true},
+		{"case after if", "v=$(if case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true},
+		{"case after elif", "v=$(if false; then :; elif case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true},
+		{"case after until", "v=$(until case x in\n", "x)#", "printf hi;; esac; do :; done)\nprintf %s \"$v\"\n", true},
+		{"case after while", "v=$(while case x in\n", "x)#", "printf hi; false;; esac; do :; done)\nprintf %s \"$v\"\n", true},
+		{"compound words as arguments", "", "v=$(printf %s then do else if elif while until case in x)#", "", false},
+		{"quoted compound word", "", "v=$(\"then\" case in x)#", "", false},
+		{"escaped compound word", "", "v=$(th\\en case in x)#", "", false},
+		{"case after negation", "v=$(! case x in\n", "x)#", "printf hi;; esac)\n", true},
+		{"case after brace", "v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true},
+		{"compound case literal suffix", "", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false},
+		{"reserved-looking case patterns", "v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true},
+	}, append(subshellBoundaryCases(), esacBoundaryCases()...)...)
+}
+
+func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {
+	t.Parallel()
+	for _, tc := range shellBoundaryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+			line := tc.target + "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
+			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+tc.target+"old\n"+tc.suffix)
+			runCommand(t, repoDir, "git", "add", "build.sh")
+			runCommand(t, repoDir, "git", "commit", "-m", "add shell source")
+			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+line+"\n"+tc.suffix)
+			runCommand(t, repoDir, "git", "add", "build.sh")
+			output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+			if err != nil {
+				t.Fatalf("shell check failed: %v\n%s", err, output)
+			}
+			assertShellSuppressionRecords(t, outputPath, line, tc.wantComment)
+		})
+	}
+}
+
+func assertShellSuppressionRecords(t *testing.T, outputPath, line string, wantComment bool) {
+	t.Helper()
+	if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) && !wantComment {
+		return
+	}
+	records := readSuppressionRecords(t, outputPath).Suppressions
+	want := 0
+	if wantComment {
+		want = 1
+	}
+	if len(records) != want {
+		t.Fatalf("got %d records, want %d: %#v", len(records), want, records)
+	}
+	if want == 1 && (records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("build.sh", line, 1)) {
+		t.Fatalf("source content or fingerprint changed: %#v", records[0])
+	}
 }
 
 func TestInlineSuppressionCheckIgnoresPythonFloorDivisionAsACommentPrefix(t *testing.T) {
@@ -1393,4 +1571,9 @@ exit 1
 `
 	writeFileMode(t, scriptPath, script, 0o755)
 	return scriptPath, logPath
+}
+
+func TestInlineSuppressionCheckIgnoresANSIQuotedMarker(t *testing.T) {
+	t.Parallel()
+	assertSuppressionCheckPassesForSourceNamed(t, "build.bash", "value=$'literal\\';#nolint'\n")
 }

@@ -42,9 +42,10 @@ marker_start_pattern="$marker_start_pattern_all"
 # Python and Ruby start a comment with "#" anywhere outside a string, just
 # like "//" does in slash-style languages, but YAML requires "#" to be
 # separated from the preceding scalar by whitespace (or start the line),
-# and shell only treats it as a comment when it begins a word. Mirrors
+# and shell treats it as a comment at a shell word boundary. Mirrors
 # STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the trusted tracker.
-marker_pattern_hash_strict="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_hash_yaml="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_hash_shell="(^|[[:space:];|&()])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_hash_lenient="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
 # PHP (and any other extension covered by neither set) keeps the original
@@ -58,7 +59,8 @@ source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cj
 # fall through to marker_pattern_all's shape (not selected by either
 # pattern below); see the active_pattern selection where they route to
 # marker_pattern_hash_lenient explicitly.
-strict_hash_file_pattern="\\.(bash|ksh|sh|ya?ml|zsh)$"
+yaml_file_pattern="\\.(ya?ml)$"
+shell_file_pattern="\\.(bash|ksh|sh|zsh)$"
 lenient_hash_file_pattern="\\.(py|rb)$"
 slash_style_file_pattern="\\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$"
 diff_scope=""
@@ -502,13 +504,15 @@ done < <(awk '/^\+\+\+ b\// { f = substr($0, 7); sub(/\t$/, "", f); printf "%s%c
 
 set +e
 awk \
-	-v pattern_hash_strict="$marker_pattern_hash_strict" \
+	-v pattern_hash_yaml="$marker_pattern_hash_yaml" \
+	-v pattern_hash_shell="$marker_pattern_hash_shell" \
 	-v pattern_hash_lenient="$marker_pattern_hash_lenient" \
 	-v pattern_slash="$marker_pattern_slash" \
 	-v go_pattern="$go_marker_pattern" \
 	-v pattern_all="$marker_pattern_all" \
 	-v file_pattern="$source_file_pattern" \
-	-v strict_hash_file_pattern="$strict_hash_file_pattern" \
+	-v yaml_file_pattern="$yaml_file_pattern" \
+	-v shell_file_pattern="$shell_file_pattern" \
 	-v lenient_hash_file_pattern="$lenient_hash_file_pattern" \
 	-v slash_style_file_pattern="$slash_style_file_pattern" '
 BEGIN {
@@ -517,6 +521,7 @@ BEGIN {
 	found = 0
 	check_file = 0
 	quote_state = ""
+	shell_state = ""
 	go_block_state = 0
 	active_pattern = pattern_all
 	bundle_file = ""
@@ -538,9 +543,10 @@ FNR == NR {
 # The quote state to seed a hunk beginning at 1-indexed `line`: derived from
 # the complete head file bundled above, not just the surrounding diff
 # context window. Mirrors quoteStateSeedFromLines in the trusted tracker.
-function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state) {
+function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state, seed_shell_state) {
 	seed_quote = ""
 	seed_go_state = ""
+	seed_shell_state = ""
 	prior_count = line - 1
 	if (full_line_count[file] + 0 < prior_count) {
 		prior_count = full_line_count[file] + 0
@@ -548,12 +554,15 @@ function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state) {
 	for (idx = 1; idx <= prior_count; idx++) {
 		go_colon_match(full_lines[file, idx], seed_go_state)
 		seed_go_state = final_go_state
-		mask_quoted_regions(full_lines[file, idx], seed_quote)
+		shell_masked = shell_mask_expansion_closers(full_lines[file, idx], seed_shell_state)
+		seed_shell_state = final_shell_state
+		mask_quoted_regions(shell_masked, seed_quote)
 		seed_quote = final_quote_state
 		if (go_colon_line) seed_quote = ""
 	}
 	seeded_quote_state = seed_quote
 	seeded_go_block_state = seed_go_state
+	seeded_shell_state = seed_shell_state
 }
 # Checking only the character immediately preceding a candidate comment
 # delimiter misses a marker preceded by ordinary text inside an otherwise
@@ -564,6 +573,118 @@ function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state) {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
+function is_unescaped_shell_operator_boundary(s, pos,    prior, backslashes) {
+	prior = substr(s, pos - 1, 1)
+	if (prior !~ /[;|&()]/) {
+		return 0
+	}
+	backslashes = 0
+	for (pos -= 2; pos >= 1 && substr(s, pos, 1) == "\\"; pos--) {
+		backslashes++
+	}
+	return (backslashes % 2) == 0
+}
+# Mark only the final delimiter of command/arithmetic substitutions. A shell
+# comment after that delimiter is still attached to the surrounding word;
+# grouping and case-clause parentheses remain visible to the boundary regex.
+function shell_word_boundary(c) { return c == "" || c ~ /[[:space:];|&()]/ }
+function shell_hash_boundary(s, pos,    prior, backslashes, original_pos) {
+	original_pos = pos
+	prior = substr(s, pos - 1, 1)
+	if (pos == 1 || prior ~ /[[:space:]]/) return 1
+	if (prior !~ /[;|&()]/) return 0
+	backslashes = 0
+	for (pos -= 2; pos >= 1 && substr(s, pos, 1) == "\\"; pos--) backslashes++
+	return backslashes % 2 == 0 && !(prior == ")" && shell_expansion_close == original_pos - 1)
+}
+function shell_top_mode() { return substr(shell_modes, length(shell_frames), 1) }
+function shell_set_top_mode(mode) { shell_modes = substr(shell_modes, 1, length(shell_frames) - 1) mode }
+function shell_make_word_ineligible() { if (substr(shell_frames, length(shell_frames), 1) ~ /[cu]/) shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "n" }
+function shell_word_closes_case() {
+	return shell_word == "esac" && substr(shell_eligibles, length(shell_frames), 1) == "y" && (shell_top_mode() == "p" || (shell_top_mode() == "b" && substr(shell_starts, length(shell_frames), 1) == "y"))
+}
+function shell_word_starts_command() {
+	return substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y" && shell_top_mode() != "w" && shell_top_mode() !~ /^[pf]$/ && shell_word ~ /^(if|then|elif|else|while|until|do|!|\{)$/
+}
+function shell_finish_word() {
+	if (substr(shell_frames, length(shell_frames), 1) !~ /[cu]/ || (shell_word == "" && substr(shell_eligibles, length(shell_frames), 1) == "y")) return
+	if (shell_word == "case" && substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y" && shell_top_mode() !~ /^[pf]$/) shell_set_top_mode("w")
+	else if (shell_word == "in" && shell_top_mode() == "w") shell_set_top_mode("p")
+	else if (shell_word_closes_case()) shell_set_top_mode("n")
+	shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) (shell_word_starts_command() ? "y" : "n")
+	shell_word = ""
+	shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "y"
+}
+function shell_push(kind) {
+	shell_frames = shell_frames kind
+	shell_returns = shell_returns (shell_quote == "" ? "n" : shell_quote)
+	shell_modes = shell_modes "n"
+	shell_starts = shell_starts "y"
+	shell_eligibles = shell_eligibles "y"
+}
+function shell_pop() {
+	shell_quote = substr(shell_returns, length(shell_returns), 1)
+	if (shell_quote == "n") shell_quote = ""
+	shell_frames = substr(shell_frames, 1, length(shell_frames) - 1)
+	shell_returns = substr(shell_returns, 1, length(shell_returns) - 1)
+	shell_modes = substr(shell_modes, 1, length(shell_modes) - 1)
+	shell_starts = substr(shell_starts, 1, length(shell_frames))
+	shell_eligibles = substr(shell_eligibles, 1, length(shell_frames))
+	shell_word = ""
+}
+function shell_open_group(top) {
+	if (top ~ /[cu]/ && shell_top_mode() ~ /^[pf]$/) { shell_set_top_mode("f"); return }
+	if (top ~ /[cu]/ && substr(shell_starts, length(shell_frames), 1) == "y") {
+		shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "n"
+		shell_push("u")
+	} else shell_push("g")
+}
+function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithmetic, result, line_continues) {
+	shell_comment_index = 0
+	if (tolower(file) !~ /\.(bash|ksh|sh|zsh)$/) { final_shell_state = ""; return s }
+	split(initial_state, state_parts, SUBSEP)
+	shell_quote = state_parts[1]
+	shell_frames = state_parts[2]
+	shell_returns = state_parts[3]
+	shell_modes = state_parts[4]
+	shell_word = state_parts[5]
+	shell_starts = state_parts[6]
+	shell_eligibles = state_parts[7]
+	result = ""; n = length(s); i = 1; shell_expansion_close = 0; line_continues = 0
+	while (i <= n) {
+		c = substr(s, i, 1)
+		if (shell_quote != "") {
+			if (c == "\\" && shell_quote != "s" && i < n) { result = result c substr(s, i + 1, 1); i += 2; continue }
+			if (((shell_quote == "s" || shell_quote == "a") && c == sprintf("%c", 39)) || (shell_quote == "d" && c == "\"") || (shell_quote == "b" && c == "`")) { shell_quote = ""; result = result c; i++; continue }
+			if (shell_quote != "d" || c != "$") { result = result c; i++; continue }
+		}
+		if (shell_quote == "" && c == "#" && substr(shell_frames, length(shell_frames), 1) == "p") { result = result "x"; i++; continue }
+		if (shell_quote == "" && c == "#" && shell_hash_boundary(s, i)) { shell_comment_index = i; result = result substr(s, i); break }
+		if (c == "\\") { if (i < n) shell_make_word_ineligible(); else line_continues = 1; result = result c substr(s, i + 1, 1); i += 2; continue }
+		if (shell_quote == "" && c == "$" && substr(s, i + 1, 1) == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "a"; result = result c substr(s, i + 1, 1); i += 2; continue }
+		if (c == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "s"; result = result c; i++; continue }
+		if (c == "\"") { shell_make_word_ineligible(); shell_quote = "d"; result = result c; i++; continue }
+		if (c == "`") { shell_make_word_ineligible(); shell_quote = "b"; result = result c; i++; continue }
+		if (c == "$" && substr(s, i + 1, 1) == "(") { shell_make_word_ineligible(); arithmetic = substr(s, i + 2, 1) == "("; shell_push(arithmetic ? "a" : "c"); shell_quote = ""; result = result c substr(s, i + 1, 1); if (arithmetic) result = result substr(s, i + 2, 1); i += (arithmetic ? 3 : 2); continue }
+		if (c == "$" && substr(s, i + 1, 1) == "{") { shell_make_word_ineligible(); shell_push("p"); shell_quote = ""; result = result c substr(s, i + 1, 1); i += 2; continue }
+		top = substr(shell_frames, length(shell_frames), 1)
+		if (shell_word_boundary(c)) shell_finish_word()
+		if (c == "(" && top != "p") shell_open_group(top)
+		else if (c == "}" && top == "p") shell_pop()
+		else if (c == ")" && top == "a" && substr(s, i + 1, 1) == ")") { shell_pop(); shell_expansion_close = i + 1; result = result c "x"; i += 2; continue }
+		else if (c == ")" && top == "c") { if (shell_top_mode() ~ /^[pf]$/) { shell_set_top_mode("b"); shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" } else { shell_pop(); shell_expansion_close = i; result = result "x"; i++; continue } }
+		else if (c == ")" && top == "u") { if (shell_top_mode() ~ /^[pf]$/) { shell_set_top_mode("b"); shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" } else shell_pop() }
+		else if (c == ")" && top == "g") shell_pop()
+		else if (c == ";" && substr(s, i + 1, 1) == ";" && top ~ /[cu]/ && shell_top_mode() == "b") shell_set_top_mode("p")
+		else if (c == "|" && top ~ /[cu]/ && shell_top_mode() ~ /^[pf]$/) shell_set_top_mode("f")
+		else if (c ~ /[;|&]/ && top ~ /[cu]/) shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y"
+		else if (!shell_word_boundary(c) && top ~ /[cu]/) shell_word = shell_word c
+		result = result c; i++
+	}
+	if (shell_quote == "" && !line_continues) { shell_finish_word(); if (substr(shell_frames, length(shell_frames), 1) ~ /[cu]/) shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" }
+	final_shell_state = shell_quote SUBSEP shell_frames SUBSEP shell_returns SUBSEP shell_modes SUBSEP shell_word SUBSEP shell_starts SUBSEP shell_eligibles
+	return result
+}
 function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
 	go_colon_marker = 0
 	go_colon_line = 0
@@ -616,6 +737,12 @@ function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
 	final_go_state = state
 	return go_colon_marker != 0
 }
+function shell_ansi_quote_start(s, idx,    cursor, backslashes) {
+	if (substr(s, idx, 1) != "$" || substr(s, idx + 1, 1) != sprintf("%c", 39)) return 0
+	backslashes = 0
+	for (cursor = idx - 1; cursor >= 1 && substr(s, cursor, 1) == "\\"; cursor--) backslashes++
+	return backslashes % 2 == 0
+}
 function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
 	result = ""
 	quote = initial_quote
@@ -653,12 +780,18 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 				i++
 				continue
 			}
-			if (c == quote) {
+			if (c == quote || (quote == "a" && c == sprintf("%c", 39))) {
 				result = result c
 				quote = ""
 			} else {
 				result = result "x"
 			}
+			continue
+		}
+		if (shell_language && shell_ansi_quote_start(s, i)) {
+			quote = "a"
+			result = result "xx"
+			i++
 			continue
 		}
 		if (c == "'"'"'" && narrow_single_quote) {
@@ -683,12 +816,19 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 			# here on is comment prose, not an unterminated string, and
 			# must not carry into the next line.
 			if (c == "#" && strict_hash_boundary_language) {
-				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
+				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i))) {
 					past_comment_start = 1
 				}
 			} else if (i == 1 || substr(s, i - 1, 1) != ":") {
 				past_comment_start = 1
 			}
+		}
+		# A shell operator escaped by an odd number of backslashes remains
+		# part of the current word. Mask its # so the later regex cannot
+		# reinterpret literal text as a suppression comment.
+		if (c == "#" && strict_hash_boundary_language && !(i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i)))) {
+			result = result "x"
+			continue
 		}
 		if (c == "\"" || c == "'"'"'" || c == "`") {
 			quote = c
@@ -707,8 +847,10 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# the extension patterns "$" anchor still matches the real filename.
 	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
-	if (tolower(file) ~ strict_hash_file_pattern) {
-		active_pattern = pattern_hash_strict
+	if (tolower(file) ~ yaml_file_pattern) {
+		active_pattern = pattern_hash_yaml
+	} else if (tolower(file) ~ shell_file_pattern) {
+		active_pattern = pattern_hash_shell
 	} else if (tolower(file) ~ lenient_hash_file_pattern) {
 		active_pattern = pattern_hash_lenient
 	} else if (tolower(file) ~ slash_style_file_pattern) {
@@ -718,6 +860,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	}
 	quote_state = ""
 	go_block_state = 0
+	shell_state = ""
 	next
 }
 /^@@ / {
@@ -735,6 +878,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	seed_scan_states()
 	quote_state = seeded_quote_state
 	go_block_state = seeded_go_block_state
+	shell_state = seeded_shell_state
 	next
 }
 /^\+/ {
@@ -757,10 +901,13 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# real suppression comment following it on the same line.
 	go_match = go_colon_match(content, go_block_state)
 	go_block_state = final_go_state
-	masked = mask_quoted_regions(content, quote_state)
+	shell_masked = shell_mask_expansion_closers(content, shell_state)
+	shell_state = final_shell_state
+	shell_match = shell_comment_index && (" " tolower(substr(content, shell_comment_index)) ~ active_pattern)
+	masked = mask_quoted_regions(shell_masked, quote_state)
 	quote_state = final_quote_state
 	if (go_colon_line) quote_state = ""
-	if (check_file && (tolower(masked) ~ active_pattern || go_match)) {
+	if (check_file && (tolower(masked) ~ active_pattern || go_match || shell_match)) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0
