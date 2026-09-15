@@ -291,8 +291,27 @@ function shellExpansionWidth(content, index, state) {
   if (content[index] !== '$' || (next !== '(' && next !== '{')) return undefined;
   const arithmetic = next === '(' && content[index + 2] === '(';
   makeShellWordIneligible(state);
-  enterShellExpansion(state, next === '{' ? 'parameter' : arithmetic ? 'arithmetic' : 'command');
-  return next === '{' || !arithmetic ? 2 : 3;
+  let kind = 'command';
+  if (next === '{') kind = 'parameter';
+  else if (arithmetic) kind = 'arithmetic';
+  enterShellExpansion(state, kind);
+  return kind === 'arithmetic' ? 3 : 2;
+}
+
+function closeShellFrame(state, frame) {
+  state.frames.pop();
+  state.quote = frame.returnQuote;
+}
+
+function closeShellCommandFrame(state, frame, index, expansionClosers) {
+  if (frame.caseMode === 'pattern') {
+    frame.caseMode = 'body';
+    frame.commandStart = true;
+    return 1;
+  }
+  closeShellFrame(state, frame);
+  expansionClosers.add(index);
+  return 1;
 }
 
 function advanceShellFrame(content, index, state, expansionClosers) {
@@ -301,24 +320,13 @@ function advanceShellFrame(content, index, state, expansionClosers) {
   if (shellWordBoundary(char)) finishShellWord(state);
   if (char === '(') state.frames.push({ kind: 'group' });
   else if (char === '}' && frame?.kind === 'parameter') {
-    state.frames.pop();
-    state.quote = frame.returnQuote;
+    closeShellFrame(state, frame);
   } else if (char === ')' && frame?.kind === 'arithmetic' && content[index + 1] === ')') {
-    state.frames.pop();
-    state.quote = frame.returnQuote;
+    closeShellFrame(state, frame);
     expansionClosers.add(index + 1);
     return 2;
-  } else if (char === ')' && frame?.kind === 'command') {
-    if (frame.caseMode === 'pattern') {
-      frame.caseMode = 'body';
-      frame.commandStart = true;
-    }
-    else {
-      state.frames.pop();
-      state.quote = frame.returnQuote;
-      expansionClosers.add(index);
-    }
-  } else if (char === ')' && frame?.kind === 'group') state.frames.pop();
+  } else if (char === ')' && frame?.kind === 'command') return closeShellCommandFrame(state, frame, index, expansionClosers);
+  else if (char === ')' && frame?.kind === 'group') state.frames.pop();
   else if (';|&'.includes(char) && frame?.kind === 'command') frame.commandStart = true;
   else if (!shellWordBoundary(char) && frame?.kind === 'command') frame.word += char;
   return 1;
@@ -411,6 +419,25 @@ function isCommentBoundary(content, index, file, prefix, shellScan) {
 // char-literal shape opens (and immediately closes) a quoted region.
 const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp']);
 
+function advanceQuotedCursor(content, cursor, quote, shellLanguage) {
+  if (content[cursor] === '\\' && !(quote === "'" && shellLanguage)) {
+    return { cursor: cursor + 1, quote };
+  }
+  return { cursor, quote: content[cursor] === quote ? undefined : quote };
+}
+
+function narrowQuoteWidth(content, cursor) {
+  if (content[cursor + 1] === '\\' && content[cursor + 3] === "'") return 4;
+  if (content[cursor + 1] !== "'" && content[cursor + 2] === "'") return 3;
+  return 1;
+}
+
+function isLineCommentStart(content, cursor, file, shellScan) {
+  const char = content[cursor];
+  if (char === '#') return isCommentBoundary(content, cursor, file, '#', shellScan);
+  return char === '/' && content[cursor + 1] === '/' && isCommentBoundary(content, cursor, file, '//', shellScan);
+}
+
 // Runs the quote-tracking state machine across content[0, index), starting
 // from `initialQuote` (the quote character already open when this line
 // began, or undefined if none). Returns { quote, pastCommentStart }: `quote`
@@ -433,28 +460,14 @@ function quoteStateAt(content, index, file, initialQuote, shellScan) {
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
     if (quote !== undefined) {
-      const noEscapesInThisQuote = quote === "'" && shellLanguage;
-      if (char === '\\' && !noEscapesInThisQuote) {
-        cursor += 1;
-      } else if (char === quote) {
-        quote = undefined;
-      }
+      ({ cursor, quote } = advanceQuotedCursor(content, cursor, quote, shellLanguage));
       continue;
     }
     if (char === "'" && narrowSingleQuoteLanguage) {
-      if (content[cursor + 1] === '\\' && content[cursor + 3] === "'") {
-        cursor += 3;
-      } else if (content[cursor + 1] !== "'" && content[cursor + 2] === "'") {
-        cursor += 2;
-      }
+      cursor += narrowQuoteWidth(content, cursor) - 1;
       continue;
     }
-    if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
-      const prefix = char === '#' ? '#' : '//';
-      if (isCommentBoundary(content, cursor, file, prefix, shellScan)) {
-        pastCommentStart = true;
-      }
-    }
+    if (isLineCommentStart(content, cursor, file, shellScan)) pastCommentStart = true;
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
     }
@@ -774,7 +787,7 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanGoLine(content, file), shellScan) {
+function commentPrefixIndexForMarker(content, file, initialQuote, goScan, shellScan) {
   const prefixes = commentPrefixesFor(file);
   const activeShellScan = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file)) ? (shellScan ?? scanShellLine(content)) : undefined;
   for (let index = 0; index < content.length; index += 1) {

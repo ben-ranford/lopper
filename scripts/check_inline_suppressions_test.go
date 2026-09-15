@@ -1208,21 +1208,26 @@ func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {
 			if err != nil {
 				t.Fatalf("shell check failed: %v\n%s", err, output)
 			}
-			if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) && !tc.wantComment {
-				return
-			}
-			records := readSuppressionRecords(t, outputPath).Suppressions
-			want := 0
-			if tc.wantComment {
-				want = 1
-			}
-			if len(records) != want {
-				t.Fatalf("got %d records, want %d: %#v", len(records), want, records)
-			}
-			if want == 1 && (records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("build.sh", line, 1)) {
-				t.Fatalf("source content or fingerprint changed: %#v", records[0])
-			}
+			assertShellSuppressionRecords(t, outputPath, line, tc.wantComment)
 		})
+	}
+}
+
+func assertShellSuppressionRecords(t *testing.T, outputPath, line string, wantComment bool) {
+	t.Helper()
+	if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) && !wantComment {
+		return
+	}
+	records := readSuppressionRecords(t, outputPath).Suppressions
+	want := 0
+	if wantComment {
+		want = 1
+	}
+	if len(records) != want {
+		t.Fatalf("got %d records, want %d: %#v", len(records), want, records)
+	}
+	if want == 1 && (records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("build.sh", line, 1)) {
+		t.Fatalf("source content or fingerprint changed: %#v", records[0])
 	}
 }
 
