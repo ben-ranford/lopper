@@ -1163,6 +1163,21 @@ func subshellBoundaryCases() []shellBoundaryCase {
 	}
 }
 
+func esacBoundaryCases() []shellBoundaryCase {
+	return []shellBoundaryCase{
+		{"esac subject", "v=$(case esac in\n", "x)#", ":;; esac)\n", true},
+		{"esac argument", "v=$(case y in x) printf esac;;\n", "y)#", "printf hi;; esac)\n", true},
+		{"esac empty case", "", "v=$(case x in esac)#", "", false},
+		{"esac last arm without terminator", "", "v=$(case x in x) printf hi; esac)#", "", false},
+		{"esac alternative pattern", "v=$(case esac in\n", "x|esac)#", "printf hi;; esac)\n", true},
+		{"esac optional pattern", "v=$(case esac in\n", "(esac)#", "printf hi;; esac)\n", true},
+		{"esac quoted subject", "v=$(case 'esac' in\n", "x)#", ":;; esac)\n", true},
+		{"esac escaped subject", "v=$(case e\\sac in\n", "x)#", ":;; esac)\n", true},
+		{"esac quoted pattern", "v=$(case esac in\n", "\"esac\")#", "printf hi;; esac)\n", true},
+		{"esac escaped pattern", "v=$(case esac in\n", "e\\sac)#", "printf hi;; esac)\n", true},
+	}
+}
+
 func shellBoundaryCases() []shellBoundaryCase {
 	return append([]shellBoundaryCase{
 		{"command", "", "v=$(printf hi)#", "", false},
@@ -1229,7 +1244,7 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"case after brace", "v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true},
 		{"compound case literal suffix", "", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false},
 		{"reserved-looking case patterns", "v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true},
-	}, subshellBoundaryCases()...)
+	}, append(subshellBoundaryCases(), esacBoundaryCases()...)...)
 }
 
 func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {

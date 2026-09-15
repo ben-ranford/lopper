@@ -590,6 +590,21 @@ function subshellBoundaryCases() {
   ];
 }
 
+function esacBoundaryCases() {
+  return [
+    ["v=$(case esac in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case y in x) printf esac;;\n", "y)#", "printf hi;; esac)\n", true],
+    ["", "v=$(case x in esac)#", "", false],
+    ["", "v=$(case x in x) printf hi; esac)#", "", false],
+    ["v=$(case esac in\n", "x|esac)#", "printf hi;; esac)\n", true],
+    ["v=$(case esac in\n", "(esac)#", "printf hi;; esac)\n", true],
+    ["v=$(case 'esac' in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case e\\sac in\n", "x)#", ":;; esac)\n", true],
+    ["v=$(case esac in\n", "\"esac\")#", "printf hi;; esac)\n", true],
+    ["v=$(case esac in\n", "e\\sac)#", "printf hi;; esac)\n", true],
+  ];
+}
+
 test('distinguishes shell expansion closers from comment boundaries across diff gaps', async () => {
   const marker = 'nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed';
   const cases = [
@@ -619,6 +634,7 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['', 'v=$(ca""se x in y)#', '', false],
     ['', 'v=$(""; case x in x) printf hi;; esac)#', '', false],
     ...subshellBoundaryCases(),
+    ...esacBoundaryCases(),
     ['', 'v=$( (printf hi) )#', '', false],
     ['', '(printf hi)#', '', true],
     ['', 'case x in x)#', 'printf hi;; esac\n', true],

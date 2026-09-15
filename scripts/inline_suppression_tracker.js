@@ -261,17 +261,26 @@ function makeShellWordIneligible(state) {
 
 const SHELL_COMPOUND_LIST_PREFIXES = new Set(['if', 'then', 'elif', 'else', 'while', 'until', 'do', '!', '{']);
 
+function shellInCasePattern(frame) {
+  return frame.caseMode === 'pattern' || frame.caseMode === 'pattern-data';
+}
+
+function shellWordClosesCase(frame) {
+  return frame.word === 'esac' && frame.wordEligible &&
+    (frame.caseMode === 'pattern' || (frame.caseMode === 'body' && frame.commandStart));
+}
+
 function shellWordStartsCommand(frame) {
   return frame.commandStart && frame.wordEligible && frame.caseMode !== 'word' &&
-    frame.caseMode !== 'pattern' && SHELL_COMPOUND_LIST_PREFIXES.has(frame.word);
+    !shellInCasePattern(frame) && SHELL_COMPOUND_LIST_PREFIXES.has(frame.word);
 }
 
 function finishShellWord(state) {
   const frame = shellCurrentCommandFrame(state);
   if (!frame || (!frame.word && frame.wordEligible)) return;
-  if (frame.word === 'case' && frame.commandStart && frame.wordEligible) frame.caseMode = 'word';
+  if (frame.word === 'case' && frame.commandStart && frame.wordEligible && !shellInCasePattern(frame)) frame.caseMode = 'word';
   else if (frame.word === 'in' && frame.caseMode === 'word') frame.caseMode = 'pattern';
-  else if (frame.word === 'esac') frame.caseMode = undefined;
+  else if (shellWordClosesCase(frame)) frame.caseMode = undefined;
   frame.commandStart = shellWordStartsCommand(frame);
   frame.word = '';
   frame.wordEligible = true;
@@ -311,7 +320,7 @@ function closeShellFrame(state, frame) {
 }
 
 function closeShellCommandFrame(state, frame, index, expansionClosers) {
-  if (frame.caseMode === 'pattern') {
+  if (shellInCasePattern(frame)) {
     frame.caseMode = 'body';
     frame.commandStart = true;
     return 1;
@@ -323,6 +332,10 @@ function closeShellCommandFrame(state, frame, index, expansionClosers) {
 
 function advanceShellCommandWord(content, index, frame) {
   const char = content[index];
+  if (char === '|' && shellInCasePattern(frame)) {
+    frame.caseMode = 'pattern-data';
+    return;
+  }
   if (content.startsWith(';;', index) && frame.caseMode === 'body') frame.caseMode = 'pattern';
   if (';|&'.includes(char)) frame.commandStart = true;
   else if (!shellWordBoundary(char)) frame.word += char;
@@ -330,7 +343,10 @@ function advanceShellCommandWord(content, index, frame) {
 
 function openShellGroup(state) {
   const frame = shellCurrentCommandFrame(state);
-  if (frame?.caseMode === 'pattern') return;
+  if (frame && shellInCasePattern(frame)) {
+    frame.caseMode = 'pattern-data';
+    return;
+  }
   if (frame?.commandStart) {
     frame.commandStart = false;
     enterShellExpansion(state, 'subshell');
