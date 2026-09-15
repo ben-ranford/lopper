@@ -642,12 +642,13 @@ function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithme
 		c = substr(s, i, 1)
 		if (shell_quote != "") {
 			if (c == "\\" && shell_quote != "s" && i < n) { result = result c substr(s, i + 1, 1); i += 2; continue }
-			if ((shell_quote == "s" && c == sprintf("%c", 39)) || (shell_quote == "d" && c == "\"") || (shell_quote == "b" && c == "`")) { shell_quote = ""; result = result c; i++; continue }
+			if (((shell_quote == "s" || shell_quote == "a") && c == sprintf("%c", 39)) || (shell_quote == "d" && c == "\"") || (shell_quote == "b" && c == "`")) { shell_quote = ""; result = result c; i++; continue }
 			if (shell_quote != "d" || c != "$") { result = result c; i++; continue }
 		}
 		if (shell_quote == "" && c == "#" && substr(shell_frames, length(shell_frames), 1) == "p") { result = result "x"; i++; continue }
 		if (shell_quote == "" && c == "#" && shell_hash_boundary(s, i)) { shell_comment_index = i; result = result substr(s, i); break }
 		if (c == "\\") { if (i < n) shell_make_word_ineligible(); else line_continues = 1; result = result c substr(s, i + 1, 1); i += 2; continue }
+		if (shell_quote == "" && c == "$" && substr(s, i + 1, 1) == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "a"; result = result c substr(s, i + 1, 1); i += 2; continue }
 		if (c == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "s"; result = result c; i++; continue }
 		if (c == "\"") { shell_make_word_ineligible(); shell_quote = "d"; result = result c; i++; continue }
 		if (c == "`") { shell_make_word_ineligible(); shell_quote = "b"; result = result c; i++; continue }
@@ -721,6 +722,12 @@ function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
 	final_go_state = state
 	return go_colon_marker != 0
 }
+function shell_ansi_quote_start(s, idx,    cursor, backslashes) {
+	if (substr(s, idx, 1) != "$" || substr(s, idx + 1, 1) != sprintf("%c", 39)) return 0
+	backslashes = 0
+	for (cursor = idx - 1; cursor >= 1 && substr(s, cursor, 1) == "\\"; cursor--) backslashes++
+	return backslashes % 2 == 0
+}
 function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
 	result = ""
 	quote = initial_quote
@@ -758,12 +765,18 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 				i++
 				continue
 			}
-			if (c == quote) {
+			if (c == quote || (quote == "a" && c == sprintf("%c", 39))) {
 				result = result c
 				quote = ""
 			} else {
 				result = result "x"
 			}
+			continue
+		}
+		if (shell_language && shell_ansi_quote_start(s, i)) {
+			quote = "a"
+			result = result "xx"
+			i++
 			continue
 		}
 		if (c == "'"'"'" && narrow_single_quote) {

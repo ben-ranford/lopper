@@ -279,7 +279,7 @@ function nextShellQuotedIndex(content, index, state) {
   const char = content[index];
   if (!state.quote) return undefined;
   if (char === '\\' && state.quote !== "'") return index + 2;
-  if (char === state.quote) {
+  if (char === state.quote || (state.quote === 'ansi' && char === "'")) {
     state.quote = undefined;
     return index + 1;
   }
@@ -393,6 +393,12 @@ function scanShellLine(content, initialState = {}) {
       index += 1;
       continue;
     }
+    if (!state.quote && char === '$' && content[index + 1] === "'") {
+      makeShellWordIneligible(state);
+      state.quote = 'ansi';
+      index += 2;
+      continue;
+    }
     const expansionWidth = shellExpansionWidth(content, index, state);
     if (expansionWidth !== undefined) {
       index += expansionWidth;
@@ -440,7 +446,15 @@ function advanceQuotedCursor(content, cursor, quote, shellLanguage) {
   if (content[cursor] === '\\' && !(quote === "'" && shellLanguage)) {
     return { cursor: cursor + 2, quote };
   }
-  return { cursor: cursor + 1, quote: content[cursor] === quote ? undefined : quote };
+  const closesQuote = content[cursor] === quote || (quote === 'ansi' && content[cursor] === "'");
+  return { cursor: cursor + 1, quote: closesQuote ? undefined : quote };
+}
+
+function isShellAnsiQuoteStart(content, index) {
+  if (content[index] !== '$' || content[index + 1] !== "'") return false;
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && content[cursor] === '\\'; cursor -= 1) backslashes += 1;
+  return backslashes % 2 === 0;
 }
 
 function narrowQuoteWidth(content, cursor) {
@@ -479,6 +493,11 @@ function quoteStateAt(content, index, file, initialQuote, shellScan) {
     const char = content[cursor];
     if (quote !== undefined) {
       ({ cursor, quote } = advanceQuotedCursor(content, cursor, quote, shellLanguage));
+      continue;
+    }
+    if (shellLanguage && isShellAnsiQuoteStart(content, cursor)) {
+      quote = 'ansi';
+      cursor += 2;
       continue;
     }
     if (char === "'" && narrowSingleQuoteLanguage) {

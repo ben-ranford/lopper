@@ -1195,6 +1195,13 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"multiline arithmetic", "v=$((\n1+\n2+\n3+\n4\n", "))#", "", false},
 		{"comment closer ignored", "v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n", ")#", "", false},
 		{"multiline quoted literal", "v=$(printf hi)#literal\"\n", "#", "\"\n", false},
+		{"ANSI literal escaped apostrophe", "", "value=$'literal\\';#", "'\n", false},
+		{"ANSI closed comment", "", "value=$'literal' ;#", "", true},
+		{"ANSI carried literal", "value=$'literal\\'\n", "#", "'\n", false},
+		{"ANSI carried close comment", "value=$'literal\\'\n", "end';#", "", true},
+		{"escaped dollar POSIX close", "", "value=\\$'literal\\';#", "", true},
+		{"double quoted ANSI opener literal", "", "value=\"$'literal;#", "\"\n", false},
+		{"POSIX escaped apostrophe closes", "", "value='literal\\';#", "", true},
 	}
 }
 
@@ -1522,4 +1529,9 @@ exit 1
 `
 	writeFileMode(t, scriptPath, script, 0o755)
 	return scriptPath, logPath
+}
+
+func TestInlineSuppressionCheckIgnoresANSIQuotedMarker(t *testing.T) {
+	t.Parallel()
+	assertSuppressionCheckPassesForSourceNamed(t, "build.bash", "value=$'literal\\';#nolint'\n")
 }

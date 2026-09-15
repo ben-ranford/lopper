@@ -623,6 +623,13 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['v=$((\n1+\n2+\n3+\n4\n', '))#', '', false],
     ['v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n', ')#', '', false],
     ['v=$(printf hi)#literal"\n', '#', '"\n', false],
+    ['', "value=$'literal\\';#", "'\n", false],
+    ['', "value=$'literal' ;#", '', true],
+    ["value=$'literal\\'\n", '#', "'\n", false],
+    ["value=$'literal\\'\n", "end';#", '', true],
+    ['', "value=\\$'literal\\';#", '', true],
+    ['', 'value="$\'literal;#', '"\n', false],
+    ['', "value='literal\\';#", '', true],
   ];
   for (const [prefix, target, suffix, wantComment] of cases) {
     const line = target + marker;
@@ -1491,4 +1498,8 @@ test('rejects path traversal before issue mutation', async () => {
     message: /Invalid inline suppression file path/,
   });
   assert.equal(harness.calls.created.length, 0);
+});
+
+test('ignores suppression-shaped text inside ANSI-C quotes', () => {
+  assert.equal(testables.hasInlineSuppressionMarker("value=$'literal\\';#nolint'", 'build.bash'), false);
 });
