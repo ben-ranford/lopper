@@ -121,8 +121,8 @@ function isMetadataBoundary(char) {
 // otherwise-open string, such as `"Use //nolint to suppress"`.
 //
 // "#" is the one exception, and only in a STRICT_HASH_BOUNDARY_EXTENSIONS
-// language (YAML, shell): there, "#" only ever starts a comment when
-// genuinely free-standing -- preceded by whitespace or nothing at all --
+// language (YAML, shell): there, "#" only starts a comment at a grammar
+// boundary -- whitespace/start for YAML, or a shell word boundary --
 // never one embedded in a scalar/word, such as the fragment identifier in
 // `url: https://example.test/#noqa` (YAML) or the literal character in
 // `echo foo#nolint` (shell). Python and Ruby are also hash-only languages
@@ -218,12 +218,158 @@ function scanGoLine(content, file, initialState) {
   return { state, markerIndex, hasColonLineComment };
 }
 
-function isCommentBoundary(char, isHashPrefixWithStrictBoundary) {
+function hasUnescapedShellOperatorBefore(content, index, expansionClosers = new Set()) {
+  const prior = content[index - 1];
+  if (!';|&()'.includes(prior)) {
+    return false;
+  }
+  let backslashes = 0;
+  for (let cursor = index - 2; content[cursor] === '\\'; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 0 && !(prior === ')' && expansionClosers.has(index - 1));
+}
+
+function isUnescapedShellOperatorBoundary(content, index, shellScan) {
+  return hasUnescapedShellOperatorBefore(content, index, shellScan?.expansionClosers);
+}
+
+// A closing command/arithmetic substitution delimiter is part of the word it
+// expands, unlike a grouping or case-clause `)`. Keep this deliberately small
+// shell lexer separate from the generic quote heuristic: it only records
+// expansion-closing `)` positions and carries its quote/frame state between
+// physical lines so a hunk can be seeded from the complete file.
+function shellWordBoundary(char) {
+  return char === undefined || isWhitespace(char) || ';|&()'.includes(char);
+}
+
+function isShellHashBoundary(content, index, expansionClosers) {
+  const prior = content[index - 1];
+  if (prior === undefined || isWhitespace(prior)) return true;
+  return hasUnescapedShellOperatorBefore(content, index, expansionClosers);
+}
+
+function shellCurrentCommandFrame(state) {
+  const frame = state.frames.at(-1);
+  return frame?.kind === 'command' ? frame : undefined;
+}
+
+function makeShellWordIneligible(state) {
+  const frame = shellCurrentCommandFrame(state);
+  if (frame) frame.wordEligible = false;
+}
+
+function finishShellWord(state) {
+  const frame = state.frames.at(-1);
+  if (frame?.kind !== 'command' || (!frame.word && frame.wordEligible)) return;
+  if (frame.word === 'case' && frame.commandStart && frame.wordEligible) frame.caseMode = 'word';
+  else if (frame.word === 'in' && frame.caseMode === 'word') frame.caseMode = 'pattern';
+  else if (frame.word === 'esac') frame.caseMode = undefined;
+  frame.commandStart = false;
+  frame.word = '';
+  frame.wordEligible = true;
+}
+
+function enterShellExpansion(state, kind) {
+  state.frames.push({ kind, returnQuote: state.quote, word: '', wordEligible: true, commandStart: true });
+  state.quote = undefined;
+}
+
+function nextShellQuotedIndex(content, index, state) {
+  const char = content[index];
+  if (!state.quote) return undefined;
+  if (char === '\\' && state.quote !== "'") return index + 2;
+  if (char === state.quote) {
+    state.quote = undefined;
+    return index + 1;
+  }
+  return state.quote !== '"' || char !== '$' ? index + 1 : undefined;
+}
+
+function shellExpansionWidth(content, index, state) {
+  const next = content[index + 1];
+  if (content[index] !== '$' || (next !== '(' && next !== '{')) return undefined;
+  const arithmetic = next === '(' && content[index + 2] === '(';
+  makeShellWordIneligible(state);
+  enterShellExpansion(state, next === '{' ? 'parameter' : arithmetic ? 'arithmetic' : 'command');
+  return next === '{' || !arithmetic ? 2 : 3;
+}
+
+function advanceShellFrame(content, index, state, expansionClosers) {
+  const char = content[index];
+  const frame = state.frames.at(-1);
+  if (shellWordBoundary(char)) finishShellWord(state);
+  if (char === '(') state.frames.push({ kind: 'group' });
+  else if (char === '}' && frame?.kind === 'parameter') {
+    state.frames.pop();
+    state.quote = frame.returnQuote;
+  } else if (char === ')' && frame?.kind === 'arithmetic' && content[index + 1] === ')') {
+    state.frames.pop();
+    state.quote = frame.returnQuote;
+    expansionClosers.add(index + 1);
+    return 2;
+  } else if (char === ')' && frame?.kind === 'command') {
+    if (frame.caseMode === 'pattern') {
+      frame.caseMode = 'body';
+      frame.commandStart = true;
+    }
+    else {
+      state.frames.pop();
+      state.quote = frame.returnQuote;
+      expansionClosers.add(index);
+    }
+  } else if (char === ')' && frame?.kind === 'group') state.frames.pop();
+  else if (';|&'.includes(char) && frame?.kind === 'command') frame.commandStart = true;
+  else if (!shellWordBoundary(char) && frame?.kind === 'command') frame.word += char;
+  return 1;
+}
+
+function scanShellLine(content, initialState = {}) {
+  const state = {
+    quote: initialState.quote,
+    frames: (initialState.frames ?? []).map((frame) => ({ ...frame })),
+  };
+  const expansionClosers = new Set();
+  let index = 0;
+  while (index < content.length) {
+    const char = content[index];
+    const quotedNext = nextShellQuotedIndex(content, index, state);
+    if (quotedNext !== undefined) {
+      index = quotedNext;
+      continue;
+    }
+    if (!state.quote && char === '#' && isShellHashBoundary(content, index, expansionClosers)) break;
+    if (char === '\\') {
+      makeShellWordIneligible(state);
+      index += 2;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      makeShellWordIneligible(state);
+      state.quote = char;
+      index += 1;
+      continue;
+    }
+    const expansionWidth = shellExpansionWidth(content, index, state);
+    if (expansionWidth !== undefined) {
+      index += expansionWidth;
+      continue;
+    }
+    index += advanceShellFrame(content, index, state, expansionClosers);
+  }
+  return { state, expansionClosers };
+}
+
+function isCommentBoundary(content, index, file, prefix, shellScan) {
+  const char = content[index - 1];
   if (char === undefined) {
     return true;
   }
-  if (isHashPrefixWithStrictBoundary) {
-    return isWhitespace(char);
+  const extension = typeof file === 'string' ? fileExtension(file) : '';
+  if (prefix === '#' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(extension)) {
+    // Shell list operators end the prior word, so # begins the next word's
+    // comment. YAML retains its whitespace-only scalar boundary.
+    return isWhitespace(char) || (SHELL_EXTENSIONS.has(extension) && isUnescapedShellOperatorBoundary(content, index, shellScan));
   }
   return char !== ':';
 }
@@ -259,9 +405,8 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 // must not corrupt the following line's own scan -- but discarding it
 // unconditionally, rather than only for that carry-over, would also break
 // masking of anything genuinely quoted later in the very same comment.
-function quoteStateAt(content, index, file, initialQuote) {
+function quoteStateAt(content, index, file, initialQuote, shellScan) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
-  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
   const shellLanguage = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
@@ -285,7 +430,8 @@ function quoteStateAt(content, index, file, initialQuote) {
       continue;
     }
     if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
-      if (isCommentBoundary(content[cursor - 1], char === '#' && strictHashBoundaryLanguage)) {
+      const prefix = char === '#' ? '#' : '//';
+      if (isCommentBoundary(content, cursor, file, prefix, shellScan)) {
         pastCommentStart = true;
       }
     }
@@ -297,16 +443,16 @@ function quoteStateAt(content, index, file, initialQuote) {
 }
 
 
-function isInsideQuotedRegion(content, index, file, initialQuote) {
-  return quoteStateAt(content, index, file, initialQuote).quote !== undefined;
+function isInsideQuotedRegion(content, index, file, initialQuote, shellScan) {
+  return quoteStateAt(content, index, file, initialQuote, shellScan).quote !== undefined;
 }
 
 // The quote state to carry into the line following `content`: undefined if
 // a genuine line comment was seen anywhere on this line (any quote left
 // open past that point is comment prose, not an unterminated string), or
 // the quote otherwise still open at end of line.
-function carryQuoteState(content, file, initialQuote) {
-  const { quote, pastCommentStart } = quoteStateAt(content, content.length, file, initialQuote);
+function carryQuoteState(content, file, initialQuote, shellScan) {
+  const { quote, pastCommentStart } = quoteStateAt(content, content.length, file, initialQuote, shellScan);
   return pastCommentStart ? undefined : quote;
 }
 
@@ -473,13 +619,16 @@ function occurrenceInLines(lines, targetLine, targetContent) {
 function scanStateSeedFromLines(lines, hunkStartLine, file) {
   let quoteState;
   let goState;
+  let shellState;
   const priorLineCount = Math.min(hunkStartLine - 1, lines.length);
   for (let index = 0; index < priorLineCount; index += 1) {
     const goScan = scanGoLine(lines[index], file, goState);
+    const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(lines[index], shellState) : undefined;
     goState = goScan.state;
-    quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(lines[index], file, quoteState);
+    quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(lines[index], file, quoteState, shellScan);
+    if (shellScan) shellState = shellScan.state;
   }
-  return { quoteState, goState };
+  return { quoteState, goState, shellState };
 }
 
 function quoteStateSeedFromLines(lines, hunkStartLine, file) {
@@ -605,9 +754,9 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanGoLine(content, file)) {
+function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanGoLine(content, file), shellScan) {
   const prefixes = commentPrefixesFor(file);
-  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
+  const activeShellScan = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file)) ? (shellScan ?? scanShellLine(content)) : undefined;
   for (let index = 0; index < content.length; index += 1) {
     // The boundary rule for "#" depends on which language this file is, so
     // the candidate prefix must be known before it can be checked.
@@ -615,10 +764,10 @@ function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanG
     if (!prefix) {
       continue;
     }
-    if (!isCommentBoundary(content[index - 1], prefix === '#' && strictHashBoundaryLanguage)) {
+    if (!isCommentBoundary(content, index, file, prefix, activeShellScan)) {
       continue;
     }
-    if (isInsideQuotedRegion(content, index, file, initialQuote)) {
+    if (isInsideQuotedRegion(content, index, file, initialQuote, activeShellScan)) {
       continue;
     }
     if (hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
@@ -628,8 +777,8 @@ function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanG
   return goScan.markerIndex;
 }
 
-function hasInlineSuppressionMarker(content, file, initialQuote, initialGoState) {
-  return commentPrefixIndexForMarker(content, file, initialQuote, scanGoLine(content, file, initialGoState)) !== -1;
+function hasInlineSuppressionMarker(content, file, initialQuote, initialGoState, initialShellState) {
+  return commentPrefixIndexForMarker(content, file, initialQuote, scanGoLine(content, file, initialGoState), scanShellLine(content, initialShellState)) !== -1;
 }
 
 function parseHunkHeader(rawLine, file) {
@@ -758,18 +907,21 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   // following it on the same line.
   let quoteState;
   let goState;
+  let shellState;
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
       const seededState = scanStateSeedFromLines(headLines, line, file);
       quoteState = seededState.quoteState;
       goState = seededState.goState;
+      shellState = seededState.shellState;
       continue;
     }
     if (rawLine.startsWith('+')) {
       const content = stripTrailingCR(rawLine.slice(1));
       const goScan = scanGoLine(content, file, goState);
-      const markerIndex = commentPrefixIndexForMarker(content, file, quoteState, goScan);
+      const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(content, shellState) : undefined;
+      const markerIndex = commentPrefixIndexForMarker(content, file, quoteState, goScan, shellScan);
       if (markerIndex !== -1) {
         if (records.size >= MAX_RECORDS) {
           throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
@@ -778,7 +930,8 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
         addSuppression(records, { file, line, content, context, headSHA, occurrence, markerIndex });
       }
       goState = goScan.state;
-      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState);
+      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState, shellScan);
+      if (shellScan) shellState = shellScan.state;
       line += 1;
       continue;
     }
@@ -792,7 +945,9 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
       const content = stripTrailingCR(rawLine.slice(1));
       const goScan = scanGoLine(content, file, goState);
       goState = goScan.state;
-      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState);
+      const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(content, shellState) : undefined;
+      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState, shellScan);
+      if (shellScan) shellState = shellScan.state;
       line += 1;
     }
   }

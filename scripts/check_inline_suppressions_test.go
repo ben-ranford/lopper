@@ -1089,6 +1089,13 @@ func TestInlineSuppressionCheckDetectsCaseVariantGoColonMarkers(t *testing.T) {
 	}
 }
 
+func TestInlineSuppressionCheckDetectsCommentsAfterShellOperators(t *testing.T) {
+	t.Parallel()
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo hi\\;#nolint\n")
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi\\\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+}
+
 func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
 	t.Parallel()
 
@@ -1107,6 +1114,80 @@ func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
 	assertSuppressionDetectedWithContext(t, "retry.go", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nold\n}\n", "package retry\n\nfunc f() {\nraw := `literal backslash \\\\\\nclosed`\nretry://"+marker+"\n}\n", "retry://"+marker)
 	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\nraw := `http://nolint.example.test`\n_ = raw\n}\n")
 	assertSuppressionCheckPassesForSourceNamed(t, "retry.go", "package retry\n\nfunc f() {\ns := \"http://nolint.example.test and \\\\\"quoted\\\\\"\"\nr := '/'\n_, _ = s, r\n}\n")
+}
+
+type shellBoundaryCase struct {
+	name, prefix, target, suffix string
+	wantComment                  bool
+}
+
+func shellBoundaryCases() []shellBoundaryCase {
+	return []shellBoundaryCase{
+		{"command", "", "v=$(printf hi)#", "", false},
+		{"arithmetic", "", "v=$((1+2))#", "", false},
+		{"nested command", "", "v=$(printf %s $(printf hi))#", "", false},
+		{"nested arithmetic", "", "v=$((1+(2*3)))#", "", false},
+		{"arithmetic in command", "", "v=$(printf %s $((1+2)))#", "", false},
+		{"quoted closer", "", "v=$(printf '%s' ')')#", "", false},
+		{"escaped closer", "", "v=$(printf hi\\))#", "", false},
+		{"parameter in command", "", "v=$(printf %s ${value:-\")\"})#", "", false},
+		{"command in parameter", "", "v=${value:-$(printf hi)}#", "", false},
+		{"double quoted opener", "", "v=$(printf %s \"(\")#", "", false},
+		{"double quoted closer", "", "v=$(printf %s \")\")#", "", false},
+		{"case in command", "", "v=$(case x in x) printf hi;; esac)#", "", false},
+		{"embedded hash between expansions", "", "v=$(printf hi)#literal$(printf bye)#", "", false},
+		{"escaped operator before literal hash", "", "v=$(printf a\\;#literal; printf b)#", "", false},
+		{"quoted parameter expansion", "", "v=$(printf %s \"${x:-)}\")#", "", false},
+		{"case words as arguments", "", "v=$(printf %s case in x)#", "", false},
+		{"quoted case word", "", "v=$(ca\"\"se x in y)#", "", false},
+		{"case after empty quoted command", "", "v=$(\"\"; case x in x) printf hi;; esac)#", "", false},
+		{"nested grouping", "", "v=$( (printf hi) )#", "", false},
+		{"group comment", "", "(printf hi)#", "", true},
+		{"case comment", "", "case x in x)#", "printf hi;; esac\n", true},
+		{"list comment", "", "echo hi;#", "", true},
+		{"pipe comment", "", "echo hi|#", "cat\n", true},
+		{"inner comment", "v=$(\n", "printf hi;#", ")\n", true},
+		{"inner group comment", "v=$(\n", "(printf hi)#", ")\n", true},
+		{"multiline command", "v=$(\nprintf hi\nprintf there\nprintf again\nprintf end\n", ")#", "", false},
+		{"multiline arithmetic", "v=$((\n1+\n2+\n3+\n4\n", "))#", "", false},
+		{"comment closer ignored", "v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n", ")#", "", false},
+		{"multiline quoted literal", "v=$(printf hi)#literal\"\n", "#", "\"\n", false},
+	}
+}
+
+func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {
+	t.Parallel()
+	for _, tc := range shellBoundaryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+			line := tc.target + "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
+			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+tc.target+"old\n"+tc.suffix)
+			runCommand(t, repoDir, "git", "add", "build.sh")
+			runCommand(t, repoDir, "git", "commit", "-m", "add shell source")
+			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+line+"\n"+tc.suffix)
+			runCommand(t, repoDir, "git", "add", "build.sh")
+			output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+			if err != nil {
+				t.Fatalf("shell check failed: %v\n%s", err, output)
+			}
+			if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) && !tc.wantComment {
+				return
+			}
+			records := readSuppressionRecords(t, outputPath).Suppressions
+			want := 0
+			if tc.wantComment {
+				want = 1
+			}
+			if len(records) != want {
+				t.Fatalf("got %d records, want %d: %#v", len(records), want, records)
+			}
+			if want == 1 && (records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("build.sh", line, 1)) {
+				t.Fatalf("source content or fingerprint changed: %#v", records[0])
+			}
+		})
+	}
 }
 
 func TestInlineSuppressionCheckIgnoresPythonFloorDivisionAsACommentPrefix(t *testing.T) {
