@@ -392,14 +392,19 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// and Ruby further need the lenient "#" boundary while YAML/shell need
 	// the strict one, mirroring STRICT_HASH_BOUNDARY_EXTENSIONS.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`suspect_pattern_hash_strict="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_hash_yaml="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_hash_shell="(^|[[:space:];|&()])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_hash_lenient="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
-		`strict_hash_file_pattern=`,
+		`suspect_pattern_go=`,
+		`yaml_file_pattern=`,
+		`shell_file_pattern=`,
 		`lenient_hash_file_pattern=`,
 		`slash_style_file_pattern=`,
-		`active_suspect_pattern="${suspect_pattern_hash_strict}"`,
+		`active_suspect_pattern="${suspect_pattern_hash_yaml}"`,
+		`active_suspect_pattern="${suspect_pattern_hash_shell}"`,
 		`active_suspect_pattern="${suspect_pattern_hash_lenient}"`,
+		`active_suspect_pattern="${suspect_pattern_go}"`,
 		`active_suspect_pattern="${suspect_pattern_slash}"`,
 		`active_suspect_pattern="${suspect_pattern_all}"`,
 		`awk -v pat="${active_suspect_pattern}" -v fname="${filename}"`,
@@ -752,6 +757,33 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			want:     "build.sh\x011\x01echo 'foo\\' #noqa",
 		},
 		{
+			// A Go label is a grammar-valid colon boundary for a following
+			// slash-style comment. It must not be lost with URL schemes.
+			name:     "detects a slash marker after a Go label",
+			filename: "retry.go",
+			blob:     "retry://nolint:staticcheck rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			patch:    "@@ -0,0 +1 @@\n+retry://nolint:staticcheck rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want:     "retry.go\x011\x01retry://nolint:staticcheck",
+		},
+		{
+			// Keep the existing block-comment prefix support when the comment
+			// follows a line-leading Go label.
+			name:     "detects a block marker after a Go label",
+			filename: "retry.go",
+			blob:     "retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			patch:    "@@ -0,0 +1 @@\n+retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want:     "retry.go\x011\x01retry:/*nolint",
+		},
+		{
+			// A shell semicolon ends a command and starts the word that may
+			// introduce a # comment, even with no separating whitespace.
+			name:     "detects a hash marker after a shell list operator",
+			filename: "build.sh",
+			blob:     "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			patch:    "@@ -0,0 +1 @@\n+echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want:     "build.sh\x011\x01echo hi;#nolint",
+		},
+		{
 			// A CRLF-encoded file preserves a trailing "\r" as part of
 			// each diff line's content; the suspect record built from it
 			// must strip that CR, matching what the trusted tracker
@@ -815,6 +847,51 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	}
 	if !strings.Contains(output, "deploy.yaml\x01") {
 		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanRespectsShellOperatorEscapes(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	escaped := "echo hi\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -0,0 +1 @@\n+"+escaped, escaped)
+	if err != nil {
+		t.Fatalf("expected the escaped shell operator scan to run, output:\n%s", output)
+	}
+	if strings.Contains(output, "build.sh\x01") {
+		t.Fatalf("expected no suspect after an escaped shell operator, output:\n%q", output)
+	}
+
+	doubleEscaped := "echo hi\\\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err = runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -0,0 +1 @@\n+"+doubleEscaped, doubleEscaped)
+	if err != nil {
+		t.Fatalf("expected the double-escaped shell operator scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "build.sh\x01") {
+		t.Fatalf("expected a suspect after an unescaped shell operator, output:\n%q", output)
+	}
+}
+
+func TestCIWorkflowSuspectScanRejectsUnicodeGoLabels(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	line := "réessayer://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	output, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+line, line)
+	if err != nil {
+		t.Fatalf("expected the Unicode Go-label scan to run, output:\n%s", output)
+	}
+	if strings.Contains(output, "retry.go\x01") {
+		t.Fatalf("expected no suspect for a Unicode Go label outside the tracker contract, output:\n%q", output)
 	}
 }
 
