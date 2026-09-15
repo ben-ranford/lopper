@@ -554,6 +554,7 @@ jobs:
                     if ((shell_quote == "s" && c == sprintf("%c", 39)) || (shell_quote == "d" && c == "\"") || (shell_quote == "b" && c == "`")) { shell_quote = ""; result = result c; i++; continue }
                     if (shell_quote != "d" || c != "$") { result = result c; i++; continue }
                   }
+                  if (shell_quote == "" && c == "#" && substr(shell_frames, length(shell_frames), 1) == "p") { result = result "x"; i++; continue }
                   if (shell_quote == "" && c == "#" && shell_hash_boundary(s, i)) { shell_comment_index = i; result = result substr(s, i); break }
                   if (c == "\\") { if (i < n) shell_make_word_ineligible(); else line_continues = 1; result = result c substr(s, i + 1, 1); i += 2; continue }
                   if (c == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "s"; result = result c; i++; continue }
@@ -563,7 +564,7 @@ jobs:
                   if (c == "$" && substr(s, i + 1, 1) == "{") { shell_make_word_ineligible(); shell_push("p"); shell_quote = ""; result = result c substr(s, i + 1, 1); i += 2; continue }
                   top = substr(shell_frames, length(shell_frames), 1)
                   if (shell_word_boundary(c)) shell_finish_word()
-                  if (c == "(") shell_push("g")
+                  if (c == "(" && top != "p") shell_push("g")
                   else if (c == "}" && top == "p") shell_pop()
                   else if (c == ")" && top == "a" && substr(s, i + 1, 1) == ")") { shell_pop(); shell_expansion_close = i + 1; result = result c "x"; i += 2; continue }
                   else if (c == ")" && top == "c") { if (shell_top_mode() == "p") { shell_set_top_mode("b"); shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" } else { shell_pop(); shell_expansion_close = i; result = result "x"; i++; continue } }

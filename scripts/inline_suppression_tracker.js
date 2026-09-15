@@ -318,7 +318,7 @@ function advanceShellFrame(content, index, state, expansionClosers) {
   const char = content[index];
   const frame = state.frames.at(-1);
   if (shellWordBoundary(char)) finishShellWord(state);
-  if (char === '(') state.frames.push({ kind: 'group' });
+  if (char === '(' && frame?.kind !== 'parameter') state.frames.push({ kind: 'group' });
   else if (char === '}' && frame?.kind === 'parameter') {
     closeShellFrame(state, frame);
   } else if (char === ')' && frame?.kind === 'arithmetic' && content[index + 1] === ')') {
@@ -345,12 +345,22 @@ function finishShellLine(state, lineContinues) {
   if (frame) frame.commandStart = true;
 }
 
+function isShellCommentStart(content, index, state, expansionClosers, literalHashIndices) {
+  if (state.quote || content[index] !== '#') return false;
+  if (state.frames.at(-1)?.kind === 'parameter') {
+    literalHashIndices.add(index);
+    return false;
+  }
+  return isShellHashBoundary(content, index, expansionClosers);
+}
+
 function scanShellLine(content, initialState = {}) {
   const state = {
     quote: initialState.quote,
     frames: (initialState.frames ?? []).map((frame) => ({ ...frame })),
   };
   const expansionClosers = new Set();
+  const literalHashIndices = new Set();
   let commentIndex = -1;
   let lineContinues = false;
   let index = 0;
@@ -361,7 +371,7 @@ function scanShellLine(content, initialState = {}) {
       index = quotedNext;
       continue;
     }
-    if (!state.quote && char === '#' && isShellHashBoundary(content, index, expansionClosers)) {
+    if (isShellCommentStart(content, index, state, expansionClosers, literalHashIndices)) {
       commentIndex = index;
       break;
     }
@@ -385,10 +395,11 @@ function scanShellLine(content, initialState = {}) {
     index += advanceShellFrame(content, index, state, expansionClosers);
   }
   finishShellLine(state, lineContinues);
-  return { state, expansionClosers, commentIndex };
+  return { state, expansionClosers, commentIndex, literalHashIndices };
 }
 
 function isCommentBoundary(content, index, file, prefix, shellScan) {
+  if (prefix === '#' && shellScan?.literalHashIndices?.has(index)) return false;
   const char = content[index - 1];
   if (char === undefined) {
     return true;
