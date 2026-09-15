@@ -251,7 +251,7 @@ function isShellHashBoundary(content, index, expansionClosers) {
 
 function shellCurrentCommandFrame(state) {
   const frame = state.frames.at(-1);
-  return frame?.kind === 'command' ? frame : undefined;
+  return frame?.kind === 'command' || frame?.kind === 'subshell' ? frame : undefined;
 }
 
 function makeShellWordIneligible(state) {
@@ -267,8 +267,8 @@ function shellWordStartsCommand(frame) {
 }
 
 function finishShellWord(state) {
-  const frame = state.frames.at(-1);
-  if (frame?.kind !== 'command' || (!frame.word && frame.wordEligible)) return;
+  const frame = shellCurrentCommandFrame(state);
+  if (!frame || (!frame.word && frame.wordEligible)) return;
   if (frame.word === 'case' && frame.commandStart && frame.wordEligible) frame.caseMode = 'word';
   else if (frame.word === 'in' && frame.caseMode === 'word') frame.caseMode = 'pattern';
   else if (frame.word === 'esac') frame.caseMode = undefined;
@@ -317,7 +317,7 @@ function closeShellCommandFrame(state, frame, index, expansionClosers) {
     return 1;
   }
   closeShellFrame(state, frame);
-  expansionClosers.add(index);
+  if (frame.kind === 'command') expansionClosers.add(index);
   return 1;
 }
 
@@ -328,20 +328,29 @@ function advanceShellCommandWord(content, index, frame) {
   else if (!shellWordBoundary(char)) frame.word += char;
 }
 
+function openShellGroup(state) {
+  const frame = shellCurrentCommandFrame(state);
+  if (frame?.caseMode === 'pattern') return;
+  if (frame?.commandStart) {
+    frame.commandStart = false;
+    enterShellExpansion(state, 'subshell');
+  } else state.frames.push({ kind: 'group' });
+}
+
 function advanceShellFrame(content, index, state, expansionClosers) {
   const char = content[index];
-  const frame = state.frames.at(-1);
   if (shellWordBoundary(char)) finishShellWord(state);
-  if (char === '(' && frame?.kind !== 'parameter') state.frames.push({ kind: 'group' });
+  const frame = state.frames.at(-1);
+  if (char === '(' && frame?.kind !== 'parameter') openShellGroup(state);
   else if (char === '}' && frame?.kind === 'parameter') {
     closeShellFrame(state, frame);
   } else if (char === ')' && frame?.kind === 'arithmetic' && content[index + 1] === ')') {
     closeShellFrame(state, frame);
     expansionClosers.add(index + 1);
     return 2;
-  } else if (char === ')' && frame?.kind === 'command') return closeShellCommandFrame(state, frame, index, expansionClosers);
+  } else if (char === ')' && shellCurrentCommandFrame(state)) return closeShellCommandFrame(state, frame, index, expansionClosers);
   else if (char === ')' && frame?.kind === 'group') state.frames.pop();
-  else if (frame?.kind === 'command') advanceShellCommandWord(content, index, frame);
+  else if (shellCurrentCommandFrame(state)) advanceShellCommandWord(content, index, frame);
   return 1;
 }
 

@@ -599,12 +599,12 @@ function shell_hash_boundary(s, pos,    prior, backslashes, original_pos) {
 }
 function shell_top_mode() { return substr(shell_modes, length(shell_frames), 1) }
 function shell_set_top_mode(mode) { shell_modes = substr(shell_modes, 1, length(shell_frames) - 1) mode }
-function shell_make_word_ineligible() { if (substr(shell_frames, length(shell_frames), 1) == "c") shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "n" }
+function shell_make_word_ineligible() { if (substr(shell_frames, length(shell_frames), 1) ~ /[cu]/) shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "n" }
 function shell_word_starts_command() {
 	return substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y" && shell_top_mode() != "w" && shell_top_mode() != "p" && shell_word ~ /^(if|then|elif|else|while|until|do|!|\{)$/
 }
 function shell_finish_word() {
-	if (substr(shell_frames, length(shell_frames), 1) != "c" || (shell_word == "" && substr(shell_eligibles, length(shell_frames), 1) == "y")) return
+	if (substr(shell_frames, length(shell_frames), 1) !~ /[cu]/ || (shell_word == "" && substr(shell_eligibles, length(shell_frames), 1) == "y")) return
 	if (shell_word == "case" && substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y") shell_set_top_mode("w")
 	else if (shell_word == "in" && shell_top_mode() == "w") shell_set_top_mode("p")
 	else if (shell_word == "esac") shell_set_top_mode("n")
@@ -628,6 +628,13 @@ function shell_pop() {
 	shell_starts = substr(shell_starts, 1, length(shell_frames))
 	shell_eligibles = substr(shell_eligibles, 1, length(shell_frames))
 	shell_word = ""
+}
+function shell_open_group(top) {
+	if (top ~ /[cu]/ && shell_top_mode() == "p") return
+	if (top ~ /[cu]/ && substr(shell_starts, length(shell_frames), 1) == "y") {
+		shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "n"
+		shell_push("u")
+	} else shell_push("g")
 }
 function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithmetic, result, line_continues) {
 	shell_comment_index = 0
@@ -659,17 +666,18 @@ function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithme
 		if (c == "$" && substr(s, i + 1, 1) == "{") { shell_make_word_ineligible(); shell_push("p"); shell_quote = ""; result = result c substr(s, i + 1, 1); i += 2; continue }
 		top = substr(shell_frames, length(shell_frames), 1)
 		if (shell_word_boundary(c)) shell_finish_word()
-		if (c == "(" && top != "p") shell_push("g")
+		if (c == "(" && top != "p") shell_open_group(top)
 		else if (c == "}" && top == "p") shell_pop()
 		else if (c == ")" && top == "a" && substr(s, i + 1, 1) == ")") { shell_pop(); shell_expansion_close = i + 1; result = result c "x"; i += 2; continue }
 		else if (c == ")" && top == "c") { if (shell_top_mode() == "p") { shell_set_top_mode("b"); shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" } else { shell_pop(); shell_expansion_close = i; result = result "x"; i++; continue } }
+		else if (c == ")" && top == "u") { if (shell_top_mode() == "p") { shell_set_top_mode("b"); shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" } else shell_pop() }
 		else if (c == ")" && top == "g") shell_pop()
-		else if (c == ";" && substr(s, i + 1, 1) == ";" && top == "c" && shell_top_mode() == "b") shell_set_top_mode("p")
-		else if (c ~ /[;|&]/ && top == "c") shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y"
-		else if (!shell_word_boundary(c) && top == "c") shell_word = shell_word c
+		else if (c == ";" && substr(s, i + 1, 1) == ";" && top ~ /[cu]/ && shell_top_mode() == "b") shell_set_top_mode("p")
+		else if (c ~ /[;|&]/ && top ~ /[cu]/) shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y"
+		else if (!shell_word_boundary(c) && top ~ /[cu]/) shell_word = shell_word c
 		result = result c; i++
 	}
-	if (shell_quote == "" && !line_continues) { shell_finish_word(); if (substr(shell_frames, length(shell_frames), 1) == "c") shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" }
+	if (shell_quote == "" && !line_continues) { shell_finish_word(); if (substr(shell_frames, length(shell_frames), 1) ~ /[cu]/) shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" }
 	final_shell_state = shell_quote SUBSEP shell_frames SUBSEP shell_returns SUBSEP shell_modes SUBSEP shell_word SUBSEP shell_starts SUBSEP shell_eligibles
 	return result
 }
