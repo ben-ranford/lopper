@@ -630,6 +630,20 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['', "value=\\$'literal\\';#", '', true],
     ['', 'value="$\'literal;#', '"\n', false],
     ['', "value='literal\\';#", '', true],
+    ["v=$(if true; then case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(for x in x; do case x in\n", "x)#", "printf hi;; esac; done)\nprintf %s \"$v\"\n", true],
+    ["v=$(if false; then :; else case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(if case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(if false; then :; elif case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true],
+    ["v=$(until case x in\n", "x)#", "printf hi;; esac; do :; done)\nprintf %s \"$v\"\n", true],
+    ["v=$(while case x in\n", "x)#", "printf hi; false;; esac; do :; done)\nprintf %s \"$v\"\n", true],
+    ["", "v=$(printf %s then do else if elif while until case in x)#", "", false],
+    ["", "v=$(\"then\" case in x)#", "", false],
+    ["", "v=$(th\\en case in x)#", "", false],
+    ["v=$(! case x in\n", "x)#", "printf hi;; esac)\n", true],
+    ["v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true],
+    ["", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false],
+    ["v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true],
   ];
   for (const [prefix, target, suffix, wantComment] of cases) {
     const line = target + marker;

@@ -509,13 +509,16 @@ jobs:
               function shell_top_mode() { return substr(shell_modes, length(shell_frames), 1) }
               function shell_set_top_mode(mode) { shell_modes = substr(shell_modes, 1, length(shell_frames) - 1) mode }
               function shell_make_word_ineligible() { if (substr(shell_frames, length(shell_frames), 1) == "c") shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "n" }
+              function shell_word_starts_command() {
+                return substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y" && shell_top_mode() != "w" && shell_top_mode() != "p" && shell_word ~ /^(if|then|elif|else|while|until|do|!|\{)$/
+              }
               function shell_finish_word() {
                 if (substr(shell_frames, length(shell_frames), 1) != "c" || (shell_word == "" && substr(shell_eligibles, length(shell_frames), 1) == "y")) return
                 if (shell_word == "case" && substr(shell_starts, length(shell_frames), 1) == "y" && substr(shell_eligibles, length(shell_frames), 1) == "y") shell_set_top_mode("w")
                 else if (shell_word == "in" && shell_top_mode() == "w") shell_set_top_mode("p")
                 else if (shell_word == "esac") shell_set_top_mode("n")
+                shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) (shell_word_starts_command() ? "y" : "n")
                 shell_word = ""
-                shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "n"
                 shell_eligibles = substr(shell_eligibles, 1, length(shell_frames) - 1) "y"
               }
               function shell_push(kind) {

@@ -259,13 +259,20 @@ function makeShellWordIneligible(state) {
   if (frame) frame.wordEligible = false;
 }
 
+const SHELL_COMPOUND_LIST_PREFIXES = new Set(['if', 'then', 'elif', 'else', 'while', 'until', 'do', '!', '{']);
+
+function shellWordStartsCommand(frame) {
+  return frame.commandStart && frame.wordEligible && frame.caseMode !== 'word' &&
+    frame.caseMode !== 'pattern' && SHELL_COMPOUND_LIST_PREFIXES.has(frame.word);
+}
+
 function finishShellWord(state) {
   const frame = state.frames.at(-1);
   if (frame?.kind !== 'command' || (!frame.word && frame.wordEligible)) return;
   if (frame.word === 'case' && frame.commandStart && frame.wordEligible) frame.caseMode = 'word';
   else if (frame.word === 'in' && frame.caseMode === 'word') frame.caseMode = 'pattern';
   else if (frame.word === 'esac') frame.caseMode = undefined;
-  frame.commandStart = false;
+  frame.commandStart = shellWordStartsCommand(frame);
   frame.word = '';
   frame.wordEligible = true;
 }

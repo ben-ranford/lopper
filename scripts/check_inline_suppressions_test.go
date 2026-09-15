@@ -1202,6 +1202,20 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"escaped dollar POSIX close", "", "value=\\$'literal\\';#", "", true},
 		{"double quoted ANSI opener literal", "", "value=\"$'literal;#", "\"\n", false},
 		{"POSIX escaped apostrophe closes", "", "value='literal\\';#", "", true},
+		{"case after then", "v=$(if true; then case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true},
+		{"case after do", "v=$(for x in x; do case x in\n", "x)#", "printf hi;; esac; done)\nprintf %s \"$v\"\n", true},
+		{"case after else", "v=$(if false; then :; else case x in\n", "x)#", "printf hi;; esac; fi)\nprintf %s \"$v\"\n", true},
+		{"case after if", "v=$(if case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true},
+		{"case after elif", "v=$(if false; then :; elif case x in\n", "x)#", "printf hi;; esac; then :; fi)\nprintf %s \"$v\"\n", true},
+		{"case after until", "v=$(until case x in\n", "x)#", "printf hi;; esac; do :; done)\nprintf %s \"$v\"\n", true},
+		{"case after while", "v=$(while case x in\n", "x)#", "printf hi; false;; esac; do :; done)\nprintf %s \"$v\"\n", true},
+		{"compound words as arguments", "", "v=$(printf %s then do else if elif while until case in x)#", "", false},
+		{"quoted compound word", "", "v=$(\"then\" case in x)#", "", false},
+		{"escaped compound word", "", "v=$(th\\en case in x)#", "", false},
+		{"case after negation", "v=$(! case x in\n", "x)#", "printf hi;; esac)\n", true},
+		{"case after brace", "v=$({ case x in\n", "x)#", "printf hi;; esac; })\n", true},
+		{"compound case literal suffix", "", "v=$(if true; then case x in x) printf hi;; esac; fi)#", "", false},
+		{"reserved-looking case patterns", "v=$(case do in\n", "then|do)#", "printf hi;; esac)\n", true},
 	}
 }
 
