@@ -163,6 +163,19 @@ function advanceGoMultilineState(content, cursor, state) {
   return undefined;
 }
 
+function isGoColonAdjacent(content, cursor) {
+  return cursor > 0 && content[cursor - 1] === ':';
+}
+
+function goColonMarkerIndex(content, cursor, prefix, currentMarkerIndex) {
+  if (currentMarkerIndex !== -1 || !isGoColonAdjacent(content, cursor)) {
+    return currentMarkerIndex;
+  }
+  return hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, cursor, prefix))
+    ? cursor
+    : currentMarkerIndex;
+}
+
 function scanGoLine(content, file, initialState) {
   if (typeof file !== 'string' || fileExtension(file) !== 'go') {
     return { state: undefined, markerIndex: -1, hasColonLineComment: false };
@@ -171,35 +184,36 @@ function scanGoLine(content, file, initialState) {
   let state = initialState;
   let markerIndex = -1;
   let hasColonLineComment = false;
-  for (let cursor = 0; cursor < content.length; cursor += 1) {
+  let cursor = 0;
+  while (cursor < content.length) {
     const char = content[cursor];
     const carriedState = advanceGoMultilineState(content, cursor, state);
     if (carriedState !== undefined) {
       state = carriedState.state;
-      cursor = carriedState.cursor;
+      cursor = carriedState.cursor + 1;
       continue;
     }
     const prefix = goCommentPrefixAt(content, cursor);
     if (prefix !== undefined) {
-      const colonAdjacent = cursor > 0 && content[cursor - 1] === ':';
-      if (colonAdjacent && markerIndex === -1 && hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, cursor, prefix))) {
-        markerIndex = cursor;
-      }
+      markerIndex = goColonMarkerIndex(content, cursor, prefix, markerIndex);
       if (prefix === '//') {
-        hasColonLineComment ||= colonAdjacent;
+        hasColonLineComment ||= isGoColonAdjacent(content, cursor);
         break;
       }
       state = 'block';
-      cursor += 1;
+      cursor += 2;
       continue;
     }
     if (char === '`') {
       state = 'raw';
+      cursor += 1;
       continue;
     }
     if (char === '"' || char === "'") {
-      cursor = skipGoQuotedRegion(content, cursor);
+      cursor = skipGoQuotedRegion(content, cursor) + 1;
+      continue;
     }
+    cursor += 1;
   }
   return { state, markerIndex, hasColonLineComment };
 }
