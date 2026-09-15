@@ -587,7 +587,7 @@ function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
 		}
 		if (c == "/" && (substr(s, i + 1, 1) == "/" || substr(s, i + 1, 1) == "*")) {
 			prefix = substr(s, i, 2)
-			if (i > 1 && substr(s, i - 1, 1) == ":" && substr(s, i) ~ go_pattern) {
+			if (i > 1 && substr(s, i - 1, 1) == ":" && tolower(substr(s, i)) ~ go_pattern) {
 				go_colon_marker = i
 			}
 			if (prefix == "//") {

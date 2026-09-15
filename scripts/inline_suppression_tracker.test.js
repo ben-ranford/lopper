@@ -343,6 +343,10 @@ test('recognizes grammar-valid adjacent comments after a Go label', () => {
   const goBlockLabel = 'retry:/*' + 'nolint rationale=x; owner=y; remove-when=z';
   assert.equal(testables.hasInlineSuppressionMarker(goBlockLabel, 'retry.go'), true, goBlockLabel);
 
+  for (const line of ['retry://NOLINT', 'réessayer:/*NoSoNaR', 'default:/**NOSEC']) {
+    assert.equal(testables.hasInlineSuppressionMarker(line, 'retry.go'), true, line);
+  }
+
   assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
 
   // Go statement boundaries introduce same-line labels, including Unicode

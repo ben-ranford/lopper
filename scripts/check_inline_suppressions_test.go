@@ -1057,6 +1057,38 @@ func TestInlineSuppressionCheckDetectsAdjacentCommentsAfterGoLabels(t *testing.T
 	assertSuppressionDetectedForFileAndLine(t, "retry.go", "retry:// don't use this path\nvalue := unsafe() //nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 }
 
+func goColonCaseVariantLines() []string {
+	return []string{"retry://NOLINT", "réessayer:/*NoSoNaR", "default:/**NOSEC"}
+}
+
+func TestInlineSuppressionCheckDetectsCaseVariantGoColonMarkers(t *testing.T) {
+	t.Parallel()
+	for _, source := range goColonCaseVariantLines() {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			writeFile(t, filepath.Join(repoDir, "retry.go"), source+"\n")
+			runCommand(t, repoDir, "git", "add", "retry.go")
+			out, err := runSuppressionCheck(repoDir)
+			if err == nil || !strings.Contains(out, "Missing inline suppression tracking metadata") {
+				t.Fatalf("expected missing-metadata rejection, got %v: %s", err, out)
+			}
+			line := source + " rationale=temporary scanner false positive; owner=@security; remove-when=analyzer fixed"
+			writeFile(t, filepath.Join(repoDir, "retry.go"), line+"\n")
+			runCommand(t, repoDir, "git", "add", "retry.go")
+			outputPath := filepath.Join(repoDir, "records.json")
+			out, err = runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+			if err != nil {
+				t.Fatalf("expected tracked marker to pass, got %v: %s", err, out)
+			}
+			records := readSuppressionRecords(t, outputPath).Suppressions
+			if len(records) != 1 || records[0].Content != line || records[0].Fingerprint != suppressionFingerprint("retry.go", line, 1) {
+				t.Fatalf("original marker content/fingerprint not preserved: %#v", records)
+			}
+		})
+	}
+}
+
 func TestInlineSuppressionCheckKeepsIndependentGoLexicalState(t *testing.T) {
 	t.Parallel()
 

@@ -503,7 +503,7 @@ jobs:
                   }
                   if (c == "/" && (substr(s, i + 1, 1) == "/" || substr(s, i + 1, 1) == "*")) {
                     prefix = substr(s, i, 2)
-                    if (i > 1 && substr(s, i - 1, 1) == ":" && substr(s, i) ~ go_pat) go_colon_marker = i
+                    if (i > 1 && substr(s, i - 1, 1) == ":" && tolower(substr(s, i)) ~ go_pat) go_colon_marker = i
                     if (prefix == "//") {
                       if (i > 1 && substr(s, i - 1, 1) == ":") go_colon_line = 1
                       break

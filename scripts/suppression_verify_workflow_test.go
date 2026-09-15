@@ -864,6 +864,20 @@ func TestCIWorkflowSuspectScanDetectsGoColonCommentBoundaries(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	for _, line := range goColonCaseVariantLines() {
+		out, err := runSuspectScan(t, varsBlock, loopBody, "retry.go", "deadbeef", "@@ -0,0 +1 @@\n+"+line+"\n", line+"\n")
+		if err != nil || !strings.Contains(out, "retry.go\x011\x01"+line) {
+			t.Fatalf("expected original case-variant suspect, got %v: %q", err, out)
+		}
+	}
+}
+
 func TestCIWorkflowSuspectScanCarriesGoColonLineComments(t *testing.T) {
 	t.Parallel()
 
