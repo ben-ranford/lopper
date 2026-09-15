@@ -719,13 +719,14 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
-	cases := []struct {
+	type scanCase struct {
 		name     string
 		filename string
 		blob     string
 		patch    string
 		want     string
-	}{
+	}
+	cases := []scanCase{
 		{
 			// The opening backtick sits 3 lines above the hunk -- further
 			// back than the patch's own 3-line context window reveals (the
@@ -756,33 +757,6 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			want:     "build.sh\x011\x01echo 'foo\\' #noqa",
 		},
 		{
-			// A Go label is a grammar-valid colon boundary for a following
-			// slash-style comment. It must not be lost with URL schemes.
-			name:     "detects a slash marker after a Go label",
-			filename: "retry.go",
-			blob:     "retry://nolint:staticcheck rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			patch:    "@@ -0,0 +1 @@\n+retry://nolint:staticcheck rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			want:     "retry.go\x011\x01retry://nolint:staticcheck",
-		},
-		{
-			// Keep the existing block-comment prefix support when the comment
-			// follows a line-leading Go label.
-			name:     "detects a block marker after a Go label",
-			filename: "retry.go",
-			blob:     "retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			patch:    "@@ -0,0 +1 @@\n+retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			want:     "retry.go\x011\x01retry:/*nolint",
-		},
-		{
-			// A shell semicolon ends a command and starts the word that may
-			// introduce a # comment, even with no separating whitespace.
-			name:     "detects a hash marker after a shell list operator",
-			filename: "build.sh",
-			blob:     "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			patch:    "@@ -0,0 +1 @@\n+echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
-			want:     "build.sh\x011\x01echo hi;#nolint",
-		},
-		{
 			// A CRLF-encoded file preserves a trailing "\r" as part of
 			// each diff line's content; the suspect record built from it
 			// must strip that CR, matching what the trusted tracker
@@ -794,6 +768,27 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			patch:    "@@ -1 +1 @@\r\n-package main\r\n+package main //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\r\n",
 			want:     "main.go\x011\x01package main //nolint:staticcheck",
 		},
+	}
+
+	// Each adjacency case adds one line; derive its matching blob, patch,
+	// and record prefix so those representations cannot drift apart.
+	for _, adjacent := range []struct {
+		name     string
+		filename string
+		content  string
+	}{
+		{"detects a slash marker after a Go label", "retry.go", "retry://nolint:staticcheck"},
+		{"detects a block marker after a Go label", "retry.go", "retry:/*nolint"},
+		{"detects a hash marker after a shell list operator", "build.sh", "echo hi;#nolint"},
+	} {
+		line := adjacent.content + " rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+		cases = append(cases, scanCase{
+			name:     adjacent.name,
+			filename: adjacent.filename,
+			blob:     line,
+			patch:    "@@ -0,0 +1 @@\n+" + line,
+			want:     adjacent.filename + "\x011\x01" + adjacent.content,
+		})
 	}
 
 	for _, tc := range cases {
