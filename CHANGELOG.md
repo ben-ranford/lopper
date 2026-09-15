@@ -2,6 +2,33 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.8](https://github.com/ben-ranford/lopper/compare/v1.8.7...v1.8.8) (2026-09-15)
+
+
+### Preview Features
+
+* **tui:** add feature-flagged Stave UI ([#1500](https://github.com/ben-ranford/lopper/issues/1500)) ([fa9a7ea](https://github.com/ben-ranford/lopper/commit/fa9a7eaaa3e169771e7db103a92e5de2b9e00ba9))
+
+
+### Bug Fixes
+
+* **analysis:** warn when bounded file scans are truncated ([#1602](https://github.com/ben-ranford/lopper/issues/1602)) ([648a7c2](https://github.com/ben-ranford/lopper/commit/648a7c25dbca7b086a49ca761d7bdd6bb83a0a30))
+* **ci:** detect Go suppression comments after labels ([#1645](https://github.com/ben-ranford/lopper/issues/1645)) ([4221707](https://github.com/ben-ranford/lopper/commit/4221707717010f268f084671a7ca93ecb5f3acee))
+* **ci:** detect shell operator suppression comments ([#1650](https://github.com/ben-ranford/lopper/issues/1650)) ([60136a9](https://github.com/ben-ranford/lopper/commit/60136a938db75e20dc7360ead5b4ea9c72844c98))
+* **ci:** require review for Renovate updates ([#1591](https://github.com/ben-ranford/lopper/issues/1591)) ([eb4a781](https://github.com/ben-ranford/lopper/commit/eb4a781a018d6472b51eb69c68e9389cd4ae6d00))
+* **ci:** trust custom Homebrew remotes before tapping ([#1620](https://github.com/ben-ranford/lopper/issues/1620)) ([329c0c5](https://github.com/ben-ranford/lopper/commit/329c0c5fcfebce76e0322697573cfb9f6eedae24))
+* **deps:** update module charm.land/bubbletea/v2 to v2.0.9 ([#1627](https://github.com/ben-ranford/lopper/issues/1627)) ([e0407b9](https://github.com/ben-ranford/lopper/commit/e0407b9d24414e0902ab355a8d451cc6b02d0a87))
+* **docs:** enforce deterministic manpage generation ([#1600](https://github.com/ben-ranford/lopper/issues/1600)) ([d46628d](https://github.com/ben-ranford/lopper/commit/d46628d193138087c8f3a96ab563d0e0d2d700a5))
+* **flags:** preserve immutable feature code history ([#1601](https://github.com/ben-ranford/lopper/issues/1601)) ([5cf4ffa](https://github.com/ben-ranford/lopper/commit/5cf4ffab74c102b8c3266dbb3e3659a2bb6c0384))
+* **flags:** retain stamped preview candidates ([#1592](https://github.com/ben-ranford/lopper/issues/1592)) ([7202b05](https://github.com/ben-ranford/lopper/commit/7202b05a6e8eea47c0fa0a3f5ab1dc3fcbd1c4af))
+* **go:** bound vendored module metadata reads ([#1595](https://github.com/ben-ranford/lopper/issues/1595)) ([064e08d](https://github.com/ben-ranford/lopper/commit/064e08da4d538e211be963f4899b45fadb54bb09))
+* **hooks:** isolate installed pre-commit checks ([#1632](https://github.com/ben-ranford/lopper/issues/1632)) ([e002b80](https://github.com/ben-ranford/lopper/commit/e002b8048b4301dae6585e3d4a8611aa0ef49062))
+* **policy:** enforce denied licenses with baselines ([#1599](https://github.com/ben-ranford/lopper/issues/1599)) ([d691708](https://github.com/ben-ranford/lopper/commit/d6917081cd1c5abc2ccc4305baaa9a9328d11dd7))
+* **policy:** enforce the local policy pack contract ([#1593](https://github.com/ben-ranford/lopper/issues/1593)) ([ff07368](https://github.com/ben-ranford/lopper/commit/ff073681acbc41cee00ed8603231847a7f34606e))
+* **report:** retain security risks below confidence threshold ([#1597](https://github.com/ben-ranford/lopper/issues/1597)) ([b9bf749](https://github.com/ben-ranford/lopper/commit/b9bf749f256b61cf4deab932d13929e3a3e0c884))
+* **review:** ignore SemVer prefix-only version changes ([#1594](https://github.com/ben-ranford/lopper/issues/1594)) ([9c386a2](https://github.com/ben-ranford/lopper/commit/9c386a2294614268558e892a4c3e4d6130c0e862))
+* **swift:** ignore Carthage-only auto detection signals ([#1588](https://github.com/ben-ranford/lopper/issues/1588)) ([fb2cdf7](https://github.com/ben-ranford/lopper/commit/fb2cdf773dd1a830be1e33043f0b6cc50407ee83))
+
 ## [1.8.7](https://github.com/ben-ranford/lopper/compare/v1.8.6...v1.8.7) (2026-09-10)
 
 * Source builds require Go `1.27.1` or newer (previously `1.27.0`).
