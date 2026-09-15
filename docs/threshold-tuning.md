@@ -116,7 +116,7 @@ vulnerability database for this gate. The finding priority combines local
 advisory severity with reachability confidence, runtime usage correlation, and
 static import/export evidence.
 
-You can also pass an explicit config path:
+You can also pass an explicit local config path:
 
 ```bash
 lopper analyse --top 20 --repo . --config path/to/lopper.yml
@@ -133,13 +133,7 @@ thresholds:
   fail_on_increase_percent: 2
 ```
 
-Remote policy packs are supported when pinned by SHA-256 in the URL fragment and loaded from an explicit trusted config path (`--config ...`):
-
-```yaml
-policy:
-  packs:
-    - https://example.com/lopper/org-policy.yml#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-```
+The `--config` value and every policy-pack reference must be local files. HTTP and HTTPS URLs are disabled for both, including pinned URLs. Download and review a config or pack before referencing its local path.
 
 Policy precedence is deterministic:
 

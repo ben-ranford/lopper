@@ -1,23 +1,16 @@
 package thresholds
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 const (
 	remotePolicyPinKey   = "sha256"
 	maxRemotePolicyBytes = 1 << 20
 )
-
-var remotePolicyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func parseRemoteURL(raw string) (*url.URL, bool) {
 	parsed, err := url.Parse(raw)
@@ -66,46 +59,4 @@ func extractRemotePolicyPin(fragment string) (string, error) {
 		return "", fmt.Errorf("invalid remote policy sha256 pin: %w", err)
 	}
 	return normalized, nil
-}
-
-func readRemotePolicyFile(location string) (_ []byte, err error) {
-	parsed, err := url.Parse(location)
-	if err != nil {
-		return nil, fmt.Errorf("parse remote policy URL: %w", err)
-	}
-	expectedHash, err := extractRemotePolicyPin(parsed.Fragment)
-	if err != nil {
-		return nil, err
-	}
-	parsed.Fragment = ""
-
-	response, err := remotePolicyHTTPClient.Get(parsed.String())
-	if err != nil {
-		return nil, fmt.Errorf("fetch remote policy: %w", err)
-	}
-	defer func() {
-		if closeErr := response.Body.Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-	}()
-
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, fmt.Errorf("fetch remote policy: unexpected status %d", response.StatusCode)
-	}
-
-	limited := io.LimitReader(response.Body, maxRemotePolicyBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, fmt.Errorf("read remote policy response: %w", err)
-	}
-	if len(data) > maxRemotePolicyBytes {
-		return nil, fmt.Errorf("remote policy exceeded size limit of %d bytes", maxRemotePolicyBytes)
-	}
-
-	sum := sha256.Sum256(data)
-	got := hex.EncodeToString(sum[:])
-	if got != expectedHash {
-		return nil, fmt.Errorf("remote policy sha256 mismatch: expected %s, got %s", expectedHash, got)
-	}
-	return data, nil
 }
