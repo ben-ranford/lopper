@@ -63,4 +63,6 @@ ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path, aliases: true) 
 	.gostyle.yml \
 	action.yml
 
+./scripts/check-manpage.sh
+
 printf 'Managed output checks passed.\n'
