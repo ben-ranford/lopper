@@ -432,9 +432,9 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 
 function advanceQuotedCursor(content, cursor, quote, shellLanguage) {
   if (content[cursor] === '\\' && !(quote === "'" && shellLanguage)) {
-    return { cursor: cursor + 1, quote };
+    return { cursor: cursor + 2, quote };
   }
-  return { cursor, quote: content[cursor] === quote ? undefined : quote };
+  return { cursor: cursor + 1, quote: content[cursor] === quote ? undefined : quote };
 }
 
 function narrowQuoteWidth(content, cursor) {
@@ -468,20 +468,22 @@ function quoteStateAt(content, index, file, initialQuote, shellScan) {
   const shellLanguage = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
-  for (let cursor = 0; cursor < index; cursor += 1) {
+  let cursor = 0;
+  while (cursor < index) {
     const char = content[cursor];
     if (quote !== undefined) {
       ({ cursor, quote } = advanceQuotedCursor(content, cursor, quote, shellLanguage));
       continue;
     }
     if (char === "'" && narrowSingleQuoteLanguage) {
-      cursor += narrowQuoteWidth(content, cursor) - 1;
+      cursor += narrowQuoteWidth(content, cursor);
       continue;
     }
     if (isLineCommentStart(content, cursor, file, shellScan)) pastCommentStart = true;
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
     }
+    cursor += 1;
   }
   return { quote, pastCommentStart };
 }
