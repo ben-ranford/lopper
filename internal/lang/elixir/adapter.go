@@ -35,7 +35,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		GeneratedAt:   a.Clock(),
 		RepoPath:      repoPath,
 		Dependencies:  dependencies,
-		Warnings:      warnings,
+		Warnings:      append(scan.warnings, warnings...),
 		Summary:       report.ComputeSummary(dependencies),
 		SchemaVersion: report.SchemaVersion,
 	}, nil
