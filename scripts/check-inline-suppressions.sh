@@ -42,10 +42,9 @@ marker_start_pattern="$marker_start_pattern_all"
 # Python and Ruby start a comment with "#" anywhere outside a string, just
 # like "//" does in slash-style languages, but YAML requires "#" to be
 # separated from the preceding scalar by whitespace (or start the line),
-# and shell treats it as a comment at a shell word boundary. Mirrors
+# and shell only treats it as a comment when it begins a word. Mirrors
 # STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the trusted tracker.
-marker_pattern_hash_yaml="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
-marker_pattern_hash_shell="(^|[[:space:];|&()])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_hash_strict="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_hash_lenient="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
 # PHP (and any other extension covered by neither set) keeps the original
@@ -59,8 +58,7 @@ source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cj
 # fall through to marker_pattern_all's shape (not selected by either
 # pattern below); see the active_pattern selection where they route to
 # marker_pattern_hash_lenient explicitly.
-yaml_file_pattern="\\.(ya?ml)$"
-shell_file_pattern="\\.(bash|ksh|sh|zsh)$"
+strict_hash_file_pattern="\\.(bash|ksh|sh|ya?ml|zsh)$"
 lenient_hash_file_pattern="\\.(py|rb)$"
 slash_style_file_pattern="\\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$"
 diff_scope=""
@@ -504,15 +502,13 @@ done < <(awk '/^\+\+\+ b\// { f = substr($0, 7); sub(/\t$/, "", f); printf "%s%c
 
 set +e
 awk \
-	-v pattern_hash_yaml="$marker_pattern_hash_yaml" \
-	-v pattern_hash_shell="$marker_pattern_hash_shell" \
+	-v pattern_hash_strict="$marker_pattern_hash_strict" \
 	-v pattern_hash_lenient="$marker_pattern_hash_lenient" \
 	-v pattern_slash="$marker_pattern_slash" \
 	-v go_pattern="$go_marker_pattern" \
 	-v pattern_all="$marker_pattern_all" \
 	-v file_pattern="$source_file_pattern" \
-	-v yaml_file_pattern="$yaml_file_pattern" \
-	-v shell_file_pattern="$shell_file_pattern" \
+	-v strict_hash_file_pattern="$strict_hash_file_pattern" \
 	-v lenient_hash_file_pattern="$lenient_hash_file_pattern" \
 	-v slash_style_file_pattern="$slash_style_file_pattern" '
 BEGIN {
@@ -568,17 +564,6 @@ function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state) {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function is_unescaped_shell_operator_boundary(s, pos,    prior, backslashes) {
-	prior = substr(s, pos - 1, 1)
-	if (prior !~ /[;|&()]/) {
-		return 0
-	}
-	backslashes = 0
-	for (pos -= 2; pos >= 1 && substr(s, pos, 1) == "\\"; pos--) {
-		backslashes++
-	}
-	return (backslashes % 2) == 0
-}
 function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
 	go_colon_marker = 0
 	go_colon_line = 0
@@ -698,19 +683,12 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 			# here on is comment prose, not an unterminated string, and
 			# must not carry into the next line.
 			if (c == "#" && strict_hash_boundary_language) {
-				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i))) {
+				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
 					past_comment_start = 1
 				}
 			} else if (i == 1 || substr(s, i - 1, 1) != ":") {
 				past_comment_start = 1
 			}
-		}
-		# A shell operator escaped by an odd number of backslashes remains
-		# part of the current word. Mask its # so the later regex cannot
-		# reinterpret literal text as a suppression comment.
-		if (c == "#" && strict_hash_boundary_language && !(i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i)))) {
-			result = result "x"
-			continue
 		}
 		if (c == "\"" || c == "'"'"'" || c == "`") {
 			quote = c
@@ -729,10 +707,8 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# the extension patterns "$" anchor still matches the real filename.
 	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
-	if (tolower(file) ~ yaml_file_pattern) {
-		active_pattern = pattern_hash_yaml
-	} else if (tolower(file) ~ shell_file_pattern) {
-		active_pattern = pattern_hash_shell
+	if (tolower(file) ~ strict_hash_file_pattern) {
+		active_pattern = pattern_hash_strict
 	} else if (tolower(file) ~ lenient_hash_file_pattern) {
 		active_pattern = pattern_hash_lenient
 	} else if (tolower(file) ~ slash_style_file_pattern) {

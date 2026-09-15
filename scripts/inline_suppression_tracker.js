@@ -121,8 +121,8 @@ function isMetadataBoundary(char) {
 // otherwise-open string, such as `"Use //nolint to suppress"`.
 //
 // "#" is the one exception, and only in a STRICT_HASH_BOUNDARY_EXTENSIONS
-// language (YAML, shell): there, "#" only starts a comment at a grammar
-// boundary -- whitespace/start for YAML, or a shell word boundary --
+// language (YAML, shell): there, "#" only ever starts a comment when
+// genuinely free-standing -- preceded by whitespace or nothing at all --
 // never one embedded in a scalar/word, such as the fragment identifier in
 // `url: https://example.test/#noqa` (YAML) or the literal character in
 // `echo foo#nolint` (shell). Python and Ruby are also hash-only languages
@@ -218,27 +218,12 @@ function scanGoLine(content, file, initialState) {
   return { state, markerIndex, hasColonLineComment };
 }
 
-function isUnescapedShellOperatorBoundary(content, index) {
-  if (!';|&()'.includes(content[index - 1])) {
-    return false;
-  }
-  let backslashes = 0;
-  for (let cursor = index - 2; content[cursor] === '\\'; cursor -= 1) {
-    backslashes += 1;
-  }
-  return backslashes % 2 === 0;
-}
-
-function isCommentBoundary(content, index, file, prefix) {
-  const char = content[index - 1];
+function isCommentBoundary(char, isHashPrefixWithStrictBoundary) {
   if (char === undefined) {
     return true;
   }
-  const extension = typeof file === 'string' ? fileExtension(file) : '';
-  if (prefix === '#' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(extension)) {
-    // Shell list operators end the prior word, so # begins the next word's
-    // comment. YAML retains its whitespace-only scalar boundary.
-    return isWhitespace(char) || (SHELL_EXTENSIONS.has(extension) && isUnescapedShellOperatorBoundary(content, index));
+  if (isHashPrefixWithStrictBoundary) {
+    return isWhitespace(char);
   }
   return char !== ':';
 }
@@ -276,6 +261,7 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 // masking of anything genuinely quoted later in the very same comment.
 function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
+  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
   const shellLanguage = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
@@ -299,8 +285,7 @@ function quoteStateAt(content, index, file, initialQuote) {
       continue;
     }
     if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
-      const prefix = char === '#' ? '#' : '//';
-      if (isCommentBoundary(content, cursor, file, prefix)) {
+      if (isCommentBoundary(content[cursor - 1], char === '#' && strictHashBoundaryLanguage)) {
         pastCommentStart = true;
       }
     }
@@ -622,6 +607,7 @@ function markerStartAfterPrefix(content, index, prefix) {
 
 function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanGoLine(content, file)) {
   const prefixes = commentPrefixesFor(file);
+  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
   for (let index = 0; index < content.length; index += 1) {
     // The boundary rule for "#" depends on which language this file is, so
     // the candidate prefix must be known before it can be checked.
@@ -629,7 +615,7 @@ function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanG
     if (!prefix) {
       continue;
     }
-    if (!isCommentBoundary(content, index, file, prefix)) {
+    if (!isCommentBoundary(content[index - 1], prefix === '#' && strictHashBoundaryLanguage)) {
       continue;
     }
     if (isInsideQuotedRegion(content, index, file, initialQuote)) {

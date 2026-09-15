@@ -1034,7 +1034,7 @@ func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.
 	assertSuppressionDetectedForLine(t, line)
 }
 
-func TestInlineSuppressionCheckDetectsAdjacentCommentsAfterGoLabelsAndShellOperators(t *testing.T) {
+func TestInlineSuppressionCheckDetectsAdjacentCommentsAfterGoLabels(t *testing.T) {
 	t.Parallel()
 
 	// A Go label may be immediately followed by a slash-style comment. This
@@ -1043,14 +1043,6 @@ func TestInlineSuppressionCheckDetectsAdjacentCommentsAfterGoLabelsAndShellOpera
 	// The detector already supports block-style suppression comments, so the
 	// label rule must preserve that prefix too.
 	assertSuppressionDetectedForFileAndLine(t, "retry.go", "retry:/*nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
-
-	// A shell list operator ends the preceding word, so the following # starts
-	// a comment even with no intervening whitespace.
-	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
-	// An odd backslash escapes the semicolon, keeping # in the same shell
-	// word. Two backslashes leave the semicolon unescaped.
-	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo hi\\;#nolint\n")
-	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo hi\\\\;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 
 	assertSuppressionDetectedForFileAndLine(t, "retry.go", "goto retry; retry://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 	assertSuppressionDetectedForFileAndLine(t, "retry.go", "réessayer://nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")

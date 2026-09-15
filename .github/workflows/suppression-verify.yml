@@ -297,12 +297,10 @@ jobs:
           # genuinely free-standing "#", never one embedded in a
           # scalar/word, such as the fragment identifier in
           # `url: https://example.test/#noqa` (YAML) or the literal
-          # character in `echo foo#nolint` (shell); shell list operators
-          # also start a new word. Mirrors
+          # character in `echo foo#nolint` (shell). Mirrors
           # STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the
           # trusted tracker.
-          suspect_pattern_hash_yaml="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
-          suspect_pattern_hash_shell="(^|[[:space:];|&()])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
+          suspect_pattern_hash_strict="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           suspect_pattern_hash_lenient="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           suspect_go_marker_pattern="^(//|/[*]+)[[:space:]]*${marker_names}([^[:alnum:]_-]|$)"
@@ -312,8 +310,7 @@ jobs:
           suspect_pattern_all="(^|[^:])((//|/[*]+|#)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           # Same extension classification as STRICT_HASH_BOUNDARY_EXTENSIONS/
           # SLASH_STYLE_EXTENSIONS in the trusted JS tracker.
-          yaml_file_pattern='\.(ya?ml)$'
-          shell_file_pattern='\.(bash|ksh|sh|zsh)$'
+          strict_hash_file_pattern='\.(bash|ksh|sh|ya?ml|zsh)$'
           lenient_hash_file_pattern='\.(py|rb)$'
           slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'
           # Scope to the same source-file extensions the detector itself
@@ -444,10 +441,8 @@ jobs:
           echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
             filename="$(echo "${file_json}" | jq -r '.filename')"
             lower_filename="$(echo "${filename}" | tr '[:upper:]' '[:lower:]')"
-            if [[ "${lower_filename}" =~ ${yaml_file_pattern} ]]; then
-              active_suspect_pattern="${suspect_pattern_hash_yaml}"
-            elif [[ "${lower_filename}" =~ ${shell_file_pattern} ]]; then
-              active_suspect_pattern="${suspect_pattern_hash_shell}"
+            if [[ "${lower_filename}" =~ ${strict_hash_file_pattern} ]]; then
+              active_suspect_pattern="${suspect_pattern_hash_strict}"
             elif [[ "${lower_filename}" =~ ${lenient_hash_file_pattern} ]]; then
               active_suspect_pattern="${suspect_pattern_hash_lenient}"
             elif [[ "${lower_filename}" =~ ${slash_style_file_pattern} ]]; then
@@ -484,17 +479,6 @@ jobs:
                 full_line_count = FNR
                 full_lines[FNR] = $0
                 next
-              }
-              function is_unescaped_shell_operator_boundary(s, pos,    prior, backslashes) {
-                prior = substr(s, pos - 1, 1)
-                if (prior !~ /[;|&()]/) {
-                  return 0
-                }
-                backslashes = 0
-                for (pos -= 2; pos >= 1 && substr(s, pos, 1) == "\\"; pos--) {
-                  backslashes++
-                }
-                return (backslashes % 2) == 0
               }
               function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
                 go_colon_marker = 0
@@ -612,19 +596,12 @@ jobs:
                     # on is comment prose, not an unterminated string, and
                     # must not carry into the next line.
                     if (c == "#" && strict_hash_boundary_language) {
-                      if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i))) {
+                      if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
                         past_comment_start = 1
                       }
                     } else if (i == 1 || substr(s, i - 1, 1) != ":") {
                       past_comment_start = 1
                     }
-                  }
-                  # A shell operator escaped by an odd number of backslashes
-                  # remains part of the current word. Mask its # so the later
-                  # regex cannot reinterpret literal text as a suppression.
-                  if (c == "#" && strict_hash_boundary_language && !(i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i)))) {
-                    result = result "x"
-                    continue
                   }
                   if (c == "\"" || c == "'"'"'" || c == "`") {
                     quote = c

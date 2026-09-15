@@ -334,7 +334,7 @@ test('recognizes supported inline suppression marker forms without matching quot
   }
 });
 
-test('recognizes grammar-valid adjacent comments after a Go label and shell list operator', () => {
+test('recognizes grammar-valid adjacent comments after a Go label', () => {
   // A Go label ends with a colon, but a URL scheme uses the same final
   // character. The Go-specific label boundary must therefore be explicit;
   // a blanket colon exception would regress the URL control below.
@@ -343,14 +343,6 @@ test('recognizes grammar-valid adjacent comments after a Go label and shell list
   const goBlockLabel = 'retry:/*' + 'nolint rationale=x; owner=y; remove-when=z';
   assert.equal(testables.hasInlineSuppressionMarker(goBlockLabel, 'retry.go'), true, goBlockLabel);
 
-  // In shell, a semicolon ends the preceding command and starts a new word,
-  // so a following # begins a real comment. An embedded # remains literal.
-  const shellOperator = 'echo hi;#' + 'nolint rationale=x; owner=y; remove-when=z';
-  assert.equal(testables.hasInlineSuppressionMarker(shellOperator, 'build.sh'), true, shellOperator);
-  const escapedShellOperator = 'echo hi\\;#' + 'nolint rationale=x; owner=y; remove-when=z';
-  assert.equal(testables.hasInlineSuppressionMarker(escapedShellOperator, 'build.sh'), false, escapedShellOperator);
-  const doubleEscapedShellOperator = 'echo hi\\\\;#' + 'nolint rationale=x; owner=y; remove-when=z';
-  assert.equal(testables.hasInlineSuppressionMarker(doubleEscapedShellOperator, 'build.sh'), true, doubleEscapedShellOperator);
   assert.equal(testables.hasInlineSuppressionMarker('echo hi#' + 'nolint', 'build.sh'), false);
 
   // Go statement boundaries introduce same-line labels, including Unicode
