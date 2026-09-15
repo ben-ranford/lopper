@@ -949,6 +949,21 @@ func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowSuspectScanDetectsQuotedShellMarkerCaseVariants(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+	for _, line := range quotedShellMarkerCaseVariants() {
+		content := "v=\"$(\n" + line + "\n)\"\n"
+		out, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", "@@ -2 +2 @@\n-old\n+"+line+"\n", content)
+		if err != nil || !strings.Contains(out, "build.sh\x012\x01"+line) {
+			t.Fatalf("expected original shell suspect, got %v: %q", err, out)
+		}
+	}
+}
+
 func TestCIWorkflowSuspectScanCarriesGoColonLineComments(t *testing.T) {
 	t.Parallel()
 

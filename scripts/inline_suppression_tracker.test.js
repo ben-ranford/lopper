@@ -605,6 +605,13 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['', 'echo hi|#', 'cat\n', true],
     ['v=$(\n', 'printf hi;#', ')\n', true],
     ['v=$(\n', '(printf hi)#', ')\n', true],
+    ['v="$(\n', 'printf hi;#', ')"\n', true],
+    ['v="$(\n', '(printf hi);#', ')"\n', true],
+    ['v=$(\ncase x in\nx) printf hi;;\nesac\n', ')#', '', false],
+    ['v=$(\nca\\\nse x in x) printf hi;; esac\n', ')#', '', false],
+    ['v=$(printf %s ca\\\nse in x\n', ')#', '', false],
+    ["v=$(\nprintf %s \\\\\ncase x in x) printf hi;; esac\n", ")#", "", false],
+    ["v=$(\nprintf hi # prose \\\ncase x in x) printf bye;; esac\n", ")#", "", false],
     ['v=$(\nprintf hi\nprintf there\nprintf again\nprintf end\n', ')#', '', false],
     ['v=$((\n1+\n2+\n3+\n4\n', '))#', '', false],
     ['v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n', ')#', '', false],
@@ -625,6 +632,19 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
       assert.ok(body.includes(`Source line:\n\n\`\`\`text\n${line}`));
       assert.match(body, /Owner: @security/);
     }
+  }
+});
+
+test('detects case-variant markers inside quoted shell substitutions', async () => {
+  for (const marker of ['NOLINT', 'NoSoNaR', 'NOSEC']) {
+    const line = `printf hi;#${marker} rationale=temporary parser false positive; owner=@security; remove-when=parser fixed`;
+    const harness = makeHarness({
+      files: [{ filename: 'build.sh', status: 'modified', patch: `@@ -2 +2 @@\n-old\n+${line}\n` }],
+      fullFileContents: { 'build.sh': `v="$(\n${line}\n)"\n` },
+    });
+    await trackInlineSuppressions(harness.args);
+    assert.equal(harness.calls.created.length, 1);
+    assert.ok(harness.calls.created[0].body.includes(line));
   }
 });
 

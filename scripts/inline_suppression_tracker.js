@@ -324,12 +324,27 @@ function advanceShellFrame(content, index, state, expansionClosers) {
   return 1;
 }
 
+function nextShellEscapedIndex(content, index, state) {
+  if (content[index] !== '\\') return undefined;
+  if (index + 1 < content.length) makeShellWordIneligible(state);
+  return index + 2;
+}
+
+function finishShellLine(state, lineContinues) {
+  if (state.quote || lineContinues) return;
+  finishShellWord(state);
+  const frame = shellCurrentCommandFrame(state);
+  if (frame) frame.commandStart = true;
+}
+
 function scanShellLine(content, initialState = {}) {
   const state = {
     quote: initialState.quote,
     frames: (initialState.frames ?? []).map((frame) => ({ ...frame })),
   };
   const expansionClosers = new Set();
+  let commentIndex = -1;
+  let lineContinues = false;
   let index = 0;
   while (index < content.length) {
     const char = content[index];
@@ -338,10 +353,14 @@ function scanShellLine(content, initialState = {}) {
       index = quotedNext;
       continue;
     }
-    if (!state.quote && char === '#' && isShellHashBoundary(content, index, expansionClosers)) break;
-    if (char === '\\') {
-      makeShellWordIneligible(state);
-      index += 2;
+    if (!state.quote && char === '#' && isShellHashBoundary(content, index, expansionClosers)) {
+      commentIndex = index;
+      break;
+    }
+    const escapedNext = nextShellEscapedIndex(content, index, state);
+    if (escapedNext !== undefined) {
+      lineContinues = escapedNext > content.length;
+      index = escapedNext;
       continue;
     }
     if (char === "'" || char === '"' || char === '`') {
@@ -357,7 +376,8 @@ function scanShellLine(content, initialState = {}) {
     }
     index += advanceShellFrame(content, index, state, expansionClosers);
   }
-  return { state, expansionClosers };
+  finishShellLine(state, lineContinues);
+  return { state, expansionClosers, commentIndex };
 }
 
 function isCommentBoundary(content, index, file, prefix, shellScan) {
@@ -767,7 +787,7 @@ function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanG
     if (!isCommentBoundary(content, index, file, prefix, activeShellScan)) {
       continue;
     }
-    if (isInsideQuotedRegion(content, index, file, initialQuote, activeShellScan)) {
+    if (index !== activeShellScan?.commentIndex && isInsideQuotedRegion(content, index, file, initialQuote, activeShellScan)) {
       continue;
     }
     if (hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {

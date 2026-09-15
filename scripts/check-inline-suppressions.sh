@@ -611,13 +611,14 @@ function shell_finish_word() {
 }
 function shell_push(kind) {
 	shell_frames = shell_frames kind
-	shell_returns = shell_returns shell_quote
+	shell_returns = shell_returns (shell_quote == "" ? "n" : shell_quote)
 	shell_modes = shell_modes "n"
 	shell_starts = shell_starts "y"
 	shell_eligibles = shell_eligibles "y"
 }
 function shell_pop() {
 	shell_quote = substr(shell_returns, length(shell_returns), 1)
+	if (shell_quote == "n") shell_quote = ""
 	shell_frames = substr(shell_frames, 1, length(shell_frames) - 1)
 	shell_returns = substr(shell_returns, 1, length(shell_returns) - 1)
 	shell_modes = substr(shell_modes, 1, length(shell_modes) - 1)
@@ -625,7 +626,8 @@ function shell_pop() {
 	shell_eligibles = substr(shell_eligibles, 1, length(shell_frames))
 	shell_word = ""
 }
-function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithmetic, result) {
+function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithmetic, result, line_continues) {
+	shell_comment_index = 0
 	if (tolower(file) !~ /\.(bash|ksh|sh|zsh)$/) { final_shell_state = ""; return s }
 	split(initial_state, state_parts, SUBSEP)
 	shell_quote = state_parts[1]
@@ -635,7 +637,7 @@ function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithme
 	shell_word = state_parts[5]
 	shell_starts = state_parts[6]
 	shell_eligibles = state_parts[7]
-	result = ""; n = length(s); i = 1; shell_expansion_close = 0
+	result = ""; n = length(s); i = 1; shell_expansion_close = 0; line_continues = 0
 	while (i <= n) {
 		c = substr(s, i, 1)
 		if (shell_quote != "") {
@@ -643,8 +645,8 @@ function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithme
 			if ((shell_quote == "s" && c == sprintf("%c", 39)) || (shell_quote == "d" && c == "\"") || (shell_quote == "b" && c == "`")) { shell_quote = ""; result = result c; i++; continue }
 			if (shell_quote != "d" || c != "$") { result = result c; i++; continue }
 		}
-		if (shell_quote == "" && c == "#" && shell_hash_boundary(s, i)) { result = result substr(s, i); break }
-		if (c == "\\" && i < n) { shell_make_word_ineligible(); result = result c substr(s, i + 1, 1); i += 2; continue }
+		if (shell_quote == "" && c == "#" && shell_hash_boundary(s, i)) { shell_comment_index = i; result = result substr(s, i); break }
+		if (c == "\\") { if (i < n) shell_make_word_ineligible(); else line_continues = 1; result = result c substr(s, i + 1, 1); i += 2; continue }
 		if (c == sprintf("%c", 39)) { shell_make_word_ineligible(); shell_quote = "s"; result = result c; i++; continue }
 		if (c == "\"") { shell_make_word_ineligible(); shell_quote = "d"; result = result c; i++; continue }
 		if (c == "`") { shell_make_word_ineligible(); shell_quote = "b"; result = result c; i++; continue }
@@ -662,6 +664,7 @@ function shell_mask_expansion_closers(s, initial_state,    i, c, n, top, arithme
 		else if (!shell_word_boundary(c) && top == "c") shell_word = shell_word c
 		result = result c; i++
 	}
+	if (shell_quote == "" && !line_continues) { shell_finish_word(); if (substr(shell_frames, length(shell_frames), 1) == "c") shell_starts = substr(shell_starts, 1, length(shell_frames) - 1) "y" }
 	final_shell_state = shell_quote SUBSEP shell_frames SUBSEP shell_returns SUBSEP shell_modes SUBSEP shell_word SUBSEP shell_starts SUBSEP shell_eligibles
 	return result
 }
@@ -871,10 +874,11 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	go_block_state = final_go_state
 	shell_masked = shell_mask_expansion_closers(content, shell_state)
 	shell_state = final_shell_state
+	shell_match = shell_comment_index && (" " tolower(substr(content, shell_comment_index)) ~ active_pattern)
 	masked = mask_quoted_regions(shell_masked, quote_state)
 	quote_state = final_quote_state
 	if (go_colon_line) quote_state = ""
-	if (check_file && (tolower(masked) ~ active_pattern || go_match)) {
+	if (check_file && (tolower(masked) ~ active_pattern || go_match || shell_match)) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0

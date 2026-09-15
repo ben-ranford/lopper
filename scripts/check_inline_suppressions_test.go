@@ -1121,6 +1121,35 @@ type shellBoundaryCase struct {
 	wantComment                  bool
 }
 
+func quotedShellMarkerCaseVariants() []string {
+	return []string{"printf hi;#NOLINT", "printf hi;#NoSoNaR", "printf hi;#NOSEC"}
+}
+
+func TestInlineSuppressionCheckDetectsQuotedShellMarkerCaseVariants(t *testing.T) {
+	t.Parallel()
+	for _, line := range quotedShellMarkerCaseVariants() {
+		assertSuppressionDetectedForFileAndLine(t, "build.sh", "v=\"$(\n"+line+" rationale=temporary parser false positive; owner=@security; remove-when=parser fixed\n)\"\n")
+	}
+}
+
+func TestInlineSuppressionCheckDoesNotCarryShellMarkerIntoGoFile(t *testing.T) {
+	t.Parallel()
+	repoDir := newInlineSuppressionRepo(t)
+	marker := "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
+	writeFile(t, filepath.Join(repoDir, "a.sh"), "#"+marker+"\n")
+	writeFile(t, filepath.Join(repoDir, "z.go"), "package p\nvar text = \"//"+marker+"\"\n")
+	runCommand(t, repoDir, "git", "add", "a.sh", "z.go")
+	outputPath := filepath.Join(repoDir, "records.json")
+	out, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("scanner failed: %v: %s", err, out)
+	}
+	records := readSuppressionRecords(t, outputPath).Suppressions
+	if len(records) != 1 || records[0].File != "a.sh" {
+		t.Fatalf("expected only the real shell comment, got %#v", records)
+	}
+}
+
 func shellBoundaryCases() []shellBoundaryCase {
 	return []shellBoundaryCase{
 		{"command", "", "v=$(printf hi)#", "", false},
@@ -1148,6 +1177,13 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"pipe comment", "", "echo hi|#", "cat\n", true},
 		{"inner comment", "v=$(\n", "printf hi;#", ")\n", true},
 		{"inner group comment", "v=$(\n", "(printf hi)#", ")\n", true},
+		{"outer quoted inner comment", "v=\"$(\n", "printf hi;#", ")\"\n", true},
+		{"outer quoted inner group comment", "v=\"$(\n", "(printf hi);#", ")\"\n", true},
+		{"multiline case pattern", "v=$(\ncase x in\nx) printf hi;;\nesac\n", ")#", "", false},
+		{"continued case keyword", "v=$(\nca\\\nse x in x) printf hi;; esac\n", ")#", "", false},
+		{"continued case argument", "v=$(printf %s ca\\\nse in x\n", ")#", "", false},
+		{"even trailing backslashes", "v=$(\nprintf %s \\\\\ncase x in x) printf hi;; esac\n", ")#", "", false},
+		{"comment trailing backslash", "v=$(\nprintf hi # prose \\\ncase x in x) printf bye;; esac\n", ")#", "", false},
 		{"multiline command", "v=$(\nprintf hi\nprintf there\nprintf again\nprintf end\n", ")#", "", false},
 		{"multiline arithmetic", "v=$((\n1+\n2+\n3+\n4\n", "))#", "", false},
 		{"comment closer ignored", "v=$(\n# ) is comment text\nprintf hi\nprintf there\nprintf end\n", ")#", "", false},
