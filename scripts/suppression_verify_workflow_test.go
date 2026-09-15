@@ -300,7 +300,8 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// closing delimiter looks like it opens a fresh quoted region and
 		// masks a real suppression comment following it -- silently, since
 		// the scan then reports no suspects rather than failing loudly.
-		`masked = mask_quoted_regions(content, quote_state)`,
+		`shell_masked = shell_mask_expansion_closers(content, shell_state)`,
+		`masked = mask_quoted_regions(shell_masked, quote_state)`,
 		`quote_state = final_quote_state`,
 		// GitHub's default 3-line patch context still cannot reveal a
 		// construct opened further above a hunk than that window reaches;
@@ -894,13 +895,13 @@ func TestCIWorkflowSuspectScanDistinguishesShellSubstitutionClosers(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			line := tc.target + "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
-			lineNumber := strings.Count(tc.prefix, "\n") + 1
-			patch := fmt.Sprintf("@@ -%d +%d @@\n-old\n+%s\n", lineNumber, lineNumber, line)
+			linePos := strings.Count(tc.prefix, "\n") + 1
+			patch := fmt.Sprintf("@@ -%d +%d @@\n-old\n+%s\n", linePos, linePos, line)
 			out, err := runSuspectScan(t, varsBlock, loopBody, "build.sh", "deadbeef", patch, tc.prefix+line+"\n"+tc.suffix)
 			if err != nil {
 				t.Fatalf("suspect scan failed: %v\n%s", err, out)
 			}
-			want := fmt.Sprintf("build.sh\x01%d\x01%s", lineNumber, line)
+			want := fmt.Sprintf("build.sh\x01%d\x01%s", linePos, line)
 			if got := strings.Contains(out, want); got != tc.wantComment {
 				t.Fatalf("comment detected=%v, want %v: %q", got, tc.wantComment, out)
 			}
