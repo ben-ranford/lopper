@@ -314,6 +314,13 @@ function closeShellCommandFrame(state, frame, index, expansionClosers) {
   return 1;
 }
 
+function advanceShellCommandWord(content, index, frame) {
+  const char = content[index];
+  if (content.startsWith(';;', index) && frame.caseMode === 'body') frame.caseMode = 'pattern';
+  if (';|&'.includes(char)) frame.commandStart = true;
+  else if (!shellWordBoundary(char)) frame.word += char;
+}
+
 function advanceShellFrame(content, index, state, expansionClosers) {
   const char = content[index];
   const frame = state.frames.at(-1);
@@ -327,8 +334,7 @@ function advanceShellFrame(content, index, state, expansionClosers) {
     return 2;
   } else if (char === ')' && frame?.kind === 'command') return closeShellCommandFrame(state, frame, index, expansionClosers);
   else if (char === ')' && frame?.kind === 'group') state.frames.pop();
-  else if (';|&'.includes(char) && frame?.kind === 'command') frame.commandStart = true;
-  else if (!shellWordBoundary(char) && frame?.kind === 'command') frame.word += char;
+  else if (frame?.kind === 'command') advanceShellCommandWord(content, index, frame);
   return 1;
 }
 

@@ -1169,6 +1169,8 @@ func shellBoundaryCases() []shellBoundaryCase {
 		{"double quoted opener", "", "v=$(printf %s \"(\")#", "", false},
 		{"double quoted closer", "", "v=$(printf %s \")\")#", "", false},
 		{"case in command", "", "v=$(case x in x) printf hi;; esac)#", "", false},
+		{"later case arm comment", "v=$(\ncase y in x) printf no;;\n", "y)#", "printf hi;; esac\n)\n", true},
+		{"multiple case arms literal suffix", "", "v=$(case y in x) printf no;; y) printf hi;; esac)#", "", false},
 		{"embedded hash between expansions", "", "v=$(printf hi)#literal$(printf bye)#", "", false},
 		{"escaped operator before literal hash", "", "v=$(printf a\\;#literal; printf b)#", "", false},
 		{"quoted parameter expansion", "", "v=$(printf %s \"${x:-)}\")#", "", false},

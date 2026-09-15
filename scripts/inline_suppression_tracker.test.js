@@ -597,6 +597,8 @@ test('distinguishes shell expansion closers from comment boundaries across diff 
     ['', "v=$(printf %s \"(\")#", '', false],
     ['', "v=$(printf %s \")\")#", '', false],
     ['', "v=$(case x in x) printf hi;; esac)#", '', false],
+    ['v=$(\ncase y in x) printf no;;\n', 'y)#', 'printf hi;; esac\n)\n', true],
+    ['', 'v=$(case y in x) printf no;; y) printf hi;; esac)#', '', false],
     ['', "v=$(printf hi)#literal$(printf bye)#", '', false],
     ['', "v=$(printf a\\;#literal; printf b)#", '', false],
     ['', "v=$(printf %s \"${x:-)}\")#", '', false],
