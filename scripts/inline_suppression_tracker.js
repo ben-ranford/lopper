@@ -128,13 +128,80 @@ function isMetadataBoundary(char) {
 // `echo foo#nolint` (shell). Python and Ruby are also hash-only languages
 // but need no such rule: "#" starts a comment there exactly like "//" does
 // in slash-style languages, immediately after code with no space required.
-function isGoLabelCommentBoundary(content, index, file, prefix) {
-  if ((prefix !== '//' && prefix !== '/*') || typeof file !== 'string' || fileExtension(file) !== 'go' || index < 2 || content[index - 1] !== ':') {
-    return false;
+// This Go-only scan is deliberately independent from the generic quote
+// heuristic. Only raw strings and block comments carry across lines; quoted
+// strings and rune literals end with the physical line. It reports the first
+// colon-adjacent marker proven to be in Go code and whether a real colon-
+// adjacent line comment began, which is the sole Go-specific input to legacy
+// quote carry handling.
+function skipGoQuotedRegion(content, cursor) {
+  const quote = content[cursor];
+  for (let index = cursor + 1; index < content.length; index += 1) {
+    if (content[index] === '\\') {
+      index += 1;
+    } else if (content[index] === quote) {
+      return index;
+    }
   }
-  // A Go label is the only supported colon-adjacent slash-comment form. A
-  // generic colon exception would reinterpret URL schemes as comments.
-  return /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/.test(content.slice(0, index - 1));
+  return content.length;
+}
+
+function goCommentPrefixAt(content, index) {
+  const next = content[index + 1];
+  return content[index] === '/' && (next === '/' || next === '*') ? `/${next}` : undefined;
+}
+
+function advanceGoMultilineState(content, cursor, state) {
+  if (state === 'block') {
+    return content[cursor] === '*' && content[cursor + 1] === '/'
+      ? { state: undefined, cursor: cursor + 1 }
+      : { state, cursor };
+  }
+  if (state === 'raw') {
+    return { state: content[cursor] === '`' ? undefined : state, cursor };
+  }
+  return undefined;
+}
+
+function scanGoLine(content, file, initialState) {
+  if (typeof file !== 'string' || fileExtension(file) !== 'go') {
+    return { state: undefined, markerIndex: -1, hasColonLineComment: false };
+  }
+
+  let state = initialState;
+  let markerIndex = -1;
+  let hasColonLineComment = false;
+  for (let cursor = 0; cursor < content.length; cursor += 1) {
+    const char = content[cursor];
+    const carriedState = advanceGoMultilineState(content, cursor, state);
+    if (carriedState !== undefined) {
+      state = carriedState.state;
+      cursor = carriedState.cursor;
+      continue;
+    }
+    const prefix = goCommentPrefixAt(content, cursor);
+    if (prefix !== undefined) {
+      const colonAdjacent = cursor > 0 && content[cursor - 1] === ':';
+      if (colonAdjacent && markerIndex === -1 && hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, cursor, prefix))) {
+        markerIndex = cursor;
+      }
+      if (prefix === '//') {
+        hasColonLineComment ||= colonAdjacent;
+        break;
+      }
+      state = 'block';
+      cursor += 1;
+      continue;
+    }
+    if (char === '`') {
+      state = 'raw';
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      cursor = skipGoQuotedRegion(content, cursor);
+    }
+  }
+  return { state, markerIndex, hasColonLineComment };
 }
 
 function isUnescapedShellOperatorBoundary(content, index) {
@@ -159,7 +226,7 @@ function isCommentBoundary(content, index, file, prefix) {
     // comment. YAML retains its whitespace-only scalar boundary.
     return isWhitespace(char) || (SHELL_EXTENSIONS.has(extension) && isUnescapedShellOperatorBoundary(content, index));
   }
-  return char !== ':' || isGoLabelCommentBoundary(content, index, file, prefix);
+  return char !== ':';
 }
 
 // Scans content[0, index) tracking single/double/backtick-quoted regions
@@ -229,6 +296,7 @@ function quoteStateAt(content, index, file, initialQuote) {
   }
   return { quote, pastCommentStart };
 }
+
 
 function isInsideQuotedRegion(content, index, file, initialQuote) {
   return quoteStateAt(content, index, file, initialQuote).quote !== undefined;
@@ -403,23 +471,33 @@ function occurrenceInLines(lines, targetLine, targetContent) {
 // resetting to "no open quote" at every hunk boundary would make such a
 // closing delimiter later in the hunk look like a new opener, potentially
 // masking a real suppression comment or misreading ordinary code as one.
-function quoteStateSeedFromLines(lines, hunkStartLine, file) {
+function scanStateSeedFromLines(lines, hunkStartLine, file) {
   let quoteState;
+  let goState;
   const priorLineCount = Math.min(hunkStartLine - 1, lines.length);
   for (let index = 0; index < priorLineCount; index += 1) {
-    quoteState = carryQuoteState(lines[index], file, quoteState);
+    const goScan = scanGoLine(lines[index], file, goState);
+    goState = goScan.state;
+    quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(lines[index], file, quoteState);
   }
-  return quoteState;
+  return { quoteState, goState };
 }
 
-function addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote }) {
+function quoteStateSeedFromLines(lines, hunkStartLine, file) {
+  return scanStateSeedFromLines(lines, hunkStartLine, file).quoteState;
+}
+
+function goStateSeedFromLines(lines, hunkStartLine, file) {
+  return scanStateSeedFromLines(lines, hunkStartLine, file).goState;
+}
+
+function addSuppression(records, { file, line, content, context, headSHA, occurrence, markerIndex }) {
   validateFile(file);
   if (!Number.isInteger(line) || line < 1 || line > 1000000) {
     throw new RangeError('Invalid inline suppression line.');
   }
   validateString(content, 'content', 4096);
 
-  const markerIndex = commentPrefixIndexForMarker(content, file, initialQuote);
   const metadataScope = markerIndex === -1 ? content : content.slice(markerIndex);
   const rationale = validateString(metadataValue(metadataScope, ['rationale', 'reason']), 'rationale', 1024);
   const owner = validateString(metadataValue(metadataScope, ['owner']), 'owner', 256);
@@ -528,7 +606,7 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function commentPrefixIndexForMarker(content, file, initialQuote) {
+function commentPrefixIndexForMarker(content, file, initialQuote, goScan = scanGoLine(content, file)) {
   const prefixes = commentPrefixesFor(file);
   for (let index = 0; index < content.length; index += 1) {
     // The boundary rule for "#" depends on which language this file is, so
@@ -544,14 +622,14 @@ function commentPrefixIndexForMarker(content, file, initialQuote) {
       continue;
     }
     if (hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
-      return index;
+      return goScan.markerIndex === -1 || index < goScan.markerIndex ? index : goScan.markerIndex;
     }
   }
-  return -1;
+  return goScan.markerIndex;
 }
 
-function hasInlineSuppressionMarker(content, file, initialQuote) {
-  return commentPrefixIndexForMarker(content, file, initialQuote) !== -1;
+function hasInlineSuppressionMarker(content, file, initialQuote, initialGoState) {
+  return commentPrefixIndexForMarker(content, file, initialQuote, scanGoLine(content, file, initialGoState)) !== -1;
 }
 
 function parseHunkHeader(rawLine, file) {
@@ -679,22 +757,28 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   // opens a new quoted region, which would mask a real suppression comment
   // following it on the same line.
   let quoteState;
+  let goState;
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
-      quoteState = quoteStateSeedFromLines(headLines, line, file);
+      const seededState = scanStateSeedFromLines(headLines, line, file);
+      quoteState = seededState.quoteState;
+      goState = seededState.goState;
       continue;
     }
     if (rawLine.startsWith('+')) {
       const content = stripTrailingCR(rawLine.slice(1));
-      if (hasInlineSuppressionMarker(content, file, quoteState)) {
+      const goScan = scanGoLine(content, file, goState);
+      const markerIndex = commentPrefixIndexForMarker(content, file, quoteState, goScan);
+      if (markerIndex !== -1) {
         if (records.size >= MAX_RECORDS) {
           throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
         }
         const occurrence = occurrenceInLines(headLines, line, content);
-        addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote: quoteState });
+        addSuppression(records, { file, line, content, context, headSHA, occurrence, markerIndex });
       }
-      quoteState = carryQuoteState(content, file, quoteState);
+      goState = goScan.state;
+      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState);
       line += 1;
       continue;
     }
@@ -706,7 +790,9 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
       // characters must still be tracked even though it isn't scanned for
       // suppression markers (it isn't newly added by this pull request).
       const content = stripTrailingCR(rawLine.slice(1));
-      quoteState = carryQuoteState(content, file, quoteState);
+      const goScan = scanGoLine(content, file, goState);
+      goState = goScan.state;
+      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState);
       line += 1;
     }
   }

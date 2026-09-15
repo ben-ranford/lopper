@@ -21,6 +21,7 @@ marker_names="(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}
 marker_start_pattern_hash="#[[:space:]]*${marker_names}"
 marker_start_pattern_slash="(//|/[*]+)[[:space:]]*${marker_names}"
 marker_start_pattern_all="(//|/[*]+|#)[[:space:]]*${marker_names}"
+go_marker_pattern="^(//|/[*]+)[[:space:]]*${marker_names}([^[:alnum:]_-]|$)"
 # Used to locate the marker's start within content that already matched one
 # of the language-specific patterns above, so the broadest pattern is safe
 # here regardless of the source language.
@@ -47,9 +48,6 @@ marker_pattern_hash_yaml="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnu
 marker_pattern_hash_shell="(^|[[:space:];|&()])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_hash_lenient="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
-# In Go, a label can be directly followed by //; do not relax the generic
-# colon rule because it would mistake URL schemes for comments.
-marker_pattern_go="(${marker_pattern_slash}|^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*:(${marker_start_pattern_slash})([^[:alnum:]_-]|$))"
 # PHP (and any other extension covered by neither set) keeps the original
 # lenient boundary for "#" too: unlike YAML/shell, PHP's "#" needs no
 # free-standing rule.
@@ -510,7 +508,7 @@ awk \
 	-v pattern_hash_shell="$marker_pattern_hash_shell" \
 	-v pattern_hash_lenient="$marker_pattern_hash_lenient" \
 	-v pattern_slash="$marker_pattern_slash" \
-	-v pattern_go="$marker_pattern_go" \
+	-v go_pattern="$go_marker_pattern" \
 	-v pattern_all="$marker_pattern_all" \
 	-v file_pattern="$source_file_pattern" \
 	-v yaml_file_pattern="$yaml_file_pattern" \
@@ -523,6 +521,7 @@ BEGIN {
 	found = 0
 	check_file = 0
 	quote_state = ""
+	go_block_state = 0
 	active_pattern = pattern_all
 	bundle_file = ""
 }
@@ -543,17 +542,22 @@ FNR == NR {
 # The quote state to seed a hunk beginning at 1-indexed `line`: derived from
 # the complete head file bundled above, not just the surrounding diff
 # context window. Mirrors quoteStateSeedFromLines in the trusted tracker.
-function seed_quote_state(   idx, prior_count, seed) {
-	seed = ""
+function seed_scan_states(   idx, prior_count, seed_quote, seed_go_state) {
+	seed_quote = ""
+	seed_go_state = ""
 	prior_count = line - 1
 	if (full_line_count[file] + 0 < prior_count) {
 		prior_count = full_line_count[file] + 0
 	}
 	for (idx = 1; idx <= prior_count; idx++) {
-		mask_quoted_regions(full_lines[file, idx], seed)
-		seed = final_quote_state
+		go_colon_match(full_lines[file, idx], seed_go_state)
+		seed_go_state = final_go_state
+		mask_quoted_regions(full_lines[file, idx], seed_quote)
+		seed_quote = final_quote_state
+		if (go_colon_line) seed_quote = ""
 	}
-	return seed
+	seeded_quote_state = seed_quote
+	seeded_go_block_state = seed_go_state
 }
 # Checking only the character immediately preceding a candidate comment
 # delimiter misses a marker preceded by ordinary text inside an otherwise
@@ -574,6 +578,58 @@ function is_unescaped_shell_operator_boundary(s, pos,    prior, backslashes) {
 		backslashes++
 	}
 	return (backslashes % 2) == 0
+}
+function go_colon_match(s, initial_state,    i, c, state, quote, prefix) {
+	go_colon_marker = 0
+	go_colon_line = 0
+	state = initial_state
+	if (tolower(file) !~ /\.go$/) {
+		final_go_state = ""
+		return 0
+	}
+	for (i = 1; i <= length(s); i++) {
+		c = substr(s, i, 1)
+		if (state == "block") {
+			if (c == "*" && substr(s, i + 1, 1) == "/") {
+				state = ""
+				i++
+			}
+			continue
+		}
+		if (state == "raw") {
+			if (c == "`") state = ""
+			continue
+		}
+		if (c == "/" && (substr(s, i + 1, 1) == "/" || substr(s, i + 1, 1) == "*")) {
+			prefix = substr(s, i, 2)
+			if (i > 1 && substr(s, i - 1, 1) == ":" && substr(s, i) ~ go_pattern) {
+				go_colon_marker = i
+			}
+			if (prefix == "//") {
+				if (i > 1 && substr(s, i - 1, 1) == ":") go_colon_line = 1
+				break
+			}
+			state = "block"
+			i++
+			continue
+		}
+		if (c == "`") {
+			state = "raw"
+			continue
+		}
+		if (c == "\"" || c == "'"'"'") {
+			quote = c
+			for (i++; i <= length(s); i++) {
+				if (substr(s, i, 1) == "\\") {
+					i++
+				} else if (substr(s, i, 1) == quote) {
+					break
+				}
+			}
+		}
+	}
+	final_go_state = state
+	return go_colon_marker != 0
 }
 function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
 	result = ""
@@ -645,7 +701,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/ || (shell_language && is_unescaped_shell_operator_boundary(s, i))) {
 					past_comment_start = 1
 				}
-			} else if (i == 1 || substr(s, i - 1, 1) != ":" || (tolower(file) ~ /\.go$/ && substr(s, 1, i - 2) ~ /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/)) {
+			} else if (i == 1 || substr(s, i - 1, 1) != ":") {
 				past_comment_start = 1
 			}
 		}
@@ -679,14 +735,13 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 		active_pattern = pattern_hash_shell
 	} else if (tolower(file) ~ lenient_hash_file_pattern) {
 		active_pattern = pattern_hash_lenient
-	} else if (tolower(file) ~ /\.go$/) {
-		active_pattern = pattern_go
 	} else if (tolower(file) ~ slash_style_file_pattern) {
 		active_pattern = pattern_slash
 	} else {
 		active_pattern = pattern_all
 	}
 	quote_state = ""
+	go_block_state = 0
 	next
 }
 /^@@ / {
@@ -701,7 +756,9 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# there is unseen content this diff never reads. Derive the state from
 	# the complete head file bundled above instead of guessing "no open
 	# quote".
-	quote_state = seed_quote_state()
+	seed_scan_states()
+	quote_state = seeded_quote_state
+	go_block_state = seeded_go_block_state
 	next
 }
 /^\+/ {
@@ -722,9 +779,12 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# through a later line must not make that later scan think the
 	# closing delimiter opens a new quoted region, which would mask a
 	# real suppression comment following it on the same line.
+	go_match = go_colon_match(content, go_block_state)
+	go_block_state = final_go_state
 	masked = mask_quoted_regions(content, quote_state)
 	quote_state = final_quote_state
-	if (check_file && tolower(masked) ~ active_pattern) {
+	if (go_colon_line) quote_state = ""
+	if (check_file && (tolower(masked) ~ active_pattern || go_match)) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0
