@@ -466,13 +466,55 @@ clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 
 hooks-install:
-	@git config core.hooksPath .githooks
-	@chmod +x .githooks/*
-	@echo "Installed git hooks from .githooks"
+	@set -eu; \
+		source_hook=".githooks/pre-commit"; \
+		[ -f "$$source_hook" ] && [ ! -L "$$source_hook" ] || { echo "Missing reviewed pre-commit hook: $$source_hook" >&2; exit 1; }; \
+		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		managed_hook="$$managed_dir/pre-commit"; \
+		config_error="$$(mktemp)"; tmp_hook=; cleanup() { rm -f "$$config_error" "$${tmp_hook:-}"; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		read_config() { value="$$("$$@" 2>"$$config_error")" && return 0; status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] && { value=; return 0; }; cat "$$config_error" >&2; exit "$$status"; }; \
+		read_config git config --get core.hooksPath; effective_path="$$value"; \
+		read_config git config --local --get core.hooksPath; local_path="$$value"; \
+		case "$$effective_path:$$local_path" in \
+			:|"$$managed_dir":|"$$managed_dir":"$$managed_dir"|.githooks:.githooks) ;; \
+			*) echo "Refusing to replace existing core.hooksPath: $$effective_path" >&2; exit 1 ;; \
+		esac; \
+		created_dir=0; \
+		if [ ! -e "$$managed_dir" ]; then mkdir -p "$$managed_dir"; created_dir=1; fi; \
+		[ -d "$$managed_dir" ] && [ ! -L "$$managed_dir" ] || { echo "Unsafe managed hook directory: $$managed_dir" >&2; exit 1; }; \
+		created_hook=0; \
+		if [ -L "$$managed_hook" ]; then \
+			echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; \
+		elif [ -e "$$managed_hook" ]; then \
+			[ -f "$$managed_hook" ] && [ ! -L "$$managed_hook" ] || { echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; }; \
+			[ -x "$$managed_hook" ] || { echo "Managed pre-commit hook is not executable: $$managed_hook" >&2; exit 1; }; \
+		else \
+			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
+			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; created_hook=1; \
+		fi; \
+		if ! git config --local core.hooksPath "$$managed_dir"; then \
+			[ "$$created_hook" -eq 0 ] || rm -f "$$managed_hook"; \
+			[ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir"; \
+			exit 1; \
+		fi; \
+		read_config git config --get core.hooksPath; \
+		if [ "$$value" != "$$managed_dir" ]; then \
+			if [ -n "$$local_path" ]; then git config --local core.hooksPath "$$local_path"; else git config --local --unset core.hooksPath || :; fi; \
+			[ "$$created_hook" -eq 0 ] || rm -f "$$managed_hook"; \
+			[ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir"; \
+			echo "Unable to activate managed core.hooksPath" >&2; exit 1; \
+		fi; \
+		echo "Installed immutable pre-commit hook at $$managed_hook"
 
 hooks-uninstall:
-	@git config --unset core.hooksPath || true
-	@echo "Removed custom core.hooksPath hook configuration"
+	@set -eu; \
+		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		managed_dir="$$common_dir/lopper-hooks"; \
+		config_error="$$(mktemp)"; cleanup() { rm -f "$$config_error"; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		configured_path="$$(git config --local --get core.hooksPath 2>"$$config_error")" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; configured_path=; }; \
+		case "$$configured_path" in "$$managed_dir"|.githooks) git config --local --unset core.hooksPath ;; esac; \
+		echo "Removed managed core.hooksPath hook configuration"
 
 vscode-extension-install:
 	cd $(VSCODE_EXTENSION_DIR) && npm ci

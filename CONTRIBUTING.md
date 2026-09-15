@@ -8,7 +8,7 @@ Requirements:
 
 - Go `1.27.1` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
 - `zig` (required for cross-CGO release builds)
-- `shellcheck` (required for `make ci` and git hooks)
+- `shellcheck` (required for `make ci`)
 - Ruby (required for automation integrity YAML/JSON checks in `make ci`)
 - Node.js 22.12 or newer (required for automation integrity and VS Code extension tests)
 - `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
@@ -25,6 +25,7 @@ make demos-check
 ```
 
 `make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
+To enable the optional pre-commit checks, run `make hooks-install`. On first installation it copies the reviewed hook into the repository's shared Git metadata and validates staged whitespace and Go formatting without invoking checkout files. Re-running the command preserves that installed snapshot. `make hooks-uninstall` removes only Lopper's managed `core.hooksPath` setting and retains the installed snapshot.
 The automation integrity gate requires Linux or macOS tooling with Ruby, Node.js, Python 3, and POSIX shell syntax support; Docker-based `act` runs should target Linux-backed jobs because hosted macOS runners are not available locally.
 It also tracks newly introduced inline suppression markers in source files, so fix the underlying finding instead of adding `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, or coverage-bypass comments.
 If an inline suppression is unavoidable, the same added line must include `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`, and CI must be able to create or update the linked GitHub tracking issue.
