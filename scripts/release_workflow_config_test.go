@@ -83,6 +83,7 @@ type workflowJobConfig struct {
 	RunsOn          string               `yaml:"runs-on"`
 	Steps           []workflowStepConfig `yaml:"steps"`
 	Strategy        workflowStrategy     `yaml:"strategy"`
+	TimeoutMinutes  int                  `yaml:"timeout-minutes"`
 	Uses            string               `yaml:"uses"`
 	With            map[string]string    `yaml:"with"`
 }
@@ -1602,21 +1603,6 @@ func TestReleaseWorkflowDownloadsReleaseArtifactsByExactName(t *testing.T) {
 func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	t.Parallel()
 
-	var lockfile struct {
-		Packages map[string]struct {
-			Version   string `json:"version"`
-			Integrity string `json:"integrity"`
-		} `json:"packages"`
-	}
-	readJSONConfig(t, "extensions/vscode-lopper/package-lock.json", &lockfile)
-	vsce, ok := lockfile.Packages["node_modules/@vscode/vsce"]
-	if !ok {
-		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
-	}
-	if vsce.Version != "3.9.2" || !strings.HasPrefix(vsce.Integrity, "sha512-") {
-		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
-	}
-
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
@@ -1624,8 +1610,13 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	assertWorkflowJobNeeds(t, preparation, "Marketplace tooling preparation", workflowJobNeeds{"prepare-release"})
 	assertWorkflowJobPermissions(t, preparation, "Marketplace tooling preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, preparation, "Marketplace tooling preparation")
-	if len(preparation.Outputs) != 1 || preparation.Outputs["configured"] != "${{ steps.gate.outputs.configured }}" {
-		t.Fatalf("Marketplace tooling preparation outputs = %#v, want only the token configuration boolean", preparation.Outputs)
+	wantOutputs := map[string]string{
+		"configured":     "${{ steps.gate.outputs.configured }}",
+		"vsce_version":   "${{ steps.tooling.outputs.vsce_version }}",
+		"vsce_integrity": "${{ steps.tooling.outputs.vsce_integrity }}",
+	}
+	if !maps.Equal(preparation.Outputs, wantOutputs) {
+		t.Fatalf("Marketplace tooling preparation outputs = %#v, want %#v", preparation.Outputs, wantOutputs)
 	}
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{
@@ -1647,13 +1638,14 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	})
 
 	lockStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Validate Marketplace tooling lockfile")
+	if lockStep.ID != "tooling" {
+		t.Fatalf("Marketplace lockfile validation id = %q, want tooling", lockStep.ID)
+	}
 	assertWorkflowStepRunContainsAll(t, lockStep, "Marketplace lockfile validation step", []string{
 		`lockfile="extensions/vscode-lopper/package-lock.json"`,
 		`vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"`,
 		`vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"`,
-		`if [ "${vsce_version}" != "3.9.2" ]; then`,
-		`case "${vsce_integrity}" in`,
-		`sha512-?*)`,
+		`printf 'vsce_version=%s\nvsce_integrity=%s\n' "${vsce_version}" "${vsce_integrity}" >> "$GITHUB_OUTPUT"`,
 	})
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
@@ -1826,6 +1818,15 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 		t.Fatalf("Marketplace input checksum validations = %d, want publication and toolchain artifacts", count)
 	}
 	assertWorkflowStepEnvMissing(t, validateStep, "VSCE_PAT", "Marketplace validation must be tokenless")
+	extractedStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate extracted Marketplace tooling")
+	assertWorkflowStepEnv(t, extractedStep, "extracted Marketplace tooling validation", map[string]string{
+		"TRUSTED_VSCE_VERSION":   "${{ needs.prepare-marketplace-toolchain.outputs.vsce_version }}",
+		"TRUSTED_VSCE_INTEGRITY": "${{ needs.prepare-marketplace-toolchain.outputs.vsce_integrity }}",
+	})
+	if extractedStep.Shell != validateStep.Shell {
+		t.Fatal("extracted Marketplace tooling validation must use the sanitized validation shell")
+	}
+	assertWorkflowStepOrder(t, marketplace, "Validate Marketplace publication inputs", "Validate extracted Marketplace tooling", "Publish VS Code extension to Marketplace")
 
 	publishIndex := workflowStepIndexByName(t, workflow.Jobs, "publish-marketplace", "Publish VS Code extension to Marketplace")
 	if publishIndex != len(marketplace.Steps)-1 {
@@ -2010,6 +2011,7 @@ func assertMarketplacePublicationGate(t *testing.T, jobs map[string]workflowJobC
 		"Download release publication inputs",
 		"Download Marketplace toolchain",
 		"Validate Marketplace publication inputs",
+		"Validate extracted Marketplace tooling",
 		"Publish VS Code extension to Marketplace",
 	} {
 		step := workflowStepByName(t, jobs, "publish-marketplace", stepName)
