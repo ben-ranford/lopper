@@ -59,6 +59,9 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 	}
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	if verify.TimeoutMinutes != 60 {
+		t.Fatalf("suppression verification timeout = %d minutes, want 60", verify.TimeoutMinutes)
+	}
 	assertWorkflowJobOmitsCheckout(t, verify, "suppression verify")
 	assertWorkflowJobStepRunsOmitAllFold(t, verify, "suppression verify", []string{
 		"go run ./",
@@ -99,7 +102,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// Shared by the later waiting steps so every deadline is measured
 		// from this job's own start rather than restarting a fresh budget
 		// per step, which could otherwise let their combined wait exceed
-		// the job's own 20-minute timeout.
+		// the job's own 60-minute timeout.
 		"core.setOutput('job-start-ms'",
 	})
 
@@ -115,6 +118,8 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 
 	resolve := workflowStepByName(t, workflow.Jobs, "verify", "Resolve trusted ci artifact for this pull request head")
 	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: resolve.With["script"]}, "resolve trusted ci artifact", []string{
+		// Keep 90 seconds before the job timeout for validation and reporting.
+		fmt.Sprintf("const deadlineMs = jobStartMs + (%d * 60 + 30) * 1000;", verify.TimeoutMinutes-2),
 		"workflow_id: 'ci.yml'",
 		"event: 'pull_request'",
 		"head_sha: headSha",
@@ -140,7 +145,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// their runs become visible through the API in the same instant, so
 		// failing closed on zero visible candidates would make the required
 		// check nondeterministically fail on ordinary PR events instead of
-		// using its ten-minute polling window.
+		// using its shared polling deadline.
 		"const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed')",
 		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
 		// at the same head SHA while an earlier, already-completed run
@@ -197,18 +202,18 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// The wait must share one deadline across every fingerprint (outer loop
 	// polling all still-missing fingerprints per round), not an independent
 	// wait nested inside a per-fingerprint loop -- otherwise a persistently
-	// failed tracker could sleep for MAX_RECORDS x 10 minutes instead of
+	// failed tracker could exhaust one wait budget per record instead of
 	// reporting promptly.
 	assertWorkflowMarkerOrder(t, gate.Run, `while [ "${#missing[@]}" -gt 0 ]; do`, `for fingerprint in "${missing[@]}"; do`)
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
 		// Measured from the same job-start origin the artifact-resolution
-		// step uses, with buffer before the job's own 20-minute timeout, so
+		// step uses, with buffer before the job's own 60-minute timeout, so
 		// GitHub cannot cancel the job mid-poll and leave the
 		// "suppression-verify" check stuck "in_progress" instead of
 		// reporting failure.
-		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
+		fmt.Sprintf("job_deadline_ms=$(( JOB_START_MS + (%d * 60 + 30) * 1000 ))", verify.TimeoutMinutes-2),
 		`now_ms="$(date +%s%3N)"`,
 		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,
 	})

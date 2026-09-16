@@ -83,6 +83,7 @@ type workflowJobConfig struct {
 	RunsOn          string               `yaml:"runs-on"`
 	Steps           []workflowStepConfig `yaml:"steps"`
 	Strategy        workflowStrategy     `yaml:"strategy"`
+	TimeoutMinutes  int                  `yaml:"timeout-minutes"`
 	Uses            string               `yaml:"uses"`
 	With            map[string]string    `yaml:"with"`
 }
