@@ -321,6 +321,33 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
+async function verifyRenovateProvenance(github, pull, commits) {
+  const renovateCommits = commits.filter((commit) => isVerifiedRenovateCommit(commit, pull));
+  if (renovateCommits.length === 0) {
+    return;
+  }
+  if (!pull.head.ref) {
+    throw queuePauseError('Queue identity audit failed: missing Renovate branch reference.');
+  }
+  const ref = `refs/heads/${pull.head.ref}`;
+  const { data: activities } = await github.request('GET /repos/{owner}/{repo}/activity', {
+    owner: pull.base.repo.owner.login,
+    repo: pull.base.repo.name,
+    ref,
+    per_page: 100,
+    direction: 'desc',
+  });
+  const trustedHeads = new Set((Array.isArray(activities) ? activities : [])
+    .filter((activity) => activity?.ref === ref && isRenovateAccount(activity?.actor) &&
+      ['push', 'force_push', 'branch_creation'].includes(activity?.activity_type))
+    .map((activity) => activity.after));
+  if (renovateCommits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
+    throw queuePauseError(
+      'Queue identity audit failed: cannot prove Renovate pushed every bot commit from the latest 100 branch activities. Ask Renovate to rebase this pull request.',
+    );
+  }
+}
+
 async function verifyHeadForQueue(
   github,
   pull,
@@ -356,6 +383,7 @@ async function verifyHeadForQueue(
   }
   const comparison = { ...firstComparison, commits };
   assertCanonicalCommitIdentity(comparison, pull);
+  await verifyRenovateProvenance(github, pull, commits);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };
   }

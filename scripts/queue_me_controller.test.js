@@ -22,6 +22,7 @@ function makePull(number, overrides = {}) {
     },
     head: {
       sha: `head-${number}`,
+      ref: `queue-me-${number}`,
       repo: { full_name: 'octo/lopper' },
     },
     ...overrides,
@@ -72,6 +73,16 @@ function makeRenovateCommit(sha = 'renovate-commit', overrides = {}) {
   };
 }
 
+function makeRenovateActivity(sha = 'renovate-commit', overrides = {}) {
+  return {
+    after: sha,
+    actor: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+    activity_type: 'push',
+    ref: 'refs/heads/queue-me-10',
+    ...overrides,
+  };
+}
+
 function makeHarness(options = {}) {
   const pulls = options.pulls || [];
   const eventPull = options.eventPull;
@@ -97,7 +108,16 @@ function makeHarness(options = {}) {
     ]),
   );
   const comments = new Map();
+  const fixtureCommits = [
+    ...(options.comparisonCommits || []),
+    ...Object.values(options.comparisonCommitsByNumber || {}).flat(),
+    ...(options.comparisonPages || []).flatMap((page) => page.commits || []),
+  ];
+  const trustedRenovateCommits = fixtureCommits.filter(
+    (commit) => commit?.author?.login === 'renovate[bot]' && commit?.author?.id === 29139614,
+  );
   const calls = {
+    activities: [],
     armed: [],
     armExpectedHeads: [],
     branchReads: [],
@@ -111,6 +131,17 @@ function makeHarness(options = {}) {
   const repository = { default_branch: 'main', full_name: 'octo/lopper' };
 
   const github = {
+    request: async (route, input) => {
+      calls.activities.push({ route, input });
+      if (options.activityError) throw options.activityError;
+      const activities = options.activities || trustedRenovateCommits.map((commit) => ({
+        after: commit.sha,
+        actor: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+        activity_type: 'push',
+        ref: input.ref,
+      }));
+      return { data: activities };
+    },
     rest: {
       issues: {
         getLabel: async () => {
@@ -726,6 +757,82 @@ test('controller arms a verified same-repository Renovate pull without rewriting
   assert.deepEqual(harness.calls.rebased, []);
   assert.deepEqual(harness.calls.armed, [10]);
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
+});
+
+test('controller proves Renovate provenance with one bounded branch activity request', async () => {
+  const renovatePull = makePull(10, {
+    user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+  });
+  const harness = makeHarness({
+    pulls: [renovatePull],
+    comparisonCommits: [makeRenovateCommit()],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.activities, [{
+    route: 'GET /repos/{owner}/{repo}/activity',
+    input: {
+      owner: 'octo', repo: 'lopper', ref: 'refs/heads/queue-me-10', per_page: 100, direction: 'desc',
+    },
+  }]);
+  assert.deepEqual(harness.calls.armed, [10]);
+});
+
+test('controller pauses Renovate provenance failures before auto-merge', async (t) => {
+  const cases = [
+    { name: 'spoofed actor', activities: [makeRenovateActivity('renovate-commit', { actor: { login: 'attacker', type: 'User', id: 1 } })] },
+    { name: 'wrong commit SHA', activities: [makeRenovateActivity('other-sha')] },
+    { name: 'missing activity SHA', activities: [makeRenovateActivity('renovate-commit', { after: null })] },
+    { name: 'missing activity', activities: [] },
+    { name: 'wrong branch ref', activities: [makeRenovateActivity('renovate-commit', { ref: 'refs/heads/other' })] },
+    { name: 'wrong activity type', activities: [makeRenovateActivity('renovate-commit', { activity_type: 'branch_deletion' })] },
+    { name: 'activity API failure', activityError: new Error('activity unavailable') },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const renovatePull = makePull(10, {
+        user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+      });
+      const harness = makeHarness({
+        pulls: [renovatePull], comparisonCommits: [makeRenovateCommit()], ...scenario,
+      });
+
+      await runController(harness.args);
+
+      assert.equal(harness.calls.activities.length, 1);
+      assert.deepEqual(harness.calls.armed, []);
+      assert.match(harness.calls.comments[0].body, /provenance|identity audit/i);
+    });
+  }
+});
+
+test('controller accepts Renovate branch creation and force-push provenance', async (t) => {
+  for (const activity_type of ['branch_creation', 'force_push']) {
+    await t.test(activity_type, async () => {
+      const renovatePull = makePull(10, {
+        user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+      });
+      const harness = makeHarness({
+        pulls: [renovatePull],
+        comparisonCommits: [makeRenovateCommit()],
+        activities: [makeRenovateActivity('renovate-commit', { activity_type })],
+      });
+
+      await runController(harness.args);
+
+      assert.deepEqual(harness.calls.armed, [10]);
+    });
+  }
+});
+
+test('controller does not read branch activity for canonical human commits', async () => {
+  const harness = makeHarness({ pulls: [makePull(10)] });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.activities, []);
+  assert.deepEqual(harness.calls.armed, [10]);
 });
 
 test('removing queue-me disables auto-merge and leaves an empty queue green', async () => {
