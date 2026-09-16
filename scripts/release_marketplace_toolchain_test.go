@@ -139,7 +139,7 @@ func TestExtractedMarketplaceToolchainValidationBindsTrustedOutputs(t *testing.T
 
 const marketplaceIntegrity = "sha512-NImwuLaenMmb5D5Jer9/lzi/F9ZQUBOp8Azhj/BVYcTFgixv8KehFXqEUDjQlD2tAiw2E6dDGyjTuAB//di60A=="
 
-func marketplaceLockfile(version string, integrity string) string {
+func marketplaceLockfile(version, integrity string) string {
 	return `{"packages":{"node_modules/@vscode/vsce":{"version":` + strconv.Quote(version) + `,"integrity":` + strconv.Quote(integrity) + `}}}`
 }
 
