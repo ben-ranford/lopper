@@ -78,7 +78,37 @@ function sameCommitIdentity(commit) {
   return authorLogin !== '' && authorLogin === committerLogin;
 }
 
-function commitIdentityFailure(commit) {
+function isRenovateAccount(identity) {
+  return identity?.login === 'renovate[bot]' &&
+    identity?.type === 'Bot' && identity?.id === 29139614;
+}
+
+function isRenovatePull(pull) {
+  const baseRepo = pull?.base?.repo;
+  return isRenovateAccount(pull?.user) && Boolean(baseRepo?.owner?.login && baseRepo?.name) &&
+    pull?.head?.repo?.full_name === `${baseRepo.owner.login}/${baseRepo.name}`;
+}
+
+function isRenovateGitIdentity(identity) {
+  return identity?.name === 'renovate[bot]' &&
+    identity?.email === '29139614+renovate[bot]@users.noreply.github.com';
+}
+
+function isVerifiedRenovateCommit(commit, pull) {
+  if (!isRenovatePull(pull) || !isRenovateAccount(commit?.author) ||
+      !isRenovateGitIdentity(commit?.commit?.author) ||
+      commit?.commit?.verification?.verified !== true ||
+      commit?.commit?.verification?.reason !== 'valid') {
+    return false;
+  }
+  const committer = commit?.commit?.committer;
+  return (isRenovateAccount(commit?.committer) && isRenovateGitIdentity(committer)) ||
+    (commit?.committer?.login === 'web-flow' && commit?.committer?.type === 'User' &&
+      commit?.committer?.id === 19864447 && committer?.name === 'GitHub' &&
+      committer?.email === 'noreply@github.com');
+}
+
+function commitIdentityFailure(commit, pull) {
   const author = commit?.commit?.author || {};
   const committer = commit?.commit?.committer || {};
   const authorName = String(author.name || '').trim();
@@ -89,6 +119,9 @@ function commitIdentityFailure(commit) {
 
   if (!authorName || !authorEmail || !committerName || !committerEmail) {
     return `${sha}: author and committer metadata must both be present`;
+  }
+  if (isVerifiedRenovateCommit(commit, pull)) {
+    return '';
   }
   if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
     return `${sha}: author is a bot identity`;
@@ -117,17 +150,17 @@ function queueIdentityFailureMessage(failures) {
     const omittedFailureNoun = omitted === 1 ? 'failure' : 'failures';
     omittedSummary = `; ${omitted} additional commit identity ${omittedFailureNoun} omitted`;
   }
-  return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
+  return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity or a verified Renovate identity on a same-repository Renovate pull request. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
 }
 
-function assertCanonicalCommitIdentity(comparison) {
+function assertCanonicalCommitIdentity(comparison, pull) {
   const commits = comparison?.commits || [];
   if (comparison?.total_commits > commits.length) {
     throw queuePauseError(
       `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
     );
   }
-  const failures = commits.map(commitIdentityFailure).filter(Boolean);
+  const failures = commits.map((commit) => commitIdentityFailure(commit, pull)).filter(Boolean);
   if (failures.length > 0) {
     throw queuePauseError(queueIdentityFailureMessage(failures));
   }
@@ -322,7 +355,7 @@ async function verifyHeadForQueue(
     }
   }
   const comparison = { ...firstComparison, commits };
-  assertCanonicalCommitIdentity(comparison);
+  assertCanonicalCommitIdentity(comparison, pull);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };
   }
@@ -556,7 +589,10 @@ async function advanceQueuedPull({
     const retrySummary = hasFollower
       ? 'The queue will continue with the next queued pull request. This pull request will be retried after a clean identity audit.'
       : 'This pull request will be retried after a clean identity audit.';
-    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity. ${retrySummary}`;
+    const refreshInstruction = isRenovatePull(candidate)
+      ? 'Ask Renovate to rebase this pull request so its verified commits contain the current base.'
+      : 'Push a history that contains the current base while preserving canonical author and committer identity.';
+    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. ${refreshInstruction} ${retrySummary}`;
     await syncStatusComment(
       github,
       owner,
