@@ -780,6 +780,8 @@ jobs:
       contents: read
     outputs:
       configured: ${{ steps.gate.outputs.configured }}
+      vsce_version: ${{ steps.tooling.outputs.vsce_version }}
+      vsce_integrity: ${{ steps.tooling.outputs.vsce_integrity }}
     steps:
       - name: Detect Marketplace token
         id: gate
@@ -812,6 +814,7 @@ jobs:
           node-version: 24
 
       - name: Validate Marketplace tooling lockfile
+        id: tooling
         if: ${{ steps.gate.outputs.configured == 'true' }}
         run: |
           set -euo pipefail
@@ -823,17 +826,16 @@ jobs:
 
           vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
           vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
-          if [ "${vsce_version}" != "3.9.2" ]; then
-            echo "Marketplace tooling lockfile must pin @vscode/vsce 3.9.2" >&2
+          # The reviewed lockfile at trusted_main_sha owns the exact tooling pin.
+          if ! [[ "${vsce_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Marketplace tooling lockfile must pin an exact @vscode/vsce release" >&2
             exit 1
           fi
-          case "${vsce_integrity}" in
-            sha512-?*) ;;
-            *)
-              echo "Marketplace tooling lockfile must pin @vscode/vsce integrity" >&2
-              exit 1
-              ;;
-          esac
+          if ! [[ "${vsce_integrity}" =~ ^sha512-[A-Za-z0-9+/]{86}==$ ]]; then
+            echo "Marketplace tooling lockfile must pin @vscode/vsce SHA-512 integrity" >&2
+            exit 1
+          fi
+          printf 'vsce_version=%s\nvsce_integrity=%s\n' "${vsce_version}" "${vsce_integrity}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare integrity-bound Marketplace toolchain
         if: ${{ steps.gate.outputs.configured == 'true' }}
@@ -1207,10 +1209,26 @@ jobs:
             echo "Extracted Marketplace VSCE launcher resolves outside the locked package" >&2
             exit 1
           fi
-          jq -e '.packages["node_modules/@vscode/vsce"] | .version == "3.9.2" and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json" >/dev/null
-          jq -e '.version == "3.9.2"' "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
           node_bin="$(command -v node)"
           test -x "${node_bin}"
+
+      - name: Validate extracted Marketplace tooling
+        if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          TRUSTED_VSCE_VERSION: ${{ needs.prepare-marketplace-toolchain.outputs.vsce_version }}
+          TRUSTED_VSCE_INTEGRITY: ${{ needs.prepare-marketplace-toolchain.outputs.vsce_integrity }}
+        run: |
+          set -euo pipefail
+          toolchain_dir="${RUNNER_TEMP}/vsce-toolchain"
+          test -n "${TRUSTED_VSCE_VERSION}"
+          test -n "${TRUSTED_VSCE_INTEGRITY}"
+          jq -e --arg version "${TRUSTED_VSCE_VERSION}" --arg integrity "${TRUSTED_VSCE_INTEGRITY}" \
+            '.packages["node_modules/@vscode/vsce"] | .version == $version and .integrity == $integrity' \
+            "${toolchain_dir}/package-lock.json" >/dev/null
+          jq -e --arg version "${TRUSTED_VSCE_VERSION}" \
+            '.name == "@vscode/vsce" and .version == $version' \
+            "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
 
       - name: Publish VS Code extension to Marketplace
         if: ${{ needs.prepare-marketplace-toolchain.outputs.configured == 'true' }}
