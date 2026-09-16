@@ -132,3 +132,38 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 		t.Fatalf("queue-me node tests failed: %v\n%s", err, output)
 	}
 }
+
+func TestQueueMeControllerRenovateIdentityRegression(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to prove Renovate queue identity handling")
+	}
+	const script = `
+const controller = require('./queue_me_controller.js');
+const pull = {
+  base: { repo: { name: 'lopper', owner: { login: 'octo' } } },
+  head: { repo: { full_name: 'octo/lopper' } },
+  user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+};
+const renovate = { login: 'renovate[bot]', type: 'Bot', id: 29139614 };
+const raw = { name: 'renovate[bot]', email: '29139614+renovate[bot]@users.noreply.github.com' };
+controller.testables.assertCanonicalCommitIdentity({
+  total_commits: 1,
+  commits: [{
+    sha: 'renovate-commit', author: renovate,
+    committer: { login: 'web-flow', type: 'User', id: 19864447 },
+    commit: {
+      author: raw,
+      committer: { name: 'GitHub', email: 'noreply@github.com' },
+      verification: { verified: true, reason: 'valid' },
+    },
+  }],
+}, pull);
+`
+	command := exec.Command(node, "-e", script)
+	command.Dir = repoPath(t, "scripts")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("verified same-repository Renovate identity must pass: %v\n%s", err, output)
+	}
+}
