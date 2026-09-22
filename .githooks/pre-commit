@@ -92,9 +92,16 @@ fi
 # including unstaged edits. commit-tree does not invoke commit hooks.
 staged_tree=$("$git_bin" write-tree) || exit 1
 set -- "$staged_tree"
-if parent_commit=$("$git_bin" rev-parse --verify HEAD 2>/dev/null); then
+if [ "${LOPPER_HOOK_AMEND:-0}" = 1 ]; then
+	# Git does not pass --amend to pre-commit; callers opt in explicitly.
+	amend_parents=$("$git_bin" show -s --format=%P HEAD) || exit 1
+	for parent_commit in $amend_parents; do
+		set -- "$@" -p "$parent_commit"
+	done
+elif parent_commit=$("$git_bin" rev-parse --verify HEAD 2>/dev/null); then
 	set -- "$@" -p "$parent_commit"
 fi
+unset LOPPER_HOOK_AMEND
 merge_head_file=$("$git_bin" rev-parse --git-path MERGE_HEAD) || exit 1
 if [ -f "$merge_head_file" ]; then
 	while IFS= read -r merge_parent; do

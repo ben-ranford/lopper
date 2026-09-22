@@ -52,6 +52,20 @@ func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
 	}
 }
 
+func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${LOPPER_HOOK_AMEND-}\"\n\t@test \"$$(git rev-parse HEAD^)\" = \"$$(git rev-parse before-amend^)\"\n\t@! git merge-base --is-ancestor before-amend HEAD\n")
+	runCommand(t, repoDir, "git", "add", "Makefile")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "amend fixture")
+	runCommand(t, repoDir, "git", "tag", "before-amend")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	if output, err := hookCommandWithEnv(repoDir, []string{"LOPPER_HOOK_AMEND=1"}, "git", "commit", "--amend", "--no-edit"); err != nil {
+		t.Fatalf("CI did not model amend parents: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "git", "checkout", "-b", "incoming")
