@@ -6,21 +6,141 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestHooksInstallUsesImmutableSnapshot(t *testing.T) {
+func TestInstalledPreCommitRunsStagedCI(t *testing.T) {
 	repoDir := newHookFixture(t)
-	sentinel := filepath.Join(repoDir, "branch-command-ran")
-	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
-	writeFile(t, filepath.Join(repoDir, "Makefile"), "fmt:\n\t@printf branch >"+sentinel+"\nci:\n\t@printf branch >"+sentinel+"\nhooks-install:\n\t@printf branch >"+sentinel+"\n")
+	sentinel := filepath.Join(repoDir, "ci-ran")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nexit 99\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git diff HEAD^ HEAD -- sample.go | grep -F 'return 2'\n\t@printf ci >"+sentinel+"\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "Makefile", ".githooks/pre-commit", "sample.go")
-	output, err := hookCommand(repoDir, "git", "commit", "-m", "revision B")
+	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@exit 99\n")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "full CI")
 	if err != nil {
-		t.Fatalf("commit revision B: %v\n%s", err, output)
+		t.Fatalf("commit with staged CI: %v\n%s", err, output)
 	}
-	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Fatalf("checkout-controlled command ran: %v", err)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("staged CI did not run: %v", err)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo fixture-ci-failed; exit 42\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
+	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing CI")
+	if err == nil || !strings.Contains(output, "fixture-ci-failed") {
+		t.Fatalf("expected CI failure to block commit, got %v:\n%s", err, output)
+	}
+	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+		t.Fatal("failed CI created a commit")
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestInstalledPreCommitIgnoresCheckoutHooks(t *testing.T) {
+	for _, hookExit := range []string{"0", "42"} {
+		t.Run("exit_"+hookExit, func(t *testing.T) {
+			repoDir := newHookFixture(t)
+			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+			writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\nprintf 'ci:\\n\\t@true\\n' > Makefile\nexit "+hookExit+"\n", 0o755)
+			writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo staged-ci-failed; exit 42\n")
+			runCommand(t, repoDir, "git", "add", "Makefile")
+			before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
+			output, err := hookCommand(repoDir, "git", "commit", "-m", "staged CI failure")
+			if err == nil || !strings.Contains(output, "staged-ci-failed") {
+				t.Fatalf("expected staged CI failure despite checkout hook, got %v:\n%s", err, output)
+			}
+			if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+				t.Fatal("failed staged CI created a commit")
+			}
+			assertHookWorktreeCleaned(t, repoDir)
+		})
+	}
+}
+
+func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
+	t.Helper()
+	worktrees := testutil.GitOutput(t, repoDir, "worktree", "list", "--porcelain")
+	if strings.Count(worktrees, "worktree ") != 1 {
+		t.Fatalf("CI left a temporary worktree registered: %s", worktrees)
+	}
+}
+
+func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${LOPPER_HOOK_AMEND-}\"\n\t@test \"$$(git rev-parse HEAD^)\" = \"$$(git rev-parse before-amend^)\"\n\t@! git merge-base --is-ancestor before-amend HEAD\n")
+	runCommand(t, repoDir, "git", "add", "Makefile")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "amend fixture")
+	runCommand(t, repoDir, "git", "tag", "before-amend")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	if output, err := hookCommandWithEnv(repoDir, []string{"LOPPER_HOOK_AMEND=1"}, "git", "commit", "--amend", "--no-edit"); err != nil {
+		t.Fatalf("CI did not model amend parents: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "git", "checkout", "-b", "incoming")
+	writeFile(t, filepath.Join(repoDir, "incoming.txt"), "incoming change\n")
+	runCommand(t, repoDir, "git", "add", "incoming.txt")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "incoming change")
+	runCommand(t, repoDir, "git", "checkout", "main")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git merge-base --is-ancestor incoming HEAD\n\t@test \"$$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')\" = 3\n")
+	runCommand(t, repoDir, "git", "add", "Makefile")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "local change")
+	runCommand(t, repoDir, "git", "merge", "--no-commit", "--no-ff", "incoming")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "merge incoming")
+	if err != nil {
+		t.Fatalf("merge CI snapshot lost incoming ancestry: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestInstalledPreCommitChecksFullTreeFromSparseCheckout(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "keep\n")
+	writeFile(t, filepath.Join(repoDir, "excluded", "required.txt"), "required\n")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -f included/keep.txt\n\t@test -f excluded/required.txt\n")
+	runCommand(t, repoDir, "git", "add", ".")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "sparse fixture")
+	runCommand(t, repoDir, "git", "sparse-checkout", "set", "included")
+	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "updated\n")
+	runCommand(t, repoDir, "git", "add", "included/keep.txt")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "sparse commit")
+	if err != nil {
+		t.Fatalf("CI did not check the full staged tree: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "excluded", "required.txt")); !os.IsNotExist(err) {
+		t.Fatalf("CI changed the caller's sparse checkout: %v", err)
+	}
+	if patterns := strings.TrimSpace(testutil.GitOutput(t, repoDir, "sparse-checkout", "list")); patterns != "included" {
+		t.Fatalf("CI changed the caller's sparse patterns: %q", patterns)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
+	repoDir := newHookFixture(t)
+	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+	managedHook := filepath.Join(hookDir, "pre-commit")
+	writeFileMode(t, managedHook, "#!/bin/sh\nexit 99\n", 0o755)
+	runCommand(t, repoDir, "make", "hooks-install")
+	want, err := os.ReadFile(filepath.Join(repoDir, ".githooks", "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(managedHook)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("installed snapshot was not refreshed: %v", err)
 	}
 }
 
@@ -223,6 +343,56 @@ func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestInstalledPreCommitUsesAlternateCommonDirectory(t *testing.T) {
+	repoDir := newHookFixture(t)
+	commonDir := filepath.Join(t.TempDir(), "common")
+	if err := os.CopyFS(commonDir, os.DirFS(filepath.Join(repoDir, ".git"))); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"GIT_COMMON_DIR=" + commonDir}
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_COMMON_DIR-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "add", "sample.go", "Makefile"); err != nil {
+		t.Fatalf("stage with alternate common directory: %v\n%s", err, output)
+	}
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "commit", "-m", "alternate common directory"); err != nil {
+		t.Fatalf("commit with alternate common directory: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
+	repoDir := newHookFixture(t)
+	originalHead := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
+	objects := t.TempDir()
+	env := []string{"GIT_OBJECT_DIRECTORY=" + objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repoDir, ".git", "objects")}
+	baseCommit, err := hookCommandWithEnv(repoDir, env, "git", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "alternate CI base")
+	if err != nil {
+		t.Fatalf("create alternate CI base: %v\n%s", err, baseCommit)
+	}
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "update-ref", "refs/remotes/ci-base", strings.TrimSpace(baseCommit)); err != nil {
+		t.Fatalf("record alternate CI base: %v\n%s", err, output)
+	}
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git rev-parse --verify refs/remotes/ci-base^{commit}\n\t@test -z \"$${GIT_OBJECT_DIRECTORY-}\"\n\t@test -z \"$${GIT_ALTERNATE_OBJECT_DIRECTORIES-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "add", "sample.go", "Makefile"); err != nil {
+		t.Fatalf("stage alternate objects: %v\n%s", err, output)
+	}
+	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+	if output, err := hookCommandWithEnv(repoDir, env, filepath.Join(hookDir, "pre-commit")); err != nil {
+		t.Fatalf("CI lost alternate objects: %v\n%s", err, output)
+	}
+	packs, err := filepath.Glob(filepath.Join(repoDir, ".git", "objects", "pack", "*.idx"))
+	if err != nil || len(packs) != 1 {
+		t.Fatalf("expected one materialized snapshot pack, got %v: %v", packs, err)
+	}
+	packContents := testutil.GitOutput(t, repoDir, "verify-pack", "-v", packs[0])
+	if strings.Contains(packContents, originalHead) {
+		t.Fatal("snapshot pack duplicated history already in normal storage")
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
 	repoDir := newHookFixture(t)
 	indexPath := filepath.Join(repoDir, "alternate-index")
@@ -282,7 +452,16 @@ func newHookFixture(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
 	}
-	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "Makefile"), filepath.Join(repoDir, "Makefile"), 0o644)
+	makefile, err := os.ReadFile(filepath.Join(filepath.Dir(cwd), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, installers, ok := strings.Cut(string(makefile), "hooks-install:\n")
+	if !ok {
+		t.Fatal("missing hook installation targets")
+	}
+	installers, _, _ = strings.Cut(installers, "\nvscode-extension-install:")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
 	runCommand(t, repoDir, "git", "add", ".")

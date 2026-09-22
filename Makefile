@@ -506,7 +506,11 @@ hooks-install:
 			[ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir"; \
 			echo "Unable to activate managed core.hooksPath" >&2; exit 1; \
 		fi; \
-		echo "Installed immutable pre-commit hook at $$managed_hook"
+		if [ "$$created_hook" -eq 0 ]; then \
+			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
+			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; \
+		fi; \
+		echo "Installed full-CI pre-commit hook at $$managed_hook"
 
 hooks-uninstall:
 	@set -eu; \
