@@ -114,7 +114,7 @@ pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree
 # clearing a caller-supplied object database. Do not repack borrowed history.
 local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
 ci_root=$("$mktemp_bin" -d) || exit 1
-if [ -n "${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}" ]; then
+if [ -n "${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}${GIT_COMMON_DIR-}" ]; then
 	"$git_bin" rev-list --objects --no-object-names --all "$pending_commit" >"$ci_root/objects" || exit 1
 	(
 		for git_name in $local_git_env; do unset "$git_name"; done

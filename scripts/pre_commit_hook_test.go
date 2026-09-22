@@ -339,6 +339,24 @@ func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestInstalledPreCommitUsesAlternateCommonDirectory(t *testing.T) {
+	repoDir := newHookFixture(t)
+	commonDir := filepath.Join(t.TempDir(), "common")
+	if err := os.CopyFS(commonDir, os.DirFS(filepath.Join(repoDir, ".git"))); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"GIT_COMMON_DIR=" + commonDir}
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_COMMON_DIR-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "add", "sample.go", "Makefile"); err != nil {
+		t.Fatalf("stage with alternate common directory: %v\n%s", err, output)
+	}
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "commit", "-m", "alternate common directory"); err != nil {
+		t.Fatalf("commit with alternate common directory: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
 	repoDir := newHookFixture(t)
 	originalHead := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
