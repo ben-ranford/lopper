@@ -327,7 +327,14 @@ func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
 	originalHead := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 	objects := t.TempDir()
 	env := []string{"GIT_OBJECT_DIRECTORY=" + objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repoDir, ".git", "objects")}
-	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_OBJECT_DIRECTORY-}\"\n\t@test -z \"$${GIT_ALTERNATE_OBJECT_DIRECTORIES-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
+	baseCommit, err := hookCommandWithEnv(repoDir, env, "git", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "alternate CI base")
+	if err != nil {
+		t.Fatalf("create alternate CI base: %v\n%s", err, baseCommit)
+	}
+	if output, err := hookCommandWithEnv(repoDir, env, "git", "update-ref", "refs/remotes/ci-base", strings.TrimSpace(baseCommit)); err != nil {
+		t.Fatalf("record alternate CI base: %v\n%s", err, output)
+	}
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git rev-parse --verify refs/remotes/ci-base^{commit}\n\t@test -z \"$${GIT_OBJECT_DIRECTORY-}\"\n\t@test -z \"$${GIT_ALTERNATE_OBJECT_DIRECTORIES-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
 	if output, err := hookCommandWithEnv(repoDir, env, "git", "add", "sample.go", "Makefile"); err != nil {
 		t.Fatalf("stage alternate objects: %v\n%s", err, output)
