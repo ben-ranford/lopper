@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/stave"
 	"github.com/ben-ranford/stave/event"
 	"github.com/ben-ranford/stave/session"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 )
 
@@ -108,24 +109,41 @@ func TestStavePreviewParentCancellationRestoresTerminalAndReturnsCause(t *testin
 	analyzer := newParentCancellationRefreshAnalyzer()
 	t.Cleanup(func() { releaseParentCancellationRefresh(t, analyzer, false) })
 	parent, cancelParent := context.WithCancelCause(context.Background())
-	t.Cleanup(func() { cancelParent(nil) })
 	returned := make(chan error, 1)
+	exited := make(chan struct{})
+	t.Cleanup(func() {
+		cancelParent(nil)
+		select {
+		case <-exited:
+		case <-time.After(staveSignalSubprocessBound):
+			t.Error("preview did not stop before PTY cleanup")
+		}
+	})
 	summary := NewSummary(terminal, terminal, analyzer, report.NewFormatter())
 	go func() {
+		defer close(exited)
 		returned <- NewStavePreview(summary).Start(parent, Options{RepoPath: ".", UseStavePreview: true, Features: previewFeatures(t), Width: 100})
 	}()
 	capture := newSignalPTYCapture(master)
 	waitSignalOutput(t, capture, returned, func(output string) bool {
 		return strings.Contains(output, "Status: Stave preview") && strings.Contains(output, "\x1b[?1049h")
 	})
-	if _, err := master.Write([]byte(":refresh\r")); err != nil {
+	if _, err := master.Write([]byte(":refresh")); err != nil {
 		t.Fatalf("start refresh action: %v", err)
 	}
-	waitForParentCancellationRefresh(t, analyzer.started, returned)
+	// Wait for command acceptance before submitting it. Rendering the initial
+	// frame does not prove that the PTY input queue has been processed.
+	waitSignalOutput(t, capture, returned, func(output string) bool {
+		return strings.Contains(ansi.Strip(output), "Command: refresh")
+	})
+	if _, err := master.Write([]byte("\r")); err != nil {
+		t.Fatalf("submit refresh action: %v", err)
+	}
+	waitForParentCancellationRefresh(t, analyzer.started, "startup", staveSignalSubprocessBound, capture)
 
 	parentCause := errors.New("parent cancellation")
 	cancelParent(parentCause)
-	waitForParentCancellationRefresh(t, analyzer.cancelled, returned)
+	waitForParentCancellationRefresh(t, analyzer.cancelled, "cancellation", time.Second, capture)
 	if err := waitForParentCancellationReturn(returned); !errors.Is(err, parentCause) {
 		t.Fatalf("start parent cancellation = %v, want cause %v", err, parentCause)
 	}
@@ -167,14 +185,14 @@ func (a *parentCancellationRefreshAnalyzer) Analyse(ctx context.Context, _ analy
 	}
 }
 
-func waitForParentCancellationRefresh(t *testing.T, signal <-chan struct{}, returned <-chan error) {
+func waitForParentCancellationRefresh(t *testing.T, signal <-chan struct{}, phase string, bound time.Duration, capture *signalPTYCapture) {
 	t.Helper()
+	// Preview return and backend cancellation are independent acknowledgements.
+	// Do not consume the return value while waiting for the backend signal.
 	select {
 	case <-signal:
-	case err := <-returned:
-		t.Fatalf("preview returned before refresh cancellation was observed: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("refresh cancellation was not observed")
+	case <-time.After(bound):
+		t.Fatalf("refresh %s was not observed within %s; output=%q", phase, bound, capture.String())
 	}
 }
 

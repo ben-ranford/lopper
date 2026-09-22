@@ -1613,7 +1613,7 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	if !ok {
 		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
 	}
-	if vsce.Version != "3.9.2" || !strings.HasPrefix(vsce.Integrity, "sha512-") {
+	if vsce.Version != "4.0.0" || !strings.HasPrefix(vsce.Integrity, "sha512-") {
 		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
 	}
 
