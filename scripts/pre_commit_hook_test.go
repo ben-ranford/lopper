@@ -324,6 +324,7 @@ func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 
 func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
 	repoDir := newHookFixture(t)
+	originalHead := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 	objects := t.TempDir()
 	env := []string{"GIT_OBJECT_DIRECTORY=" + objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repoDir, ".git", "objects")}
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_OBJECT_DIRECTORY-}\"\n\t@test -z \"$${GIT_ALTERNATE_OBJECT_DIRECTORIES-}\"\n\t@git show HEAD:sample.go | grep -F 'return 2'\n")
@@ -334,6 +335,14 @@ func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
 	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 	if output, err := hookCommandWithEnv(repoDir, env, filepath.Join(hookDir, "pre-commit")); err != nil {
 		t.Fatalf("CI lost alternate objects: %v\n%s", err, output)
+	}
+	packs, err := filepath.Glob(filepath.Join(repoDir, ".git", "objects", "pack", "*.idx"))
+	if err != nil || len(packs) != 1 {
+		t.Fatalf("expected one materialized snapshot pack, got %v: %v", packs, err)
+	}
+	packContents := testutil.GitOutput(t, repoDir, "verify-pack", "-v", packs[0])
+	if strings.Contains(packContents, originalHead) {
+		t.Fatal("snapshot pack duplicated history already in normal storage")
 	}
 	assertHookWorktreeCleaned(t, repoDir)
 }

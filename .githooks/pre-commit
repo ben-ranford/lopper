@@ -110,17 +110,22 @@ if [ -f "$merge_head_file" ]; then
 fi
 pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$@") || exit 1
 
-# Materialize objects from a caller-supplied object database before clearing
-# its environment. The CI worktree and its child Git processes need ordinary
-# repository storage, while unrelated test fixtures must not inherit it.
+# Materialize only objects missing from normal repository storage before
+# clearing a caller-supplied object database. Do not repack borrowed history.
+local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
 ci_root=$("$mktemp_bin" -d) || exit 1
 if [ -n "${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}" ]; then
-	printf '%s\n' "$pending_commit" | "$git_bin" pack-objects --stdout --revs >"$ci_root/snapshot.pack" || exit 1
+	"$git_bin" rev-list --objects --no-object-names "$pending_commit" >"$ci_root/objects" || exit 1
+	(
+		for git_name in $local_git_env; do unset "$git_name"; done
+		"$git_bin" cat-file --batch-check='%(objectname) %(objecttype)' <"$ci_root/objects"
+	) >"$ci_root/object-status" || exit 1
+	awk '$2 == "missing" { print $1 }' "$ci_root/object-status" >"$ci_root/missing" || exit 1
+	"$git_bin" pack-objects --stdout <"$ci_root/missing" >"$ci_root/snapshot.pack" || exit 1
 fi
 
 # CI creates temporary repositories and commits in its test fixtures. Do not
 # leak the committing worktree's index or Git configuration into those tests.
-local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
 for git_name in $local_git_env; do
 	unset "$git_name"
 done
