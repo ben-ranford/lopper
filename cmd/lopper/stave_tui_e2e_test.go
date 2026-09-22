@@ -295,7 +295,31 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 	root := mustModuleRoot(t)
 	bin := filepath.Join(t.TempDir(), "lopper")
 	buildBinary(t, root, bin)
-	cmd := exec.Command(bin, "tui", "--repo", root, "--language", "go", "--top", "5", "--enable-feature", "stave-tui-preview")
+	// Other packages create and remove probe files in the source checkout.
+	// Analyse a private fixture so interactive refresh cannot race those tests.
+	fixture := t.TempDir()
+	writeFile(t, filepath.Join(fixture, "go.mod"), `module example.com/stave-pty
+
+go 1.22
+
+require (
+	charm.land/bubbletea/v2 v2.0.0
+	github.com/pelletier/go-toml/v2 v2.0.0
+)
+`)
+	writeFile(t, filepath.Join(fixture, "main.go"), `package main
+
+import (
+	tea "charm.land/bubbletea/v2"
+	toml "github.com/pelletier/go-toml/v2"
+)
+
+func main() {
+	_ = tea.NewProgram
+	_ = toml.Unmarshal
+}
+`)
+	cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "go", "--top", "5", "--enable-feature", "stave-tui-preview")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 30})
