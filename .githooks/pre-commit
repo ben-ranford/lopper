@@ -45,7 +45,7 @@ ci_worktree=
 cleanup() {
 	rm -f "$names_file"
 	if [ -n "$ci_worktree" ]; then
-		"$git_bin" -C "$checkout_root" -c core.bare=false worktree remove --force "$ci_worktree"
+		"$git_bin" -C "$checkout_root" -c core.bare=false worktree remove --force "$ci_worktree" || :
 	fi
 	if [ -n "$ci_root" ]; then rm -rf "$ci_root"; fi
 }
@@ -134,8 +134,8 @@ export PATH
 if [ -f "$ci_root/snapshot.pack" ]; then
 	"$git_bin" index-pack --stdin <"$ci_root/snapshot.pack" >/dev/null || exit 1
 fi
-"$git_bin" -c core.bare=false worktree add --detach "$ci_root/checkout" "$pending_commit" || exit 1
 ci_worktree=$ci_root/checkout
+"$git_bin" -c core.bare=false worktree add --detach "$ci_worktree" "$pending_commit" || exit 1
 # Sparse patterns are inherited by new worktrees. CI must see the full tree;
 # sparse-checkout scopes the change to this temporary worktree.
 if [ "$("$git_bin" -C "$ci_worktree" config --bool core.sparseCheckout || :)" = true ]; then

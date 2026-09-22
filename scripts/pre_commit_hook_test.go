@@ -44,6 +44,23 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	assertHookWorktreeCleaned(t, repoDir)
 }
 
+func TestInstalledPreCommitCleansFailedCheckout(t *testing.T) {
+	repoDir := newHookFixture(t)
+	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+	writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\necho fixture-checkout-failed >&2\nexit 42\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing checkout")
+	if err == nil || !strings.Contains(output, "fixture-checkout-failed") {
+		t.Fatalf("expected checkout failure, got %v:\n%s", err, output)
+	}
+	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+		t.Fatal("failed checkout created a commit")
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
 	t.Helper()
 	worktrees := testutil.GitOutput(t, repoDir, "worktree", "list", "--porcelain")
