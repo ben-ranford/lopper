@@ -10,27 +10,29 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestInstalledPreCommitRunsWorkingTreeCI(t *testing.T) {
+func TestInstalledPreCommitRunsStagedCI(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "ci-ran")
 	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nexit 99\n", 0o755)
-	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@printf ci >"+sentinel+"\n")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git diff HEAD^ HEAD -- sample.go | grep -F 'return 2'\n\t@printf ci >"+sentinel+"\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@exit 99\n")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "full CI")
 	if err != nil {
-		t.Fatalf("commit with working-tree CI: %v\n%s", err, output)
+		t.Fatalf("commit with staged CI: %v\n%s", err, output)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
-		t.Fatalf("working-tree CI did not run: %v", err)
+		t.Fatalf("staged CI did not run: %v", err)
 	}
+	assertHookWorktreeCleaned(t, repoDir)
 }
 
 func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo fixture-ci-failed; exit 42\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
 	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing CI")
 	if err == nil || !strings.Contains(output, "fixture-ci-failed") {
@@ -38,6 +40,15 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	}
 	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
 		t.Fatal("failed CI created a commit")
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
+func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
+	t.Helper()
+	worktrees := testutil.GitOutput(t, repoDir, "worktree", "list", "--porcelain")
+	if strings.Count(worktrees, "worktree ") != 1 {
+		t.Fatalf("CI left a temporary worktree registered: %s", worktrees)
 	}
 }
 

@@ -40,7 +40,15 @@ if [ ! -f "$gofmt_bin" ] || [ ! -x "$gofmt_bin" ]; then
 fi
 case "$gofmt_bin" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: gofmt" >&2; exit 1 ;; esac
 names_file=$("$mktemp_bin") || exit 1
-cleanup() { rm -f "$names_file"; }
+ci_root=
+ci_worktree=
+cleanup() {
+	rm -f "$names_file"
+	if [ -n "$ci_worktree" ]; then
+		"$git_bin" -C "$checkout_root" -c core.bare=false worktree remove --force "$ci_worktree"
+	fi
+	if [ -n "$ci_root" ]; then rm -rf "$ci_root"; fi
+}
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -80,6 +88,15 @@ if ! "$xargs_bin" -0 -n 1 sh -c '
 	exit 1
 fi
 
+# Give HEAD-based gates the pending index, without advancing the branch or
+# including unstaged edits. commit-tree does not invoke commit hooks.
+staged_tree=$("$git_bin" write-tree) || exit 1
+if parent_commit=$("$git_bin" rev-parse --verify HEAD 2>/dev/null); then
+	pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$staged_tree" -p "$parent_commit") || exit 1
+else
+	pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$staged_tree") || exit 1
+fi
+
 # CI creates temporary repositories and commits in its test fixtures. Do not
 # leak the committing worktree's index or Git configuration into those tests.
 local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
@@ -88,5 +105,8 @@ for git_name in $local_git_env; do
 done
 PATH=$caller_path
 export PATH
-echo "[pre-commit] running full make ci on the working tree"
-make ci
+ci_root=$("$mktemp_bin" -d) || exit 1
+"$git_bin" -c core.bare=false worktree add --detach "$ci_root/checkout" "$pending_commit" || exit 1
+ci_worktree=$ci_root/checkout
+echo "[pre-commit] running full make ci on the staged snapshot"
+(cd "$ci_worktree" && make ci)
