@@ -114,5 +114,10 @@ export PATH
 ci_root=$("$mktemp_bin" -d) || exit 1
 "$git_bin" -c core.bare=false worktree add --detach "$ci_root/checkout" "$pending_commit" || exit 1
 ci_worktree=$ci_root/checkout
+# Sparse patterns are inherited by new worktrees. CI must see the full tree;
+# sparse-checkout scopes the change to this temporary worktree.
+if [ "$("$git_bin" -C "$ci_worktree" config --bool core.sparseCheckout || :)" = true ]; then
+	"$git_bin" -C "$ci_worktree" sparse-checkout disable || exit 1
+fi
 echo "[pre-commit] running full make ci on the staged snapshot"
 (cd "$ci_worktree" && make ci)

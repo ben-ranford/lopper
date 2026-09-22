@@ -70,6 +70,29 @@ func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
 	assertHookWorktreeCleaned(t, repoDir)
 }
 
+func TestInstalledPreCommitChecksFullTreeFromSparseCheckout(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "keep\n")
+	writeFile(t, filepath.Join(repoDir, "excluded", "required.txt"), "required\n")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -f included/keep.txt\n\t@test -f excluded/required.txt\n")
+	runCommand(t, repoDir, "git", "add", ".")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "sparse fixture")
+	runCommand(t, repoDir, "git", "sparse-checkout", "set", "included")
+	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "updated\n")
+	runCommand(t, repoDir, "git", "add", "included/keep.txt")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "sparse commit")
+	if err != nil {
+		t.Fatalf("CI did not check the full staged tree: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "excluded", "required.txt")); !os.IsNotExist(err) {
+		t.Fatalf("CI changed the caller's sparse checkout: %v", err)
+	}
+	if patterns := strings.TrimSpace(testutil.GitOutput(t, repoDir, "sparse-checkout", "list")); patterns != "included" {
+		t.Fatalf("CI changed the caller's sparse patterns: %q", patterns)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
 	repoDir := newHookFixture(t)
 	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
