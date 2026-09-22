@@ -79,3 +79,14 @@ if ! "$xargs_bin" -0 -n 1 sh -c '
 	' sh "$mktemp_bin" "$git_bin" "$gofmt_bin" <"$names_file"; then
 	exit 1
 fi
+
+# CI creates temporary repositories and commits in its test fixtures. Do not
+# leak the committing worktree's index or Git configuration into those tests.
+local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
+for git_name in $local_git_env; do
+	unset "$git_name"
+done
+PATH=$caller_path
+export PATH
+echo "[pre-commit] running full make ci on the working tree"
+make ci

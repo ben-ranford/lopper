@@ -6,21 +6,54 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-func TestHooksInstallUsesImmutableSnapshot(t *testing.T) {
+func TestInstalledPreCommitRunsWorkingTreeCI(t *testing.T) {
 	repoDir := newHookFixture(t)
-	sentinel := filepath.Join(repoDir, "branch-command-ran")
-	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
-	writeFile(t, filepath.Join(repoDir, "Makefile"), "fmt:\n\t@printf branch >"+sentinel+"\nci:\n\t@printf branch >"+sentinel+"\nhooks-install:\n\t@printf branch >"+sentinel+"\n")
+	sentinel := filepath.Join(repoDir, "ci-ran")
+	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nexit 99\n", 0o755)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@printf ci >"+sentinel+"\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "Makefile", ".githooks/pre-commit", "sample.go")
-	output, err := hookCommand(repoDir, "git", "commit", "-m", "revision B")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "full CI")
 	if err != nil {
-		t.Fatalf("commit revision B: %v\n%s", err, output)
+		t.Fatalf("commit with working-tree CI: %v\n%s", err, output)
 	}
-	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Fatalf("checkout-controlled command ran: %v", err)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("working-tree CI did not run: %v", err)
+	}
+}
+
+func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
+	repoDir := newHookFixture(t)
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo fixture-ci-failed; exit 42\n")
+	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repoDir, "git", "add", "sample.go")
+	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing CI")
+	if err == nil || !strings.Contains(output, "fixture-ci-failed") {
+		t.Fatalf("expected CI failure to block commit, got %v:\n%s", err, output)
+	}
+	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+		t.Fatal("failed CI created a commit")
+	}
+}
+
+func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
+	repoDir := newHookFixture(t)
+	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+	managedHook := filepath.Join(hookDir, "pre-commit")
+	writeFileMode(t, managedHook, "#!/bin/sh\nexit 99\n", 0o755)
+	runCommand(t, repoDir, "make", "hooks-install")
+	want, err := os.ReadFile(filepath.Join(repoDir, ".githooks", "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(managedHook)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("installed snapshot was not refreshed: %v", err)
 	}
 }
 
@@ -282,7 +315,16 @@ func newHookFixture(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
 	}
-	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "Makefile"), filepath.Join(repoDir, "Makefile"), 0o644)
+	makefile, err := os.ReadFile(filepath.Join(filepath.Dir(cwd), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, installers, ok := strings.Cut(string(makefile), "hooks-install:\n")
+	if !ok {
+		t.Fatal("missing hook installation targets")
+	}
+	installers, _, _ = strings.Cut(installers, "\nvscode-extension-install:")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
 	runCommand(t, repoDir, "git", "add", ".")
