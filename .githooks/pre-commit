@@ -103,6 +103,14 @@ if [ -f "$merge_head_file" ]; then
 fi
 pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$@") || exit 1
 
+# Materialize objects from a caller-supplied object database before clearing
+# its environment. The CI worktree and its child Git processes need ordinary
+# repository storage, while unrelated test fixtures must not inherit it.
+ci_root=$("$mktemp_bin" -d) || exit 1
+if [ -n "${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}" ]; then
+	printf '%s\n' "$pending_commit" | "$git_bin" pack-objects --stdout --revs >"$ci_root/snapshot.pack" || exit 1
+fi
+
 # CI creates temporary repositories and commits in its test fixtures. Do not
 # leak the committing worktree's index or Git configuration into those tests.
 local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
@@ -111,7 +119,9 @@ for git_name in $local_git_env; do
 done
 PATH=$caller_path
 export PATH
-ci_root=$("$mktemp_bin" -d) || exit 1
+if [ -f "$ci_root/snapshot.pack" ]; then
+	"$git_bin" index-pack --stdin <"$ci_root/snapshot.pack" >/dev/null || exit 1
+fi
 "$git_bin" -c core.bare=false worktree add --detach "$ci_root/checkout" "$pending_commit" || exit 1
 ci_worktree=$ci_root/checkout
 # Sparse patterns are inherited by new worktrees. CI must see the full tree;
