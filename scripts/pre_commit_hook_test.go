@@ -44,21 +44,25 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	assertHookWorktreeCleaned(t, repoDir)
 }
 
-func TestInstalledPreCommitCleansFailedCheckout(t *testing.T) {
-	repoDir := newHookFixture(t)
-	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
-	writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\necho fixture-checkout-failed >&2\nexit 42\n", 0o755)
-	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
-	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
-	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing checkout")
-	if err == nil || !strings.Contains(output, "fixture-checkout-failed") {
-		t.Fatalf("expected checkout failure, got %v:\n%s", err, output)
+func TestInstalledPreCommitIgnoresCheckoutHooks(t *testing.T) {
+	for _, hookExit := range []string{"0", "42"} {
+		t.Run("exit_"+hookExit, func(t *testing.T) {
+			repoDir := newHookFixture(t)
+			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+			writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\nprintf 'ci:\\n\\t@true\\n' > Makefile\nexit "+hookExit+"\n", 0o755)
+			writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo staged-ci-failed; exit 42\n")
+			runCommand(t, repoDir, "git", "add", "Makefile")
+			before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
+			output, err := hookCommand(repoDir, "git", "commit", "-m", "staged CI failure")
+			if err == nil || !strings.Contains(output, "staged-ci-failed") {
+				t.Fatalf("expected staged CI failure despite checkout hook, got %v:\n%s", err, output)
+			}
+			if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+				t.Fatal("failed staged CI created a commit")
+			}
+			assertHookWorktreeCleaned(t, repoDir)
+		})
 	}
-	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
-		t.Fatal("failed checkout created a commit")
-	}
-	assertHookWorktreeCleaned(t, repoDir)
 }
 
 func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
