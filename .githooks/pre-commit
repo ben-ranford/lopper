@@ -91,11 +91,17 @@ fi
 # Give HEAD-based gates the pending index, without advancing the branch or
 # including unstaged edits. commit-tree does not invoke commit hooks.
 staged_tree=$("$git_bin" write-tree) || exit 1
+set -- "$staged_tree"
 if parent_commit=$("$git_bin" rev-parse --verify HEAD 2>/dev/null); then
-	pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$staged_tree" -p "$parent_commit") || exit 1
-else
-	pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$staged_tree") || exit 1
+	set -- "$@" -p "$parent_commit"
 fi
+merge_head_file=$("$git_bin" rev-parse --git-path MERGE_HEAD) || exit 1
+if [ -f "$merge_head_file" ]; then
+	while IFS= read -r merge_parent; do
+		set -- "$@" -p "$merge_parent"
+	done < "$merge_head_file"
+fi
+pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$@") || exit 1
 
 # CI creates temporary repositories and commits in its test fixtures. Do not
 # leak the committing worktree's index or Git configuration into those tests.

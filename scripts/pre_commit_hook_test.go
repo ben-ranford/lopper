@@ -52,6 +52,24 @@ func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
 	}
 }
 
+func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "git", "checkout", "-b", "incoming")
+	writeFile(t, filepath.Join(repoDir, "incoming.txt"), "incoming change\n")
+	runCommand(t, repoDir, "git", "add", "incoming.txt")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "incoming change")
+	runCommand(t, repoDir, "git", "checkout", "main")
+	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git merge-base --is-ancestor incoming HEAD\n\t@test \"$$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')\" = 3\n")
+	runCommand(t, repoDir, "git", "add", "Makefile")
+	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "local change")
+	runCommand(t, repoDir, "git", "merge", "--no-commit", "--no-ff", "incoming")
+	output, err := hookCommand(repoDir, "git", "commit", "-m", "merge incoming")
+	if err != nil {
+		t.Fatalf("merge CI snapshot lost incoming ancestry: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repoDir)
+}
+
 func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
 	repoDir := newHookFixture(t)
 	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
