@@ -3,9 +3,9 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -18,18 +18,24 @@ import (
 // Program.Send then discards them, allowing StreamEvents to finish flushing.
 type staveTerminalInput struct {
 	reader cancelreader.CancelReader
-	source io.Reader
+	source *os.File
 	cancel context.CancelFunc
 	done   chan struct{}
 	err    error
 }
 
 func newStaveTerminalInput(source io.Reader) (*staveTerminalInput, error) {
-	reader, err := uv.NewCancelReader(source)
+	// Full-screen selection already requires a file. Generic readers use a
+	// fallback that cannot interrupt a blocked Read, so joining them is unsafe.
+	file, ok := source.(*os.File)
+	if !ok || file == nil {
+		return nil, fmt.Errorf("full-screen terminal input requires a file, got %T", source)
+	}
+	reader, err := uv.NewCancelReader(file)
 	if err != nil {
 		return nil, err
 	}
-	return &staveTerminalInput{reader: reader, source: source}, nil
+	return &staveTerminalInput{reader: reader, source: file}, nil
 }
 
 func (in *staveTerminalInput) start(program *tea.Program) {
@@ -64,10 +70,7 @@ func (in *staveTerminalInput) close() error {
 // Bubble Tea still owns raw mode and renderer restoration. This EOF adapter
 // preserves its terminal detection while keeping its internal parser idle.
 func (in *staveTerminalInput) terminal() io.Reader {
-	if file, ok := in.source.(term.File); ok {
-		return &staveTerminalEOF{file: file}
-	}
-	return strings.NewReader("")
+	return &staveTerminalEOF{file: in.source}
 }
 
 type staveTerminalEOF struct{ file term.File }
