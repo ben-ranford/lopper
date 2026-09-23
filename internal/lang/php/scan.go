@@ -164,7 +164,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	}
 	parsed := parsePHPImports(content, relPath, resolver)
 	usage := shared.CountUsage(content, parsed.imports)
-	dynamic := hasDynamicPatterns(content, relPath)
+	dynamic := hasDynamicPatterns(content, relPath, resolver.allowPHPShortOpenTags)
 
 	mergeDependencyCounts(c.result.GroupedImportsByDependency, parsed.groupedByDep)
 	if dynamic {
