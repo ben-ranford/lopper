@@ -54,13 +54,15 @@ func recordLookup(target map[string]string, ambiguous map[string][]string, key s
 			return
 		}
 		merged := append([]string{existing, value}, ambiguous[key]...)
-		ambiguous[key] = uniqueSortedStrings(merged)
+		ambiguous[key] = sortedUniqueTrimmedStringsNonNil(merged)
 		return
 	}
 	target[key] = value
 }
 
-func uniqueSortedStrings(values []string) []string {
+// sortedUniqueTrimmedStringsNonNil preserves the lookup contract of a non-nil
+// result, even for empty input. Unlike report normalization, it never returns nil.
+func sortedUniqueTrimmedStringsNonNil(values []string) []string {
 	set := make(map[string]struct{})
 	for _, value := range values {
 		value = strings.TrimSpace(value)

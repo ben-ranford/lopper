@@ -133,16 +133,6 @@ func addDependencyKeys(dependencies map[string]struct{}, table map[string]any, _
 	}
 }
 
-func sortedDependencyUnion(values ...map[string]struct{}) []string {
-	set := make(map[string]struct{})
-	for _, value := range values {
-		for dependency := range value {
-			set[dependency] = struct{}{}
-		}
-	}
-	return shared.SortedKeys(set)
-}
-
 func sortedMapKeys(values map[string]any) string {
 	return strings.Join(sortedMapKeySlice(values), ", ")
 }

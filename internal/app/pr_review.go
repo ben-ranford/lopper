@@ -498,7 +498,7 @@ func collectPRReviewWarnings(input prReviewArtifactInput) []string {
 			warnings = append(warnings, fmt.Sprintf("head %s: %s", shortPRReviewRevision(input.headSHA), trimmed))
 		}
 	}
-	return uniqueSortedStrings(warnings)
+	return report.SortedUniqueTrimmedStrings(warnings)
 }
 
 func shortPRReviewRevision(sha string) string {
