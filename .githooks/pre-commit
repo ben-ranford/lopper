@@ -1,81 +1,165 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
-unset GIT_DIR GIT_WORK_TREE GIT_PREFIX
-
-config_count=${GIT_CONFIG_COUNT:-0}
-case "$config_count" in ''|*[!0-9]*) exit 1 ;; esac
-while [ "${config_count#0}" != "$config_count" ]; do config_count=${config_count#0}; done
-config_count=${config_count:-0}
-export "GIT_CONFIG_KEY_${config_count}=core.bare"
-export "GIT_CONFIG_VALUE_${config_count}=false"
-export GIT_CONFIG_COUNT=$((config_count + 1))
-
+# Installation explicitly trusts this snapshot. Runtime checkout contents are
+# excluded from hook-selected executables; staged CI itself is not sandboxed.
 caller_path=${PATH-}
-gofmt_bin=$(PATH=$caller_path command -v gofmt) || exit 1
-PATH=/usr/bin:/bin:$caller_path
+PATH=/usr/bin:/bin
 export PATH
-checkout_root=$(pwd -P) || exit 1
-git_bin=$(command -v git) || exit 1
-mktemp_bin=$(command -v mktemp) || exit 1
-xargs_bin=$(command -v xargs) || exit 1
-case "$gofmt_bin" in /*) ;; *) echo "Refusing unresolved hook tool: gofmt" >&2; exit 1 ;; esac
-gofmt_reference=$gofmt_bin
-gofmt_link_depth=0
-while [ -L "$gofmt_bin" ]; do
-	gofmt_parent=$(CDPATH='' cd -P "$(dirname "$gofmt_bin")" && pwd -P) || exit 1
-	gofmt_target=$(readlink "$gofmt_bin") || exit 1
-	case "$gofmt_target" in
-		/*) gofmt_bin=$gofmt_target ;;
-		*) gofmt_bin=$gofmt_parent/$gofmt_target ;;
+checkout_root=$(pwd -P && printf '.') || exit 1
+checkout_root=${checkout_root%.}
+checkout_root=${checkout_root%$'\n'}
+mktemp_bin=/usr/bin/mktemp
+xargs_bin=/usr/bin/xargs
+inventory_file=$("$mktemp_bin") || exit 1
+trap '/bin/rm -f "$inventory_file"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Inventory the physical checkout, never an inherited alternate repository.
+(
+	unset GIT_DIR GIT_WORK_TREE GIT_PREFIX GIT_COMMON_DIR GIT_INDEX_FILE
+	unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+	unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+	/usr/bin/git --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+		-C "$checkout_root" worktree list --porcelain -z
+) >"$inventory_file" || { echo 'Cannot inspect hook worktrees' >&2; exit 1; }
+roots=()
+record_root=
+record_identity=false
+found_checkout=false
+while IFS= read -r -d '' field; do
+	case "$field" in
+		worktree\ *)
+			[ -z "$record_root" ] || exit 1
+			record_root=${field#worktree }
+			case "$record_root" in /*) ;; *) exit 1 ;; esac
+			roots+=("$record_root")
+			# Stale, missing, and inaccessible foreign worktrees stay excluded
+			# lexically. They must not make otherwise usable checkouts fail.
+			if physical_root=$(CDPATH='' cd -P "$record_root" 2>/dev/null && pwd -P && printf '.'); then
+				physical_root=${physical_root%.}
+				physical_root=${physical_root%$'\n'}
+				roots+=("$physical_root")
+				if [ "$physical_root" = "$checkout_root" ]; then found_checkout=true; fi
+			fi ;;
+		'')
+			[ -n "$record_root" ] && "$record_identity" || exit 1
+			record_root=; record_identity=false ;;
+		HEAD\ *|bare)
+			[ -n "$record_root" ] && ! "$record_identity" || exit 1
+			if [ "$field" != bare ] && [[ ! $field =~ ^HEAD\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then exit 1; fi
+			record_identity=true ;;
+		branch\ *|detached|locked|locked\ *|prunable|prunable\ *)
+			[ -n "$record_root" ] || exit 1 ;;
+		*) echo 'Malformed hook worktree inventory' >&2; exit 1 ;;
 	esac
-	gofmt_link_depth=$((gofmt_link_depth + 1))
-	[ "$gofmt_link_depth" -le 40 ] || { echo "Refusing cyclic gofmt symlink: $gofmt_reference" >&2; exit 1; }
-done
-gofmt_dir=$(CDPATH='' cd -P "$(dirname "$gofmt_bin")" && pwd -P) || exit 1
-gofmt_bin=$gofmt_dir/${gofmt_bin##*/}
-if [ ! -f "$gofmt_bin" ] || [ ! -x "$gofmt_bin" ]; then
-	echo "Refusing non-executable hook tool: gofmt" >&2
-	exit 1
+done <"$inventory_file"
+if [ -n "$field" ] || [ -n "$record_root" ] || ! "$found_checkout"; then
+	echo 'Incomplete hook worktree inventory' >&2; exit 1
 fi
-case "$gofmt_bin" in "$checkout_root"|"$checkout_root"/*) echo "Refusing checkout-controlled hook tool: gofmt" >&2; exit 1 ;; esac
+/bin/rm -f "$inventory_file"
+trap - EXIT
+
+outside_checkouts() {
+	local root
+	for root in "${roots[@]}"; do
+		case "$1" in "$root"|"$root"/*) return 1 ;; esac
+		# Catch filesystem aliases while walking each ancestor component.
+		if [ "$1" -ef "$root" ]; then return 1; fi
+	done
+}
+# Inspect every component and symlink hop, including links that pass through a
+# checkout before returning to an external target. Preserve embedded newlines.
+resolve_external() {
+	local remaining=$1 component resolved='' link links=0
+	case "$remaining" in /*) ;; *) return 1 ;; esac
+	while [ -n "$remaining" ]; do
+		remaining=${remaining#/}
+		component=${remaining%%/*}
+		if [ "$remaining" = "$component" ]; then remaining=; else remaining=${remaining#*/}; fi
+		case "$component" in
+			''|.) continue ;;
+			..) resolved=${resolved%/*}; continue ;;
+		esac
+		resolved=$resolved/$component
+		outside_checkouts "$resolved" || return 1
+		if [ -L "$resolved" ]; then
+			links=$((links + 1))
+			[ "$links" -le 40 ] || return 1
+			link=$(/usr/bin/readlink "$resolved" && printf '.') || return 1
+			link=${link%.}; link=${link%$'\n'}
+			remaining=$link${remaining:+/$remaining}
+			case "$link" in /*) resolved= ;; *) resolved=${resolved%/*} ;; esac
+		fi
+	done
+	resolved_external=${resolved:-/}
+	outside_checkouts "$resolved_external"
+}
+select_tool() {
+	local candidate
+	candidate=$(PATH=$caller_path command -v "$1") || return 1
+	if ! resolve_external "$candidate"; then
+		echo "Refusing checkout-controlled hook tool or invalid symlink: $1" >&2
+		return 1
+	fi
+	[ -f "$resolved_external" ] && [ -x "$resolved_external" ] || return 1
+}
+select_tool git; git_bin=$resolved_external
+select_tool gofmt; gofmt_bin=$resolved_external
+select_tool make; make_bin=$resolved_external
+
+# Preserve external installation ordering while removing checkout directories.
+# Empty/relative entries are deliberately omitted, including for staged CI.
+trusted_path=
+remaining_path=$caller_path:
+while [ -n "$remaining_path" ]; do
+	path_entry=${remaining_path%%:*}
+	remaining_path=${remaining_path#*:}
+	if resolve_external "$path_entry" && [ -d "$resolved_external" ]; then
+		trusted_path=${trusted_path:+$trusted_path:}$resolved_external
+	fi
+done
+PATH=${trusted_path:+$trusted_path:}/usr/bin:/bin
+export PATH
+unset GIT_DIR GIT_WORK_TREE GIT_PREFIX
 names_file=$("$mktemp_bin") || exit 1
 ci_root=
 ci_worktree=
 cleanup() {
-	rm -f "$names_file"
+	/bin/rm -f "$names_file"
 	if [ -n "$ci_worktree" ]; then
-		"$git_bin" -C "$checkout_root" -c core.bare=false worktree remove --force "$ci_worktree" || :
+		"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout_root" worktree remove --force "$ci_worktree" || :
 	fi
-	if [ -n "$ci_root" ]; then rm -rf "$ci_root"; fi
+	if [ -n "$ci_root" ]; then /bin/rm -rf "$ci_root"; fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if ! "$git_bin" diff --cached --check --no-ext-diff --no-textconv; then
+if ! "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --cached --check --no-ext-diff --no-textconv; then
 	echo "[pre-commit] staged whitespace check failed" >&2
 	exit 1
 fi
-"$git_bin" diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$names_file"
+"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$names_file"
 
 # shellcheck disable=SC2016
-if ! "$xargs_bin" -0 -n 1 sh -c '
+if ! "$xargs_bin" -0 -n 1 /bin/sh -c '
 		file=${4-}
 		[ -n "$file" ] || exit 0
 		stage_file=$("$1") || exit 1
 		tmp=
-		cleanup() { rm -f "$stage_file" "$tmp"; }
+		cleanup() { /bin/rm -f "$stage_file" "$tmp"; }
 		trap cleanup EXIT
 		trap "exit 129" HUP
 		trap "exit 130" INT
 		trap "exit 143" TERM
-		"$2" --literal-pathspecs ls-files --stage -- "$file" >"$stage_file" || exit 1
+		"$2" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --literal-pathspecs ls-files --stage -- "$file" >"$stage_file" || exit 1
 		IFS=" " read -r mode _ <"$stage_file" || exit 1
 		case "$mode" in 100644|100755) ;; *) exit 0 ;; esac
 		tmp=$("$1") || exit 1
-		"$2" show ":./$file" >"$tmp" || exit 1
+		"$2" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null show ":./$file" >"$tmp" || exit 1
 		status=0
 		diff=$("$3" -d "$tmp") || status=$?
 		if [ -n "$diff" ]; then
@@ -90,38 +174,38 @@ fi
 
 # Give HEAD-based gates the pending index, without advancing the branch or
 # including unstaged edits. commit-tree does not invoke commit hooks.
-staged_tree=$("$git_bin" write-tree) || exit 1
+staged_tree=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null write-tree) || exit 1
 set -- "$staged_tree"
 if [ "${LOPPER_HOOK_AMEND:-0}" = 1 ]; then
 	# Git does not pass --amend to pre-commit; callers opt in explicitly.
-	amend_parents=$("$git_bin" show -s --format=%P HEAD) || exit 1
+	amend_parents=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null show -s --format=%P HEAD) || exit 1
 	for parent_commit in $amend_parents; do
 		set -- "$@" -p "$parent_commit"
 	done
-elif parent_commit=$("$git_bin" rev-parse --verify HEAD 2>/dev/null); then
+elif parent_commit=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null rev-parse --verify HEAD 2>/dev/null); then
 	set -- "$@" -p "$parent_commit"
 fi
 unset LOPPER_HOOK_AMEND
-merge_head_file=$("$git_bin" rev-parse --git-path MERGE_HEAD) || exit 1
+merge_head_file=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null rev-parse --git-path MERGE_HEAD) || exit 1
 if [ -f "$merge_head_file" ]; then
 	while IFS= read -r merge_parent; do
 		set -- "$@" -p "$merge_parent"
 	done < "$merge_head_file"
 fi
-pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" commit-tree "$@") || exit 1
+pending_commit=$(printf '%s\n' 'Pre-commit CI snapshot' | "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null commit-tree "$@") || exit 1
 
 # Materialize only objects missing from normal repository storage before
 # clearing a caller-supplied object database. Do not repack borrowed history.
-local_git_env=$("$git_bin" rev-parse --local-env-vars) || exit 1
+local_git_env=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null rev-parse --local-env-vars) || exit 1
 ci_root=$("$mktemp_bin" -d) || exit 1
 if [ -n "${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}${GIT_COMMON_DIR-}" ]; then
-	"$git_bin" rev-list --objects --no-object-names --all "$pending_commit" >"$ci_root/objects" || exit 1
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null rev-list --objects --no-object-names --all "$pending_commit" >"$ci_root/objects" || exit 1
 	(
 		for git_name in $local_git_env; do unset "$git_name"; done
-		"$git_bin" cat-file --batch-check='%(objectname) %(objecttype)' <"$ci_root/objects"
+		"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null cat-file --batch-check='%(objectname) %(objecttype)' <"$ci_root/objects"
 	) >"$ci_root/object-status" || exit 1
-	awk '$2 == "missing" { print $1 }' "$ci_root/object-status" >"$ci_root/missing" || exit 1
-	"$git_bin" pack-objects --stdout <"$ci_root/missing" >"$ci_root/snapshot.pack" || exit 1
+	/usr/bin/awk '$2 == "missing" { print $1 }' "$ci_root/object-status" >"$ci_root/missing" || exit 1
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null pack-objects --stdout <"$ci_root/missing" >"$ci_root/snapshot.pack" || exit 1
 fi
 
 # CI creates temporary repositories and commits in its test fixtures. Do not
@@ -129,17 +213,18 @@ fi
 for git_name in $local_git_env; do
 	unset "$git_name"
 done
-PATH=$caller_path
-export PATH
 if [ -f "$ci_root/snapshot.pack" ]; then
-	"$git_bin" index-pack --stdin <"$ci_root/snapshot.pack" >/dev/null || exit 1
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null index-pack --stdin <"$ci_root/snapshot.pack" >/dev/null || exit 1
 fi
 ci_worktree=$ci_root/checkout
-"$git_bin" -c core.bare=false -c core.hooksPath=/dev/null worktree add --detach "$ci_worktree" "$pending_commit" || exit 1
+"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null worktree add --detach "$ci_worktree" "$pending_commit" || exit 1
 # Sparse patterns are inherited by new worktrees. CI must see the full tree;
 # sparse-checkout scopes the change to this temporary worktree.
-if [ "$("$git_bin" -C "$ci_worktree" config --bool core.sparseCheckout || :)" = true ]; then
-	"$git_bin" -C "$ci_worktree" sparse-checkout disable || exit 1
+sparse_status=0
+sparse_checkout=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$ci_worktree" config --bool core.sparseCheckout) || sparse_status=$?
+case "$sparse_status" in 0|1) ;; *) exit "$sparse_status" ;; esac
+if [ "$sparse_checkout" = true ]; then
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$ci_worktree" sparse-checkout disable || exit 1
 fi
 echo "[pre-commit] running full make ci on the staged snapshot"
-(cd "$ci_worktree" && make ci)
+(cd "$ci_worktree" && "$make_bin" ci)

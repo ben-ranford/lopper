@@ -503,3 +503,223 @@ func hookCommandWithEnv(dir string, env []string, name string, args ...string) (
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
+
+func TestInstalledPreCommitExcludesSiblingTools(t *testing.T) {
+	for _, direction := range []string{"main-to-linked", "linked-to-main"} {
+		for _, tool := range []string{"git", "gofmt", "make"} {
+			for _, link := range []bool{false, true} {
+				t.Run(direction+"/"+tool+"/"+map[bool]string{false: "direct", true: "symlink"}[link], func(t *testing.T) {
+					assertSiblingHookToolExcluded(t, direction, tool, link)
+				})
+			}
+		}
+	}
+}
+
+func assertSiblingHookToolExcluded(t *testing.T, direction, tool string, link bool) {
+	t.Helper()
+	main := newHookFixture(t)
+	linked := filepath.Join(filepath.Dir(main), "linked\ncheckout")
+	runCommand(t, main, "git", "worktree", "add", "--detach", linked)
+	current, foreign := main, linked
+	if direction == "linked-to-main" {
+		current, foreign = linked, main
+	}
+	marker := filepath.Join(t.TempDir(), "executed")
+	toolDir := filepath.Join(foreign, "tools")
+	writeFileMode(t, filepath.Join(toolDir, tool), "#!/bin/sh\ntouch '"+marker+"'\nexit 99\n", 0o755)
+	if link {
+		external := t.TempDir()
+		if err := os.Symlink(filepath.Join(toolDir, tool), filepath.Join(external, tool)); err != nil {
+			t.Fatal(err)
+		}
+		toolDir = external
+	}
+	writeFile(t, filepath.Join(current, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, current, "git", "add", "sample.go")
+	hook := strings.TrimSpace(testutil.GitOutput(t, current, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(current, []string{"PATH=" + toolDir + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout-controlled %s executed: %v, %v\n%s", tool, statErr, err, output)
+	}
+	if link && err == nil {
+		t.Fatalf("expected external symlink into checkout to fail closed: %s", output)
+	}
+}
+
+func TestInstalledPreCommitKeepsFilteredPathInCI(t *testing.T) {
+	repo := newHookFixture(t)
+	tools := filepath.Join(repo, "tools")
+	writeFileMode(t, filepath.Join(tools, "untrusted-probe"), "#!/bin/sh\nexit 99\n", 0o755)
+	writeFile(t, filepath.Join(repo, "Makefile"), "ci:\n\t@! command -v untrusted-probe\n")
+	runCommand(t, repo, "git", "add", "Makefile")
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(repo, []string{"PATH=" + tools + ":.:" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
+	if err != nil {
+		t.Fatalf("filtered PATH not carried into CI: %v\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitAcceptsExternalPrefixAndMissingWorktree(t *testing.T) {
+	repo := newHookFixture(t)
+	missing := filepath.Join(filepath.Dir(repo), "missing")
+	runCommand(t, repo, "git", "worktree", "add", "--detach", missing)
+	if err := os.RemoveAll(missing); err != nil {
+		t.Fatal(err)
+	}
+	tools := repo + "-external\nlocation"
+	host, err := exec.LookPath("gofmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFileMode(t, filepath.Join(tools, "gofmt"), "#!/bin/sh\nexec '"+host+"' \"$@\"\n", 0o755)
+	writeFile(t, filepath.Join(repo, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repo, "git", "add", "sample.go")
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(repo, []string{"PATH=" + tools + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
+	if err != nil {
+		t.Fatalf("external prefix or missing foreign worktree rejected: %v\n%s", err, output)
+	}
+	if !strings.Contains(testutil.GitOutput(t, repo, "worktree", "list", "--porcelain"), missing) {
+		t.Fatal("hook pruned the missing foreign worktree")
+	}
+}
+
+func TestInstalledPreCommitRejectsInvalidInventory(t *testing.T) {
+	for _, response := range []struct{ name, script string }{
+		{"failed", "exit 42"},
+		{"empty", "exit 0"},
+		{"unterminated", "printf 'worktree /foreign'"},
+		{"unknown-field", "printf 'garbage\\0\\0'"},
+		{"foreign", "printf 'worktree /foreign\\0HEAD abc\\0\\0'"},
+		{"missing-head", "printf 'worktree %s\\0\\0' \"$PWD\""},
+		{"incomplete", "printf 'worktree %s\\0HEAD abc\\0' \"$PWD\""},
+	} {
+		t.Run(response.name, func(t *testing.T) {
+			repo := newHookFixture(t)
+			hook := filepath.Join(strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath")), "pre-commit")
+			contents, err := os.ReadFile(hook)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inventoryGit := filepath.Join(t.TempDir(), "inventory-git")
+			writeFileMode(t, inventoryGit, "#!/bin/sh\n"+response.script+"\n", 0o755)
+			// Alter only the trusted test snapshot, not the production PATH.
+			writeFileMode(t, hook, strings.Replace(string(contents), "/usr/bin/git --no-pager", "'"+inventoryGit+"' --no-pager", 1), 0o755)
+			output, err := hookCommand(repo, hook)
+			if err == nil {
+				t.Fatalf("invalid inventory permitted CI: %s", output)
+			}
+		})
+	}
+}
+
+func TestInstalledPreCommitChecksEverySymlinkHop(t *testing.T) {
+	for _, kind := range []string{"return-to-external", "directory-link", "cycle", "dangling"} {
+		t.Run(kind, func(t *testing.T) {
+			repo := newHookFixture(t)
+			external := t.TempDir()
+			target, err := exec.LookPath("gofmt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "return-to-external":
+				intermediate := filepath.Join(repo, "hop")
+				if err := os.Symlink(target, intermediate); err != nil {
+					t.Fatal(err)
+				}
+				target = intermediate
+			case "directory-link":
+				writeFileMode(t, filepath.Join(repo, "tools", "gofmt"), "#!/bin/sh\nexit 99\n", 0o755)
+				if err := os.Symlink(filepath.Join(repo, "tools"), filepath.Join(external, "directory")); err != nil {
+					t.Fatal(err)
+				}
+				target = filepath.Join(external, "directory", "gofmt")
+			case "cycle":
+				target = filepath.Join(external, "gofmt")
+			case "dangling":
+				target = filepath.Join(external, "missing")
+			}
+			if err := os.Symlink(target, filepath.Join(external, "gofmt")); err != nil {
+				t.Fatal(err)
+			}
+			hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+			// No fallback gofmt: invalid links must fail closed.
+			output, err := hookCommandWithEnv(repo, []string{"PATH=" + external + ":/usr/bin:/bin"}, filepath.Join(hook, "pre-commit"))
+			if err == nil {
+				t.Fatalf("invalid symlink accepted: %s", output)
+			}
+		})
+	}
+}
+
+func TestInstalledPreCommitDisablesGitExecutableConfiguration(t *testing.T) {
+	repo := newHookFixture(t)
+	external := t.TempDir()
+	marker := filepath.Join(external, "git-called")
+	wrapper := "#!/bin/sh\n" +
+		"test \"$1\" = --no-pager || exit 91\nshift\n" +
+		"for expected in core.bare=false core.fsmonitor=false core.hooksPath=/dev/null; do\n" +
+		"  test \"$1\" = -c && test \"$2\" = \"$expected\" || exit 92\n  shift 2\ndone\n" +
+		"printf called >> '" + marker + "'\n" +
+		"exec /usr/bin/git --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null \"$@\"\n"
+	writeFileMode(t, filepath.Join(external, "git"), wrapper, 0o755)
+	writeFileMode(t, filepath.Join(external, "monitor"), "#!/bin/sh\nexit 99\n", 0o755)
+	runCommand(t, repo, "git", "config", "core.fsmonitor", filepath.Join(external, "monitor"))
+	writeFile(t, filepath.Join(repo, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	runCommand(t, repo, "git", "-c", "core.fsmonitor=false", "add", "sample.go")
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(repo, []string{"PATH=" + external + ":" + os.Getenv("PATH"), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.bare", "GIT_CONFIG_VALUE_0=true"}, filepath.Join(hook, "pre-commit"))
+	if err != nil {
+		t.Fatalf("hook Git call missing isolation flags: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("selected external Git was not used: %v", err)
+	}
+}
+
+func TestInstalledPreCommitAllowsInaccessibleForeignWorktree(t *testing.T) {
+	repo := newHookFixture(t)
+	foreign := filepath.Join(filepath.Dir(repo), "inaccessible")
+	runCommand(t, repo, "git", "worktree", "add", "--detach", foreign)
+	if err := os.Chmod(foreign, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(foreign, 0o755); err != nil {
+			t.Errorf("restore foreign worktree permissions: %v", err)
+		}
+	})
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommand(repo, filepath.Join(hook, "pre-commit"))
+	if err != nil {
+		t.Fatalf("unrelated inaccessible registration blocked CI: %v\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitRejectsCheckoutCaseAlias(t *testing.T) {
+	repo := newHookFixture(t)
+	alias := filepath.Join(filepath.Dir(repo), "REPO")
+	if _, err := os.Stat(alias); err != nil {
+		t.Skip("filesystem uses case-sensitive paths")
+	}
+	writeFileMode(t, filepath.Join(repo, "tools", "gofmt"), "#!/bin/sh\nexit 0\n", 0o755)
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(repo, []string{"PATH=" + filepath.Join(alias, "tools") + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
+	if err == nil {
+		t.Fatalf("case-aliased checkout tool accepted: %s", output)
+	}
+}
+
+func TestInstalledPreCommitRejectsSparseInspectionFailure(t *testing.T) {
+	repo := newHookFixture(t)
+	external := t.TempDir()
+	writeFileMode(t, filepath.Join(external, "git"), "#!/bin/sh\ncase \"$*\" in *'config --bool core.sparseCheckout'*) exit 42 ;; esac\nexec /usr/bin/git \"$@\"\n", 0o755)
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	output, err := hookCommandWithEnv(repo, []string{"PATH=" + external + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
+	if err == nil || strings.Contains(output, "running full make ci") {
+		t.Fatalf("sparse inspection failure was ignored: %v\n%s", err, output)
+	}
+	assertHookWorktreeCleaned(t, repo)
+}
