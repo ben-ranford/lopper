@@ -39,11 +39,14 @@ func matchesActiveBuild(content []byte) bool {
 func extractBuildConstraintExpressions(content []byte) (constraint.Expr, []constraint.Expr) {
 	lines := strings.Split(string(content), "\n")
 	plusBuildExprs := make([]constraint.Expr, 0)
+	plusBuildLineIndexes := make([]int, 0)
 	var goBuildExpr constraint.Expr
+	lastBlankLine := -1
 
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
+			lastBlankLine = i
 			continue
 		}
 		if shouldStopBuildConstraintScan(line) {
@@ -58,10 +61,20 @@ func extractBuildConstraintExpressions(content []byte) (constraint.Expr, []const
 		case "plus":
 			if expr != nil {
 				plusBuildExprs = append(plusBuildExprs, expr)
+				plusBuildLineIndexes = append(plusBuildLineIndexes, i)
 			}
 		}
 	}
-	return goBuildExpr, plusBuildExprs
+	if lastBlankLine < 0 {
+		return goBuildExpr, nil
+	}
+	validPlusBuildExprs := make([]constraint.Expr, 0, len(plusBuildExprs))
+	for i, expr := range plusBuildExprs {
+		if plusBuildLineIndexes[i] < lastBlankLine {
+			validPlusBuildExprs = append(validPlusBuildExprs, expr)
+		}
+	}
+	return goBuildExpr, validPlusBuildExprs
 }
 
 func shouldStopBuildConstraintScan(line string) bool {
