@@ -82,6 +82,21 @@ func TestHooksInstallRollbackFailureRetainsUsableHook(t *testing.T) {
 	}
 }
 
+func TestHooksInstallActivationFailureRemovesNewManagedHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	if err := os.WriteFile(fixture.configPath+".lock", nil, 0o600); err != nil {
+		t.Fatalf("create simulated config lock: %v", err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install")
+	if err == nil || strings.Contains(string(output), "retaining managed hook") {
+		t.Fatalf("activation failure = %v\n%s", err, output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer left managed hook state after activation failed: %v", err)
+	}
+}
+
 func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	tmpDir := t.TempDir()
