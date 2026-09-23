@@ -48,16 +48,7 @@ func collectGradleFileDescriptorsWithWarnings(repoPath string, discover func(str
 }
 
 func discoverGradleFiles(repoPath string, matches func(fileName string) bool) (gradleFileDiscoveryResult, error) {
-	result := gradleFileDiscoveryResult{}
-	var retainedBytes int64
-	budgetWarningAdded := false
-	addBudgetWarning := func() {
-		if budgetWarningAdded {
-			return
-		}
-		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped reading Gradle files after reaching the %d-byte content limit", gradleDiscoveryContentByteLimit))
-		budgetWarningAdded = true
-	}
+	state := gradleFileDiscoveryState{}
 	walkErr := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -71,33 +62,51 @@ func discoverGradleFiles(repoPath string, matches func(fileName string) bool) (g
 		if !matches(entry.Name()) {
 			return nil
 		}
-		result.Matched = true
-		remainingBytes := gradleDiscoveryContentByteLimit - retainedBytes
-		if remainingBytes <= 0 {
-			addBudgetWarning()
-			return nil
-		}
-		readLimit := int64(shared.GradleManifestByteLimit)
-		if remainingBytes < readLimit {
-			readLimit = remainingBytes
-		}
-		content, readErr := safeio.ReadFileUnderLimit(repoPath, path, readLimit)
-		if readErr != nil {
-			if remainingBytes < shared.GradleManifestByteLimit && errors.Is(readErr, safeio.ErrFileTooLarge) {
-				addBudgetWarning()
-				return nil
-			}
-			result.Warnings = append(result.Warnings, formatGradleReadWarning(repoPath, path, readErr))
-			return nil
-		}
-		retainedBytes += int64(len(content))
-		result.Files = append(result.Files, discoveredGradleFile{
-			Path:    path,
-			Content: string(content),
-		})
+		state.addFile(repoPath, path)
 		return nil
 	})
-	return result, walkErr
+	return state.result, walkErr
+}
+
+type gradleFileDiscoveryState struct {
+	result            gradleFileDiscoveryResult
+	retainedBytes     int64
+	budgetWarningSeen bool
+}
+
+func (s *gradleFileDiscoveryState) addFile(repoPath, path string) {
+	s.result.Matched = true
+	remainingBytes := gradleDiscoveryContentByteLimit - s.retainedBytes
+	if remainingBytes <= 0 {
+		s.addBudgetWarning()
+		return
+	}
+	readLimit := int64(shared.GradleManifestByteLimit)
+	if remainingBytes < readLimit {
+		readLimit = remainingBytes
+	}
+	content, readErr := safeio.ReadFileUnderLimit(repoPath, path, readLimit)
+	if readErr != nil {
+		if remainingBytes < shared.GradleManifestByteLimit && errors.Is(readErr, safeio.ErrFileTooLarge) {
+			s.addBudgetWarning()
+			return
+		}
+		s.result.Warnings = append(s.result.Warnings, formatGradleReadWarning(repoPath, path, readErr))
+		return
+	}
+	s.retainedBytes += int64(len(content))
+	s.result.Files = append(s.result.Files, discoveredGradleFile{
+		Path:    path,
+		Content: string(content),
+	})
+}
+
+func (s *gradleFileDiscoveryState) addBudgetWarning() {
+	if s.budgetWarningSeen {
+		return
+	}
+	s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("stopped reading Gradle files after reaching the %d-byte content limit", gradleDiscoveryContentByteLimit))
+	s.budgetWarningSeen = true
 }
 
 func matchesBuildFile(fileName string, names []string) bool {
