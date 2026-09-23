@@ -75,12 +75,6 @@ func (in *staveTerminalInput) close() error {
 	return errors.Join(in.err, in.reader.Close())
 }
 
-// Bubble Tea still owns raw mode and renderer restoration. This EOF adapter
-// preserves its terminal detection while keeping its internal parser idle.
-func (in *staveTerminalInput) terminal() io.Reader {
-	return &staveTerminalEOF{file: in.source}
-}
-
 type staveTerminalEOF struct{ file term.File }
 
 func (*staveTerminalEOF) Read([]byte) (int, error)      { return 0, io.EOF }
