@@ -3,7 +3,9 @@
 package scripts
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,6 +35,134 @@ func TestHooksPreflightTimesOutOnBlockingGitConfigWithoutMutation(t *testing.T) 
 			})
 		}
 	}
+}
+
+func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	tmpDir := t.TempDir()
+	env := postWriteBlockingGitEnv(t)
+	env = append(env, "TMPDIR="+tmpDir)
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", env...)
+	if err == nil || !strings.Contains(string(output), "Timed out while reading Git preflight configuration") {
+		t.Fatalf("post-write config timeout = %v\n%s", err, output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer left managed hook state after post-write timeout: %v", err)
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
+}
+
+func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	tmpDir := t.TempDir()
+	env := postWriteBlockingGitEnv(t)
+	env = append(env, "TMPDIR="+tmpDir)
+	command := exec.Command("make", "hooks-install")
+	command.Dir = fixture.repoDir
+	command.Env = append(withoutGitEnv(), env...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start hooks-install: %v", err)
+	}
+	commandDone := make(chan error, 1)
+	go func() { commandDone <- command.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	configWasUpdated := false
+	for time.Now().Before(deadline) {
+		config, err := os.ReadFile(fixture.configPath)
+		if err == nil && strings.Contains(string(config), filepath.Dir(fixture.managedHook)) {
+			configWasUpdated = true
+			break
+		}
+		select {
+		case err := <-commandDone:
+			t.Fatalf("hooks-install exited before post-write read blocked: %v\n%s", err, output.String())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if !configWasUpdated {
+		killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGKILL)
+		<-commandDone
+		t.Fatalf("hooks-install did not update config before blocking\n%s", output.String())
+	}
+	killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGTERM)
+	select {
+	case err := <-commandDone:
+		if err == nil {
+			t.Fatal("hooks-install succeeded after interruption during post-write config read")
+		}
+	case <-time.After(5 * time.Second):
+		killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGKILL)
+		<-commandDone
+		t.Fatalf("hooks-install did not exit after interruption\n%s", output.String())
+	}
+	waitForPreflightInstallRollback(t, fixture, tmpDir)
+}
+
+func killPreflightTestProcessGroup(t *testing.T, pid int, signal syscall.Signal) {
+	t.Helper()
+	if err := syscall.Kill(-pid, signal); err != nil && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("send %s to process group %d: %v", signal, pid, err)
+	}
+}
+
+func postWriteBlockingGitEnv(t *testing.T) []string {
+	t.Helper()
+	shimDir := t.TempDir()
+	fifo := filepath.Join(t.TempDir(), "post-write.fifo")
+	counter := filepath.Join(t.TempDir(), "effective-reads")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("create blocking config FIFO: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shim := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ]; then
+	count=0
+	[ ! -f "$HOOK_TIMEOUT_COUNTER" ] || count=$(cat "$HOOK_TIMEOUT_COUNTER")
+	count=$((count + 1))
+	echo "$count" >"$HOOK_TIMEOUT_COUNTER"
+	if [ "$count" -eq 2 ]; then exec cat "$HOOK_TIMEOUT_FIFO"; fi
+fi
+exec %s "$@"
+`, shellQuote(realGit))
+	writeFile(t, filepath.Join(shimDir, "git"), shim)
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatalf("make git shim executable: %v", err)
+	}
+	return []string{
+		"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOOK_TIMEOUT_COUNTER=" + counter,
+		"HOOK_TIMEOUT_FIFO=" + fifo,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}
+}
+
+func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixture, tmpDir string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		config, err := os.ReadFile(fixture.configPath)
+		_, stateErr := os.Stat(filepath.Dir(fixture.managedHook))
+		temps, globErr := filepath.Glob(filepath.Join(tmpDir, "lopper-hooks-*"))
+		if err == nil && string(config) == string(fixture.configBefore) && os.IsNotExist(stateErr) && globErr == nil && len(temps) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer left managed hook state after interruption: %v", err)
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
 }
 
 type preflightTimeoutFixture struct {
