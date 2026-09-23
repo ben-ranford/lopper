@@ -283,6 +283,7 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 		mainGoWithTrackedSuppression("nolint:staticcheck"),
 		[]string{
 			"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
+			"CI=true",
 			"GITHUB_SHA=abc123",
 			"GITHUB_SERVER_URL=https://github.com",
 		},
@@ -299,6 +300,67 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 			"Removal condition: analyzer handles generated guard",
 		},
 	)
+}
+
+func TestInlineSuppressionCheckTrackingCreatorBoundary(t *testing.T) {
+	t.Parallel()
+	for _, ci := range []bool{false, true} {
+		t.Run(fmt.Sprintf("CI=%t", ci), func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			content := mainGoWithTrackedSuppression("nolint:staticcheck")
+			writeFile(t, filepath.Join(repoDir, mainGoPath), content)
+			runCommand(t, repoDir, "git", "add", mainGoPath)
+			creator := "interactive-user"
+			if ci {
+				creator = "github-actions[bot]"
+			}
+			statePath := filepath.Join(repoDir, "issues.json")
+			fingerprint := suppressionFingerprint(mainGoPath, strings.Split(content, "\n")[3], 1)
+			// A public issue with the exact marker must not be trusted.
+			issues, err := json.Marshal([]map[string]any{{"number": 99, "author": map[string]string{"login": "untrusted-user"}, "body": "<!-- lopper-inline-suppression:" + fingerprint + " -->"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, statePath, string(issues))
+			ghPath := filepath.Join(repoDir, "gh")
+			writeFileMode(t, ghPath, `#!/usr/bin/env bash
+set -euo pipefail
+case "$1 $2" in
+ "api user")
+  [[ "$CI" != true ]]
+  printf '%s\n' interactive-user
+  ;;
+ "issue list")
+  while [[ "$1" != --jq ]]; do shift; done
+  jq -r "$2 // empty" "$ISSUE_STATE"
+  ;;
+ "issue create")
+  while [[ "$1" != --body-file ]]; do shift; done
+  jq --arg creator "$ISSUE_CREATOR" --rawfile body "$2" '. + [{number:123,author:{login:$creator},body:$body}]' "$ISSUE_STATE" > "$ISSUE_STATE.tmp"
+  mv "$ISSUE_STATE.tmp" "$ISSUE_STATE"
+  printf '%s\n' https://github.com/example/repo/issues/123
+  ;;
+ "issue comment") [[ "$3" == 123 ]] ;;
+ *) exit 1 ;;
+esac
+`, 0o755)
+			env := []string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track", "CI=" + fmt.Sprint(ci), "GITHUB_ACTIONS=" + fmt.Sprint(ci), "ISSUE_STATE=" + statePath, "ISSUE_CREATOR=" + creator}
+			for _, want := range []string{"Opened GitHub tracking issue", "Updated GitHub tracking issue #123"} {
+				output, err := runSuppressionCheckWithEnv(repoDir, env...)
+				if err != nil || !strings.Contains(output, want) {
+					t.Fatalf("want %q, error %v, output:\n%s", want, err, output)
+				}
+			}
+			var finalIssues []json.RawMessage
+			if err := json.Unmarshal([]byte(readFile(t, statePath)), &finalIssues); err != nil {
+				t.Fatal(err)
+			}
+			if len(finalIssues) != 2 {
+				t.Fatalf("want public issue and one tracker, got %d", len(finalIssues))
+			}
+		})
+	}
 }
 
 func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing.T) {
@@ -1548,6 +1610,11 @@ done
 
 if [ -n "$body_file" ] && [ -f "$body_file" ]; then
 	cat "$body_file" >> "` + logPath + `"
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+	printf '%s\n' "interactive-user"
+	exit 0
 fi
 
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
