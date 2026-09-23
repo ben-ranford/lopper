@@ -11,26 +11,14 @@ import (
 
 func TestValidateDownloadedOSVZipErrors(t *testing.T) {
 	payload := testOSVZip(t, "GO-2021-0113.json", testOSVAdvisory("GO-2021-0113"))
-	openErr := errors.New("open failure")
+	assertSnapshotOpenFailures(t, func(openSnapshot snapshotOpener) error {
+		return validateDownloadedOSVZip(openSnapshot, int64(len(payload)), &osvZipInventory{})
+	})
 	for _, tc := range []struct {
 		name         string
 		openSnapshot snapshotOpener
 		wantError    string
 	}{
-		{
-			name: "open failure",
-			openSnapshot: func() (io.ReadCloser, error) {
-				return nil, openErr
-			},
-			wantError: openErr.Error(),
-		},
-		{
-			name: "nil file",
-			openSnapshot: func() (io.ReadCloser, error) {
-				return nil, nil
-			},
-			wantError: "nil file",
-		},
 		{
 			name: "random access unavailable",
 			openSnapshot: func() (io.ReadCloser, error) {

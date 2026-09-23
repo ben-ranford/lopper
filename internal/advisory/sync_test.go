@@ -1799,6 +1799,17 @@ func TestValidateOSVJSONSnapshot(t *testing.T) {
 }
 
 func TestValidateDownloadedOSVJSONErrors(t *testing.T) {
+	assertSnapshotOpenFailures(t, validateDownloadedOSVJSON)
+	openSnapshot := func() (io.ReadCloser, error) {
+		return &errCloseReadCloser{Reader: strings.NewReader(`[]`)}, nil
+	}
+	if err := validateDownloadedOSVJSON(openSnapshot); err == nil || !strings.Contains(err.Error(), "close snapshot after validation") {
+		t.Fatalf("expected close validation error, got %v", err)
+	}
+}
+
+func assertSnapshotOpenFailures(t *testing.T, validate func(snapshotOpener) error) {
+	t.Helper()
 	openErr := errors.New("open failure")
 	for _, tc := range []struct {
 		name         string
@@ -1819,16 +1830,9 @@ func TestValidateDownloadedOSVJSONErrors(t *testing.T) {
 			},
 			wantError: "nil file",
 		},
-		{
-			name: "close failure",
-			openSnapshot: func() (io.ReadCloser, error) {
-				return &errCloseReadCloser{Reader: strings.NewReader(`[]`)}, nil
-			},
-			wantError: "close snapshot after validation",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateDownloadedOSVJSON(tc.openSnapshot)
+			err := validate(tc.openSnapshot)
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("expected %q validation error, got %v", tc.wantError, err)
 			}
