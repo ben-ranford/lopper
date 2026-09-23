@@ -302,7 +302,7 @@ func checkStaveTerminalSessionSnapshotAndRunSurfaceCloneFailure(t *testing.T) {
 		t.Fatalf("sessionSnapshot error = %v", err)
 	}
 
-	err = preview.runStaveTerminal(context.Background(), opts, prepared, strings.NewReader(""), io.Discard, false)
+	err = preview.runStaveTerminal(context.Background(), opts, prepared, staveTerminalTestInput(t, strings.NewReader("")), io.Discard, false)
 	if err == nil || !strings.Contains(err.Error(), "clone boom") {
 		t.Fatalf("runStaveTerminal clone failure = %v", err)
 	}
@@ -314,7 +314,7 @@ func checkStaveTerminalRunstaveterminalExecutesTypedRefreshAction(t *testing.T) 
 	defer prepared.Session.Close()
 
 	input := &finalCoverageRefreshThenQuitReader{prepared: prepared}
-	if err := preview.runStaveTerminal(context.Background(), opts, prepared, input, io.Discard, false); err != nil {
+	if err := preview.runStaveTerminal(context.Background(), opts, prepared, staveTerminalTestInput(t, input), io.Discard, false); err != nil {
 		t.Fatalf("runStaveTerminal: %v", err)
 	}
 
