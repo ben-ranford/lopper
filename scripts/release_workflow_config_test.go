@@ -2982,7 +2982,7 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 		if !slices.Contains(manager.ManagerFilePatterns, `/^\.github/workflows/release\.yml$/`) {
 			t.Fatal("VSCE manager must target the release workflow")
 		}
-		matches += assertRenovateVSCEPatterns(t, manager.MatchStrings, string(workflow), version)
+		matches += assertRenovateWorkflowPinVersions(t, manager.MatchStrings, string(workflow), version)
 	}
 	if matches != 4 {
 		t.Fatalf("Renovate tracks %d VSCE workflow pins, want 4", matches)
@@ -2995,7 +2995,7 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 	t.Fatal("VSCE npm and workflow updates must share a group and bump the package range")
 }
 
-func assertRenovateVSCEPatterns(t *testing.T, patterns []string, workflow, version string) int {
+func assertRenovateWorkflowPinVersions(t *testing.T, patterns []string, workflow, version string) int {
 	t.Helper()
 	matches := 0
 	for _, pattern := range patterns {
