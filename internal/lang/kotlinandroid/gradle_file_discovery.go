@@ -1,6 +1,7 @@
 package kotlinandroid
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+const gradleDiscoveryContentByteLimit int64 = 16 * 1024 * 1024
 
 type discoveredGradleFile struct {
 	Path    string
@@ -46,6 +49,15 @@ func collectGradleFileDescriptorsWithWarnings(repoPath string, discover func(str
 
 func discoverGradleFiles(repoPath string, matches func(fileName string) bool) (gradleFileDiscoveryResult, error) {
 	result := gradleFileDiscoveryResult{}
+	var retainedBytes int64
+	budgetWarningAdded := false
+	addBudgetWarning := func() {
+		if budgetWarningAdded {
+			return
+		}
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped reading Gradle files after reaching the %d-byte content limit", gradleDiscoveryContentByteLimit))
+		budgetWarningAdded = true
+	}
 	walkErr := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -60,11 +72,25 @@ func discoverGradleFiles(repoPath string, matches func(fileName string) bool) (g
 			return nil
 		}
 		result.Matched = true
-		content, readErr := safeio.ReadFileUnder(repoPath, path)
+		remainingBytes := gradleDiscoveryContentByteLimit - retainedBytes
+		if remainingBytes <= 0 {
+			addBudgetWarning()
+			return nil
+		}
+		readLimit := int64(shared.GradleManifestByteLimit)
+		if remainingBytes < readLimit {
+			readLimit = remainingBytes
+		}
+		content, readErr := safeio.ReadFileUnderLimit(repoPath, path, readLimit)
 		if readErr != nil {
+			if remainingBytes < shared.GradleManifestByteLimit && errors.Is(readErr, safeio.ErrFileTooLarge) {
+				addBudgetWarning()
+				return nil
+			}
 			result.Warnings = append(result.Warnings, formatGradleReadWarning(repoPath, path, readErr))
 			return nil
 		}
+		retainedBytes += int64(len(content))
 		result.Files = append(result.Files, discoveredGradleFile{
 			Path:    path,
 			Content: string(content),
