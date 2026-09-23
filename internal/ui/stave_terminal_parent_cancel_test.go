@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/stave"
 	"github.com/ben-ranford/stave/event"
 	"github.com/ben-ranford/stave/session"
+	"github.com/ben-ranford/stave/state"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 )
@@ -72,11 +73,20 @@ func TestStaveTerminalParentCancellationPublishesIndeterminateOutcome(t *testing
 	if !ok || cancelled.CallID != callID || cancelled.Status != "cancelled" || !strings.Contains(cancelled.Error, "final action outcome unknown") {
 		t.Fatalf("parent cancellation outcome = %#v", events[0].Payload)
 	}
+	// Stave publishes the shutdown reducer state before beginClose closes its
+	// event queue. A sequence advance acknowledges publication, not closure.
+	closureCtx, cancelClosure := context.WithTimeout(context.Background(), time.Second)
+	defer cancelClosure()
+	if err := prepared.Session.Wait(closureCtx, func(state.State[staveSummaryModel]) bool {
+		return prepared.Session.Lifecycle() == session.LifecycleClosed
+	}); err != nil {
+		t.Fatalf("shutdown closure not observed: %v; lifecycle=%s; events=%#v", err, prepared.Session.Lifecycle(), events)
+	}
 	snapshot, err := prepared.Session.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Model.interaction.pendingCallID != "" || !strings.Contains(snapshot.Model.interaction.error, "final action outcome unknown") {
+	if !snapshot.Model.interaction.quit || snapshot.Model.interaction.pendingCallID != "" || !strings.Contains(snapshot.Model.interaction.error, "final action outcome unknown") {
 		t.Fatalf("parent cancellation session state = %+v", snapshot.Model.interaction)
 	}
 	late, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: callID, Status: "completed"})
@@ -85,6 +95,13 @@ func TestStaveTerminalParentCancellationPublishesIndeterminateOutcome(t *testing
 	}
 	if err := sendLopperEvent(context.Background(), prepared, late); !errors.Is(err, session.ErrSessionClosed) {
 		t.Fatalf("late completion error = %v, want closed session", err)
+	}
+	afterLate, err := prepared.Session.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterLate.Sequence != snapshot.Sequence || afterLate.Model.interaction.error != snapshot.Model.interaction.error {
+		t.Fatalf("late completion changed cancelled outcome: before=%+v; after=%+v", snapshot, afterLate)
 	}
 }
 
