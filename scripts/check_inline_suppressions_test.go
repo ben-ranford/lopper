@@ -464,22 +464,27 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	}
 
 	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 2 {
-		t.Fatalf("expected two suppression records (one per branch's addition), got %#v", records.Suppressions)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected only the PR-head suppression, got %#v", records.Suppressions)
+	}
+	record := records.Suppressions[0]
+	if record.File != mainGoPath || record.Line != 5 || record.Source != "main.go:5" || record.Content != line || record.Fingerprint != suppressionFingerprint(mainGoPath, line, 1) {
+		t.Fatalf("record does not match the PR-head tree: %#v", record)
 	}
 
-	prFingerprint := suppressionFingerprint(mainGoPath, line, 1)
-	found := false
-	for _, record := range records.Suppressions {
-		if record.Fingerprint == prFingerprint {
-			found = true
-		}
-		if record.Fingerprint == suppressionFingerprint(mainGoPath, line, 2) {
-			t.Fatalf("a record used the occurrence-2 fingerprint, meaning it counted main's independent addition against the PR's own occurrence: %#v", records.Suppressions)
-		}
+	// The current base tip is the first merge parent, but coordinates must
+	// still come from the PR head and its merge base with that tip.
+	output, err = runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE=HEAD^1",
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+	)
+	if err != nil {
+		t.Fatalf("expected current-base scan to pass, output:\n%s", output)
 	}
-	if !found {
-		t.Fatalf("expected a record with the PR's own occurrence-1 fingerprint %s, got %#v", prFingerprint, records.Suppressions)
+	currentBaseRecords := readSuppressionRecords(t, outputPath)
+	if len(currentBaseRecords.Suppressions) != 1 || currentBaseRecords.Suppressions[0] != record {
+		t.Fatalf("current-base records differ from PR-head coordinates: %#v", currentBaseRecords.Suppressions)
 	}
 }
 
