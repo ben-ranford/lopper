@@ -9,6 +9,9 @@ import (
 )
 
 func buildRequestedGoDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	if normalizeDependencyID(req.Dependency) != "" {
+		req.TopN = 0
+	}
 	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopGoDependencies)
 }
 
