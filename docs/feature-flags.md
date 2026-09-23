@@ -67,7 +67,9 @@ The PR enforcement workflow keeps a sticky report on feature PRs and on any PR t
 ## User Activation
 
 Preview flags can be enabled or disabled by code or name.
-CLI flags override config:
+For `analyse` and `pr-review`, explicit CLI choices override the effective repository/policy-pack configuration for the same feature. Configuration overrides build-channel and release-lock defaults; unrelated feature choices retain their existing values. Names, immutable codes, and supported deprecated aliases identify the same feature.
+
+For example:
 
 ```bash
 lopper analyse lodash \
@@ -87,12 +89,13 @@ Repo config uses a `features` section:
 features:
   enable:
     - LOP-FEAT-0001
-  disable:
-    - example-preview
 ```
 
-The same flag cannot be enabled and disabled in one resolved run.
-Unknown feature names or codes fail parsing so stale config is visible.
+With `features.enable: [LOP-FEAT-0001]` in config, `--disable-feature LOP-FEAT-0001` temporarily disables that feature for one invocation. Conversely, `features.disable: [LOP-FEAT-0001]` with `--enable-feature LOP-FEAT-0001` enables it. These CLI overrides do not edit configuration files. The same precedence applies to `lopper pr-review --base <sha> --head <sha>`.
+
+Within either config or CLI arguments, enabling and disabling the same feature is still an error, including through different names or codes. Unknown references and conflicts in effective configuration remain errors even when a CLI choice would override them. Deprecated aliases still produce warnings when their configuration choice is overridden.
+
+Policy-pack traversal and list semantics are unchanged: later packs and local configuration replace an explicitly supplied enable or disable list, and an explicit empty list clears its inherited values before CLI choices are applied.
 
 Stable features may keep deprecated legacy names for one major release boundary.
 When a stable feature drops a `-preview` suffix, use the stable name in docs, examples, release reports, and manifests; keep the old preview name in `deprecatedNames` so existing config and explicit rollback commands continue to resolve.

@@ -122,20 +122,19 @@ func resolveFeatureBuildContext() (featureflags.Channel, *featureflags.ReleaseLo
 }
 
 func resolveFeatureSet(registry *featureflags.Registry, channel featureflags.Channel, lock *featureflags.ReleaseLock, visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {
-	enable := append([]string{}, configFeatures.Enable...)
-	disable := append([]string{}, configFeatures.Disable...)
+	cli := featureflags.Overrides{}
 	if visited["enable-feature"] {
-		enable = mergePatterns(enable, values.enableFeatures.Values())
+		cli.Enable = values.enableFeatures.Values()
 	}
 	if visited["disable-feature"] {
-		disable = mergePatterns(disable, values.disableFeatures.Values())
+		cli.Disable = values.disableFeatures.Values()
 	}
-	return registry.Resolve(featureflags.ResolveOptions{
+	return registry.ResolveLayers(featureflags.ResolveOptions{
 		Channel: channel,
 		Lock:    lock,
-		Enable:  enable,
-		Disable: disable,
-	})
+		Enable:  configFeatures.Enable,
+		Disable: configFeatures.Disable,
+	}, cli)
 }
 
 func resolveAnalyseNotifications(visited map[string]bool, values analyseFlagValues, resolvedConfigPath string) (notify.Config, error) {
