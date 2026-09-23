@@ -20,7 +20,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 65
     permissions:
       actions: read
       checks: write
@@ -42,7 +42,7 @@ jobs:
             });
             core.setOutput('check-id', String(check.id));
             // Shared with every later waiting step so their deadlines are
-            // measured from the same origin as the job's own 20-minute
+            // measured from the same origin as the job's own 65-minute
             // timeout, instead of each restarting its own fresh budget.
             core.setOutput('job-start-ms', String(Date.now()));
 
@@ -86,17 +86,28 @@ jobs:
             // Only the run that was genuinely dispatched for this exact PR
             // number can have uploaded an artifact under this exact name.
             const artifactName = `pr-report-inputs-${pullNumber}`;
+            // Suppression verification has a one-hour SLO, independent of
+            // GitHub's longer default CI timeout. Five minutes remain for
+            // validation and publishing the final check conclusion.
             // Shared with the trusted tracking-issue poll below: both waits
             // race against one deadline measured from this job's own start
             // (not a fresh budget per step), with enough buffer before the
-            // job's 20-minute timeout for the remaining download/validate/
+            // job's 65-minute timeout for the remaining download/validate/
             // report steps to still run and update the head check, instead
             // of leaving it stuck "in_progress" when GitHub cancels the job.
-            const deadlineMs = jobStartMs + (18 * 60 + 30) * 1000;
+            const deadlineMs = jobStartMs + (60 * 60) * 1000;
             const delayMs = 15000;
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
             const findArtifact = async () => {
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+              });
+              if (pull.head.sha !== headSha) {
+                throw new Error(`Pull request head ${headSha} was superseded; refusing stale artifacts.`);
+              }
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -108,7 +119,7 @@ jobs:
               const candidates = runs
                 .filter((run) => run.head_sha === headSha)
                 .filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs);
-              const completed = candidates.filter((run) => run.status === 'completed');
+              const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success');
               for (const run of completed) {
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                   owner: context.repo.owner,
@@ -1058,11 +1069,11 @@ jobs:
           # The deadline is measured from this job's own start (the same
           # origin the artifact-resolution step above uses), not a fresh
           # budget restarted here, and leaves buffer before the job's
-          # 20-minute timeout for the final always() step to still run and
+          # 65-minute timeout for the final always() step to still run and
           # update the head check -- otherwise GitHub can cancel the job
           # mid-poll and leave "suppression-verify" stuck "in_progress"
           # instead of reporting failure.
-          job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))
+          job_deadline_ms=$(( JOB_START_MS + (60 * 60) * 1000 ))
           missing=("${fingerprints[@]}")
           while [ "${#missing[@]}" -gt 0 ]; do
             now_ms="$(date +%s%3N)"

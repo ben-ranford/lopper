@@ -99,7 +99,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// Shared by the later waiting steps so every deadline is measured
 		// from this job's own start rather than restarting a fresh budget
 		// per step, which could otherwise let their combined wait exceed
-		// the job's own 20-minute timeout.
+		// the job's own 65-minute timeout.
 		"core.setOutput('job-start-ms'",
 	})
 
@@ -133,7 +133,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// content) can.
 		"pullNumber = context.payload.pull_request.number",
 		"artifactName = `pr-report-inputs-${pullNumber}`",
-		"const completed = candidates.filter((run) => run.status === 'completed')",
+		"const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success')",
 		// An empty candidate list must be treated as "still pending", not
 		// "no run will ever appear": this verifier and the "ci" run it
 		// waits on are dispatched by the same event, but nothing guarantees
@@ -204,11 +204,11 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
 		// Measured from the same job-start origin the artifact-resolution
-		// step uses, with buffer before the job's own 20-minute timeout, so
+		// step uses, with buffer before the job's own 65-minute timeout, so
 		// GitHub cannot cancel the job mid-poll and leave the
 		// "suppression-verify" check stuck "in_progress" instead of
 		// reporting failure.
-		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
+		"job_deadline_ms=$(( JOB_START_MS + (60 * 60) * 1000 ))",
 		`now_ms="$(date +%s%3N)"`,
 		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,
 	})
