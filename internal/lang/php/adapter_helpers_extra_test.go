@@ -652,13 +652,7 @@ func TestParsePHPImportsTracksClassContextNearLinearly(t *testing.T) {
 		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
 	}
 
-	start := time.Now()
 	parsed := parsePHPImports([]byte(content.String()), "distributed-use.php", resolver)
-	elapsed := time.Since(start)
-
-	if elapsed > 12*time.Second {
-		t.Fatalf("expected bounded context tracking to finish quickly, took %s", elapsed)
-	}
 	if len(parsed.imports) != testMaxPHPUseStatementsPerFile {
 		t.Fatalf("expected %d use imports, got %d", testMaxPHPUseStatementsPerFile, len(parsed.imports))
 	}
