@@ -141,7 +141,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// failing closed on zero visible candidates would make the required
 		// check nondeterministically fail on ordinary PR events instead of
 		// using its ten-minute polling window.
-		"const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed')",
+		"const stillPending = !currentTerminal || candidates.some((run) => run.status !== 'completed')",
 		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
 		// at the same head SHA while an earlier, already-completed run
 		// (computed against the base this PR has since moved away from)

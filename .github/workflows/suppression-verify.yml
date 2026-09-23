@@ -141,7 +141,11 @@ jobs:
               // but their runs are not guaranteed to become visible through
               // the API in lockstep, so seeing none yet must not be treated
               // as proof none will ever appear.
-              const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed');
+              // Terminal attempts completed before this verifier started
+              // cannot prove that a concurrently dispatched retry has failed:
+              // the new run may not yet be visible in the API.
+              const currentTerminal = candidates.some((run) => run.status === 'completed' && new Date(run.updated_at).getTime() >= jobStartMs);
+              const stillPending = !currentTerminal || candidates.some((run) => run.status !== 'completed');
               return { run: null, artifact: null, stillPending };
             };
 

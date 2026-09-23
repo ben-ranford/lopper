@@ -27,6 +27,9 @@ func TestSuppressionArtifactWait(t *testing.T) {
 	resolve := workflowStepByName(t, workflow.Jobs, "verify", "Resolve trusted ci artifact for this pull request head")
 	for _, tc := range []struct{ name, want string }{
 		{"late-success", "accepted:42:99"},
+		{"stale-failure", "accepted:42:99"},
+		{"stale-cancelled", "accepted:42:99"},
+		{"stale-only", "Timed out"},
 		{"failure", "No completed"},
 		{"cancelled", "No completed"},
 		{"timeout", "Timed out"},
@@ -76,10 +79,14 @@ const github = {
     throw new Error('untrusted workflow query');
    }
    if (scenario === 'missing-run') return [];
+   if (scenario === 'stale-only' || (scenario.startsWith('stale-') && polls === 0)) {
+    return [{id: 41, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
+     updated_at: new Date(start - 1).toISOString(), status: 'completed', conclusion: scenario === 'stale-only' ? 'failure' : scenario.slice(6)}];
+   }
    const pending = ['timeout', 'superseded'].includes(scenario) ||
-    (scenario === 'late-success' && now - start < 30 * 60 * 1000);
+    ((scenario === 'late-success' || scenario.startsWith('stale-')) && now - start < 30 * 60 * 1000);
    return [{id: 42, head_sha: scenario === 'wrong-head' ? 'other' : 'expected',
-    created_at: new Date(start).toISOString(), status: pending ? 'in_progress' : 'completed',
+    created_at: new Date(start).toISOString(), updated_at: new Date(now).toISOString(), status: pending ? 'in_progress' : 'completed',
     conclusion: ['failure', 'cancelled'].includes(scenario) ? scenario : 'success'}];
   }
   if (method !== 'artifacts' || args.run_id !== 42) throw new Error('wrong artifact query');
@@ -93,7 +100,7 @@ new AsyncFunction('github', 'context', 'core', 'process', process.env.WAIT_SCRIP
  .then(() => console.log('accepted:' + outputs['run-id'] + ':' + outputs['artifact-id']))
  .catch(error => {
   const elapsed = now - start;
-  if (['timeout', 'wrong-head', 'missing-run'].includes(scenario) && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
+  if (['timeout', 'wrong-head', 'missing-run', 'stale-only'].includes(scenario) && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
    throw new Error('timeout outside verification SLO/report buffer: ' + elapsed);
   }
   if (['failure', 'cancelled', 'expired', 'wrong-name'].includes(scenario) && polls !== 0) {
