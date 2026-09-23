@@ -53,6 +53,35 @@ func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
 	assertNoPreflightTimeoutTemps(t, tmpDir)
 }
 
+func TestHooksInstallRollbackFailureRetainsUsableHook(t *testing.T) {
+	for _, previousPath := range []string{"", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) {
+			t.Parallel()
+			fixture := newPreflightTimeoutFixture(t, "hooks-install")
+			if previousPath != "" {
+				runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+			}
+			env := append(postWriteBlockingGitEnv(t), "HOOK_TIMEOUT_LOCK_CONFIG=1")
+			output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", env...)
+			if err == nil || !strings.Contains(string(output), "Unable to restore core.hooksPath; retaining managed hook") {
+				t.Fatalf("rollback failure = %v\n%s", err, output)
+			}
+			got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath")
+			if got != filepath.Dir(fixture.managedHook) {
+				t.Fatalf("core.hooksPath = %q, want retained managed hook", got)
+			}
+			info, err := os.Stat(fixture.managedHook)
+			if err != nil || info.Mode()&0o111 == 0 {
+				t.Fatalf("retained hook is not executable: %v", err)
+			}
+			if err := os.Remove(fixture.configPath + ".lock"); err != nil {
+				t.Fatalf("remove simulated config lock: %v", err)
+			}
+			runCommand(t, fixture.repoDir, fixture.managedHook)
+		})
+	}
+}
+
 func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	tmpDir := t.TempDir()
@@ -129,7 +158,10 @@ if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ]; then
 	[ ! -f "$HOOK_TIMEOUT_COUNTER" ] || count=$(cat "$HOOK_TIMEOUT_COUNTER")
 	count=$((count + 1))
 	echo "$count" >"$HOOK_TIMEOUT_COUNTER"
-	if [ "$count" -eq 2 ]; then exec cat "$HOOK_TIMEOUT_FIFO"; fi
+	if [ "$count" -eq 2 ]; then
+		if [ "${HOOK_TIMEOUT_LOCK_CONFIG-}" = 1 ]; then : >.git/config.lock; fi
+		exec cat "$HOOK_TIMEOUT_FIFO"
+	fi
 fi
 exec %s "$@"
 `, shellQuote(realGit))
