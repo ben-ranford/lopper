@@ -1,7 +1,6 @@
 package kotlinandroid
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -87,7 +86,7 @@ func (s *gradleFileDiscoveryState) addFile(repoPath, path string) {
 	}
 	content, readErr := safeio.ReadFileUnderLimit(repoPath, path, readLimit)
 	if readErr != nil {
-		if remainingBytes < shared.GradleManifestByteLimit && errors.Is(readErr, safeio.ErrFileTooLarge) {
+		if isAggregateGradleContentLimitError(remainingBytes, readErr) {
 			s.addBudgetWarning()
 			return
 		}
@@ -99,6 +98,10 @@ func (s *gradleFileDiscoveryState) addFile(repoPath, path string) {
 		Path:    path,
 		Content: string(content),
 	})
+}
+
+func isAggregateGradleContentLimitError(remainingBytes int64, readErr error) bool {
+	return remainingBytes < int64(shared.GradleManifestByteLimit) && shared.IsPureSentinelError(readErr, safeio.ErrFileTooLarge)
 }
 
 func (s *gradleFileDiscoveryState) addBudgetWarning() {
