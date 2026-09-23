@@ -14,7 +14,7 @@ import (
 )
 
 func TestSummaryTerminalArrowsWithoutEnter(t *testing.T) {
-	for _, exit := range []string{"q\r", "\x03", "\x04", "cancel", "action"} {
+	for _, exit := range []string{"q\r", "\x03", "\x04", "cancel", "action", "queued"} {
 		t.Run(exit, func(t *testing.T) { runSummaryArrowPTY(t, exit) })
 	}
 }
@@ -63,6 +63,9 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 		t.Fatal(err)
 	}
 	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 2/2") })
+	if exit == "queued" {
+		exit = "q\r" + strings.Repeat("x", 1024)
+	}
 	if exit == "action" {
 		if _, err := master.Write([]byte("save-baseline nightly\r")); err != nil {
 			t.Fatal(err)
