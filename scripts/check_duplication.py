@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
-import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,15 +68,21 @@ def added_lines(repo, merge_base):
     for raw in output.split("\0")[:-1]:
         path = supported_path(raw, repo)
         diff = checked(["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", merge_base, "HEAD", "--", raw], repo).stdout
-        for line in diff.splitlines():
-            if line.startswith(("Binary files ", "GIT binary patch")):
-                raise AnalysisError(f"Cannot analyze binary Go diff: {raw!r}")
-            if line.startswith("@@"):
-                match = re.fullmatch(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@.*", line)
-                if not match:
-                    raise AnalysisError(f"Malformed Git hunk for {raw!r}: {line!r}")
-                start, count = int(match[1]), int(match[2] or 1)
-                added.update((path, number) for number in range(start, start + count))
+        added.update(changed_hunk_lines(diff, path))
+    return added
+
+
+def changed_hunk_lines(diff, path):
+    added = set()
+    for line in diff.splitlines():
+        if line.startswith(("Binary files ", "GIT binary patch")):
+            raise AnalysisError(f"Cannot analyze binary Go diff: {path!r}")
+        if line.startswith("@@"):
+            match = re.fullmatch(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@.*", line)
+            if not match:
+                raise AnalysisError(f"Malformed Git hunk for {path!r}: {line!r}")
+            start, count = int(match[1]), int(match[2] or 1)
+            added.update((path, number) for number in range(start, start + count))
     return added
 
 
@@ -90,18 +96,24 @@ def finding_location(raw, start, end, repo, line_counts):
     return path, start, end
 
 
+def parse_location(location, repo, line_counts):
+    raw, separator, line_range = location.rpartition(":")
+    start, dash, end = line_range.partition("-")
+    if not separator or not dash or not start.isascii() or not end.isascii() or not start.isdecimal() or not end.isdecimal():
+        raise AnalysisError(f"Malformed detector location: {location!r}")
+    return finding_location(raw, start, end, repo, line_counts)
+
+
 def parse_findings(output, repo):
     if output and not output.endswith("\n"):
         raise AnalysisError("Truncated detector output (missing final newline)")
     sources, destinations, duplicated = set(), set(), set()
     line_counts = {}
     for record in output.splitlines():
-        match = re.fullmatch(r"(.+):(\d+)-(\d+): duplicate of (.+):(\d+)-(\d+)", record)
-        if not match:
+        records = record.split(": duplicate of ")
+        if len(records) != 2:
             raise AnalysisError(f"Malformed detector record: {record!r}")
-        locations = []
-        for offset in (1, 4):
-            locations.append(finding_location(match[offset], match[offset + 1], match[offset + 2], repo, line_counts))
+        locations = [parse_location(location, repo, line_counts) for location in records]
         if locations[0] == locations[1]:
             raise AnalysisError(f"Detector reported a self-duplicate: {record!r}")
         sources.add(locations[0])
@@ -116,9 +128,14 @@ def parse_findings(output, repo):
 
 
 def scan(repo, go_command, version, threshold):
+    if not re.fullmatch(r"[0-9a-f]{40}", version):
+        raise AnalysisError("Detector version must be pinned to a full lowercase commit SHA")
+    go_executable = shutil.which(go_command)
+    if not go_executable or Path(go_executable).name not in ("go", "go.exe"):
+        raise AnalysisError("Go command must name a Go executable, without embedded arguments")
     with tempfile.TemporaryDirectory(prefix="lopper-dupl-") as directory:
         environment = dict(os.environ, GOBIN=directory)
-        checked([*shlex.split(go_command), "install", f"github.com/mibk/dupl@{version}"], repo, environment=environment)
+        checked([go_executable, "install", "--", f"github.com/mibk/dupl@{version}"], repo, environment=environment)
         executable = Path(directory) / ("dupl.exe" if os.name == "nt" else "dupl")
         result = checked([str(executable), "-t", str(threshold), "-plumbing", "."], repo)
         # dupl logs Go parse failures but can still exit zero. Never treat its
