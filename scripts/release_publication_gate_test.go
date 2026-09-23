@@ -159,7 +159,19 @@ func TestReleaseSonarVerifierSurvivesSourceCheckout(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &workflow)
 	job := workflowJobByName(t, workflow.Jobs, "verify-source-ci")
-	assertWorkflowStepOrder(t, job, "Checkout trusted workflow revision", "Preserve trusted Sonar verifier", "Checkout exact release source", "Verify exact source Sonar analysis")
+	assertWorkflowStepOrder(t, job,
+		"Checkout trusted workflow revision",
+		"Preserve trusted Sonar verifier",
+		"Verify exact source Sonar analysis",
+		"Checkout exact release source",
+		"Verify exact release source",
+		"Setup Go",
+		"Install shellcheck",
+		"Resolve gosec version",
+		"Install Go tooling",
+		"Run exact source CI gate",
+		"Verify demo assets",
+	)
 	checkout := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Checkout trusted workflow revision")
 	preserve := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Preserve trusted Sonar verifier")
 	verify := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Verify exact source Sonar analysis")
@@ -168,6 +180,9 @@ func TestReleaseSonarVerifierSurvivesSourceCheckout(t *testing.T) {
 	}
 	if checkout.If != verify.If || preserve.If != verify.If {
 		t.Fatal("trusted verifier preparation must run for every Sonar verification")
+	}
+	if verify.Env["PATH"] != "/usr/bin:/bin" || verify.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
+		t.Fatal("trusted Sonar verification must use a sanitized shell and system-only PATH before source-controlled steps")
 	}
 	for _, scenario := range []string{"missing", "replaced"} {
 		t.Run(scenario, func(t *testing.T) {
