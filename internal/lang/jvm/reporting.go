@@ -7,6 +7,9 @@ import (
 )
 
 func buildRequestedJVMDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	if req.Dependency != "" {
+		req.TopN = 0
+	}
 	return shared.BuildRequestedDependenciesWithWeights(req, scan, normalizeDependencyID, buildDependencyReport, buildTopJVMDependencies)
 }
 
