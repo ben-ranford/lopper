@@ -1,7 +1,6 @@
 package scripts
 
 import (
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +30,7 @@ func TestAutomationYAMLParsing(t *testing.T) {
 				repoDir := automationYAMLFixture(t)
 				writeRepoScriptFixture(t, repoDir, "scripts/"+script.name)
 				writeFixtureFile(t, repoDir, script.path, input.content)
-				cmd := exec.Command(filepath.Join(repoDir, "scripts", script.name))
+				cmd := automationShellFixtureCommand(filepath.Join(repoDir, "scripts", script.name))
 				cmd.Dir = repoDir
 				output, err := cmd.CombinedOutput()
 				if input.error == "" {

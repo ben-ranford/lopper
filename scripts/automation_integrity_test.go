@@ -92,7 +92,7 @@ jobs:
         uses: actions/checkout@v7
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := automationShellFixtureCommand(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -126,7 +126,7 @@ runs:
       uses: actions/cache@v4
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := automationShellFixtureCommand(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,7 +156,7 @@ jobs:
     steps: *trusted_steps
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := automationShellFixtureCommand(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -559,9 +559,7 @@ var automationExamplesFixtureSlots = make(chan struct{}, 2)
 
 func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, error) {
 	t.Helper()
-	return runAutomationExamplesFixtureWithCommand(t, lefthookYAML, func(scriptPath string) *exec.Cmd {
-		return exec.Command(scriptPath)
-	})
+	return runAutomationExamplesFixtureWithCommand(t, lefthookYAML, automationShellFixtureCommand)
 }
 
 func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, newCommand func(string) *exec.Cmd) (string, error) {
