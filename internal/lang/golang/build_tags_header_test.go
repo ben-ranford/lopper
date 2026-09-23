@@ -28,3 +28,15 @@ func TestLegacyBuildConstraintInPackageDocsDoesNotExcludeFile(t *testing.T) {
 		t.Fatal("adapter excluded file with legacy constraint in package documentation")
 	}
 }
+
+func TestInactiveLegacyBuildConstraintWithHeaderSeparationExcludesFile(t *testing.T) {
+	content := []byte(strings.Join([]string{
+		"// +build lopper_never_enabled",
+		"",
+		packageMainLine,
+		"",
+	}, "\n"))
+	if matchesActiveBuild(content) {
+		t.Fatal("adapter included file with inactive legacy build constraint")
+	}
+}
