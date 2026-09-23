@@ -619,6 +619,7 @@ func TestInstalledPreCommitChecksEverySymlinkHop(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			repo := newHookFixture(t)
 			external := t.TempDir()
+			linkExternalHookTools(t, external)
 			target, err := exec.LookPath("gofmt")
 			if err != nil {
 				t.Fatal(err)
@@ -646,7 +647,7 @@ func TestInstalledPreCommitChecksEverySymlinkHop(t *testing.T) {
 			}
 			hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
 			// No fallback gofmt: invalid links must fail closed.
-			output, err := hookCommandWithEnv(repo, []string{"PATH=" + external + ":/usr/bin:/bin"}, filepath.Join(hook, "pre-commit"))
+			output, err := hookCommandWithEnv(repo, []string{"PATH=" + external}, filepath.Join(hook, "pre-commit"))
 			if err == nil {
 				t.Fatalf("invalid symlink accepted: %s", output)
 			}
@@ -722,4 +723,71 @@ func TestInstalledPreCommitRejectsSparseInspectionFailure(t *testing.T) {
 		t.Fatalf("sparse inspection failure was ignored: %v\n%s", err, output)
 	}
 	assertHookWorktreeCleaned(t, repo)
+}
+
+func TestInstalledPreCommitRejectsAlternateCommonWorktreeTools(t *testing.T) {
+	for _, tool := range []string{"git", "gofmt", "make"} {
+		t.Run(tool, func(t *testing.T) {
+			assertAlternateCommonToolRejected(t, tool)
+		})
+	}
+}
+
+func assertAlternateCommonToolRejected(t *testing.T, tool string) {
+	t.Helper()
+	repo := newHookFixture(t)
+	common := filepath.Join(t.TempDir(), "common")
+	if err := os.CopyFS(common, os.DirFS(filepath.Join(repo, ".git"))); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(t.TempDir(), "alternate-sibling")
+	env := []string{"GIT_COMMON_DIR=" + common}
+	if output, err := hookCommandWithEnv(repo, env, "git", "worktree", "add", "--detach", sibling); err != nil {
+		t.Fatalf("create alternate-common sibling: %v\n%s", err, output)
+	}
+	marker := filepath.Join(t.TempDir(), "executed")
+	toolDir := filepath.Join(sibling, "tools")
+	writeFileMode(t, filepath.Join(toolDir, tool), "#!/bin/sh\nprintf executed >'"+marker+"'\nexit 99\n", 0o755)
+	writeFile(t, filepath.Join(repo, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
+	if output, err := hookCommandWithEnv(repo, env, "git", "add", "sample.go"); err != nil {
+		t.Fatalf("stage alternate-common change: %v\n%s", err, output)
+	}
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	env = append(env, "PATH="+toolDir+":"+os.Getenv("PATH"))
+	output, err := hookCommandWithEnv(repo, env, filepath.Join(hook, "pre-commit"))
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("alternate-common sibling %s executed: %v\n%s", tool, statErr, output)
+	}
+	if err == nil || !strings.Contains(output, "checkout-controlled hook tool") {
+		t.Fatalf("expected alternate-common tool rejection: %v\n%s", err, output)
+	}
+}
+
+func TestInstalledPreCommitRejectsUnavailableAlternateCommonInventory(t *testing.T) {
+	repo := newHookFixture(t)
+	external := t.TempDir()
+	marker := filepath.Join(external, "git-executed")
+	writeFileMode(t, filepath.Join(external, "git"), "#!/bin/sh\nprintf executed >'"+marker+"'\nexit 99\n", 0o755)
+	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	env := []string{"GIT_COMMON_DIR=" + filepath.Join(t.TempDir(), "missing"), "PATH=" + external + ":" + os.Getenv("PATH")}
+	output, err := hookCommandWithEnv(repo, env, filepath.Join(hook, "pre-commit"))
+	if err == nil || !strings.Contains(output, "Cannot inspect hook worktrees") {
+		t.Fatalf("expected alternate inventory failure: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("selected Git ran before alternate inventory validation: %v", err)
+	}
+}
+
+func linkExternalHookTools(t *testing.T, directory string) {
+	t.Helper()
+	for _, name := range []string{"git", "make"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(directory, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

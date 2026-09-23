@@ -16,48 +16,56 @@ trap '/bin/rm -f "$inventory_file"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# Inventory the physical checkout, never an inherited alternate repository.
-(
-	unset GIT_DIR GIT_WORK_TREE GIT_PREFIX GIT_COMMON_DIR GIT_INDEX_FILE
+# Inventory both repositories whose checkouts can participate in this hook.
+# Physical checkout membership is proven before adding alternate-common roots.
+inventory_worktrees() (
+	if [ "$1" = physical ]; then unset GIT_COMMON_DIR; fi
+	unset GIT_DIR GIT_WORK_TREE GIT_PREFIX GIT_INDEX_FILE
 	unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 	unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 	/usr/bin/git --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null \
 		-C "$checkout_root" worktree list --porcelain -z
-) >"$inventory_file" || { echo 'Cannot inspect hook worktrees' >&2; exit 1; }
+)
 roots=()
-record_root=
-record_identity=false
 found_checkout=false
-while IFS= read -r -d '' field; do
-	case "$field" in
-		worktree\ *)
-			[ -z "$record_root" ] || exit 1
-			record_root=${field#worktree }
-			case "$record_root" in /*) ;; *) exit 1 ;; esac
-			roots+=("$record_root")
-			# Stale, missing, and inaccessible foreign worktrees stay excluded
-			# lexically. They must not make otherwise usable checkouts fail.
-			if physical_root=$(CDPATH='' cd -P "$record_root" 2>/dev/null && pwd -P && printf '.'); then
-				physical_root=${physical_root%.}
-				physical_root=${physical_root%$'\n'}
-				roots+=("$physical_root")
-				if [ "$physical_root" = "$checkout_root" ]; then found_checkout=true; fi
-			fi ;;
-		'')
-			[ -n "$record_root" ] && "$record_identity" || exit 1
-			record_root=; record_identity=false ;;
-		HEAD\ *|bare)
-			[ -n "$record_root" ] && ! "$record_identity" || exit 1
-			if [ "$field" != bare ] && [[ ! $field =~ ^HEAD\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then exit 1; fi
-			record_identity=true ;;
-		branch\ *|detached|locked|locked\ *|prunable|prunable\ *)
-			[ -n "$record_root" ] || exit 1 ;;
-		*) echo 'Malformed hook worktree inventory' >&2; exit 1 ;;
-	esac
-done <"$inventory_file"
-if [ -n "$field" ] || [ -n "$record_root" ] || ! "$found_checkout"; then
-	echo 'Incomplete hook worktree inventory' >&2; exit 1
-fi
+read_inventory() {
+	local record_root='' record_identity=false field
+	inventory_worktrees "$1" >"$inventory_file" || { echo 'Cannot inspect hook worktrees' >&2; exit 1; }
+	[ -s "$inventory_file" ] || { echo 'Empty hook worktree inventory' >&2; exit 1; }
+	while IFS= read -r -d '' field; do
+		case "$field" in
+			worktree\ *)
+				[ -z "$record_root" ] || exit 1
+				record_root=${field#worktree }
+				case "$record_root" in /*) ;; *) exit 1 ;; esac
+				roots+=("$record_root")
+				# Stale, missing, and inaccessible foreign worktrees stay excluded
+				# lexically. They must not make otherwise usable checkouts fail.
+				if physical_root=$(CDPATH='' cd -P "$record_root" 2>/dev/null && pwd -P && printf '.'); then
+					physical_root=${physical_root%.}
+					physical_root=${physical_root%$'\n'}
+					roots+=("$physical_root")
+					if [ "$physical_root" = "$checkout_root" ]; then found_checkout=true; fi
+				fi ;;
+			'')
+				[ -n "$record_root" ] && "$record_identity" || exit 1
+				record_root=; record_identity=false ;;
+			HEAD\ *|bare)
+				[ -n "$record_root" ] && ! "$record_identity" || exit 1
+				if [ "$field" != bare ] && [[ ! $field =~ ^HEAD\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then exit 1; fi
+				record_identity=true ;;
+			branch\ *|detached|locked|locked\ *|prunable|prunable\ *)
+				[ -n "$record_root" ] || exit 1 ;;
+			*) echo 'Malformed hook worktree inventory' >&2; exit 1 ;;
+		esac
+	done <"$inventory_file"
+	if [ -n "$field" ] || [ -n "$record_root" ]; then
+		echo 'Incomplete hook worktree inventory' >&2; exit 1
+	fi
+}
+read_inventory physical
+"$found_checkout" || { echo 'Current checkout missing from hook inventory' >&2; exit 1; }
+if [ "${GIT_COMMON_DIR+x}" = x ]; then read_inventory active; fi
 /bin/rm -f "$inventory_file"
 trap - EXIT
 
