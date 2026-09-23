@@ -15,10 +15,10 @@ func TestCIMakeTargetsRetainAndPartitionTheCIPrerequisiteGraph(t *testing.T) {
 	wantCI := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
 		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
-		"security", "vuln-check", "stave-ui-check", "test", "test-leaks", "test-race", "bench-gate", "build", "cov",
+		"security", "vuln-check", "stave-ui-check", "test", "test-leaks", "test-tui", "test-race", "bench-gate", "build", "cov",
 		runtimePycacheCheck,
 	}
-	wantTests := []string{"stave-ui-check", "test", "test-leaks", runtimePycacheCheck}
+	wantTests := []string{"stave-ui-check", "test", "test-leaks", "test-tui", runtimePycacheCheck}
 	wantChecks := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
 		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
@@ -64,7 +64,7 @@ func TestCIMakePartitionsCannotBeOverridden(t *testing.T) {
 		"CI_TEST_TARGETS":  "skipped-test",
 		"CI_CHECK_TARGETS": "skipped-check",
 	}
-	if got := makePrerequisites(t, "ci-tests", overrides); !sameStrings(got, []string{"stave-ui-check", "test", "test-leaks", "runtime-pycache-check"}) {
+	if got := makePrerequisites(t, "ci-tests", overrides); !sameStrings(got, []string{"stave-ui-check", "test", "test-leaks", "test-tui", "runtime-pycache-check"}) {
 		t.Fatalf("ci-tests prerequisites changed through overrides: %q", got)
 	}
 	if got := makePrerequisites(t, "ci-checks", overrides); strings.Contains(strings.Join(got, " "), "skipped-") {

@@ -66,7 +66,7 @@ GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFL
 
 # Keep the parallel CI partitions fixed so environment or command-line overrides
 # cannot omit a required gate. runtime-pycache-check runs after each partition.
-override CI_TEST_TARGETS := stave-ui-check test test-leaks
+override CI_TEST_TARGETS := stave-ui-check test test-leaks test-tui
 override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test-race bench-gate build cov runtime-pycache-check
 
 format:
@@ -306,7 +306,7 @@ build:
 manpage:
 	MANPAGE_DATE="$(MANPAGE_DATE)" ./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-tui test-race bench-gate build cov runtime-pycache-check
 
 ci-tests: $(CI_TEST_TARGETS) runtime-pycache-check
 
@@ -533,3 +533,12 @@ vscode-extension-test:
 vscode-extension-package:
 	mkdir -p $(DIST_DIR)
 	cd $(VSCODE_EXTENSION_DIR) && npx @vscode/vsce package --out "../../$(VSCODE_EXTENSION_PACKAGE_PATH)"
+
+.PHONY: test-tui tui-demo
+test-tui: build
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui ./internal/cli
+	python3 -B -m unittest scripts/test_tui_test.py
+	python3 -B scripts/test_tui.py --binary "$(BIN_DIR)/$(BINARY_NAME)"
+
+tui-demo: build
+	$(BIN_DIR)/$(BINARY_NAME) tui --repo testdata/ui/pty-fixture --language js-ts --sort name --page-size 1
