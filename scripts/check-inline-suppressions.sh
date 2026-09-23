@@ -240,9 +240,16 @@ gh_issue_list() {
 	local fingerprint="$2"
 	local creator="github-actions[bot]"
 	if [[ "${CI:-}" != "true" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
-		creator="$("$gh_bin" api user --jq .login)" || return 1
+		local host
+		if [[ -n "$repo" ]]; then
+			host="$("$gh_bin" repo view "$repo" --json url --jq '.url | split("/")[2]')" || return 1
+		else
+			host="$("$gh_bin" repo view --json url --jq '.url | split("/")[2]')" || return 1
+		fi
+		[[ -n "$host" ]] || return 1
+		creator="$("$gh_bin" api user --hostname "$host" --jq .login)" || return 1
 		# Only use the authenticated account, never caller-supplied issue authors.
-		[[ "$creator" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || return 1
+		[[ "$creator" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || return 1
 	fi
 	# Fingerprints are SHA-256 hex digests, so this marker is safe to inline into the jq string literal below.
 	local marker="<!-- lopper-inline-suppression:${fingerprint} -->"
