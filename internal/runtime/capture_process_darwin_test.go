@@ -51,13 +51,7 @@ func TestDarwinCleanupPreservesLiveGroupAndInspectionErrors(t *testing.T) {
 	originalMembers := runtimeProcessGroupMembers
 	originalKill := runtimeKillProcessGroup
 	t.Cleanup(func() { runtimeProcessGroupMembers = originalMembers; runtimeKillProcessGroup = originalKill })
-	cases := []struct {
-		name       string
-		members    []unix.KinfoProc
-		inspectErr error
-		killErr    error
-		wantErr    error
-	}{
+	cases := []darwinCleanupCase{
 		{name: "live", members: []unix.KinfoProc{{Proc: unix.ExternProc{P_stat: 2}}}, killErr: syscall.EPERM, wantErr: syscall.EPERM},
 		{name: "mixed", members: []unix.KinfoProc{{Proc: unix.ExternProc{P_stat: darwinProcessZombie}}, {Proc: unix.ExternProc{P_stat: 2}}}, killErr: syscall.EPERM, wantErr: syscall.EPERM},
 		{name: "inspection failure", inspectErr: syscall.EACCES, killErr: syscall.EPERM, wantErr: syscall.EPERM},
@@ -67,24 +61,47 @@ func TestDarwinCleanupPreservesLiveGroupAndInspectionErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtimeKillProcessGroup = func(pid int, signal syscall.Signal) error {
-				if pid != -42 || signal != syscall.SIGKILL {
-					t.Fatalf("unexpected signal: %d, %v", pid, signal)
-				}
-				return tc.killErr
-			}
-			runtimeProcessGroupMembers = func(name string, args ...int) ([]unix.KinfoProc, error) {
-				if name != "kern.proc.pgrp" || len(args) != 1 || args[0] != 42 {
-					t.Fatalf("unexpected process query: %s %v", name, args)
-				}
-				if !errors.Is(tc.killErr, syscall.EPERM) {
-					t.Fatal("queried group for unrelated signal error")
-				}
-				return tc.members, tc.inspectErr
-			}
-			if err := cleanupRuntimeProcessGroup(42); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("cleanup error = %v, want %v", err, tc.wantErr)
-			}
+			assertDarwinCleanupCase(t, tc)
 		})
+	}
+}
+
+type darwinCleanupCase struct {
+	name       string
+	members    []unix.KinfoProc
+	inspectErr error
+	killErr    error
+	wantErr    error
+}
+
+func assertDarwinCleanupCase(t *testing.T, tc darwinCleanupCase) {
+	t.Helper()
+	runtimeKillProcessGroup = darwinKillStub(t, tc.killErr)
+	runtimeProcessGroupMembers = darwinMembersStub(t, tc)
+	if err := cleanupRuntimeProcessGroup(42); !errors.Is(err, tc.wantErr) {
+		t.Fatalf("cleanup error = %v, want %v", err, tc.wantErr)
+	}
+}
+
+func darwinKillStub(t *testing.T, result error) func(int, syscall.Signal) error {
+	t.Helper()
+	return func(pid int, signal syscall.Signal) error {
+		if pid != -42 || signal != syscall.SIGKILL {
+			t.Fatalf("unexpected signal: %d, %v", pid, signal)
+		}
+		return result
+	}
+}
+
+func darwinMembersStub(t *testing.T, tc darwinCleanupCase) func(string, ...int) ([]unix.KinfoProc, error) {
+	t.Helper()
+	return func(name string, args ...int) ([]unix.KinfoProc, error) {
+		if name != "kern.proc.pgrp" || len(args) != 1 || args[0] != 42 {
+			t.Fatalf("unexpected process query: %s %v", name, args)
+		}
+		if !errors.Is(tc.killErr, syscall.EPERM) {
+			t.Fatal("queried group for unrelated signal error")
+		}
+		return tc.members, tc.inspectErr
 	}
 }
