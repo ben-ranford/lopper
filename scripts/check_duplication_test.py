@@ -113,11 +113,27 @@ class DuplicationRunnerTest(unittest.TestCase):
         for status, stderr in ((1, "crashed"), (0, "parse error")):
             results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], status, "", stderr)]
             with self.subTest(status=status), mock.patch.object(runner.subprocess, "run", side_effect=results), self.assertRaises(runner.AnalysisError):
-                runner.scan(self.repo, "go", "pinned", 55)
+                runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
+
+    def test_detector_arguments_reject_unpinned_versions_and_command_flags(self):
+        for version in ("latest", "-toolexec=sh", "abc;touch marker", "a" * 39, "a" * 40 + "\n"):
+            with self.subTest(version=version), mock.patch.object(runner.subprocess, "run") as run:
+                with self.assertRaisesRegex(runner.AnalysisError, "pinned"):
+                    runner.scan(self.repo, "go", version, 55)
+                run.assert_not_called()
+        with mock.patch.object(runner.subprocess, "run") as run, self.assertRaisesRegex(runner.AnalysisError, "Go executable"):
+            runner.scan(self.repo, "go -toolexec=sh", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
+        run.assert_not_called()
+
+    def test_parser_rejects_long_ambiguous_records(self):
+        with self.assertRaises(runner.AnalysisError):
+            runner.parse_findings(("file:1-2:" * 10000) + "\n", self.repo)
+        with self.assertRaises(runner.AnalysisError):
+            runner.changed_hunk_lines("@@ invalid hunk", "file.go")
 
     def test_detector_install_failure_is_not_masked(self):
         with mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "install failed")), self.assertRaisesRegex(runner.AnalysisError, "install failed"):
-            runner.scan(self.repo, "go", "pinned", 55)
+            runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
 
     def test_cli_reports_no_change_success_and_duplicate_failure(self):
         command = [sys.executable, "-B", str(Path(runner.__file__).resolve()), "--version", "pinned", "--base", "target"]
