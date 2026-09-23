@@ -247,7 +247,7 @@ func isDirectReferenceRequirement(spec string) bool {
 		return false
 	}
 	head := trimmed
-	if cut := strings.IndexAny(head, " \t"); cut >= 0 {
+	if cut := strings.IndexAny(head, " \t@"); cut >= 0 {
 		head = head[:cut]
 	}
 	head = strings.ToLower(head)
