@@ -68,6 +68,7 @@ diff_mode=""
 gh_bin="${GH_BIN:-gh}"
 tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
 tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
+source_sha="${GITHUB_SHA:-}"
 
 create_temp_file() {
 	local temp_file=""
@@ -197,7 +198,7 @@ source_url_for_match() {
 	local line="$2"
 	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
 	local server="${GITHUB_SERVER_URL:-https://github.com}"
-	local sha="${GITHUB_SHA:-}"
+	local sha="$source_sha"
 
 	if [[ -n "$repo" && -n "$sha" ]]; then
 		printf '%s/%s/blob/%s/%s#L%s\n' "$server" "$repo" "$sha" "$file" "$line"
@@ -449,8 +450,19 @@ elif ! git diff --quiet --exit-code -- .; then
 	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
 	diff_target="HEAD"
-	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && git rev-parse --verify -q HEAD^2 >/dev/null 2>&1; then
-		diff_target="HEAD^2"
+	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -n "${PR_HEAD_SHA:-}" ]]; then
+		current_head_sha="$(git rev-parse --verify HEAD)"
+		second_parent_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+		# A pull_request checkout normally points at GitHub's synthetic merge
+		# commit. Only use its second parent when that exact commit is the PR's
+		# advertised head; topic branches can themselves contain a merge commit.
+		# Keep source links bound to the same PR-head tree used for the diff.
+		if [[ "$current_head_sha" != "$PR_HEAD_SHA" && "$second_parent_sha" == "$PR_HEAD_SHA" ]]; then
+			diff_target="HEAD^2"
+			source_sha="$PR_HEAD_SHA"
+		elif [[ "$current_head_sha" == "$PR_HEAD_SHA" ]]; then
+			source_sha="$PR_HEAD_SHA"
+		fi
 	fi
 	base_ref="$requested_base_ref"
 	used_fallback=0
