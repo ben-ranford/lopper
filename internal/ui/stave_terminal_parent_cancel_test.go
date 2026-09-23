@@ -16,7 +16,6 @@ import (
 	"github.com/ben-ranford/stave"
 	"github.com/ben-ranford/stave/event"
 	"github.com/ben-ranford/stave/session"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 )
 
@@ -128,15 +127,10 @@ func TestStavePreviewParentCancellationRestoresTerminalAndReturnsCause(t *testin
 	waitSignalOutput(t, capture, returned, func(output string) bool {
 		return strings.Contains(output, "Status: Stave preview") && strings.Contains(output, "\x1b[?1049h")
 	})
-	if _, err := master.Write([]byte(":refresh")); err != nil {
-		t.Fatalf("start refresh action: %v", err)
-	}
-	// Wait for command acceptance before submitting it. Rendering the initial
-	// frame does not prove that the PTY input queue has been processed.
-	waitSignalOutput(t, capture, returned, func(output string) bool {
-		return strings.Contains(ansi.Strip(output), "Command: refresh")
-	})
-	if _, err := master.Write([]byte("\r")); err != nil {
+	// Submit the complete command and wait for the analyzer acknowledgement.
+	// Differential terminal frames can split command text across cursor moves
+	// and prior rows, so stripped render output is not a command-acceptance signal.
+	if _, err := master.Write([]byte(":refresh\r")); err != nil {
 		t.Fatalf("submit refresh action: %v", err)
 	}
 	waitForParentCancellationRefresh(t, analyzer.started, "startup", staveSignalSubprocessBound, capture)
