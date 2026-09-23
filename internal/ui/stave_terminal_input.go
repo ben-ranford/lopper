@@ -61,7 +61,15 @@ func (in *staveTerminalInput) start(program *tea.Program) {
 func (in *staveTerminalInput) close() error {
 	if in.cancel != nil {
 		in.cancel()
-		in.reader.Cancel()
+		if !in.reader.Cancel() {
+			// Some platform readers cannot interrupt an ongoing read. Do not
+			// join that read or access its error until the relay has finished.
+			select {
+			case <-in.done:
+			default:
+				return in.reader.Close()
+			}
+		}
 		<-in.done
 	}
 	return errors.Join(in.err, in.reader.Close())
