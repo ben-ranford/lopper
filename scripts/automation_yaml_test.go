@@ -41,6 +41,9 @@ func TestAutomationYAMLParsing(t *testing.T) {
 				} else if err == nil || !strings.Contains(string(output), input.error) {
 					t.Fatalf("expected %s, got %v\n%s", input.error, err, output)
 				}
+				if input.name == "malformed" && !strings.Contains(string(output), script.path) {
+					t.Fatalf("malformed YAML diagnostic must identify %s:\n%s", script.path, output)
+				}
 			})
 		}
 	}

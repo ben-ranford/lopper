@@ -9,7 +9,7 @@ command -v ruby >/dev/null 2>&1 || {
 	exit 1
 }
 
-ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load(File.read(path), aliases: true) }' \
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load(File.read(path), aliases: true, filename: path) }' \
 	.github/workflows/release.yml \
 	.github/workflows/release-orchestration.yml \
 	.github/workflows/release-source-ci.yml \

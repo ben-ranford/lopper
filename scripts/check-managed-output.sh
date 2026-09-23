@@ -58,7 +58,7 @@ ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' \
 	internal/featureflags/release_locks.json \
 	renovate.json
 
-ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load(File.read(path), aliases: true) }' \
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load(File.read(path), aliases: true, filename: path) }' \
 	.golangci.yml \
 	.gostyle.yml \
 	action.yml
