@@ -32,6 +32,7 @@ const (
 	confidenceReasonRiskLow                 = "risk-low"
 	confidenceReasonRiskMedium              = "risk-medium"
 	confidenceReasonRiskHigh                = "risk-high"
+	confidenceReasonRiskCritical            = "risk-critical"
 )
 
 var orderedConfidenceReasonCodeValues = [...]string{
@@ -49,6 +50,7 @@ var orderedConfidenceReasonCodeValues = [...]string{
 	confidenceReasonEntryPointsStatic,
 	confidenceReasonDependencyDynamicLoader,
 	confidenceReasonNoRiskCues,
+	confidenceReasonRiskCritical,
 	confidenceReasonRiskHigh,
 	confidenceReasonRiskMedium,
 	confidenceReasonRiskLow,
@@ -281,6 +283,16 @@ func dynamicLoaderConfidenceSignal(cues []RiskCue) evaluatedReachabilitySignal {
 
 func riskSeverityConfidenceSignal(cues []RiskCue) evaluatedReachabilitySignal {
 	switch highestRiskSeverity(cues) {
+	case "critical":
+		return evaluatedReachabilitySignal{
+			signal: ReachabilitySignal{
+				Code:      confidenceReasonRiskCritical,
+				Score:     40,
+				Weight:    reachabilityWeightRiskSeverity,
+				Rationale: "critical-severity dependency risk cues limit reachability confidence",
+			},
+			summary: "risk critical",
+		}
 	case "high":
 		return evaluatedReachabilitySignal{
 			signal: ReachabilitySignal{
@@ -368,6 +380,8 @@ func highestRiskSeverity(cues []RiskCue) string {
 
 func riskSeverityWeight(value string) int {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "critical":
+		return 4
 	case "high":
 		return 3
 	case "medium":
