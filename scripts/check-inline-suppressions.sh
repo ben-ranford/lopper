@@ -130,7 +130,6 @@ fingerprint_for_occurrence() {
 
 read_full_file_content() {
 	local file="$1"
-	local head_parent
 
 	# The complete file at its current (target-side) state, not just the
 	# lines visible in this diff: the trusted tracker (which sees GitHub's
@@ -154,8 +153,8 @@ read_full_file_content() {
 	# "this change's own head" -- treating it the same way would read the
 	# wrong tree, or fail outright for a topic-only file that doesn't
 	# exist on that other side.
-	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
-		git show "${head_parent}:${file}" 2>/dev/null
+	if [[ "$diff_mode" == "branch" ]]; then
+		git show "${diff_target}:${file}" 2>/dev/null
 	elif [[ "$diff_mode" == "staged" ]]; then
 		# When the diff being checked is `git diff --cached`, the file being
 		# scanned is the index's content, not the working tree's. If the
@@ -449,6 +448,10 @@ elif ! git diff --quiet --exit-code -- .; then
 	diff_mode="worktree"
 	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
+	diff_target="HEAD"
+	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && git rev-parse --verify -q HEAD^2 >/dev/null 2>&1; then
+		diff_target="HEAD^2"
+	fi
 	base_ref="$requested_base_ref"
 	used_fallback=0
 	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
@@ -460,7 +463,7 @@ else
 		echo "No valid suppression base ref found; skipping inline suppression check." >&2
 		exit 0
 	fi
-	if ! base_commit="$(git merge-base "$base_ref" HEAD 2>/dev/null)"; then
+	if ! base_commit="$(git merge-base "$base_ref" "$diff_target" 2>/dev/null)"; then
 		echo "Base ref '$base_ref' is not related to HEAD; skipping inline suppression check." >&2
 		exit 0
 	fi
@@ -470,7 +473,7 @@ else
 		diff_scope="branch changes vs $base_ref"
 	fi
 	diff_mode="branch"
-	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..$diff_target" --)
 fi
 
 tmp_matches="$(create_temp_file)"
