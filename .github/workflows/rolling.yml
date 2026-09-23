@@ -56,6 +56,7 @@ jobs:
       tag: ${{ needs.prepare-rolling.outputs.tag }}
       source_sha: ${{ needs.prepare-rolling.outputs.source_sha }}
       artifact_prefix: rolling
+      memory_approved: ${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
       build_channel: rolling
       image_tags: |
         ${{ needs.prepare-rolling.outputs.tag }}

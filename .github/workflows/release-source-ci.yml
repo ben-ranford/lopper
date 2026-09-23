@@ -16,6 +16,7 @@ on:
 
 jobs:
   verify-source-ci:
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,3 +89,9 @@ jobs:
 
       - name: Verify demo assets
         run: make demos-check
+
+      - name: Verify exact source Sonar analysis
+        if: ${{ inputs.build_channel == 'release' }}
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: bash scripts/verify-release-sonar.sh

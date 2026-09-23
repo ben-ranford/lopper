@@ -5161,7 +5161,7 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 		t.Fatalf("prepare-ghcr build tags = %q, want image_tags output", build.With["tags"])
 	}
 	publishImages := workflow.Jobs["publish-ghcr-images"]
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "build-linux-windows", "build-darwin", "prepare-ghcr"})
 	if publishImages.If != "" {
 		t.Fatalf("publish-ghcr-images if = %q, want no override of failed-needs handling", publishImages.If)
 	}
@@ -5174,7 +5174,7 @@ func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t 
 	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "build-linux-windows", "build-darwin", "prepare-ghcr"})
 
 	var rollingWorkflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/rolling.yml", &rollingWorkflow)
@@ -5421,7 +5421,7 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "build-linux-windows", "build-darwin", "prepare-ghcr"})
 	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
@@ -5499,7 +5499,7 @@ func assertTrustedGHCRManifestPublisher(t *testing.T, workflow workflowConfig) {
 	}
 
 	publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
-	assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"publish-ghcr-images", "prepare-ghcr-manifest"})
+	assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "publish-ghcr-images", "prepare-ghcr-manifest"})
 	assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishManifest, "Log in to GHCR")
 	manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
