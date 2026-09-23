@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -247,12 +246,8 @@ func compileContextWithSourceContexts(paths ...string) (compileContext, bool) {
 }
 
 func TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t *testing.T) {
-	probePath := filepath.Join(".", "zz_system_include_probe_test.go")
-	probe := `package cpp
+	t.Parallel()
 
-import "testing"
-
-func TestSystemIncludeProbe(t *testing.T) {
 	for _, root := range []string{"/usr/include", "/usr/local/include"} {
 		if !isCompilerDefaultSystemIncludeRoot(root, true, true) {
 			t.Fatalf("expected %s to be a compiler default system root", root)
@@ -267,23 +262,6 @@ func TestSystemIncludeProbe(t *testing.T) {
 		if isLikelySystemIncludePath(path) {
 			t.Fatalf("did not expect %s to be treated as a system include path", path)
 		}
-	}
-}
-`
-	if err := os.WriteFile(probePath, []byte(probe), 0o600); err != nil {
-		t.Fatalf("write probe test: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Remove(probePath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove probe test: %v", err)
-		}
-	})
-
-	cmd := exec.Command("go", "test", "-run", "^TestSystemIncludeProbe$", ".")
-	cmd.Env = append(os.Environ(), "GOFLAGS=-buildvcs=false")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run system include probe: %v\n%s", err, output)
 	}
 }
 
