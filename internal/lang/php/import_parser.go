@@ -1751,8 +1751,23 @@ func lastNamespaceSegment(module string) string {
 }
 
 func hasDynamicPatterns(content []byte, filePath string, allowShortOpenTags bool) bool {
-	activePHP := maskInactivePHPRegionsWithShortOpenTags(string(content), allowShortOpenTags)
-	phpMasked := maskPHPHeredocNowdocBodies(activePHP)
+	text := string(content)
+	for offset := 0; offset < len(text); {
+		_, codeStart, ok := nextPHPOpenTag(text, offset, allowShortOpenTags)
+		if !ok {
+			break
+		}
+		codeEnd, next := findPHPRegionEnd(text, codeStart)
+		if hasDynamicPatternsInPHPRegion(text[codeStart:codeEnd], filePath) {
+			return true
+		}
+		offset = next
+	}
+	return false
+}
+
+func hasDynamicPatternsInPHPRegion(text, filePath string) bool {
+	phpMasked := maskPHPHeredocNowdocBodies(text)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
-	return dynamicPattern.Match(sanitized) || hasPHPDynamicInterpolation(activePHP)
+	return dynamicPattern.Match(sanitized) || hasPHPDynamicInterpolation(text)
 }
