@@ -450,25 +450,15 @@ elif ! git diff --quiet --exit-code -- .; then
 	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
 	base_ref="$requested_base_ref"
-	used_fallback=0
-	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
-		echo "Warning: suppression base ref '$base_ref' not found; falling back to 'HEAD~1'. This may miss inline suppressions introduced earlier in this branch." >&2
-		base_ref="HEAD~1"
-		used_fallback=1
+	if ! resolved_base="$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}" 2>/dev/null)"; then
+		echo "Suppression base ref '$base_ref' does not resolve to a commit; cannot check branch changes." >&2
+		exit 1
 	fi
-	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
-		echo "No valid suppression base ref found; skipping inline suppression check." >&2
-		exit 0
+	if ! base_commit="$(git merge-base "$resolved_base" HEAD 2>/dev/null)"; then
+		echo "Suppression base ref '$base_ref' cannot establish a merge base with HEAD; cannot check branch changes." >&2
+		exit 1
 	fi
-	if ! base_commit="$(git merge-base "$base_ref" HEAD 2>/dev/null)"; then
-		echo "Base ref '$base_ref' is not related to HEAD; skipping inline suppression check." >&2
-		exit 0
-	fi
-	if [[ "$used_fallback" -eq 1 ]]; then
-		diff_scope="branch changes vs fallback $base_ref (requested $requested_base_ref)"
-	else
-		diff_scope="branch changes vs $base_ref"
-	fi
+	diff_scope="branch changes vs $base_ref"
 	diff_mode="branch"
 	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
 fi
