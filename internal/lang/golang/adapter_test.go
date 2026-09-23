@@ -863,7 +863,7 @@ func testBuildConstraintMatchingAndExtraction(t *testing.T) {
 		t.Fatalf("expected go:build for current GOOS to match")
 	}
 
-	plusBuildOnly := []byte(strings.Join([]string{"// +build " + runtime.GOOS, packageMainLine, ""}, "\n"))
+	plusBuildOnly := []byte(strings.Join([]string{"// +build " + runtime.GOOS, "", packageMainLine, ""}, "\n"))
 
 	if !matchesActiveBuild(plusBuildOnly) {
 		t.Fatalf("expected +build for current GOOS to match")
@@ -1474,7 +1474,7 @@ func TestMiscCoverageBranches(t *testing.T) {
 	if isSupportedGoReleaseTag("go1.bad") {
 		t.Fatalf("expected malformed go version tag to be unsupported")
 	}
-	if matchesActiveBuild([]byte("// +build definitely_not_active\n" + packageMainLine + "\n")) {
+	if matchesActiveBuild([]byte("// +build definitely_not_active\n\n" + packageMainLine + "\n")) {
 		t.Fatalf("expected inactive plus-build expression to evaluate false")
 	}
 
