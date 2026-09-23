@@ -995,9 +995,8 @@ func validateOSVZipEntry(entry *zip.File, validateJSON bool, inventory *osvZipIn
 	}
 	tracked := &zipEntryReadTracker{reader: contents}
 	var validationErr error
-	var payload bytes.Buffer
 	if validateJSON {
-		validationErr = validateOSVJSONSnapshot(io.TeeReader(io.LimitReader(tracked, maxSyncMetadataBytes+1), &payload))
+		validationErr = inspectOSVJSONSnapshot(io.LimitReader(tracked, maxSyncMetadataBytes+1), inventory)
 	}
 	_, drainErr := io.Copy(io.Discard, tracked)
 	closeErr := contents.Close()
@@ -1006,9 +1005,6 @@ func validateOSVZipEntry(entry *zip.File, validateJSON bool, inventory *osvZipIn
 	}
 	if validationErr != nil {
 		return fmt.Errorf("validate OSV JSON ZIP entry %q: %w", entry.Name, validationErr)
-	}
-	if validateJSON {
-		return inventory.add(payload.Bytes())
 	}
 	return nil
 }
@@ -1027,6 +1023,10 @@ func (r *zipEntryReadTracker) Read(buffer []byte) (int, error) {
 }
 
 func validateOSVJSONSnapshot(reader io.Reader) error {
+	return inspectOSVJSONSnapshot(reader, nil)
+}
+
+func inspectOSVJSONSnapshot(reader io.Reader, inventory *osvZipInventory) error {
 	decoder := json.NewDecoder(reader)
 	decoder.UseNumber()
 	token, err := decoder.Token()
@@ -1039,9 +1039,9 @@ func validateOSVJSONSnapshot(reader io.Reader) error {
 	}
 	switch delim {
 	case '[':
-		err = validateOSVJSONEntries(decoder)
+		err = validateOSVJSONEntries(decoder, inventory)
 	case '{':
-		err = validateOSVJSONTopLevelObject(decoder)
+		err = validateOSVJSONTopLevelObject(decoder, inventory)
 	default:
 		err = fmt.Errorf("top-level JSON value must be an advisory array, advisory object, or object with a vulns array")
 	}
@@ -1066,7 +1066,8 @@ type osvJSONAffectedShape struct {
 	rangeConstraint   bool
 }
 
-func validateOSVJSONTopLevelObject(decoder *json.Decoder) error {
+func validateOSVJSONTopLevelObject(decoder *json.Decoder, inventory *osvZipInventory) error {
+	objectInventory := inventory.forSingleAdvisory()
 	foundVulns := false
 	shape := osvJSONAdvisoryShape{}
 	for decoder.More() {
@@ -1078,13 +1079,13 @@ func validateOSVJSONTopLevelObject(decoder *json.Decoder) error {
 			if foundVulns {
 				return errors.New("duplicate vulns field")
 			}
-			if err := validateOSVJSONVulns(decoder); err != nil {
+			if err := validateOSVJSONVulns(decoder, inventory); err != nil {
 				return err
 			}
 			foundVulns = true
 			continue
 		}
-		if err := readOSVJSONAdvisoryField(decoder, name, &shape); err != nil {
+		if err := readOSVJSONAdvisoryField(decoder, name, &shape, objectInventory); err != nil {
 			return err
 		}
 	}
@@ -1094,46 +1095,46 @@ func validateOSVJSONTopLevelObject(decoder *json.Decoder) error {
 	if foundVulns {
 		return nil
 	}
-	return requireUsableOSVJSONAdvisory(shape)
+	return recordOSVJSONSingleAdvisory(shape, inventory, objectInventory)
 }
 
-func validateOSVJSONVulns(decoder *json.Decoder) error {
+func validateOSVJSONVulns(decoder *json.Decoder, inventory *osvZipInventory) error {
 	if err := requireJSONDelimiter(decoder, '['); err != nil {
 		return fmt.Errorf("vulns must be an array: %w", err)
 	}
-	return validateOSVJSONEntries(decoder)
+	return validateOSVJSONEntries(decoder, inventory)
 }
 
-func validateOSVJSONEntries(decoder *json.Decoder) error {
+func validateOSVJSONEntries(decoder *json.Decoder, inventory *osvZipInventory) error {
 	for decoder.More() {
 		if err := requireJSONDelimiter(decoder, '{'); err != nil {
 			return fmt.Errorf("osv advisory entries must be objects: %w", err)
 		}
-		if err := validateOSVJSONAdvisoryObject(decoder); err != nil {
+		if err := validateOSVJSONAdvisoryObject(decoder, inventory); err != nil {
 			return fmt.Errorf("invalid OSV advisory entry: %w", err)
 		}
 	}
 	return requireJSONDelimiter(decoder, ']')
 }
 
-func validateOSVJSONAdvisoryObject(decoder *json.Decoder) error {
+func validateOSVJSONAdvisoryObject(decoder *json.Decoder, inventory *osvZipInventory) error {
 	shape := osvJSONAdvisoryShape{}
 	for decoder.More() {
 		name, err := readJSONObjectName(decoder)
 		if err != nil {
 			return err
 		}
-		if err := readOSVJSONAdvisoryField(decoder, name, &shape); err != nil {
+		if err := readOSVJSONAdvisoryField(decoder, name, &shape, inventory); err != nil {
 			return err
 		}
 	}
 	if err := requireJSONDelimiter(decoder, '}'); err != nil {
 		return err
 	}
-	return requireUsableOSVJSONAdvisory(shape)
+	return recordOSVJSONAdvisory(shape, inventory)
 }
 
-func readOSVJSONAdvisoryField(decoder *json.Decoder, name string, shape *osvJSONAdvisoryShape) error {
+func readOSVJSONAdvisoryField(decoder *json.Decoder, name string, shape *osvJSONAdvisoryShape, inventory *osvZipInventory) error {
 	switch name {
 	case "id":
 		if shape.idSeen {
@@ -1147,7 +1148,7 @@ func readOSVJSONAdvisoryField(decoder *json.Decoder, name string, shape *osvJSON
 		if shape.affectedSeen {
 			return errors.New("duplicate advisory affected field")
 		}
-		usable, err := validateOSVJSONAffectedEntries(decoder)
+		usable, err := validateOSVJSONAffectedEntries(decoder, inventory)
 		if err != nil {
 			return err
 		}
@@ -1174,7 +1175,7 @@ func requireUsableOSVJSONAdvisory(shape osvJSONAdvisoryShape) error {
 	return nil
 }
 
-func validateOSVJSONAffectedEntries(decoder *json.Decoder) (bool, error) {
+func validateOSVJSONAffectedEntries(decoder *json.Decoder, inventory *osvZipInventory) (bool, error) {
 	if err := requireJSONDelimiter(decoder, '['); err != nil {
 		return false, fmt.Errorf("affected must be an array: %w", err)
 	}
@@ -1183,7 +1184,7 @@ func validateOSVJSONAffectedEntries(decoder *json.Decoder) (bool, error) {
 		if err := requireJSONDelimiter(decoder, '{'); err != nil {
 			return false, fmt.Errorf("affected entries must be objects: %w", err)
 		}
-		entryUsable, err := validateOSVJSONAffectedObject(decoder)
+		entryUsable, err := validateOSVJSONAffectedObject(decoder, inventory)
 		if err != nil {
 			return false, err
 		}
@@ -1192,14 +1193,14 @@ func validateOSVJSONAffectedEntries(decoder *json.Decoder) (bool, error) {
 	return usable, requireJSONDelimiter(decoder, ']')
 }
 
-func validateOSVJSONAffectedObject(decoder *json.Decoder) (bool, error) {
+func validateOSVJSONAffectedObject(decoder *json.Decoder, inventory *osvZipInventory) (bool, error) {
 	shape := osvJSONAffectedShape{}
 	for decoder.More() {
 		name, err := readJSONObjectName(decoder)
 		if err != nil {
 			return false, err
 		}
-		if err := readOSVJSONAffectedField(decoder, name, &shape); err != nil {
+		if err := readOSVJSONAffectedField(decoder, name, &shape, inventory); err != nil {
 			return false, err
 		}
 	}
@@ -1209,13 +1210,13 @@ func validateOSVJSONAffectedObject(decoder *json.Decoder) (bool, error) {
 	return shape.packageNamed && (shape.versionConstraint || shape.rangeConstraint), nil
 }
 
-func readOSVJSONAffectedField(decoder *json.Decoder, name string, shape *osvJSONAffectedShape) error {
+func readOSVJSONAffectedField(decoder *json.Decoder, name string, shape *osvJSONAffectedShape, inventory *osvZipInventory) error {
 	switch name {
 	case "package":
 		if shape.packageSeen {
 			return errors.New("duplicate affected package field")
 		}
-		named, err := validateOSVJSONPackage(decoder)
+		named, err := validateOSVJSONPackage(decoder, inventory)
 		if err != nil {
 			return err
 		}
@@ -1249,7 +1250,7 @@ func readOSVJSONAffectedField(decoder *json.Decoder, name string, shape *osvJSON
 	return nil
 }
 
-func validateOSVJSONPackage(decoder *json.Decoder) (bool, error) {
+func validateOSVJSONPackage(decoder *json.Decoder, inventory *osvZipInventory) (bool, error) {
 	if err := requireJSONDelimiter(decoder, '{'); err != nil {
 		return false, fmt.Errorf("affected package must be an object: %w", err)
 	}
@@ -1259,21 +1260,31 @@ func validateOSVJSONPackage(decoder *json.Decoder) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if name != "name" {
-			if err := discardJSONValue(decoder); err != nil {
-				return false, fmt.Errorf("read package field %q: %w", name, err)
-			}
-			continue
-		}
-		if foundName {
-			return false, errors.New("duplicate package name field")
-		}
-		if err := readNonblankJSONString(decoder, "package name"); err != nil {
+		if err := readOSVJSONPackageField(decoder, name, &foundName, inventory); err != nil {
 			return false, err
 		}
-		foundName = true
 	}
 	return foundName, requireJSONDelimiter(decoder, '}')
+}
+
+func readOSVJSONPackageField(decoder *json.Decoder, name string, foundName *bool, inventory *osvZipInventory) error {
+	if name == "name" {
+		if *foundName {
+			return errors.New("duplicate package name field")
+		}
+		if err := readNonblankJSONString(decoder, "package name"); err != nil {
+			return err
+		}
+		*foundName = true
+		return nil
+	}
+	if name == "ecosystem" && inventory != nil {
+		return inventory.readEcosystem(decoder)
+	}
+	if err := discardJSONValue(decoder); err != nil {
+		return fmt.Errorf("read package field %q: %w", name, err)
+	}
+	return nil
 }
 
 func validateOSVJSONVersions(decoder *json.Decoder) (bool, error) {

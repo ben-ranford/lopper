@@ -99,7 +99,7 @@ func TestValidateOSVZipSnapshotValidatesEveryEntry(t *testing.T) {
 }
 
 func TestOSVZipInventoryBoundsAndNormalization(t *testing.T) {
-	inventory := osvZipInventory{ecosystems: map[string]struct{}{}, ecosystemBytes: maxSyncMetadataBytes - 130}
+	inventory := osvZipInventory{ecosystems: map[string]struct{}{}, ecosystemBytes: maxOSVZipEcosystemBytes - 132}
 	if err := inventory.addEcosystem("  Go  "); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,21 @@ func TestOSVZipInventoryBoundsAndNormalization(t *testing.T) {
 		t.Fatal("expected ecosystem metadata budget to be enforced")
 	}
 	payload := []byte(strings.ReplaceAll(testOSVAdvisory("PY-1"), `"Go"`, `"PyPI"`))
-	if err := inventory.add(payload); err == nil {
+	if err := inspectOSVJSONSnapshot(bytes.NewReader(payload), &inventory); err == nil {
 		t.Fatal("expected entry collection to enforce metadata budget")
+	}
+}
+
+func TestOSVZipInventoryEscapedManifestBudget(t *testing.T) {
+	inventory := osvZipInventory{ecosystemBytes: maxOSVZipEcosystemBytes - 132}
+	if err := inventory.addEcosystem("<"); err == nil {
+		t.Fatal("expected JSON escaping to count against manifest budget")
+	}
+}
+
+func TestOSVZipInventoryRejectsMalformedEcosystem(t *testing.T) {
+	payload := strings.ReplaceAll(testOSVAdvisory("GO-1"), `"Go"`, `{}`)
+	if err := inspectOSVJSONSnapshot(strings.NewReader(payload), &osvZipInventory{}); err == nil {
+		t.Fatal("expected non-string ecosystem to be rejected")
 	}
 }

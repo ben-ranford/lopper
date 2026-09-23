@@ -1,32 +1,50 @@
 package advisory
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 )
 
-// Each ZIP entry is parsed independently within the existing JSON entry limit.
-// Retain only a bounded ecosystem set and the advisory count across entries.
+// Streaming validation retains only the count and a bounded ecosystem set.
+// Reserve half the manifest budget for its other fields and cached snapshots.
+const maxOSVZipEcosystemBytes = int(maxCacheManifestBytes / 2)
+
 type osvZipInventory struct {
 	ecosystems     map[string]struct{}
 	ecosystemBytes int
 	entryCount     int
 }
 
-func (i *osvZipInventory) add(payload []byte) error {
-	if i.ecosystems == nil {
-		i.ecosystems = make(map[string]struct{})
+func recordOSVJSONAdvisory(shape osvJSONAdvisoryShape, inventory *osvZipInventory) error {
+	if err := requireUsableOSVJSONAdvisory(shape); err != nil {
+		return err
 	}
-	advisories := snapshotOSVAdvisories(payload)
-	i.entryCount += len(advisories)
-	for _, advisory := range advisories {
-		for _, affected := range advisory.Affected {
-			if err := i.addEcosystem(affected.Package.Ecosystem); err != nil {
-				return err
-			}
+	if inventory != nil {
+		inventory.entryCount++
+	}
+	return nil
+}
+
+func (i *osvZipInventory) readEcosystem(decoder *json.Decoder) error {
+	var ecosystem string
+	if err := decoder.Decode(&ecosystem); err != nil {
+		return fmt.Errorf("read package ecosystem: %w", err)
+	}
+	return i.addEcosystem(ecosystem)
+}
+
+func (i *osvZipInventory) merge(other *osvZipInventory) error {
+	if i == nil {
+		return nil
+	}
+	for ecosystem := range other.ecosystems {
+		if err := i.addEcosystem(ecosystem); err != nil {
+			return err
 		}
 	}
+	i.entryCount += other.entryCount
 	return nil
 }
 
@@ -38,10 +56,18 @@ func (i *osvZipInventory) addEcosystem(value string) error {
 	if _, exists := i.ecosystems[ecosystem]; exists {
 		return nil
 	}
-	// Include a conservative per-item allowance for the map and sorted output.
-	cost := len(ecosystem) + 128
-	if cost > maxSyncMetadataBytes-i.ecosystemBytes {
-		return fmt.Errorf("zip ecosystem metadata exceeds %d-byte limit", maxSyncMetadataBytes)
+	// Marshal uses the same JSON escaping as the manifest. The allowance covers
+	// indentation, separators, and the in-memory set/sorted-output bookkeeping.
+	encoded, err := json.Marshal(ecosystem)
+	if err != nil {
+		return fmt.Errorf("encode ecosystem metadata: %w", err)
+	}
+	cost := len(encoded) + 128
+	if cost > maxOSVZipEcosystemBytes-i.ecosystemBytes {
+		return fmt.Errorf("zip ecosystem metadata exceeds %d-byte manifest budget", maxOSVZipEcosystemBytes)
+	}
+	if i.ecosystems == nil {
+		i.ecosystems = make(map[string]struct{})
 	}
 	i.ecosystems[ecosystem] = struct{}{}
 	i.ecosystemBytes += cost
@@ -55,4 +81,18 @@ func (i *osvZipInventory) sortedEcosystems() []string {
 	}
 	sort.Strings(ecosystems)
 	return ecosystems
+}
+
+func (i *osvZipInventory) forSingleAdvisory() *osvZipInventory {
+	if i == nil {
+		return nil
+	}
+	return &osvZipInventory{}
+}
+
+func recordOSVJSONSingleAdvisory(shape osvJSONAdvisoryShape, inventory, objectInventory *osvZipInventory) error {
+	if err := recordOSVJSONAdvisory(shape, objectInventory); err != nil {
+		return err
+	}
+	return inventory.merge(objectInventory)
 }
