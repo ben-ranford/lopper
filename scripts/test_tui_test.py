@@ -35,8 +35,8 @@ finally:
             terminal.finish()
 
     def test_timeout_terminates_and_reaps_child(self):
-        with self.assertRaisesRegex(AssertionError, "timed out"):
-            with TerminalSession([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.2) as terminal:
+        with TerminalSession([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.2) as terminal:
+            with self.assertRaisesRegex(AssertionError, "timed out"):
                 terminal.expect("never")
         self.assertIsNotNone(terminal.process.returncode)
         with self.assertRaises(ChildProcessError):
