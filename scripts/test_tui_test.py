@@ -1,8 +1,11 @@
 """Exercise the PTY scaffold independently of Lopper's keyboard implementation."""
 
 import os
+import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from scripts.test_tui import TerminalSession
@@ -64,6 +67,49 @@ finally:
         self.assertIsNotNone(terminal.process.returncode)
         with self.assertRaises(ChildProcessError):
             os.waitpid(terminal.process.pid, os.WNOHANG)
+
+    def test_close_terminates_helpers_after_session_leader_exits(self):
+        helper = """
+import signal, socket, sys, time
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+connection = socket.socket(socket.AF_UNIX)
+connection.connect(sys.argv[1])
+connection.sendall(b'ready')
+print('ready', flush=True)
+time.sleep(60)
+"""
+        leader = """
+import subprocess, sys
+helper = subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]], stdout=subprocess.PIPE)
+assert helper.stdout.readline() == b'ready\\n'
+print(helper.pid, flush=True)
+"""
+        with tempfile.TemporaryDirectory(prefix="pty-", dir="/tmp") as directory:
+            with socket.socket(socket.AF_UNIX) as listener:
+                endpoint = os.path.join(directory, "helper")
+                listener.bind(endpoint)
+                listener.listen(1)
+                listener.settimeout(5)
+                terminal = TerminalSession([sys.executable, "-c", leader, helper, endpoint])
+                helper_pid = None
+                connection = None
+                try:
+                    with terminal:
+                        connection, _ = listener.accept()
+                        connection.settimeout(5)
+                        self.assertEqual(connection.recv(5), b"ready")
+                        terminal.finish()
+                        helper_pid = int(terminal.transcript.strip())
+                        self.assertEqual(terminal.process.returncode, 0)
+                    self.assertEqual(connection.recv(1), b"")
+                finally:
+                    if connection is not None:
+                        connection.close()
+                    if helper_pid is not None:
+                        try:
+                            os.kill(helper_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
     def test_failed_exit_is_reported(self):
         with TerminalSession([sys.executable, "-c", "raise SystemExit(3)"]) as terminal:

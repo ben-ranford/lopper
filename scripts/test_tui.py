@@ -58,14 +58,16 @@ class TerminalSession:
         # in kernel teardown until its output is drained or the master closes.
         os.close(self.master)
         os.close(self.slave)
-        if self.process is not None and self.process.poll() is None:
+        if self.process is not None:
+            # Descendants can survive their session leader and terminal hangup.
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 # An exiting Darwin process can reject signals; still require
                 # successful, bounded reaping below rather than assuming exit.
                 pass
-            self.process.wait(timeout=self.timeout)
+            if self.process.poll() is None:
+                self.process.wait(timeout=self.timeout)
 
     def resize(self, rows, columns):
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
