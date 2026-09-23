@@ -31,4 +31,4 @@ jobs:
 
       - name: Test Windows runtime cancellation
         shell: pwsh
-        run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant)$' -count=1 -timeout 30s
+        run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant)$' -count=5 -timeout 2m
