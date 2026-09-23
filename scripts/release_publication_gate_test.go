@@ -98,7 +98,7 @@ func TestPublicationPathsRequireSourceGate(t *testing.T) {
 	var source workflowConfig
 	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &source)
 	step := workflowStepByName(t, source.Jobs, "verify-source-ci", "Verify exact source Sonar analysis")
-	if step.If != "${{ inputs.build_channel == 'release' }}" || step.Env["SOURCE_SHA"] != "${{ inputs.source_sha }}" || step.Run != "bash scripts/verify-release-sonar.sh" {
+	if step.If != "${{ inputs.build_channel == 'release' }}" || step.Env["SOURCE_SHA"] != "${{ inputs.source_sha }}" || step.Run != `bash "${RUNNER_TEMP}/verify-release-sonar.sh"` {
 		t.Fatal("source CI must bind Sonar proof to release source")
 	}
 }
@@ -151,6 +151,51 @@ func TestRollingCannotPublishStableIdentifiers(t *testing.T) {
 			if (err == nil) != test.pass {
 				t.Fatalf("unexpected identifier result: %v: %s", err, output)
 			}
+		})
+	}
+}
+
+func TestReleaseSonarVerifierSurvivesSourceCheckout(t *testing.T) {
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &workflow)
+	job := workflowJobByName(t, workflow.Jobs, "verify-source-ci")
+	assertWorkflowStepOrder(t, job, "Checkout trusted workflow revision", "Preserve trusted Sonar verifier", "Checkout exact release source", "Verify exact source Sonar analysis")
+	checkout := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Checkout trusted workflow revision")
+	preserve := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Preserve trusted Sonar verifier")
+	verify := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Verify exact source Sonar analysis")
+	if checkout.With["ref"] != "${{ github.workflow_sha }}" || checkout.With["persist-credentials"] != "false" || checkout.Uses != "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" {
+		t.Fatal("Sonar verifier must come from the immutable workflow revision without persisted credentials")
+	}
+	if checkout.If != verify.If || preserve.If != verify.If {
+		t.Fatal("trusted verifier preparation must run for every Sonar verification")
+	}
+	for _, scenario := range []string{"missing", "replaced"} {
+		t.Run(scenario, func(t *testing.T) {
+			workspace, runnerTemp := t.TempDir(), t.TempDir()
+			workspace, err := filepath.EvalSymlinks(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifier := filepath.Join(workspace, "scripts", "verify-release-sonar.sh")
+			sha := strings.Repeat("a", 40)
+			writeFile(t, verifier, `test "$SOURCE_SHA" = "`+sha+`" && test "$PWD" = "$EXPECTED_WORKSPACE"`)
+			run := func(script string) {
+				t.Helper()
+				cmd := exec.Command("bash", "-eu", "-c", script)
+				cmd.Dir = workspace
+				cmd.Env = append(os.Environ(), "RUNNER_TEMP="+runnerTemp, "SOURCE_SHA="+sha, "EXPECTED_WORKSPACE="+workspace)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("workflow step failed: %v: %s", err, output)
+				}
+			}
+			run(preserve.Run)
+			if err := os.Remove(verifier); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "replaced" {
+				writeFile(t, verifier, "exit 99\n")
+			}
+			run(verify.Run)
 		})
 	}
 }
