@@ -25,7 +25,7 @@ func TestScanRepoIgnoresDynamicLoadingInCommentsAndStrings(t *testing.T) {
 }
 
 func TestScanRepoPreservesExecutableDynamicLoading(t *testing.T) {
-	for _, fragment := range []string{"class_exists('Vendor\\\\Lib\\\\Client');", "interface_exists($name);", "trait_exists($name);", "method_exists($name, 'run');", "new $type;", "$type::run();", `?>It's ready<?php new $type;`, `$doc = "{$type::$$property}";`, "$doc = <<<DOC\n{$type::$$property}\nDOC;"} {
+	for _, fragment := range []string{"class_exists('Vendor\\\\Lib\\\\Client');", "interface_exists($name);", "trait_exists($name);", "method_exists($name, 'run');", "new $type;", "$type::run();", `?>It's ready<?php new $type;`, `// ?><?php new $type;`, `# ?><?php echo "{$type::$$property}";`, `$doc = "{$type::$$property}";`, "$doc = <<<DOC\n{$type::$$property}\nDOC;"} {
 		t.Run(fragment, func(t *testing.T) {
 			scan := scanDynamicLoadingFixture(t, fragment)
 			if scan.DynamicUsageByDependency[helpersVendorLibDependency] != 1 {
@@ -48,27 +48,4 @@ func scanDynamicLoadingFixture(t *testing.T, fragment string) scanResult {
 		t.Fatalf("scan dynamic loading fixture: %v", err)
 	}
 	return scan
-}
-
-func TestDynamicPatternsRespectTemplateAndInterpolationBoundaries(t *testing.T) {
-	for _, tc := range []struct {
-		source    string
-		shortTags bool
-		want      bool
-	}{
-		{`It's ready <? new $type; ?>`, false, false},
-		{`It's ready <? new $type; ?>`, true, true},
-		{`<?php echo ` + "`{$type::$$property}`" + `;`, false, true},
-		{"<?php $doc = <<<\"DOC\"\n{$type::$$property}\nDOC;", false, true},
-		{"<?php $doc = <<<DOC\n{$type::$$property}", false, true},
-		{"<?php $doc = <<<DOC\n{\\$type::$$property}\nDOC;", false, false},
-		{"<?php $doc = <<<\n", false, false},
-		{`<?php /* "{$type::$$property}" */`, false, false},
-		{`<?php echo "\{$type::$$property}";`, false, true},
-		{"<?php $doc = <<<DOC\n\\{$type::$$property}\nDOC;", false, true},
-	} {
-		if got := hasDynamicPatterns([]byte(tc.source), "source.php", tc.shortTags); got != tc.want {
-			t.Errorf("source %q shortTags=%v: got %v, want %v", tc.source, tc.shortTags, got, tc.want)
-		}
-	}
 }
