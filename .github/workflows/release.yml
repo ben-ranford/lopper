@@ -823,8 +823,8 @@ jobs:
 
           vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"
           vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"
-          if [ "${vsce_version}" != "3.9.2" ]; then
-            echo "Marketplace tooling lockfile must pin @vscode/vsce 3.9.2" >&2
+          if [ "${vsce_version}" != "4.0.0" ]; then
+            echo "Marketplace tooling lockfile must pin @vscode/vsce 4.0.0" >&2
             exit 1
           fi
           case "${vsce_integrity}" in
@@ -1207,8 +1207,8 @@ jobs:
             echo "Extracted Marketplace VSCE launcher resolves outside the locked package" >&2
             exit 1
           fi
-          jq -e '.packages["node_modules/@vscode/vsce"] | .version == "3.9.2" and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json" >/dev/null
-          jq -e '.version == "3.9.2"' "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
+          jq -e '.packages["node_modules/@vscode/vsce"] | .version == "4.0.0" and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json" >/dev/null
+          jq -e '.version == "4.0.0"' "${toolchain_dir}/node_modules/@vscode/vsce/package.json" >/dev/null
           node_bin="$(command -v node)"
           test -x "${node_bin}"
 
