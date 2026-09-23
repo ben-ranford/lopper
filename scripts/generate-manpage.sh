@@ -42,7 +42,7 @@ escape_roff() {
 	printf ".SH SYNOPSIS\n"
 	printf ".nf\n"
 	printf "lopper [--version] [tui]\n"
-	printf "lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell]\n"
+	printf "lopper tui [--repo PATH] [--config PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell]\n"
 	printf "lopper analyse --top N [options]\n"
 	printf "lopper analyse <dependency> [options]\n"
 	printf "lopper dashboard [--repos PATH1,PATH2 | --config PATH]\n"

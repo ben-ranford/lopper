@@ -16,7 +16,7 @@ var (
 func ParseArgs(args []string) (app.Request, error) {
 	req := app.DefaultRequest()
 	if len(args) == 0 {
-		return req, nil
+		return parseTUI(nil, req)
 	}
 
 	if isHelpArg(args[0]) {
