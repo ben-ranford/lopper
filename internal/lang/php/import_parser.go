@@ -1750,6 +1750,8 @@ func lastNamespaceSegment(module string) string {
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
-func hasDynamicPatterns(content []byte) bool {
-	return dynamicPattern.Match(content)
+func hasDynamicPatterns(content []byte, filePath string) bool {
+	phpMasked := maskPHPHeredocNowdocBodies(string(content))
+	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
+	return dynamicPattern.Match(sanitized)
 }
