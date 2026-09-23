@@ -334,11 +334,11 @@ func TestInlineSuppressionCheckTrackingCreatorBoundary(t *testing.T) {
 set -euo pipefail
 case "$1 $2" in
  "repo view")
-  [[ "$CI" != true ]]
+  [[ "$CI" != true ]] || exit 1
   if [[ -n "$SUPPRESSION_GITHUB_REPOSITORY" ]]; then
-   [[ "$3" == "$SUPPRESSION_GITHUB_REPOSITORY" ]]
+   [[ "$3" == "$SUPPRESSION_GITHUB_REPOSITORY" ]] || exit 1
   else
-   [[ "$3" == --json ]]
+   [[ "$3" == --json ]] || exit 1
   fi
   printf '%s\n' "$ISSUE_HOST"
   ;;
@@ -360,7 +360,7 @@ case "$1 $2" in
  *) exit 1 ;;
 esac
 `, 0o755)
-			env := []string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track", "CI=" + fmt.Sprint(tc.ci), "GITHUB_ACTIONS=" + fmt.Sprint(tc.ci), "ISSUE_STATE=" + statePath, "ISSUE_CREATOR=" + creator, "ISSUE_HOST=" + tc.host, "SUPPRESSION_GITHUB_REPOSITORY=" + tc.repo}
+			env := []string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track", "CI=" + fmt.Sprint(tc.ci), "GITHUB_ACTIONS=" + fmt.Sprint(tc.ci), "ISSUE_STATE=" + statePath, "ISSUE_CREATOR=" + creator, "ISSUE_HOST=" + tc.host, "SUPPRESSION_GITHUB_REPOSITORY=" + tc.repo, "GITHUB_REPOSITORY="}
 			for _, want := range []string{"Opened GitHub tracking issue", "Updated GitHub tracking issue #123"} {
 				output, err := runSuppressionCheckWithEnv(repoDir, env...)
 				if err != nil || !strings.Contains(output, want) {
