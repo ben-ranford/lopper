@@ -9,6 +9,29 @@ from scripts.test_tui import TerminalSession
 
 
 class TerminalSessionTests(unittest.TestCase):
+    def test_controlling_terminal_delivers_interrupt_to_foreground_child(self):
+        child = """
+import os, termios, tty
+terminal = os.open('/dev/tty', os.O_RDWR)
+original = termios.tcgetattr(terminal)
+try:
+    assert os.tcgetpgrp(terminal) == os.getpgrp()
+    tty.setcbreak(terminal)
+    print('foreground ready', flush=True)
+    try:
+        os.read(terminal, 1)
+    except KeyboardInterrupt:
+        print('terminal SIGINT received', flush=True)
+finally:
+    termios.tcsetattr(terminal, termios.TCSANOW, original)
+    os.close(terminal)
+"""
+        with TerminalSession([sys.executable, "-c", child]) as terminal:
+            terminal.expect("foreground ready")
+            terminal.send(b"\x03")
+            terminal.expect("terminal SIGINT received")
+            terminal.finish()
+
     def test_key_events_resize_and_shutdown(self):
         child = """
 import os, termios, tty
@@ -46,6 +69,16 @@ finally:
         with TerminalSession([sys.executable, "-c", "raise SystemExit(3)"]) as terminal:
             with self.assertRaisesRegex(AssertionError, "child exited 3"):
                 terminal.finish()
+
+    def test_unrestored_terminal_is_reported(self):
+        with TerminalSession([sys.executable, "-c", "import tty; tty.setraw(0)"]) as terminal:
+            with self.assertRaisesRegex(AssertionError, "did not restore terminal settings"):
+                terminal.finish()
+
+    def test_finish_drains_terminal_output(self):
+        with TerminalSession([sys.executable, "-c", "print('x' * 262144, flush=True)"]) as terminal:
+            terminal.finish()
+            self.assertGreaterEqual(len(terminal.transcript), 65536)
 
     def test_finish_timeout_is_bounded(self):
         with TerminalSession([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.2) as terminal:

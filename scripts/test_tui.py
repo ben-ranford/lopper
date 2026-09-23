@@ -11,8 +11,19 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
+
+
+# Run terminal setup in a fresh interpreter, avoiding preexec callbacks in a
+# potentially threaded test runner. exec preserves Popen's PID and process group.
+TERMINAL_CHILD = """
+import fcntl, os, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+os.tcsetpgrp(0, os.getpgrp())
+os.execvp(sys.argv[1], sys.argv[1:])
+"""
 
 
 class TerminalSession:
@@ -28,7 +39,8 @@ class TerminalSession:
         try:
             self.resize(24, 120)
             self.process = subprocess.Popen(
-                command, stdin=self.slave, stdout=self.slave, stderr=self.slave,
+                [sys.executable, "-c", TERMINAL_CHILD, *command],
+                stdin=self.slave, stdout=self.slave, stderr=self.slave,
                 start_new_session=True, env={**os.environ, "TERM": "xterm-256color"},
             )
         except BaseException:
@@ -42,16 +54,18 @@ class TerminalSession:
         self.close()
 
     def close(self):
-        try:
-            if self.process is not None and self.process.poll() is None:
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # The child exited between poll and killpg.
-                self.process.wait(timeout=self.timeout)
-        finally:
-            os.close(self.master)
-            os.close(self.slave)
+        # Release the terminal first: Darwin can hold an exiting session leader
+        # in kernel teardown until its output is drained or the master closes.
+        os.close(self.master)
+        os.close(self.slave)
+        if self.process is not None and self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # An exiting Darwin process can reject signals; still require
+                # successful, bounded reaping below rather than assuming exit.
+                pass
+            self.process.wait(timeout=self.timeout)
 
     def resize(self, rows, columns):
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
@@ -68,6 +82,17 @@ class TerminalSession:
     def command(self, text):
         self.send(text.encode("utf-8") + b"\r")
 
+    def read_output(self):
+        try:
+            chunk = os.read(self.master, 65536)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            chunk = b""
+        self.pending += chunk
+        self.transcript += chunk
+        return chunk
+
     def expect(self, text):
         expected = text.encode("utf-8")
         deadline = time.monotonic() + self.timeout
@@ -78,23 +103,28 @@ class TerminalSession:
             ready, _, _ = select.select([self.master], [], [], remaining)
             if not ready:
                 continue
-            try:
-                chunk = os.read(self.master, 65536)
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                chunk = b""
+            chunk = self.read_output()
             if not chunk:
                 raise AssertionError(f"child ended before {text!r}: {self.transcript!r}")
-            self.pending += chunk
-            self.transcript += chunk
         _, _, self.pending = self.pending.partition(expected)
 
     def finish(self):
-        code = self.process.wait(timeout=self.timeout)
+        deadline = time.monotonic() + self.timeout
+        while self.process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.process.args, self.timeout)
+            # A controlling terminal may drain output during session teardown.
+            # Keep reading so the child can finish exiting before we reap it.
+            ready, _, _ = select.select([self.master], [], [], min(remaining, 0.05))
+            if ready:
+                self.read_output()
+        code = self.process.returncode
         if code != 0:
             raise AssertionError(f"child exited {code}: {self.transcript!r}")
-        actual = termios.tcgetattr(self.slave)
+        # Darwin revokes the slave descriptor when its session leader exits;
+        # the master retains the terminal's final settings for this assertion.
+        actual = termios.tcgetattr(self.master)
         # Darwin may transiently set PENDIN when canonical mode is restored.
         mask = ~getattr(termios, "PENDIN", 0)
         actual[3] &= mask

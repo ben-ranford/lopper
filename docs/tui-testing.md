@@ -22,8 +22,14 @@ Enter; `resize(rows, columns)` changes the PTY size and signals the process grou
 and terminal restoration. All waits are bounded. Context exit kills and reaps a
 child that has not finished, including when an assertion fails.
 
+Each child owns the PTY as its controlling terminal and foreground process group,
+so `/dev/tty` and terminal-generated signals behave as in an interactive session.
+A fresh Python child performs this setup before replacing itself with the target
+executable; the harness does not run pre-exec callbacks in the parent test runner.
+
 `python3 -B -m unittest scripts/test_tui_test.py` demonstrates raw Unicode and
-CSI-u key press/release transport, resize, shutdown, failed exits, and cleanup on
+CSI-u key press/release transport, `/dev/tty` access, terminal-generated Ctrl-C,
+resize, shutdown, failed exits, and cleanup on
 timeouts using a small independent terminal child. These are scaffold contracts,
 not assertions that the current Lopper UI interprets CSI-u release events.
 
