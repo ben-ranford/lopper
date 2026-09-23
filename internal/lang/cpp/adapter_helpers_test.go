@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -247,12 +246,8 @@ func compileContextWithSourceContexts(paths ...string) (compileContext, bool) {
 }
 
 func TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t *testing.T) {
-	probePath := filepath.Join(".", "zz_system_include_probe_test.go")
-	probe := `package cpp
+	t.Parallel()
 
-import "testing"
-
-func TestSystemIncludeProbe(t *testing.T) {
 	for _, root := range []string{"/usr/include", "/usr/local/include"} {
 		if !isCompilerDefaultSystemIncludeRoot(root, true, true) {
 			t.Fatalf("expected %s to be a compiler default system root", root)
@@ -269,22 +264,30 @@ func TestSystemIncludeProbe(t *testing.T) {
 		}
 	}
 }
-`
-	if err := os.WriteFile(probePath, []byte(probe), 0o600); err != nil {
-		t.Fatalf("write probe test: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Remove(probePath); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove probe test: %v", err)
+
+func TestCPPClassifierCleanupPreservesEnumeratedSources(t *testing.T) {
+	t.Run("scan spans classifier cleanup", func(t *testing.T) {
+		var sources []string
+		// Register first so this read happens after the classifier's cleanup.
+		// This schedules the failing scan interleaving without timing or polling.
+		t.Cleanup(func() {
+			for _, source := range sources {
+				if _, err := os.ReadFile(source); err != nil {
+					t.Errorf("read source enumerated before classifier cleanup: %v", err)
+				}
+			}
+		})
+
+		TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t)
+		var err error
+		sources, err = filepath.Glob("*.go")
+		if err != nil {
+			t.Fatalf("enumerate package sources: %v", err)
+		}
+		if len(sources) == 0 {
+			t.Fatal("expected package sources to scan")
 		}
 	})
-
-	cmd := exec.Command("go", "test", "-run", "^TestSystemIncludeProbe$", ".")
-	cmd.Env = append(os.Environ(), "GOFLAGS=-buildvcs=false")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run system include probe: %v\n%s", err, output)
-	}
 }
 
 func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
