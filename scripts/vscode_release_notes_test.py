@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -67,6 +69,30 @@ class VSCodeReleaseNotesTest(unittest.TestCase):
         else:
             command = ["git", "-C", self.repo, *args]
         subprocess.run(command, check=True, env=fixture_git_env())
+
+    def test_cli_rejects_invalid_tags_before_starting_subprocess(self) -> None:
+        invalid_tags = (
+            "", "--help", "v1.0.0; touch unsafe", "v1.0.0$(id)",
+            "v1.0.0\n", "v1.0.0:go.mod", "v1.0.0..HEAD", "v1.0.0^",
+            "v1.0.0-rc.1", "v1000000000.0.0", " v1.0.0", "v1.0.0/other",
+        )
+        for tag in invalid_tags:
+            with self.subTest(tag=tag), mock.patch("subprocess.Popen") as popen:
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    status = vscode_release_notes.main([
+                        "--repo", str(self.repo), f"--previous-tag={tag}",
+                    ])
+                self.assertEqual(status, 1)
+                self.assertIn("stable" if tag else "--previous-tag is required", stderr.getvalue())
+                popen.assert_not_called()
+
+    def test_exported_tag_readers_reject_invalid_tags_before_subprocess(self) -> None:
+        for reader in (vscode_release_notes.old_lockfile, vscode_release_notes.old_package):
+            with self.subTest(reader=reader.__name__), mock.patch("subprocess.Popen") as popen:
+                with self.assertRaisesRegex(ValueError, "stable"):
+                    reader(self.repo, "--output=unsafe")
+                popen.assert_not_called()
 
     def test_commit_ignores_inherited_git_index(self) -> None:
         with tempfile.TemporaryDirectory() as marker_temp:
