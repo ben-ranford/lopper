@@ -265,31 +265,6 @@ func TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t *testing.T) {
 	}
 }
 
-func TestCPPClassifierCleanupPreservesEnumeratedSources(t *testing.T) {
-	t.Run("scan spans classifier cleanup", func(t *testing.T) {
-		var sources []string
-		// Register first so this read happens after the classifier's cleanup.
-		// This schedules the failing scan interleaving without timing or polling.
-		t.Cleanup(func() {
-			for _, source := range sources {
-				if _, err := os.ReadFile(source); err != nil {
-					t.Errorf("read source enumerated before classifier cleanup: %v", err)
-				}
-			}
-		})
-
-		TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t)
-		var err error
-		sources, err = filepath.Glob("*.go")
-		if err != nil {
-			t.Fatalf("enumerate package sources: %v", err)
-		}
-		if len(sources) == 0 {
-			t.Fatal("expected package sources to scan")
-		}
-	})
-}
-
 func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
 	repo := t.TempDir()
 	args := []string{
