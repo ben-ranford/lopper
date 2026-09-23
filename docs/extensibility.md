@@ -20,6 +20,8 @@ The core contracts are in `internal/language`.
 - `dart` (Dart/Flutter)
 - `powershell` (PowerShell)
 
+The JVM adapter limits each Maven property value to 64 KiB and each substitution pass to 1,024 property tokens, across at most eight passes. Values exceeding either bound are treated as unresolved: unresolved dependency coordinates are skipped, while unresolved managed versions retain the dependency and emit the existing warning.
+
 ## Adapter contract
 
 All adapters implement:

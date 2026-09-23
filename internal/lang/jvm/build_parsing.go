@@ -355,6 +355,11 @@ func setPomPropertyValue(properties map[string]string, key, value string) {
 	properties[key] = value
 }
 
+const (
+	maxPomPropertyValueBytes = 64 * 1024
+	maxPomPropertyTokens     = 1024
+)
+
 func resolvePomPropertyValue(value string, properties map[string]string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -364,10 +369,10 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 	for iteration := 0; iteration < 8; iteration++ {
 		updated, replaced, missing := replacePomPropertyTokens(value, properties)
 		unresolved = unresolved || missing
+		value = updated
 		if !replaced {
 			break
 		}
-		value = updated
 	}
 	if pomPropertyTokenPattern.MatchString(value) {
 		unresolved = true
@@ -376,7 +381,13 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 }
 
 func replacePomPropertyTokens(value string, properties map[string]string) (string, bool, bool) {
-	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, -1)
+	if len(value) > maxPomPropertyValueBytes {
+		return "", false, true
+	}
+	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, maxPomPropertyTokens+1)
+	if len(matches) > maxPomPropertyTokens {
+		return "", false, true
+	}
 	if len(matches) == 0 {
 		return value, false, false
 	}
@@ -389,6 +400,12 @@ func replacePomPropertyTokens(value string, properties map[string]string) (strin
 		if !ok {
 			unresolved = unresolved || len(match) == 2
 			continue
+		}
+		count := strings.Count(updated, token)
+		unchangedBytes := len(updated) - count*len(token)
+		// Divide the remaining budget before multiplying an untrusted replacement size.
+		if count > 0 && len(replacement) > (maxPomPropertyValueBytes-unchangedBytes)/count {
+			return "", false, true
 		}
 		updated = strings.ReplaceAll(updated, token, replacement)
 		replaced = true
