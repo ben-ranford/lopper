@@ -38,6 +38,10 @@ case "$*" in
     printf '{"analyses":[{"key":"%s","revision":"%s","date":"2026-09-23T00:00:00+0000"}]}' "$key" "$SOURCE_SHA" ;;
   esac ;;
  *measures/search_history*)
+  case "$SCENARIO" in
+   historical|history-*)
+    [[ "$*" == *'&to=2026-09-23T00%3A00%3A01Z&'* ]] || { echo "exclusive upper bound does not include the exact analysis timestamp: $*" >&2; exit 23; } ;;
+  esac
   [[ "$SCENARIO" != history-api-error ]] || exit 22
   [[ "$SCENARIO" != history-missing ]] || { echo '{"measures":[]}'; exit; }
   issues=0; accepted=0; hotspots=0; date=2026-09-23T00:00:00+0000

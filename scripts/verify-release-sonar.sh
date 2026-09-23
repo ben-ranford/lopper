@@ -40,12 +40,16 @@ completed_analysis() {
 }
 
 historical_zero_metrics() {
-  local date encoded_date
+  local date encoded_date after_date encoded_after_date
   date=$(jq -r '.date' <<< "$before")
   encoded_date=$(jq -rn --arg date "$date" '$date | @uri')
+  # search_history treats `to` as exclusive, so include the exact analysis
+  # timestamp with a one-second-later bound and filter on the exact date below.
+  after_date=$(jq -rn --arg date "$date" '$date | sub("\\+0000$"; "Z") | fromdateiso8601 + 1 | gmtime | strftime("%Y-%m-%dT%H:%M:%SZ")')
+  encoded_after_date=$(jq -rn --arg date "$after_date" '$date | @uri')
   # The issue and hotspot inventories are branch-current. Historical metrics
   # must separately prove an older source was clean; missing history fails closed.
-  sonar_api "measures/search_history?component=ben-ranford_lopper&branch=main&metrics=violations,accepted_issues,security_hotspots&from=${encoded_date}&to=${encoded_date}&ps=1000" \
+  sonar_api "measures/search_history?component=ben-ranford_lopper&branch=main&metrics=violations,accepted_issues,security_hotspots&from=${encoded_date}&to=${encoded_after_date}&ps=1000" \
     | jq -e --arg date "$date" '
       .measures as $measures |
       ["violations", "accepted_issues", "security_hotspots"] |
