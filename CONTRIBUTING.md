@@ -175,3 +175,6 @@ Please include reproduction steps and environment details for bugs.
 - `internal/report`: report model, formatting, baseline math
 - `internal/ui`: TUI summary/detail
 - `internal/runtime`: runtime trace parsing and annotation
+
+Collection normalization contracts and canonical owners are documented in
+[Collection helper contracts](docs/collection-helpers.md).

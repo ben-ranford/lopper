@@ -2,7 +2,6 @@ package powershell
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -14,7 +13,7 @@ func buildRequestedPowerShellDependencies(req language.Request, scan scanResult)
 }
 
 func buildTopPowerShellDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
+	dependencies := shared.SortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	builder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
@@ -93,24 +92,6 @@ func buildRecommendations(dep report.DependencyReport) []report.Recommendation {
 		})
 	}
 	return recs
-}
-
-func sortedDependencyUnion(values ...map[string]struct{}) []string {
-	set := make(map[string]struct{})
-	for _, value := range values {
-		for dependency := range value {
-			set[dependency] = struct{}{}
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	dependencies := make([]string, 0, len(set))
-	for dependency := range set {
-		dependencies = append(dependencies, dependency)
-	}
-	sort.Strings(dependencies)
-	return dependencies
 }
 
 func buildPowerShellDependencyProvenance(info powerShellDependencySource) *report.DependencyProvenance {

@@ -297,6 +297,8 @@ func scopeMetadata(mode, repoPath string, roots []string) *report.ScopeMetadata 
 	}
 }
 
+// uniqueSorted returns a sorted copy with exact duplicates removed. It preserves
+// whitespace and empty strings, never mutates values, and returns nil for no input.
 func uniqueSorted(values []string) []string {
 	if len(values) == 0 {
 		return nil
