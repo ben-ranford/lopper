@@ -145,6 +145,20 @@ def smoke(binary):
         terminal.expect("Page: 1/2")
         terminal.expect("Commands:")
         terminal.resize(30, 100)
+        for key, expected in [
+            (b"\x1b[C", "Page: 2/2"), (b"\x1bOC", "Page: 2/2"),
+            (b"\x1b[D", "Page: 1/2"), (b"\x1bOD", "Page: 1/2"),
+        ]:
+            terminal.send(key)
+            terminal.expect(expected)
+            terminal.expect(">")
+        terminal.send(b"\x1b[999~")
+        terminal.send(b"\x1b")
+        time.sleep(0.1)  # Let the decoder finish an incomplete escape sequence.
+        terminal.send(b"pag 2\x1b[D\x1b[De\r")
+        terminal.expect("Page: 2/2")
+        terminal.expect(">")
+
         for command, expected in [
             ("next", "Page: 2/2"), ("next", "Page: 2/2"),
             ("prev", "Page: 1/2"), ("prev", "Page: 1/2"),
@@ -158,6 +172,14 @@ def smoke(binary):
         terminal.expect("Commands:")
         terminal.command("q")
         terminal.finish()
+    for exit_key in (b"\x03", b"\x04"):
+        with TerminalSession([
+            str(Path(binary).resolve()), "tui", "--repo", str(fixture),
+            "--language", "js-ts", "--page-size", "1",
+        ]) as terminal:
+            terminal.expect(">")
+            terminal.send(exit_key)
+            terminal.finish()
     print("TUI PTY smoke passed: pagination, bounds, filter reset, detail, resize, quit, terminal restoration")
 
 

@@ -47,6 +47,10 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	if supportsStaveInteractiveTerminal(s.In, s.Out) {
+		return s.runTerminal(ctx, opts, reportView)
+	}
+
 	reader := bufio.NewReader(s.In)
 	state := buildSummaryState(opts)
 	refreshInPlace := supportsScreenRefresh(s.Out)
@@ -336,6 +340,8 @@ func summaryHelpText() string {
 		"  w                    Sort by waste\n" +
 		"  page <n>             Jump to page number\n" +
 		"  next | prev          Page navigation\n" +
+		"  left | right         Page at empty prompt; move within command\n" +
+		"  home | end           Move to command start/end (terminal only)\n" +
 		"  n | p                Page shortcuts\n" +
 		"  size <n>             Change page size\n" +
 		"  open <dependency>    Show dependency detail\n" +
