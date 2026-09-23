@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -15,7 +16,7 @@ import (
 
 func newSummaryTerminalTest() *summaryTerminal {
 	s := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
-	m := &summaryTerminal{ctx: context.Background(), summary: *s, state: summaryState{page: 1, pageSize: 1}, report: summaryReportView{Dependencies: []summaryDependencyView{{Name: "alpha"}, {Name: "beta"}}}}
+	m := &summaryTerminal{ctx: context.Background(), writer: io.Discard, summary: *s, state: summaryState{page: 1, pageSize: 1}, report: summaryReportView{Dependencies: []summaryDependencyView{{Name: "alpha"}, {Name: "beta"}}}}
 	m.summary.Out = &m.output
 	m.render()
 	return m
@@ -46,9 +47,7 @@ func TestSummaryTerminalEditsCommands(t *testing.T) {
 			if string(m.line) != tc.want || m.cursor != tc.cursor {
 				t.Fatalf("line=%q cursor=%d", m.line, m.cursor)
 			}
-			if m.View().Cursor == nil {
-				t.Fatal("missing cursor")
-			}
+
 		})
 	}
 }
@@ -79,6 +78,7 @@ func TestSummaryTerminalNavigationAndExecution(t *testing.T) {
 		t.Fatal("ctrl-d should delete nonempty input")
 	}
 	m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	m.Update(summaryTerminalResult{})
 	if !m.quit || m.View().Content != "" {
 		t.Fatal("expected clean exit")
 	}
@@ -152,5 +152,40 @@ func TestSummaryTerminalRetainsWriteAndRenderErrors(t *testing.T) {
 	}
 	if err := s.runTerminal(context.Background(), Options{}, summaryReportView{}); !errors.Is(err, want) {
 		t.Fatal(err)
+	}
+}
+
+func TestSummaryTerminalReplacesFramesAndCompletesActions(t *testing.T) {
+	m := newSummaryTerminalTest()
+	var output bytes.Buffer
+	m.writer = &output
+	m.Update(summaryTerminalReady{})
+	if !strings.HasPrefix(output.String(), "\x1b[H\x1b[2J") {
+		t.Fatal("initial frame not cleared")
+	}
+	output.Reset()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if !strings.HasPrefix(output.String(), "\x1b[H\x1b[2J") || !strings.Contains(output.String(), "Page: 2/2") {
+		t.Fatal("navigation did not replace frame")
+	}
+	m.summary.Actions = &stubSummaryActionRunner{savePath: "saved.json"}
+	m.insert("save-baseline nightly")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || !m.inflight {
+		t.Fatal("action was not deferred")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	m.Update(tea.PasteMsg{Content: "ignored"})
+	if len(m.line) != 0 {
+		t.Fatal("accepted input during action")
+	}
+	m.Update(cmd())
+	if m.inflight || m.err != nil {
+		t.Fatalf("completion: %v", m.err)
+	}
+	m.writer = &staveCoverageErrWriter{}
+	m.Update(summaryTerminalReady{})
+	if m.err == nil {
+		t.Fatal("missing render error")
 	}
 }
