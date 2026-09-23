@@ -813,19 +813,23 @@ func finalizeDownloadedSnapshot(body io.ReadCloser, tempFile io.WriteCloser, ope
 		return fetchedSnapshot{}, fmt.Errorf("close advisory snapshot temp file: %w", err)
 	}
 	schema := inferSnapshotSchema(preview)
+	inventory := osvZipInventory{}
 	switch schema {
 	case schemaOSVJSON:
 		if err := validateDownloadedOSVJSON(openSnapshot); err != nil {
 			return fetchedSnapshot{}, fmt.Errorf("download advisory snapshot: invalid OSV JSON snapshot: %w", err)
 		}
 	case schemaOSVZip:
-		if err := validateDownloadedOSVZip(openSnapshot, sizeBytes); err != nil {
+		if err := validateDownloadedOSVZip(openSnapshot, sizeBytes, &inventory); err != nil {
 			return fetchedSnapshot{}, fmt.Errorf("download advisory snapshot: invalid OSV ZIP snapshot: %w", err)
 		}
 	default:
 		return fetchedSnapshot{}, fmt.Errorf("download advisory snapshot: unrecognized OSV snapshot schema")
 	}
 	ecosystems, entryCount := loadMetadata(sizeBytes, schema)
+	if schema == schemaOSVZip {
+		ecosystems, entryCount = inventory.sortedEcosystems(), inventory.entryCount
+	}
 	return fetchedSnapshot{
 		digest:     sha256Prefix + hex.EncodeToString(hasher.Sum(nil)),
 		schema:     schema,
@@ -917,7 +921,7 @@ func validateDownloadedOSVJSON(openSnapshot snapshotOpener) error {
 	return errors.Join(validationErr, closeErr)
 }
 
-func validateDownloadedOSVZip(openSnapshot snapshotOpener, sizeBytes int64) (err error) {
+func validateDownloadedOSVZip(openSnapshot snapshotOpener, sizeBytes int64, inventory *osvZipInventory) (err error) {
 	file, err := openSnapshot()
 	if err != nil {
 		return fmt.Errorf("open snapshot for validation: %w", err)
@@ -934,10 +938,10 @@ func validateDownloadedOSVZip(openSnapshot snapshotOpener, sizeBytes int64) (err
 	if !ok {
 		return errors.New("open snapshot for validation: random access unavailable")
 	}
-	return validateOSVZipSnapshot(readerAt, sizeBytes)
+	return validateOSVZipSnapshot(readerAt, sizeBytes, inventory)
 }
 
-func validateOSVZipSnapshot(reader io.ReaderAt, sizeBytes int64) error {
+func validateOSVZipSnapshot(reader io.ReaderAt, sizeBytes int64, inventory *osvZipInventory) error {
 	archive, err := zip.NewReader(reader, sizeBytes)
 	if err != nil {
 		return fmt.Errorf("open ZIP archive: %w", err)
@@ -951,7 +955,7 @@ func validateOSVZipSnapshot(reader io.ReaderAt, sizeBytes int64) error {
 		if isJSON && entry.UncompressedSize64 > uint64(maxSyncMetadataBytes) {
 			return fmt.Errorf("zip archive JSON entry %q exceeds %d-byte limit", entry.Name, maxSyncMetadataBytes)
 		}
-		if err := validateOSVZipEntry(entry, isJSON); err != nil {
+		if err := validateOSVZipEntry(entry, isJSON, inventory); err != nil {
 			return err
 		}
 		if isJSON {
@@ -984,15 +988,16 @@ func validateOSVZipBounds(entries []*zip.File, sizeBytes int64) error {
 	return nil
 }
 
-func validateOSVZipEntry(entry *zip.File, validateJSON bool) error {
+func validateOSVZipEntry(entry *zip.File, validateJSON bool, inventory *osvZipInventory) error {
 	contents, err := entry.Open()
 	if err != nil {
 		return fmt.Errorf("open ZIP entry %q: %w", entry.Name, err)
 	}
 	tracked := &zipEntryReadTracker{reader: contents}
 	var validationErr error
+	var payload bytes.Buffer
 	if validateJSON {
-		validationErr = validateOSVJSONSnapshot(io.LimitReader(tracked, maxSyncMetadataBytes+1))
+		validationErr = validateOSVJSONSnapshot(io.TeeReader(io.LimitReader(tracked, maxSyncMetadataBytes+1), &payload))
 	}
 	_, drainErr := io.Copy(io.Discard, tracked)
 	closeErr := contents.Close()
@@ -1001,6 +1006,9 @@ func validateOSVZipEntry(entry *zip.File, validateJSON bool) error {
 	}
 	if validationErr != nil {
 		return fmt.Errorf("validate OSV JSON ZIP entry %q: %w", entry.Name, validationErr)
+	}
+	if validateJSON {
+		return inventory.add(payload.Bytes())
 	}
 	return nil
 }
