@@ -2820,12 +2820,12 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 }
 
 // Renovate's hosted app is not version-pinned in this repository. These are the
-// update-specific object blocks in its configured public schema:
+// update-specific and vulnerability-alert object blocks in its public schema:
 // https://docs.renovatebot.com/renovate-schema.json
 // matchUpdateTypes also supports "bump", but there is no top-level bump block.
 var renovateUpdateTypeBlocks = []string{
 	"major", "minor", "patch", "pin", "digest", "pinDigest",
-	"rollback", "replacement", "lockFileMaintenance",
+	"rollback", "replacement", "lockFileMaintenance", "vulnerabilityAlerts",
 }
 
 func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage) error {
@@ -2851,32 +2851,38 @@ func TestRenovateUpdateTypeReviewSettings(t *testing.T) {
 	t.Parallel()
 
 	for _, updateType := range renovateUpdateTypeBlocks {
-		for _, tc := range []struct {
-			name    string
-			block   string
-			wantErr bool
-		}{
-			{name: "absent"},
-			{name: "no override", block: `{}`},
-			{name: "explicit review", block: `{"automerge":false}`},
-			{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
-			{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
-			{name: "invalid block", block: `true`, wantErr: true},
-		} {
-			t.Run(updateType+"/"+tc.name, func(t *testing.T) {
-				config := map[string]json.RawMessage{}
-				if tc.block != "" {
-					config[updateType] = json.RawMessage(tc.block)
-				}
-				err := validateRenovateUpdateTypeReviewSettings(config)
-				if (err != nil) != tc.wantErr {
-					t.Fatalf("validateRenovateUpdateTypeReviewSettings() = %v, want error %t", err, tc.wantErr)
-				}
-				if err != nil && !strings.Contains(err.Error(), updateType) {
-					t.Fatalf("error must identify update type %q: %v", updateType, err)
-				}
-			})
-		}
+		assertRenovateUpdateTypeReviewSettings(t, updateType)
+	}
+}
+
+func assertRenovateUpdateTypeReviewSettings(t *testing.T, updateType string) {
+	t.Helper()
+
+	for _, tc := range []struct {
+		name    string
+		block   string
+		wantErr bool
+	}{
+		{name: "absent"},
+		{name: "no override", block: `{}`},
+		{name: "explicit review", block: `{"automerge":false}`},
+		{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
+		{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
+		{name: "invalid block", block: `true`, wantErr: true},
+	} {
+		t.Run(updateType+"/"+tc.name, func(t *testing.T) {
+			config := map[string]json.RawMessage{}
+			if tc.block != "" {
+				config[updateType] = json.RawMessage(tc.block)
+			}
+			err := validateRenovateUpdateTypeReviewSettings(config)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateRenovateUpdateTypeReviewSettings() = %v, want error %t", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), updateType) {
+				t.Fatalf("error must identify update type %q: %v", updateType, err)
+			}
+		})
 	}
 }
 
