@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func newSummaryTerminalTest() *summaryTerminal {
@@ -140,7 +141,7 @@ func TestSummaryTerminalRetainsWriteAndRenderErrors(t *testing.T) {
 	if !errors.Is(output.err, io.ErrShortWrite) {
 		t.Fatal("lost initial write failure")
 	}
-	s := NewSummary(io.Discard, strings.NewReader("next\r"), &stubAnalyzer{}, report.NewFormatter())
+	s := NewSummary(io.Discard, staveTerminalTestInput(t, strings.NewReader("next\r")), &stubAnalyzer{}, report.NewFormatter())
 	calls := 0
 	want := errors.New("second render")
 	s.Formatter = func(summaryDisplayView) (string, error) {
@@ -159,7 +160,7 @@ func TestSummaryTerminalReplacesFramesAndCompletesActions(t *testing.T) {
 	m := newSummaryTerminalTest()
 	var output bytes.Buffer
 	m.writer = &output
-	m.Update(summaryTerminalReady{})
+	m.drawFrame()
 	if !strings.HasPrefix(output.String(), "\x1b[H\x1b[2J") {
 		t.Fatal("initial frame not cleared")
 	}
@@ -184,8 +185,39 @@ func TestSummaryTerminalReplacesFramesAndCompletesActions(t *testing.T) {
 		t.Fatalf("completion: %v", m.err)
 	}
 	m.writer = &staveCoverageErrWriter{}
-	m.Update(summaryTerminalReady{})
+	m.drawFrame()
 	if m.err == nil {
 		t.Fatal("missing render error")
+	}
+}
+
+func TestSummaryTerminalLongPromptStaysOnOneRow(t *testing.T) {
+	for _, width := range []int{1, 2, 8, 20} {
+		m := newSummaryTerminalTest()
+		var out bytes.Buffer
+		m.writer = &out
+		m.Update(tea.WindowSizeMsg{Width: width})
+		original := "compare-baseline " + strings.Repeat("界x", 40)
+		m.insert(original)
+		for _, key := range []rune{tea.KeyEnd, tea.KeyLeft, tea.KeyHome, tea.KeyRight} {
+			out.Reset()
+			m.Update(tea.KeyPressMsg{Code: key})
+			text := strings.TrimPrefix(ansi.Strip(out.String()), "\r")
+			if ansi.StringWidth(text) >= width {
+				t.Fatalf("width%d prompt overflows: %q", width, text)
+			}
+			if string(m.line) != original {
+				t.Fatalf("display truncation modified command: %q", m.line)
+			}
+		}
+	}
+}
+
+func TestSummaryTerminalReadErrorStopsSession(t *testing.T) {
+	m := newSummaryTerminalTest()
+	want := errors.New("terminal read")
+	_, command := m.Update(staveTerminalInputError{want})
+	if !errors.Is(m.err, want) || command == nil {
+		t.Fatalf("read error=%v", m.err)
 	}
 }

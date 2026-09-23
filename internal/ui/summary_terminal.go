@@ -19,27 +19,30 @@ import (
 // summaryTerminal keeps the command grammar and actions in Summary. Bubble Tea
 // owns key decoding and event dispatch; raw mode is restored by runTerminal.
 type summaryTerminal struct {
-	ctx      terminalContext
-	summary  Summary
-	opts     Options
-	report   summaryReportView
-	state    summaryState
-	output   bytes.Buffer
-	frame    string
-	line     []rune
-	cursor   int
-	err      error
-	quit     bool
-	inflight bool
-	cancel   context.CancelFunc
-	writer   io.Writer
+	startInput     func()
+	ctx            terminalContext
+	summary        Summary
+	opts           Options
+	report         summaryReportView
+	state          summaryState
+	output         bytes.Buffer
+	frame          string
+	line           []rune
+	cursor         int
+	err            error
+	quit           bool
+	inflight       bool
+	cancel         context.CancelFunc
+	writer         io.Writer
+	width          int
+	terminalOutput io.Writer
 }
 
 func (s *Summary) runTerminal(ctx context.Context, opts Options, report summaryReportView) (result error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	output := &summaryTerminalOutput{Writer: s.Out}
-	m := &summaryTerminal{ctx: runCtx, cancel: cancel, writer: output, summary: *s, opts: opts, report: report, state: buildSummaryState(opts)}
+	m := &summaryTerminal{ctx: runCtx, cancel: cancel, writer: output, terminalOutput: s.Out, summary: *s, opts: opts, report: report, state: buildSummaryState(opts)}
 	m.summary.Out = &m.output
 	m.render()
 	if m.err != nil {
@@ -50,7 +53,19 @@ func (s *Summary) runTerminal(ctx context.Context, opts Options, report summaryR
 		return err
 	}
 	defer func() { result = errors.Join(result, restore()) }()
-	program := tea.NewProgram(m, tea.WithInput(s.In), tea.WithOutput(output), tea.WithoutRenderer())
+	m.refreshWidth()
+	m.drawFrame()
+	m.drawPrompt()
+	if m.err != nil {
+		return m.err
+	}
+	terminalInput, err := newStaveTerminalInput(s.In)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, terminalInput.close()) }()
+	program := tea.NewProgram(m, tea.WithInput(terminalInput.terminal()), tea.WithOutput(output), tea.WithoutRenderer())
+	m.startInput = func() { terminalInput.start(program) }
 	finished := make(chan struct{})
 	go func() {
 		select {
@@ -61,6 +76,9 @@ func (s *Summary) runTerminal(ctx context.Context, opts Options, report summaryR
 	}()
 	_, err = program.Run()
 	close(finished)
+	if _, writeErr := output.Write([]byte("\r\n")); writeErr != nil {
+		return writeErr
+	}
 	if output.err != nil {
 		return output.err
 	}
@@ -76,34 +94,32 @@ func (s *Summary) runTerminal(ctx context.Context, opts Options, report summaryR
 	return err
 }
 
-type summaryTerminalReady struct{}
-
-func (m *summaryTerminal) Init() tea.Cmd { return func() tea.Msg { return summaryTerminalReady{} } }
+func (m *summaryTerminal) Init() tea.Cmd {
+	if m.startInput != nil {
+		m.startInput()
+	}
+	return nil
+}
 
 func (m *summaryTerminal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.quit {
 		return m, tea.Quit
 	}
+	m.refreshWidth()
 	switch msg := msg.(type) {
-	case summaryTerminalReady:
-		m.drawFrame()
-	case summaryTerminalResult:
-		m.inflight = false
-		m.opts, m.report, m.state, m.quit, m.err = msg.opts, msg.report, msg.state, msg.quit, msg.err
-		m.output.Reset()
-		m.output.WriteString(msg.output)
-		if !m.quit && m.err == nil {
-			m.render()
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
 			m.drawFrame()
 		}
+	case staveTerminalInputError:
+		m.err = msg.err
+	case summaryTerminalResult:
+		m.completeAction(msg)
 	case tea.KeyPressMsg:
-		if m.inflight && msg.String() != "ctrl+c" && msg.String() != "ctrl+d" {
-			return m, nil
+		if command := m.updateKey(msg); command != nil {
+			return m, command
 		}
-		if (msg.Code == tea.KeyEnter || msg.Code == tea.KeyKpEnter) && m.isAction(string(m.line)) {
-			return m, m.beginAction()
-		}
-		m.key(msg)
 	case tea.PasteMsg:
 		if !m.inflight {
 			m.insert(msg.Content)
@@ -210,11 +226,24 @@ func (m *summaryTerminal) drawFrame() {
 }
 
 func (m *summaryTerminal) drawPrompt() {
-	// Return to the prompt and erase its previous contents before every edit.
-	_, m.err = fmt.Fprintf(m.writer, "\r\x1b[2K> %s", string(m.line))
-	if m.err == nil && m.cursor < len(m.line) {
-		_, m.err = fmt.Fprintf(m.writer, "\x1b[%dD", ansi.StringWidth(string(m.line[m.cursor:])))
+	if m.err != nil {
+		return
 	}
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	// Leave the final column unused to avoid terminal auto-wrap. Scroll the
+	// visible command horizontally while keeping the logical cursor in view.
+	prefix := ansi.Truncate("> ", width-1, "")
+	available := max(0, width-1-ansi.StringWidth(prefix))
+	start := m.cursor
+	for start > 0 && ansi.StringWidth(string(m.line[start-1:m.cursor])) <= available {
+		start--
+	}
+	visible := ansi.Truncate(string(m.line[start:]), available, "")
+	column := ansi.StringWidth(prefix) + ansi.StringWidth(string(m.line[start:m.cursor])) + 1
+	_, m.err = fmt.Fprintf(m.writer, "\r\x1b[2K%s%s\x1b[%dG", prefix, visible, column)
 }
 
 type summaryTerminalResult struct {
@@ -277,4 +306,34 @@ func prepareSummaryTerminal(input io.Reader) (func() error, error) {
 		return nil, err
 	}
 	return func() error { return charmterm.Restore(file.Fd(), state) }, nil
+}
+
+func (m *summaryTerminal) completeAction(result summaryTerminalResult) {
+	m.inflight = false
+	m.opts, m.report, m.state, m.quit, m.err = result.opts, result.report, result.state, result.quit, result.err
+	m.output.Reset()
+	m.output.WriteString(result.output)
+	if !m.quit && m.err == nil {
+		m.render()
+		m.drawFrame()
+	}
+}
+
+func (m *summaryTerminal) updateKey(key tea.KeyPressMsg) tea.Cmd {
+	if m.inflight && key.String() != "ctrl+c" && key.String() != "ctrl+d" {
+		return nil
+	}
+	if (key.Code == tea.KeyEnter || key.Code == tea.KeyKpEnter) && m.isAction(string(m.line)) {
+		return m.beginAction()
+	}
+	m.key(key)
+	return nil
+}
+
+func (m *summaryTerminal) refreshWidth() {
+	width, _, ok := staveTerminalDimensions(m.terminalOutput)
+	if ok && width > 0 && width != m.width {
+		m.width = width
+		m.drawFrame()
+	}
 }

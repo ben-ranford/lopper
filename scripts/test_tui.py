@@ -7,6 +7,7 @@ import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -170,6 +171,14 @@ def smoke(binary):
         terminal.command("open alpha")
         terminal.expect("Used exports: 1")
         terminal.expect("Commands:")
+        terminal.resize(30, 20)
+        prompt_start = len(terminal.transcript)
+        terminal.send(b" " * 100 + b"pag 1\x1b[D\x1b[De\r")
+        terminal.expect("Page: 1/1")
+        terminal.expect(">")
+        prompts = re.findall(rb"\r\x1b\[2K([^\x1b]*)\x1b\[(\d+)G", terminal.transcript[prompt_start:])
+        if not prompts or any(len(text) >= 20 or int(column) > 20 for text, column in prompts):
+            raise AssertionError(f"prompt exceeded the narrow terminal: {prompts!r}")
         terminal.command("q")
         terminal.finish()
     for exit_key in (b"\x03", b"\x04"):

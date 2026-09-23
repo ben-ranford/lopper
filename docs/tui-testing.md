@@ -36,7 +36,8 @@ not assertions that the current Lopper UI interprets CSI-u release events.
 The default summary UI accepts both piped newline-delimited commands and
 interactive terminal keys. At an empty prompt, left/right page immediately and
 clamp at the first/last page. Within a command they move the cursor; Home/End,
-Backspace and Delete edit Unicode text. Enter executes the command. Try typing
+Backspace and Delete edit Unicode text. Long commands scroll horizontally in
+the prompt instead of wrapping. Enter executes the command. Try typing
 `pag 2`, pressing left twice, inserting `e`, then pressing Enter. Ctrl-C, `q`
 plus Enter and Ctrl-D at an empty prompt exit and restore terminal settings.
 CSI and application-mode arrows are supported by the existing terminal decoder.
