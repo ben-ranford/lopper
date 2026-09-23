@@ -175,3 +175,8 @@ Please include reproduction steps and environment details for bugs.
 - `internal/report`: report model, formatting, baseline math
 - `internal/ui`: TUI summary/detail
 - `internal/runtime`: runtime trace parsing and annotation
+
+Duplication comparisons fail if the intended target or scanner results are
+incomplete. Fetch the target branch and sufficient history, then run
+`make dup-check DUPLICATION_BASE=origin/<target>` for a local non-main comparison.
+See [CI duplication checks](docs/ci-usage.md) for base selection and supported paths.
