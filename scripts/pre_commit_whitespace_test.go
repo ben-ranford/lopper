@@ -9,11 +9,13 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+type stagedAttributePolicy struct {
+	name, staged, unstaged, nested, info, global, whitespace string
+	reject                                                   bool
+}
+
 func TestInstalledPreCommitStagedAttributePolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name, staged, unstaged, nested, info, global, whitespace string
-		reject                                                   bool
-	}{
+	for _, tc := range []stagedAttributePolicy{
 		{name: "unstaged allowance", unstaged: "*.txt whitespace=-trailing-space\n", reject: true},
 		{name: "staged rejection", staged: "*.txt whitespace=trailing-space\n", unstaged: "*.txt whitespace=-trailing-space\n", reject: true},
 		{name: "staged allowance", staged: "*.txt whitespace=-trailing-space\n", unstaged: "*.txt whitespace=trailing-space\n"},
@@ -25,78 +27,91 @@ func TestInstalledPreCommitStagedAttributePolicy(t *testing.T) {
 		{name: "configured allowance", whitespace: "-trailing-space"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := newHookFixture(t)
-			if tc.staged != "" {
-				writeFile(t, filepath.Join(repo, ".gitattributes"), tc.staged)
-				runCommand(t, repo, "git", "add", ".gitattributes")
-			}
-			if tc.nested != "" {
-				writeFile(t, filepath.Join(repo, "nested", ".gitattributes"), tc.nested)
-				runCommand(t, repo, "git", "add", "nested/.gitattributes")
-			}
-			if tc.unstaged != "" {
-				writeFile(t, filepath.Join(repo, ".gitattributes"), tc.unstaged)
-			}
-			if tc.info != "" {
-				writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), tc.info)
-			}
-			if tc.global != "" {
-				path := filepath.Join(t.TempDir(), "attributes")
-				writeFile(t, path, tc.global)
-				runCommand(t, repo, "git", "config", "core.attributesFile", path)
-			}
-			if tc.whitespace != "" {
-				runCommand(t, repo, "git", "config", "core.whitespace", tc.whitespace)
-			}
-			writeFile(t, filepath.Join(repo, "nested", "notes.txt"), "allowed or rejected \n")
-			runCommand(t, repo, "git", "add", "nested/notes.txt")
-			output, err := hookCommand(repo, "git", "commit", "-m", "attribute policy")
-			if tc.reject {
-				if err == nil || !strings.Contains(output, "trailing whitespace") {
-					t.Fatalf("expected whitespace rejection: %v\n%s", err, output)
-				}
-			} else if err != nil {
-				t.Fatalf("expected allowed whitespace: %v\n%s", err, output)
-			}
-			if tc.unstaged != "" {
-				content, err := os.ReadFile(filepath.Join(repo, ".gitattributes"))
-				if err != nil || string(content) != tc.unstaged {
-					t.Fatalf("working attributes modified: %v", err)
-				}
-			}
+			checkStagedAttributePolicy(t, tc)
 		})
+	}
+}
+
+func checkStagedAttributePolicy(t *testing.T, tc stagedAttributePolicy) {
+	t.Helper()
+	repo := newHookFixture(t)
+	stageAttributePolicy(t, repo, tc)
+	writeFile(t, filepath.Join(repo, "nested", "notes.txt"), "allowed or rejected \n")
+	runCommand(t, repo, "git", "add", "nested/notes.txt")
+	output, err := hookCommand(repo, "git", "commit", "-m", "attribute policy")
+	if tc.reject {
+		if err == nil || !strings.Contains(output, "trailing whitespace") {
+			t.Fatalf("expected whitespace rejection: %v\n%s", err, output)
+		}
+	} else if err != nil {
+		t.Fatalf("expected allowed whitespace: %v\n%s", err, output)
+	}
+	if tc.unstaged != "" {
+		content, err := os.ReadFile(filepath.Join(repo, ".gitattributes"))
+		if err != nil || string(content) != tc.unstaged {
+			t.Fatalf("working attributes modified: %v", err)
+		}
+	}
+}
+
+func stageAttributePolicy(t *testing.T, repo string, tc stagedAttributePolicy) {
+	t.Helper()
+	for path, content := range map[string]string{".gitattributes": tc.staged, "nested/.gitattributes": tc.nested} {
+		if content != "" {
+			writeFile(t, filepath.Join(repo, path), content)
+			runCommand(t, repo, "git", "add", path)
+		}
+	}
+	if tc.unstaged != "" {
+		writeFile(t, filepath.Join(repo, ".gitattributes"), tc.unstaged)
+	}
+	if tc.info != "" {
+		writeFile(t, filepath.Join(repo, ".git", "info", "attributes"), tc.info)
+	}
+	if tc.global != "" {
+		path := filepath.Join(t.TempDir(), "attributes")
+		writeFile(t, path, tc.global)
+		runCommand(t, repo, "git", "config", "core.attributesFile", path)
+	}
+	if tc.whitespace != "" {
+		runCommand(t, repo, "git", "config", "core.whitespace", tc.whitespace)
 	}
 }
 
 func TestInstalledPreCommitAlternateIndexAttributePolicy(t *testing.T) {
 	for _, linked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "main", true: "linked"}[linked], func(t *testing.T) {
-			repo := newHookFixture(t)
-			if linked {
-				linkedRepo := filepath.Join(t.TempDir(), "linked")
-				runCommand(t, repo, "git", "worktree", "add", "-b", "linked", linkedRepo)
-				repo = linkedRepo
-			}
-			index := filepath.Join(t.TempDir(), "index")
-			env := []string{"GIT_INDEX_FILE=" + index}
-			if output, err := hookCommandWithEnv(repo, env, "git", "read-tree", "HEAD"); err != nil {
-				t.Fatalf("alternate index: %v\n%s", err, output)
-			}
-			writeFile(t, filepath.Join(repo, ".gitattributes"), "*.txt whitespace=-trailing-space\n")
-			writeFile(t, filepath.Join(repo, "notes.txt"), "allowed \n")
-			if output, err := hookCommandWithEnv(repo, env, "git", "add", ".gitattributes", "notes.txt"); err != nil {
-				t.Fatalf("stage: %v\n%s", err, output)
-			}
-			writeFile(t, filepath.Join(repo, ".gitattributes"), "*.txt whitespace=trailing-space\n")
-			before := testutil.GitOutput(t, repo, "write-tree")
-			hookDir := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
-			if output, err := hookCommandWithEnv(repo, env, filepath.Join(hookDir, "pre-commit")); err != nil {
-				t.Fatalf("alternate staged attributes: %v\n%s", err, output)
-			}
-			if after := testutil.GitOutput(t, repo, "write-tree"); after != before {
-				t.Fatal("normal index changed")
-			}
+			checkAlternateIndexAttributePolicy(t, linked)
 		})
+	}
+}
+
+func checkAlternateIndexAttributePolicy(t *testing.T, linked bool) {
+	t.Helper()
+	repo := newHookFixture(t)
+	if linked {
+		linkedRepo := filepath.Join(t.TempDir(), "linked")
+		runCommand(t, repo, "git", "worktree", "add", "-b", "linked", linkedRepo)
+		repo = linkedRepo
+	}
+	index := filepath.Join(t.TempDir(), "index")
+	env := []string{"GIT_INDEX_FILE=" + index}
+	if output, err := hookCommandWithEnv(repo, env, "git", "read-tree", "HEAD"); err != nil {
+		t.Fatalf("alternate index: %v\n%s", err, output)
+	}
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "*.txt whitespace=-trailing-space\n")
+	writeFile(t, filepath.Join(repo, "notes.txt"), "allowed \n")
+	if output, err := hookCommandWithEnv(repo, env, "git", "add", ".gitattributes", "notes.txt"); err != nil {
+		t.Fatalf("stage: %v\n%s", err, output)
+	}
+	writeFile(t, filepath.Join(repo, ".gitattributes"), "*.txt whitespace=trailing-space\n")
+	before := testutil.GitOutput(t, repo, "write-tree")
+	hookDir := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
+	if output, err := hookCommandWithEnv(repo, env, filepath.Join(hookDir, "pre-commit")); err != nil {
+		t.Fatalf("alternate staged attributes: %v\n%s", err, output)
+	}
+	if testutil.GitOutput(t, repo, "write-tree") != before {
+		t.Fatal("normal index changed")
 	}
 }
 
