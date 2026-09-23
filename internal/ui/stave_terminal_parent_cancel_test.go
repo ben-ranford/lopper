@@ -89,6 +89,11 @@ func TestStaveTerminalParentCancellationPublishesIndeterminateOutcome(t *testing
 	if !snapshot.Model.interaction.quit || snapshot.Model.interaction.pendingCallID != "" || !strings.Contains(snapshot.Model.interaction.error, "final action outcome unknown") {
 		t.Fatalf("parent cancellation session state = %+v", snapshot.Model.interaction)
 	}
+	assertStaveLateCompletionRejected(t, prepared, snapshot, callID)
+}
+
+func assertStaveLateCompletionRejected(t *testing.T, prepared *stave.Prepared[staveSummaryModel], snapshot state.State[staveSummaryModel], callID string) {
+	t.Helper()
 	late, err := event.New(event.EffectResult, event.EffectResultPayload{CallID: callID, Status: "completed"})
 	if err != nil {
 		t.Fatal(err)
