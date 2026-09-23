@@ -1,0 +1,140 @@
+"""Isolated failure and comparison fixtures for the duplication runner."""
+
+import contextlib
+import io
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_duplication as runner
+
+
+class DuplicationRunnerTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name).resolve()
+        self.environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.git("init", "-q", "-b", "target")
+        self.git("config", "user.name", "Ben Ranford")
+        self.git("config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+        self.write("original.go", "package fixture\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.repo), *args], text=True, env=self.environment, stderr=subprocess.STDOUT)
+
+    def write(self, name, content):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    def commit(self):
+        self.git("add", ".")
+        self.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "duplication fixture")
+
+    def test_target_merge_base_covers_all_branch_commits(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("first change.go", "package fixture\nvar First = 1\n")
+        self.commit()
+        self.write("second.go", "package fixture\nvar Second = 2\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            base, merge_base = runner.comparison_base(self.repo, "target", {})
+            changed = runner.added_lines(self.repo, merge_base)
+        self.assertEqual(base, "target")
+        self.assertEqual(merge_base, self.base)
+        self.assertEqual(changed, {(name, line) for name in ("first change.go", "second.go") for line in (1, 2)})
+
+    def test_missing_and_unrelated_bases_fail_with_recovery(self):
+        self.git("checkout", "--orphan", "unrelated")
+        self.write("unrelated.go", "package unrelated\n")
+        self.commit()
+        for base in ("does-not-exist", "target"):
+            with self.subTest(base=base), mock.patch.dict(os.environ, self.environment, clear=True):
+                with self.assertRaisesRegex(runner.AnalysisError, "Fetch the target.*No fallback"):
+                    runner.comparison_base(self.repo, base, {})
+
+    def test_binary_go_changes_are_incomplete_analysis(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("binary.go", "package fixture\n\0")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True), self.assertRaisesRegex(runner.AnalysisError, "binary Go diff"):
+            runner.added_lines(self.repo, self.base)
+
+    def test_base_priority_uses_actual_pr_target(self):
+        with mock.patch.object(runner, "checked", return_value=subprocess.CompletedProcess([], 0, self.base + "\n", "")) as checked:
+            for explicit, environment, expected in (
+                ("pinned", {"BASE_SHA": "event"}, "pinned"),
+                ("", {"BASE_SHA": "event", "GITHUB_BASE_REF": "release"}, "event"),
+                ("", {"GITHUB_BASE_REF": "release"}, "refs/remotes/origin/release"),
+                ("", {"BASE_REF": "dev"}, "refs/remotes/origin/dev"),
+                ("", {}, "origin/main"),
+            ):
+                with self.subTest(expected=expected):
+                    self.assertEqual(runner.comparison_base(self.repo, explicit, environment)[0], expected)
+                    self.assertIn(expected + "^{commit}", checked.call_args_list[-2].args[0])
+
+    def test_no_changes_are_distinct_from_no_matches(self):
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, self.base), set())
+        self.assertEqual(runner.parse_findings("", self.repo), set())
+
+    def pair(self, first="dir with spaces/a.go", second="b.go"):
+        for name in ("dir with spaces/a.go", "b.go"):
+            self.write(name, "package fixture\nvar Value = 1\n")
+        return f"{first}:1-2: duplicate of {second}:1-2\n{second}:1-2: duplicate of {first}:1-2\n"
+
+    def test_valid_pairs_support_spaces_and_platform_separators(self):
+        for path in ("dir with spaces/a.go", "./dir with spaces/a.go", ".\\dir with spaces\\a.go", str(self.repo / "dir with spaces/a.go")):
+            with self.subTest(path=path):
+                self.assertEqual(runner.parse_findings(self.pair(path), self.repo), {(name, line) for name in ("dir with spaces/a.go", "b.go") for line in (1, 2)})
+
+    def test_malformed_truncated_and_unsupported_records_fail(self):
+        valid = self.pair()
+        cases = [
+            "nonsense\n", "\n", valid.rstrip("\n"), valid.splitlines()[0] + "\n",
+            valid.replace(":1-2:", ":2-1:"), valid.replace(":1-2:", ":0-2:"),
+            valid.replace(":1-2:", ":1-999:"), valid.replace("b.go", "missing.go"),
+            valid.replace("b.go", "../outside.go"), valid.replace("b.go", "C:\\outside.go"),
+            valid.replace("b.go", "bad:record.go"), valid.replace("b.go", "dir with spaces/a.go"),
+        ]
+        for output in cases:
+            with self.subTest(output=output), self.assertRaises(runner.AnalysisError):
+                runner.parse_findings(output, self.repo)
+
+    def test_detector_crash_and_parse_diagnostics_fail(self):
+        for status, stderr in ((1, "crashed"), (0, "parse error")):
+            results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], status, "", stderr)]
+            with self.subTest(status=status), mock.patch.object(runner.subprocess, "run", side_effect=results), self.assertRaises(runner.AnalysisError):
+                runner.scan(self.repo, "go", "pinned", 55)
+
+    def test_detector_install_failure_is_not_masked(self):
+        with mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "install failed")), self.assertRaisesRegex(runner.AnalysisError, "install failed"):
+            runner.scan(self.repo, "go", "pinned", 55)
+
+    def test_cli_reports_no_change_success_and_duplicate_failure(self):
+        command = [sys.executable, "-B", str(Path(runner.__file__).resolve()), "--version", "pinned", "--base", "target"]
+        result = subprocess.run(command, cwd=self.repo, env=self.environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no changed Go lines", result.stdout)
+        result = subprocess.run(command + ["--base", "missing"], cwd=self.repo, env=self.environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("No fallback", result.stderr)
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "added_lines", return_value={("b.go", 1)}), mock.patch.object(runner, "scan", return_value={("b.go", 1)}), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.main(["--version", "pinned", "--base", "target"]), 1)
+
+    def test_invalid_threshold_cannot_disable_gate(self):
+        for option, value in (("--max", "nan"), ("--max", "inf"), ("--max", "-1"), ("--threshold", "0")):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runner.main(["--version", "pinned", option, value]), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
