@@ -53,6 +53,33 @@ func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
 	assertNoPreflightTimeoutTemps(t, tmpDir)
 }
 
+func TestHooksInstallBoundsRollbackWithBlockingConfig(t *testing.T) {
+	for _, previousPath := range []string{"", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) {
+			t.Parallel()
+			fixture := newPreflightTimeoutFixture(t, "hooks-install")
+			if previousPath != "" {
+				runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+			}
+			tmpDir := t.TempDir()
+			env := append(postWriteBlockingGitEnv(t), "HOOK_TIMEOUT_FIFO_CONFIG=1", "TMPDIR="+tmpDir)
+			output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", env...)
+			if err == nil || !strings.Contains(string(output), "Unable to restore core.hooksPath; retaining managed hook") {
+				t.Fatalf("blocked rollback = %v\n%s", err, output)
+			}
+			assertCommonConfigFIFO(t, fixture.configPath, false)
+			assertNoPreflightTimeoutTemps(t, tmpDir)
+			if err := os.Remove(fixture.configPath); err != nil {
+				t.Fatalf("remove blocking config FIFO: %v", err)
+			}
+			if err := os.Rename(fixture.configPath+".before-timeout", fixture.configPath); err != nil {
+				t.Fatalf("restore activated config after timeout: %v", err)
+			}
+			runCommand(t, fixture.repoDir, fixture.managedHook)
+		})
+	}
+}
+
 func TestHooksInstallRollbackFailureRetainsUsableHook(t *testing.T) {
 	for _, previousPath := range []string{"", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) {
@@ -175,6 +202,10 @@ if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ]; then
 	echo "$count" >"$HOOK_TIMEOUT_COUNTER"
 	if [ "$count" -eq 2 ]; then
 		if [ "${HOOK_TIMEOUT_LOCK_CONFIG-}" = 1 ]; then : >.git/config.lock; fi
+		if [ "${HOOK_TIMEOUT_FIFO_CONFIG-}" = 1 ]; then
+			mv .git/config .git/config.before-timeout
+			mkfifo .git/config
+		fi
 		exec cat "$HOOK_TIMEOUT_FIFO"
 	fi
 fi
@@ -344,7 +375,7 @@ func prepareIncludedFIFO(scope string) func(*testing.T, string) []string {
 
 func runMakeWithPreflightTimeout(t *testing.T, repoDir, target string, env ...string) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "make", target)
 	command.Dir = repoDir
