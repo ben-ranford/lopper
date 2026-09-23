@@ -1613,7 +1613,7 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	if !ok {
 		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
 	}
-	if vsce.Version != "4.0.0" || !strings.HasPrefix(vsce.Integrity, "sha512-") {
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(vsce.Version) || !strings.HasPrefix(vsce.Integrity, "sha512-") {
 		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
 	}
 
@@ -1651,9 +1651,15 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		`lockfile="extensions/vscode-lopper/package-lock.json"`,
 		`vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"`,
 		`vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"`,
-		`if [ "${vsce_version}" != "3.9.2" ]; then`,
+		fmt.Sprintf(`if [ "${vsce_version}" != %q ]; then`, vsce.Version),
 		`case "${vsce_integrity}" in`,
 		`sha512-?*)`,
+	})
+
+	validateStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
+	assertWorkflowStepRunContainsAll(t, validateStep, "Marketplace publication tool version checks", []string{
+		fmt.Sprintf(`jq -e '.packages["node_modules/@vscode/vsce"] | .version == %q and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json"`, vsce.Version),
+		fmt.Sprintf(`jq -e '.version == %q' "${toolchain_dir}/node_modules/@vscode/vsce/package.json"`, vsce.Version),
 	})
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
@@ -2932,6 +2938,71 @@ func assertRenovateMatcherNarrowsCatchAllRule(t *testing.T, matcher string) {
 	if err := validateRenovatePackageRules(rules, []map[string]json.RawMessage{rawRule}); err == nil || !strings.Contains(err.Error(), "must include a catch-all") {
 		t.Fatalf("%s matcher validation = %v, want catch-all rejection", matcher, err)
 	}
+}
+
+func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
+	t.Parallel()
+
+	var config struct {
+		CustomManagers []struct {
+			CustomType          string   `json:"customType"`
+			ManagerFilePatterns []string `json:"managerFilePatterns"`
+			MatchStrings        []string `json:"matchStrings"`
+			DatasourceTemplate  string   `json:"datasourceTemplate"`
+			DepNameTemplate     string   `json:"depNameTemplate"`
+			VersioningTemplate  string   `json:"versioningTemplate"`
+		} `json:"customManagers"`
+		PackageRules []struct {
+			MatchManagers     []string `json:"matchManagers"`
+			MatchPackageNames []string `json:"matchPackageNames"`
+			GroupName         string   `json:"groupName"`
+			RangeStrategy     string   `json:"rangeStrategy"`
+		} `json:"packageRules"`
+	}
+	readJSONConfig(t, "renovate.json", &config)
+	var lockfile struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	readJSONConfig(t, "extensions/vscode-lopper/package-lock.json", &lockfile)
+	version := lockfile.Packages["node_modules/@vscode/vsce"].Version
+	workflow, err := os.ReadFile(repoPath(t, ".github/workflows/release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := 0
+	for _, manager := range config.CustomManagers {
+		if manager.DepNameTemplate != "@vscode/vsce" {
+			continue
+		}
+		if manager.CustomType != "regex" || manager.DatasourceTemplate != "npm" || manager.VersioningTemplate != "npm" {
+			t.Fatal("VSCE workflow pins must use the npm regex manager")
+		}
+		if !slices.Contains(manager.ManagerFilePatterns, `/^\.github/workflows/release\.yml$/`) {
+			t.Fatal("VSCE manager must target the release workflow")
+		}
+		for _, pattern := range manager.MatchStrings {
+			re := regexp.MustCompile(pattern)
+			found := re.FindAllStringSubmatch(string(workflow), -1)
+			if len(found) != 1 {
+				t.Fatalf("VSCE pattern %q matched %d pins, want 1", pattern, len(found))
+			}
+			if got := found[0][re.SubexpIndex("currentValue")]; got != version {
+				t.Fatalf("Renovate captured VSCE %q, want locked version %q", got, version)
+			}
+			matches += len(found)
+		}
+	}
+	if matches != 4 {
+		t.Fatalf("Renovate tracks %d VSCE workflow pins, want 4", matches)
+	}
+	for _, rule := range config.PackageRules {
+		if slices.Contains(rule.MatchPackageNames, "@vscode/vsce") && slices.Contains(rule.MatchManagers, "npm") && slices.Contains(rule.MatchManagers, "custom.regex") && rule.GroupName != "" && rule.RangeStrategy == "bump" {
+			return
+		}
+	}
+	t.Fatal("VSCE npm and workflow updates must share a group and bump the package range")
 }
 
 func TestRenovateTidiesGoModuleUpdates(t *testing.T) {

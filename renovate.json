@@ -38,6 +38,18 @@
       ],
       "groupName": "Go toolchain",
       "rangeStrategy": "bump"
+    },
+    {
+      "description": "Keep VSCE npm dependencies and Marketplace workflow pins aligned",
+      "matchManagers": [
+        "npm",
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "@vscode/vsce"
+      ],
+      "groupName": "VSCE tooling",
+      "rangeStrategy": "bump"
     }
   ],
   "customManagers": [
@@ -55,6 +67,22 @@
       "datasourceTemplate": "golang-version",
       "depNameTemplate": "go",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Update VSCE version checks in the Marketplace release workflow",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/release\\.yml$/"
+      ],
+      "matchStrings": [
+        "if \\[ \"\\$\\{vsce_version\\}\" != \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "Marketplace tooling lockfile must pin @vscode/vsce (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "jq -e '\\.packages\\[\"node_modules/@vscode/vsce\"\\] \\| \\.version == \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "jq -e '\\.version == \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"' \"\\$\\{toolchain_dir\\}/node_modules/@vscode/vsce/package\\.json\""
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@vscode/vsce",
+      "versioningTemplate": "npm"
     }
   ]
 }
