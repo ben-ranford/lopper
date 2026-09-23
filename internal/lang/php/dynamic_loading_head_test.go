@@ -19,8 +19,8 @@ func TestDynamicPatternsRespectTemplateAndInterpolationBoundaries(t *testing.T) 
 		{"<?php $doc = <<<DOC\n{\\$type::$$property}\nDOC;", false, false},
 		{"<?php $doc = <<<\n", false, false},
 		{`<?php /* "{$type::$$property}" */`, false, false},
-		{`<?php echo "\{$type::$$property}";`, false, true},
-		{"<?php $doc = <<<DOC\n\\{$type::$$property}\nDOC;", false, true},
+		{`<?php echo "\{$type::$$property}";`, false, false},
+		{"<?php $doc = <<<DOC\n\\{$type::$$property}\nDOC;", false, false},
 	} {
 		if got := hasDynamicPatterns([]byte(tc.source), "source.php", tc.shortTags); got != tc.want {
 			t.Errorf("source %q shortTags=%v: got %v, want %v", tc.source, tc.shortTags, got, tc.want)
@@ -28,8 +28,8 @@ func TestDynamicPatternsRespectTemplateAndInterpolationBoundaries(t *testing.T) 
 	}
 }
 
-func TestDynamicInterpolationPreservesBackslashBeforeBrace(t *testing.T) {
-	for _, count := range []int{1, 2, 3} {
+func TestDynamicInterpolationRespectsBackslashParity(t *testing.T) {
+	for _, count := range []int{0, 1, 2, 3, 4} {
 		prefix := strings.Repeat(`\`, count)
 		for _, expression := range []string{`{$type::$$property}`, `{ literal`} {
 			for _, source := range []string{
@@ -37,7 +37,7 @@ func TestDynamicInterpolationPreservesBackslashBeforeBrace(t *testing.T) {
 				"<?php echo `" + prefix + expression + "`;",
 				"<?php $doc = <<<DOC\n" + prefix + expression + "\nDOC;",
 			} {
-				want := expression == `{$type::$$property}`
+				want := expression == `{$type::$$property}` && count%2 == 0
 				if got := hasDynamicPatterns([]byte(source), "source.php", false); got != want {
 					t.Errorf("source %q: got %v, want %v", source, got, want)
 				}

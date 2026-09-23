@@ -29,10 +29,6 @@ func advancePHPDynamicInterpolation(text string, offset int, state *phpCodeState
 		if dynamicInterpolationPattern.MatchString(text[offset:]) {
 			return offset, true
 		}
-		if strings.HasPrefix(text[offset:], `\{`) {
-			// PHP does not treat a backslash before an opening brace as an escape.
-			return offset + 1, false
-		}
 	}
 	return advancePHPCodeState(text, offset, state), false
 }
@@ -57,7 +53,7 @@ func dynamicHeredocInterpolation(text string, offset int) (int, bool) {
 
 func hasDynamicHeredocBody(text string) bool {
 	for offset := 0; offset < len(text); offset++ {
-		if text[offset] == '\\' && offset+1 < len(text) && text[offset+1] != '{' {
+		if text[offset] == '\\' && offset+1 < len(text) {
 			offset++
 			continue
 		}
