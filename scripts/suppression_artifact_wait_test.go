@@ -29,6 +29,7 @@ func TestSuppressionArtifactWait(t *testing.T) {
 		{"late-success", "accepted:42:99"},
 		{"stale-failure", "accepted:42:99"},
 		{"stale-cancelled", "accepted:42:99"},
+		{"stale-cancelled-after-start", "accepted:42:99"},
 		{"stale-only", "Timed out"},
 		{"failure", "No completed"},
 		{"cancelled", "No completed"},
@@ -81,7 +82,8 @@ const github = {
    if (scenario === 'missing-run') return [];
    if (scenario === 'stale-only' || (scenario.startsWith('stale-') && polls === 0)) {
     return [{id: 41, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
-     updated_at: new Date(start - 1).toISOString(), status: 'completed', conclusion: scenario === 'stale-only' ? 'failure' : scenario.slice(6)}];
+     updated_at: new Date(scenario === 'stale-cancelled-after-start' ? start + 1 : start - 1).toISOString(),
+     status: 'completed', conclusion: scenario.includes('cancelled') ? 'cancelled' : 'failure'}];
    }
    const pending = ['timeout', 'superseded'].includes(scenario) ||
     ((scenario === 'late-success' || scenario.startsWith('stale-')) && now - start < 30 * 60 * 1000);
