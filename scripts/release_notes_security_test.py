@@ -54,24 +54,53 @@ class ReleaseNotesSecurityTest(unittest.TestCase):
                             reader(Path("."), tag)
                         popen.assert_not_called()
 
-    def test_valid_tag_readers_preserve_git_show_arguments(self):
+    def test_valid_tag_readers_use_fixed_command_with_stdin(self):
         repo = Path("repository with spaces")
+        body = b'{"version":"1.0.0"}'
+        response = b"a" * 40 + f" blob {len(body)}\n".encode() + body + b"\n"
         for reader, path in (
             (vscode_release_notes.old_lockfile, vscode_release_notes.LOCKFILE_PATH),
             (vscode_release_notes.old_package, vscode_release_notes.PACKAGE_PATH),
         ):
             with self.subTest(reader=reader.__name__):
-                with mock.patch.object(subprocess, "check_output", return_value='{"version":"1.0.0"}') as output:
+                with mock.patch.object(subprocess, "check_output", return_value=response) as output:
                     self.assertEqual(reader(repo, "v1.0.0"), {"version": "1.0.0"})
                 output.assert_called_once_with(
-                    ["git", "-C", str(repo), "show", f"v1.0.0:{path.as_posix()}"], text=True,
+                    ["git", "-C", str(repo), "cat-file", "--batch"],
+                    input=f"v1.0.0:{path.as_posix()}\n".encode(),
                 )
 
     def test_subprocess_probe_observes_git_execution(self):
         with mock.patch.object(subprocess, "Popen", side_effect=RuntimeError("subprocess probe")) as popen:
             with self.assertRaisesRegex(RuntimeError, "subprocess probe"):
-                vscode_release_notes.git(Path("."), "status")
+                vscode_release_notes.git_file(Path("."), "v1.0.0", Path("go.mod"))
             popen.assert_called_once()
+
+    def test_git_operations_reject_protocol_injection(self):
+        for value in INVALID_TAGS:
+            for operation in (
+                lambda: vscode_release_notes.git_file(Path("."), value, Path("go.mod")),
+                lambda: vscode_release_notes.git_extension_log(Path("."), value),
+                lambda: vscode_release_notes.git_commit_paths(Path("."), value),
+            ):
+                with self.subTest(value=value), mock.patch.object(subprocess, "Popen") as popen:
+                    with self.assertRaises(ValueError):
+                        operation()
+                    popen.assert_not_called()
+
+    def test_git_file_rejects_unexpected_paths_and_invalid_responses(self):
+        with mock.patch.object(subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "unsupported"):
+                vscode_release_notes.git_file(Path("."), "v1.0.0", Path("unexpected"))
+            popen.assert_not_called()
+        for response in (b"bad", b"abc tree 0\n\n", b"abc blob 4\na\n", b"abc blob 1\nab"):
+            with self.subTest(response=response):
+                with mock.patch.object(subprocess, "check_output", return_value=response):
+                    with self.assertRaises(ValueError):
+                        vscode_release_notes.git_file(Path("."), "v1.0.0", Path("go.mod"))
+        with mock.patch.object(subprocess, "check_output", return_value=b"v1.0.0:go.mod missing\n"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                vscode_release_notes.git_file(Path("."), "v1.0.0", Path("go.mod"))
 
 
 if __name__ == "__main__":
