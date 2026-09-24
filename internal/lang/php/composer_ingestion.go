@@ -440,28 +440,11 @@ func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool
 			continue
 		}
 		if scopedSectionsPossible && strings.HasPrefix(line, "<") {
-			if strings.HasPrefix(line, "</") {
-				if sectionDepth > 0 {
-					sectionDepth--
-				}
-			} else {
-				sectionDepth++
-			}
+			sectionDepth = phpConfigSectionDepth(line, sectionDepth)
 			continue
 		}
-		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
-			fields := strings.Fields(lower)
-			if len(fields) >= 3 && fields[1] == "short_open_tag" {
-				if sectionDepth > 0 {
-					return false, false, true
-				}
-				enabled, found, incomplete = phpConfigBooleanSetting(fields[2])
-			}
-			continue
-		}
-		key, value, ok := strings.Cut(lower, "=")
-		if !ok || strings.TrimSpace(key) != "short_open_tag" {
+		value, ok := shortOpenTagConfigValue(strings.ToLower(line))
+		if !ok {
 			continue
 		}
 		if sectionDepth > 0 {
@@ -470,6 +453,25 @@ func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool
 		enabled, found, incomplete = phpConfigBooleanSetting(value)
 	}
 	return enabled, found, incomplete
+}
+
+func phpConfigSectionDepth(line string, depth int) int {
+	if strings.HasPrefix(line, "</") {
+		return max(0, depth-1)
+	}
+	return depth + 1
+}
+
+func shortOpenTagConfigValue(line string) (string, bool) {
+	if strings.HasPrefix(line, "php_value") || strings.HasPrefix(line, "php_flag") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[1] == "short_open_tag" {
+			return fields[2], true
+		}
+		return "", false
+	}
+	key, value, ok := strings.Cut(line, "=")
+	return value, ok && strings.TrimSpace(key) == "short_open_tag"
 }
 
 func phpConfigBooleanSetting(value string) (bool, bool, bool) {

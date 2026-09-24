@@ -116,8 +116,9 @@ func assertIdentifierDocument(t *testing.T, schema *gojsonschema.Schema, documen
 	if err := json.Unmarshal([]byte(document), &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata.Schema != identifier {
-		t.Fatalf("serialized schema identifier = %q, want upstream identifier %q", metadata.Schema, identifier)
+	secureIdentifier := strings.Replace(identifier, "http://", "https://", 1)
+	if metadata.Schema != secureIdentifier {
+		t.Fatalf("serialized schema identifier = %q, want HTTPS schema URL %q", metadata.Schema, secureIdentifier)
 	}
 	result, err := schema.Validate(gojsonschema.NewStringLoader(document))
 	if err != nil {
