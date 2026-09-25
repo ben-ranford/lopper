@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
-	"github.com/pelletier/go-toml/v2"
 )
 
 var (
@@ -19,6 +18,10 @@ func collectPyprojectManifestEvidence(repoPath, path string, index identityIndex
 	if !ok {
 		return
 	}
+	collectPyprojectManifestEvidenceDocument(repoPath, path, index, document)
+}
+
+func collectPyprojectManifestEvidenceDocument(repoPath, path string, index identityIndex, document map[string]any) {
 	source := relativeIdentitySource(repoPath, path)
 	project := pythonManifestTable(document["project"])
 	addPythonRequirementPins(index, project["dependencies"], source)
@@ -36,23 +39,26 @@ func collectPipfileManifestEvidence(repoPath, path string, index identityIndex, 
 	if !ok {
 		return
 	}
+	collectPipfileManifestEvidenceDocument(repoPath, path, index, document)
+}
+
+func collectPipfileManifestEvidenceDocument(repoPath, path string, index identityIndex, document map[string]any) {
 	source := relativeIdentitySource(repoPath, path)
 	addPythonPackageTablePins(index, document["packages"], source, false)
 	addPythonPackageTablePins(index, document["dev-packages"], source, false)
 }
 
 func readPythonManifestDocument(repoPath, path string, warnings *identityWarningCollector) (map[string]any, bool) {
-	data, err := pythonlang.ReadManifestFile(repoPath, path)
+	document, err := pythonlang.ReadPackagingDocument(repoPath, path)
 	if err != nil {
-		warnings.addFailure("read", path, identityReadFailed, err)
+		kind := identityReadFailed
+		if document.FailureStage == "parse" {
+			kind = identityParseFailed
+		}
+		warnings.addFailure(document.FailureStage, path, kind, err)
 		return nil, false
 	}
-	var document map[string]any
-	if err := toml.Unmarshal(data, &document); err != nil {
-		warnings.addFailure("parse", path, identityParseFailed, err)
-		return nil, false
-	}
-	return document, true
+	return document.Document, true
 }
 
 func addPoetryManifestPins(index identityIndex, poetry map[string]any, source string) {

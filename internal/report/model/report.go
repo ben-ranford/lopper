@@ -4,7 +4,21 @@ import "time"
 
 const SchemaVersion = "0.2.0"
 
+// PythonManifestDocument is an internal decoded adapter artifact, not report output.
+// Paths are relative to the adapter root; decode/read failures remain evidence warnings.
+type PythonManifestDocument struct {
+	Path         string
+	Document     map[string]any
+	Text         string
+	FailureKind  string
+	FailureStage string
+	Failure      string
+}
+
 type Report struct {
+	PythonManifests       []PythonManifestDocument `json:"-"`
+	PythonManifestCatalog bool                     `json:"-"`
+
 	SchemaVersion        string               `json:"schemaVersion"`
 	GeneratedAt          time.Time            `json:"generatedAt"`
 	RepoPath             string               `json:"repoPath"`

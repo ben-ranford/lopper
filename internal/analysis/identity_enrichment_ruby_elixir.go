@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -90,15 +91,15 @@ type identityTopLevelTermSplitter struct {
 	start  int
 }
 
-func discoverRubyIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	paths := discoverAdapterIdentityManifests(repoPath, warnings, rubylang.ShouldSkipDirectory, func(name string) bool {
+func discoverRubyIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	paths := discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, rubylang.ShouldSkipDirectory, func(name string) bool {
 		return name == rubyIdentityLockName
 	})
 	snapshot.rubyFiles = append(snapshot.rubyFiles, paths...)
 }
 
-func discoverElixirIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	paths := discoverAdapterIdentityManifests(repoPath, warnings, elixirlang.ShouldSkipDirectory, func(name string) bool {
+func discoverElixirIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	paths := discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, elixirlang.ShouldSkipDirectory, func(name string) bool {
 		return name == elixirIdentityManifestName || name == elixirIdentityLockName
 	})
 	snapshot.elixirFiles = append(snapshot.elixirFiles, paths...)

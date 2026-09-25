@@ -194,6 +194,10 @@ func prepareAndLoadCachedReportWithIsolationRoots(req Request, cache *analysisCa
 		cache.warn("analysis cache lookup failed for " + adapterID + ":" + normalizedRoot + ": " + lookupErr.Error())
 		return cacheEntry, report.Report{}, false
 	}
+	if hit && cachedReport.PythonManifestCatalog {
+		// Catalog paths are relative to this adapter root, not a previous scoped checkout.
+		cachedReport.RepoPath = normalizedRoot
+	}
 	return cacheEntry, cachedReport, hit
 }
 

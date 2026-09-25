@@ -16,6 +16,10 @@ type reportFamilyMerger interface {
 }
 
 func mergeReports(repoPath string, reports []report.Report) report.Report {
+	return mergeReportsWithIdentityRoot(repoPath, repoPath, reports)
+}
+
+func mergeReportsWithIdentityRoot(repoPath, identityRoot string, reports []report.Report) report.Report {
 	result := report.Report{
 		RepoPath: repoPath,
 	}
@@ -30,6 +34,14 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 	}
 
 	for _, current := range reports {
+		result.PythonManifestCatalog = result.PythonManifestCatalog || current.PythonManifestCatalog
+		for _, document := range current.PythonManifests {
+			relativeRoot, err := filepath.Rel(identityRoot, current.RepoPath)
+			if err == nil {
+				document.Path = filepath.ToSlash(filepath.Join(relativeRoot, document.Path))
+			}
+			result.PythonManifests = append(result.PythonManifests, document)
+		}
 		for _, family := range families {
 			family.merge(current)
 		}

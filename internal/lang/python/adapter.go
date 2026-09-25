@@ -38,11 +38,19 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	}
 
 	excludedPaths := shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
-	scanResult, err := scanRepoWithExcludedPaths(ctx, repoPath, excludedPaths)
+	var catalog *packagingCatalog
+	if req.Features.Enabled(report.DependencyIdentityPreviewFeature) {
+		catalog = newPackagingCatalog()
+	}
+	scanResult, err := scanRepoWithCatalog(ctx, repoPath, excludedPaths, catalog)
 	if err != nil {
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
+	if catalog != nil {
+		result.PythonManifests = catalog.snapshot()
+		result.PythonManifestCatalog = true
+	}
 
 	analysisReq := req
 	analysisReq.RepoPath = repoPath
@@ -86,6 +94,10 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 }
 
 func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (scanResult, error) {
+	return scanRepoWithCatalog(ctx, repoPath, excludedPaths, nil)
+}
+
+func scanRepoWithCatalog(ctx context.Context, repoPath string, excludedPaths map[string]struct{}, catalog *packagingCatalog) (scanResult, error) {
 	result := scanResult{
 		DeclaredDependencies: make(map[string]struct{}),
 		ImportedDependencies: make(map[string]struct{}),
@@ -93,7 +105,7 @@ func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPat
 	if repoPath == "" {
 		return result, fmt.Errorf("repo path is empty")
 	}
-	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath, excludedPaths)
+	declaredDependencies, warnings, err := collectDeclaredDependenciesWithCatalog(ctx, repoPath, excludedPaths, catalog)
 	if err != nil {
 		return result, err
 	}
