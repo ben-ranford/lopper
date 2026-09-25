@@ -139,6 +139,7 @@ func TestDynamicInterpolationNestedStrings(t *testing.T) {
 		{`{$arr["class_exists($name)"]}`, false},
 		{`{$arr["\{$type::$$property}"]}`, false},
 		{`{$arr[/* "{$type::$$property}" */ 0]}`, false},
+		{`{$a["{$b[/* " */ 0]}"][class_exists($x)]}`, true},
 	} {
 		for _, marker := range []string{"DOC", `"DOC"`, "'DOC'"} {
 			source := "<?php $doc = <<<" + marker + "\n" + tc.expression + "\nDOC;"
@@ -147,6 +148,14 @@ func TestDynamicInterpolationNestedStrings(t *testing.T) {
 				t.Errorf("source %q: got %v, want %v", source, got, want)
 			}
 		}
+	}
+}
+
+func TestDynamicInterpolationDeepNestedExpressions(t *testing.T) {
+	const depth = 5000
+	expression := `"` + strings.Repeat(`{$array["`, depth) + `{$type::$$property}` + strings.Repeat(`"]}`, depth) + `"`
+	if !hasPHPDynamicInterpolation(expression) {
+		t.Fatal("dynamic cue at the deepest interpolation was missed")
 	}
 }
 
