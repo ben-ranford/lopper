@@ -7,7 +7,7 @@ rollback path.
 
 ## Enable the preview
 
-The flag remains preview-only and explicit-only (`LOP-FEAT-0029`). Both the resolved feature and explicit consent are required. Consent can come from a CLI enable or effective repository/policy configuration; dev, release, and rolling defaults alone never select Stave:
+The flag remains preview-only and explicit-only (`LOP-FEAT-0029`). Both the resolved feature and explicit consent are required. Consent can come from a CLI enable, effective repository/policy configuration, or a saved personal choice; dev, release, and rolling defaults alone never select Stave:
 
 ```sh
 lopper tui --repo . --enable-feature stave-tui-preview
@@ -36,7 +36,7 @@ For a temporary rollback, run:
 lopper tui --repo . --disable-feature LOP-FEAT-0029
 ```
 
-CLI choices override config for the same feature, so CLI enable also overrides config disable. Without explicit CLI/config enablement, or when the effective choice is disabled, the existing Summary implementation is selected. Neither activation nor rollback writes configuration or preferences, and no prompt is added. No report, baseline, or action state is shared with a previous preview process.
+CLI choices override config for the same feature, so CLI enable also overrides config disable. Temporary CLI activation and rollback never change personal preferences. A disabled effective choice selects the existing Summary implementation. No report, baseline, or action state is shared with a previous preview process.
 
 Repository-config activation targets v1.8.9; use a build containing this change. Earlier preview builds require explicit CLI enablement. This does not graduate the Stave preview. The [command coverage table](feature-flags.md#command-configuration-coverage) describes the current config limits for other commands.
 
@@ -45,6 +45,51 @@ is maintained in Lopper; it does not require a local Stave checkout or a
 module replacement. The root module is published through the public Go proxy
 and checksum database. Lopper retains its terminal bridge; Stave's nested
 adapter modules are not part of this dependency.
+
+## Personal preview choice
+
+A build containing the Stave preview and the v1.8.9 invitation support offers
+“Try the new UI” before starting either renderer on capable interactive input
+and output terminals. Try (`t`) starts Stave immediately in the same process
+and remembers consent; Keep current (`k`) remembers legacy. Later (`l`) or
+Enter starts legacy without saving. EOF exits without a UI or saved change;
+interrupt/cancellation exits through the normal CLI cancellation path.
+
+The invitation is suppressed by any explicit Stave CLI/config choice, a saved
+personal preference, CI, `TERM=dumb`, `NO_COLOR`, pipes, redirected streams,
+and snapshots. Automation never reads or writes personal preferences, and its
+renderer continues to use explicit CLI/config choices. The prompt completes
+before alternate-screen entry and does not read ahead into the UI's input.
+
+The personal choice is stored in `lopper/ui-preferences.json` under the platform
+user configuration directory (`os.UserConfigDir`): typically
+`$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on
+macOS, and `%AppData%` on Windows. It uses version 1 with a `ui` value of `stave`
+or `legacy`, is shared across repositories, and is written atomically with
+restrictive permissions. Repository policy is never modified. Successful
+concurrent saves follow last-successful-write semantics.
+
+For Stave on interactive launches the precedence is **CLI > repository/policy
+configuration > personal preference > defaults**. Personal Stave consent enables
+both preview gates and leaves unrelated flags and lifecycle defaults unchanged.
+
+```sh
+lopper tui --ui-preference=stave   # remember and use Stave now
+lopper tui --ui-preference=legacy  # remember and use legacy now
+lopper tui --ui-preference=ask     # forget the choice and offer again
+```
+
+These commands require interactive terminals outside CI, and cannot be
+combined with a snapshot or an explicit Stave enable/disable CLI flag. `TERM=dumb` and `NO_COLOR` suppress the invitation while still allowing deliberate
+setting/reset and saved choices on interactive terminals. Repository
+configuration still wins for this launch and is reported; `ask` clears the saved
+choice but a repository decision suppresses the invitation. Invalid choices
+fail before preference storage is accessed.
+
+Unreadable or corrupt preferences produce a warning and use legacy without
+prompting or modifying the file. Explicit setting/reset provides deliberate
+recovery. A failed save uses the chosen UI for this session and warns that it was
+not remembered. A failed reset reports an error and preserves the preference.
 
 ## Terminal interaction
 
