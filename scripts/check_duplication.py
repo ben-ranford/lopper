@@ -76,7 +76,7 @@ def added_lines(repo, merge_base):
     added = set()
     for raw in output.split("\0")[:-1]:
         path = supported_path(raw, repo)
-        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", merge_base, "HEAD", "--", raw], repo).stdout
+        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", merge_base, "HEAD", "--", f":(literal){raw}"], repo).stdout
         added.update(changed_hunk_lines(diff, path))
     return added
 
