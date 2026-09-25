@@ -123,49 +123,6 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
 
-	testutil.MustWriteFile(t, filepath.Join(repo, testMainSourceFileName), "package demo\n")
-	if err := os.Mkdir(filepath.Join(repo, testGradleDirectoryName), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", testGradleDirectoryName, err)
-	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	var mainEntry fs.DirEntry
-	var gradleDirEntry fs.DirEntry
-	for _, entry := range entries {
-		switch entry.Name() {
-		case testMainSourceFileName:
-			mainEntry = entry
-		case testGradleDirectoryName:
-			gradleDirEntry = entry
-		}
-	}
-	if mainEntry == nil || gradleDirEntry == nil {
-		t.Fatalf("expected test entries, got %#v", entries)
-	}
-
-	roots := map[string]struct{}{}
-	detection := language.Detection{}
-	visited := 0
-	androidSpecific := false
-	state := detectionWalkState{
-		repoPath:              repo,
-		roots:                 roots,
-		detection:             &detection,
-		visited:               &visited,
-		maxFiles:              5,
-		androidSpecificSignal: &androidSpecific,
-	}
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, state); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected SkipDir for skipped directory, got %v", err)
-	}
-
-	visited = 5
-	state.maxFiles = 1
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testMainSourceFileName), mainEntry, state); !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected SkipAll when file cap is exceeded, got %v", err)
-	}
 }
 
 func TestModuleRootAndPathHelpers(t *testing.T) {

@@ -2,8 +2,6 @@ package js
 
 import (
 	"context"
-	"errors"
-	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -21,7 +19,6 @@ var jsDetectSkippedDirs = map[string]bool{
 }
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	_ = ctx
 	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection := language.Detection{}
@@ -31,10 +28,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	err := scanFilesForJSDetection(repoPath, &detection, roots)
-	if errors.Is(err, io.EOF) {
-		err = nil
-	}
+	err := scanFilesForJSDetection(ctx, repoPath, &detection, roots)
 	if err != nil {
 		return language.Detection{}, err
 	}
@@ -58,24 +52,9 @@ var jsConfigRootSignals = []shared.RootSignal{
 	{Name: "jsconfig.json", Confidence: 20},
 }
 
-func scanFilesForJSDetection(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+func scanFilesForJSDetection(ctx context.Context, repoPath string, detection *language.Detection, roots map[string]struct{}) error {
 	const maxFiles = 256
-	visitedFiles := 0
-	return filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if shouldSkipDetectDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		visitedFiles++
-		if visitedFiles > maxFiles {
-			return io.EOF
-		}
+	return shared.WalkRepoFiles(ctx, repoPath, maxFiles, shouldSkipDetectDir, func(path string, d fs.DirEntry) error {
 		if strings.EqualFold(d.Name(), jsPackageFile) {
 			detection.Matched = true
 			detection.Confidence += 10

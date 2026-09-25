@@ -100,3 +100,14 @@ func TestPythonWalkAndScanEntryBranches(t *testing.T) {
 		t.Fatalf("expected scanRepo error for missing path")
 	}
 }
+
+func TestPythonDetectionHonorsCanceledContext(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), importRequestsLine)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	detection, err := NewAdapter().DetectWithConfidence(ctx, repo)
+	if !errors.Is(err, context.Canceled) || detection.Matched {
+		t.Fatalf("canceled detection must not report source matches: %#v, %v", detection, err)
+	}
+}
