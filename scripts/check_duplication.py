@@ -29,7 +29,7 @@ def comparison_base(repo, requested, environment):
     if not base:
         target = environment.get("GITHUB_BASE_REF") or environment.get("BASE_REF")
         base = target or "origin/main"
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base):
+    if not re.fullmatch(r"\w[\w./-]*", base, flags=re.ASCII):
         raise AnalysisError(
             f"Unsupported comparison base {base!r}. Use a named ref containing letters, digits, "
             "underscores, dots, slashes, or hyphens (not a leading hyphen), or a commit SHA. "
