@@ -141,7 +141,9 @@ func TestStavePreviewPipedInputTracksPTYOutputSizeInLineMode(t *testing.T) {
 		done <- NewStavePreview(summary).Start(context.Background(), Options{UseStavePreview: true, Features: previewFeatures(t), Width: 80})
 	}()
 	capture := newSignalPTYCapture(terminalInput)
-	waitSignalOutput(t, capture, done, func(output string) bool { return strings.Contains(output, "Stave preview") })
+	waitSignalOutput(t, capture, done, func(output string) bool {
+		return strings.Contains(output, "Stave preview") && maxStaveRenderedLineWidth(output) == 100
+	})
 	initial := capture.String()
 	if strings.Contains(initial, "\x1b[") {
 		t.Fatalf("piped input emitted terminal control output: %q", initial)
@@ -153,7 +155,15 @@ func TestStavePreviewPipedInputTracksPTYOutputSizeInLineMode(t *testing.T) {
 	if err := pty.Setsize(terminalOutput, &pty.Winsize{Rows: 40, Cols: 120}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pipeWriter.WriteString("refresh\nq\n"); err != nil {
+	if _, err := pipeWriter.WriteString("refresh\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Session exit does not synchronize the independent PTY capture goroutine.
+	// Observe the resized output before quitting, while the session is still live.
+	waitSignalOutput(t, capture, done, func(output string) bool {
+		return maxStaveRenderedLineWidth(output) == 120
+	})
+	if _, err := pipeWriter.WriteString("q\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := pipeWriter.Close(); err != nil {
