@@ -131,17 +131,17 @@ func TestParseTUIBuildDefaultsDoNotImplyConsent(t *testing.T) {
 }
 
 func TestParseTUIConfigPackConsentAndClearing(t *testing.T) {
-	for _, clear := range []bool{false, true} {
-		t.Run(fmt.Sprint(clear), func(t *testing.T) {
+	for _, clearConsent := range []bool{false, true} {
+		t.Run(fmt.Sprint(clearConsent), func(t *testing.T) {
 			repo := t.TempDir()
 			writeFile(t, filepath.Join(repo, "policy.yml"), "features:\n  enable: [stave-tui-preview]\n")
 			config := "policy:\n  packs: [policy.yml]\n"
-			if clear {
+			if clearConsent {
 				config += "features:\n  enable: []\n"
 			}
 			writeFile(t, filepath.Join(repo, parseConfigFileName), config)
 			req := mustParseArgs(t, []string{"tui", "--repo", repo})
-			assertTUIConfigChoice(t, req, !clear)
+			assertTUIConfigChoice(t, req, !clearConsent)
 		})
 	}
 }
