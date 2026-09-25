@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var dynamicInterpolationPattern = regexp.MustCompile(`^\{\$[A-Za-z_][A-Za-z0-9_]*\s*::`)
+var dynamicInterpolationPattern = regexp.MustCompile(`^\{\$+[A-Za-z_][A-Za-z0-9_]*(?:->\$*[A-Za-z_][A-Za-z0-9_]*)*\s*::`)
 
 func hasPHPDynamicInterpolation(text string) bool {
 	state := phpStateCode

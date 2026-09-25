@@ -45,3 +45,27 @@ func TestDynamicInterpolationRespectsBackslashParity(t *testing.T) {
 		}
 	}
 }
+
+func TestDynamicInterpolationIndirectVariables(t *testing.T) {
+	for _, expression := range []string{`{$$type::$property}`, `{$obj->$type::$property}`, `{$obj->child->$type::$property}`} {
+		for _, source := range []string{
+			`<?php echo "` + expression + `";`,
+			"<?php echo `" + expression + "`;",
+			"<?php $doc = <<<DOC\n" + expression + "\nDOC;",
+		} {
+			if !hasDynamicPatterns([]byte(source), "source.php", false) {
+				t.Errorf("executable indirect static interpolation missed: %q", source)
+			}
+		}
+		for _, source := range []string{
+			`<?php echo '` + expression + `';`,
+			"<?php $doc = <<<'DOC'\n" + expression + "\nDOC;",
+			`<?php /* "` + expression + `" */`,
+			`<?php echo "\` + expression + `";`,
+		} {
+			if hasDynamicPatterns([]byte(source), "source.php", false) {
+				t.Errorf("non-executable indirect static interpolation detected: %q", source)
+			}
+		}
+	}
+}
