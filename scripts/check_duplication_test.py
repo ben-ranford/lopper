@@ -60,6 +60,17 @@ class DuplicationRunnerTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.environment, clear=True):
             self.assertEqual(runner.added_lines(self.repo, self.base), {("new.go", 1), ("new.go", 2)})
 
+    def test_changed_filenames_are_literal_pathspecs(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("foo[1].go", "package fixture\nvar First = 1\n")
+        self.write("foo1.go", "package fixture\nvar Second = 2\nvar Third = 3\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, self.base), {
+                ("foo[1].go", 1), ("foo[1].go", 2),
+                ("foo1.go", 1), ("foo1.go", 2), ("foo1.go", 3),
+            })
+
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
         self.write("unrelated.go", "package unrelated\n")
