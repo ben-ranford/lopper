@@ -52,6 +52,14 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.assertEqual(merge_base, self.base)
         self.assertEqual(changed, {(name, line) for name in ("first change.go", "second.go") for line in (1, 2)})
 
+    def test_forced_diff_color_preserves_added_lines(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("new.go", "package fixture\nvar Value = 1\n")
+        self.commit()
+        self.git("config", "color.diff", "always")
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, self.base), {("new.go", 1), ("new.go", 2)})
+
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
         self.write("unrelated.go", "package unrelated\n")
