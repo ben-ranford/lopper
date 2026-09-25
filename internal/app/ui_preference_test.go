@@ -35,16 +35,18 @@ func (m *memoryUIPreference) Clear() error {
 	return m.clearErr
 }
 
+type uiPreferenceScenario struct {
+	name, saved, prompt, manage                 string
+	explicit, enabled, noninteractive, snapshot bool
+	readErr, saveErr, clearErr, promptErr       error
+	wantStave, wantNoStart, wantError           bool
+	reads, writes, clears, prompts              int
+	warning                                     string
+}
+
 func TestUIPreferenceStartup(t *testing.T) {
 	failure := errors.New("storage unavailable")
-	for _, tc := range []struct {
-		name, saved, prompt, manage                 string
-		explicit, enabled, noninteractive, snapshot bool
-		readErr, saveErr, clearErr, promptErr       error
-		wantStave, wantNoStart, wantError           bool
-		reads, writes, clears, prompts              int
-		warning                                     string
-	}{
+	for _, tc := range []uiPreferenceScenario{
 		{name: "try", prompt: "stave", wantStave: true, reads: 1, writes: 1, prompts: 1},
 		{name: "keep", prompt: "legacy", reads: 1, writes: 1, prompts: 1},
 		{name: "later", reads: 1, prompts: 1},
@@ -71,48 +73,56 @@ func TestUIPreferenceStartup(t *testing.T) {
 		{name: "invalid setting", manage: "invalid", wantError: true, wantNoStart: true},
 		{name: "noninteractive setting", manage: "stave", noninteractive: true, wantError: true, wantNoStart: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &memoryUIPreference{choice: tc.saved, readErr: tc.readErr, saveErr: tc.saveErr, clearErr: tc.clearErr}
-			tui := &fakeTUI{}
-			var output bytes.Buffer
-			prompts := 0
-			a := &App{TUI: tui, Out: &output, Preferences: store, UIInteractive: func() bool { return !tc.noninteractive }, UIEligible: func() bool { return true }, UIPrompt: func(context.Context) (string, error) { prompts++; return tc.prompt, tc.promptErr }}
-			req := DefaultRequest()
-			req.TUI.StaveExplicit = tc.explicit
-			req.TUI.UseStavePreview = tc.enabled
-			req.TUI.UIPreference = tc.manage
-			if tc.snapshot {
-				req.TUI.SnapshotPath = "-"
-			}
-			enable := []string{"dart-source-attribution"}
-			if tc.enabled {
-				enable = append(enable, "stave-tui-preview")
-			}
-			var err error
-			req.TUI.Features, err = featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{Enable: enable})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = a.Execute(context.Background(), req)
-			if (err != nil) != tc.wantError {
-				t.Fatalf("error=%v", err)
-			}
-			if tui.startCalled == tc.wantNoStart {
-				t.Fatalf("start=%v", tui.startCalled)
-			}
-			if tui.startCalled && (tui.lastOptions.UseStavePreview != tc.wantStave || tui.lastOptions.Features.Enabled("stave-tui-preview") != tc.wantStave) {
-				t.Fatalf("renderer gates=%+v", tui.lastOptions)
-			}
-			if tui.startCalled && !tui.lastOptions.Features.Enabled("dart-source-attribution") {
-				t.Fatal("lost unrelated flag")
-			}
-			if store.reads != tc.reads || store.writes != tc.writes || store.clears != tc.clears || prompts != tc.prompts {
-				t.Fatalf("storage=%+v prompts=%d", store, prompts)
-			}
-			if tc.warning != "" && !strings.Contains(output.String(), tc.warning) {
-				t.Fatalf("warning=%q", output.String())
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { checkUIPreferenceStartup(t, tc) })
+	}
+}
+
+func checkUIPreferenceStartup(t *testing.T, tc uiPreferenceScenario) {
+	t.Helper()
+	store := &memoryUIPreference{choice: tc.saved, readErr: tc.readErr, saveErr: tc.saveErr, clearErr: tc.clearErr}
+	tui := &fakeTUI{}
+	var output bytes.Buffer
+	prompts := 0
+	a := &App{TUI: tui, Out: &output, Preferences: store, UIInteractive: func() bool { return !tc.noninteractive }, UIEligible: func() bool { return true }, UIPrompt: func(context.Context) (string, error) { prompts++; return tc.prompt, tc.promptErr }}
+	req := DefaultRequest()
+	req.TUI.StaveExplicit = tc.explicit
+	req.TUI.UseStavePreview = tc.enabled
+	req.TUI.UIPreference = tc.manage
+	if tc.snapshot {
+		req.TUI.SnapshotPath = "-"
+	}
+	enable := []string{"dart-source-attribution"}
+	if tc.enabled {
+		enable = append(enable, "stave-tui-preview")
+	}
+	var err error
+	req.TUI.Features, err = featureflags.DefaultRegistry().Resolve(featureflags.ResolveOptions{Enable: enable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Execute(context.Background(), req)
+	if (err != nil) != tc.wantError {
+		t.Fatalf("error=%v", err)
+	}
+	assertUIPreferenceRenderer(t, tc, tui)
+	if store.reads != tc.reads || store.writes != tc.writes || store.clears != tc.clears || prompts != tc.prompts {
+		t.Fatalf("storage=%+v prompts=%d", store, prompts)
+	}
+	if tc.warning != "" && !strings.Contains(output.String(), tc.warning) {
+		t.Fatalf("warning=%q", output.String())
+	}
+}
+
+func assertUIPreferenceRenderer(t *testing.T, tc uiPreferenceScenario, tui *fakeTUI) {
+	t.Helper()
+	if tui.startCalled == tc.wantNoStart {
+		t.Fatalf("start=%v", tui.startCalled)
+	}
+	if tui.startCalled && (tui.lastOptions.UseStavePreview != tc.wantStave || tui.lastOptions.Features.Enabled("stave-tui-preview") != tc.wantStave) {
+		t.Fatalf("renderer gates=%+v", tui.lastOptions)
+	}
+	if tui.startCalled && !tui.lastOptions.Features.Enabled("dart-source-attribution") {
+		t.Fatal("lost unrelated flag")
 	}
 }
 
