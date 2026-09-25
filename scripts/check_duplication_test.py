@@ -81,6 +81,20 @@ class DuplicationRunnerTest(unittest.TestCase):
                     self.assertEqual(runner.comparison_base(self.repo, explicit, environment)[0], expected)
                     self.assertIn(expected + "^{commit}", checked.call_args_list[-2].args[0])
 
+    def test_base_arguments_reject_options_and_revision_expressions(self):
+        for base in ("--help", "-c", "target;echo marker", "target\n", "HEAD~1", "HEAD^{tree}", "target:original.go"):
+            for requested, environment in ((base, {}), ("", {"BASE_SHA": base}), ("", {"GITHUB_BASE_REF": base}), ("", {"BASE_REF": base})):
+                with self.subTest(base=base, environment=environment), mock.patch.object(runner.subprocess, "run") as run:
+                    with self.assertRaisesRegex(runner.AnalysisError, "Unsupported comparison base.*No fallback"):
+                        runner.comparison_base(self.repo, requested, environment)
+                    run.assert_not_called()
+
+    def test_base_arguments_accept_named_refs_and_commit_shas(self):
+        self.git("branch", "release/v1.8.9-fix_1")
+        for base in ("HEAD", self.base, "release/v1.8.9-fix_1", "refs/heads/release/v1.8.9-fix_1"):
+            with self.subTest(base=base), mock.patch.dict(os.environ, self.environment, clear=True):
+                self.assertEqual(runner.comparison_base(self.repo, base, {}), (base, self.base))
+
     def test_no_changes_are_distinct_from_no_matches(self):
         with mock.patch.dict(os.environ, self.environment, clear=True):
             self.assertEqual(runner.added_lines(self.repo, self.base), set())
