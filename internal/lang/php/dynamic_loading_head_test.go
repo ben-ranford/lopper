@@ -32,13 +32,13 @@ func TestDynamicPatternsRespectTemplateAndInterpolationBoundaries(t *testing.T) 
 func TestDynamicInterpolationRespectsBackslashParity(t *testing.T) {
 	for _, count := range []int{0, 1, 2, 3, 4} {
 		prefix := strings.Repeat(`\`, count)
-		for _, expression := range []string{`{$type::$$property}`, `{ literal`} {
+		for _, expression := range []string{`{$type::$$property}`, `${class_exists($name)}`, `{ literal`} {
 			for _, source := range []string{
 				`<?php echo "` + prefix + expression + `";`,
 				"<?php echo `" + prefix + expression + "`;",
 				"<?php $doc = <<<DOC\n" + prefix + expression + "\nDOC;",
 			} {
-				want := expression == `{$type::$$property}` && count%2 == 0
+				want := expression != `{ literal` && count%2 == 0
 				if got := hasDynamicPatterns([]byte(source), "source.php", false); got != want {
 					t.Errorf("source %q: got %v, want %v", source, got, want)
 				}
@@ -126,7 +126,7 @@ func TestDynamicInterpolationCommentBoundaries(t *testing.T) {
 
 func TestDynamicInterpolationMalformedFragments(t *testing.T) {
 	body := strings.Repeat("{$x ", 10000)
-	if next, dynamic := scanDynamicInterpolationAt(body, 0); next != len(body) || dynamic {
+	if next, dynamic, _ := scanDynamicInterpolationAt(body, 0); next != len(body) || dynamic {
 		t.Fatalf("malformed expression scan = (%d, %v), want (%d, false)", next, dynamic, len(body))
 	}
 	for _, source := range []string{
@@ -196,5 +196,52 @@ func BenchmarkDynamicInterpolationDollarRun(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeprecatedDynamicInterpolation(t *testing.T) {
+	for _, expression := range []string{`${class_exists($name)}`, `${$type::X}`, `{$a["${class_exists($name)}"]}`} {
+		for _, source := range []string{
+			`<?php echo "` + expression + `";`,
+			"<?php echo `" + expression + "`;",
+			"<?php $doc = <<<DOC\n" + expression + "\nDOC;",
+		} {
+			if !hasDynamicPatterns([]byte(source), "source.php", false) {
+				t.Errorf("missed executable interpolation: %q", source)
+			}
+		}
+	}
+	for _, source := range []string{
+		`<?php echo '${class_exists($name)}';`,
+		`<?php echo "\${class_exists($name)}";`,
+		"<?php $doc = <<<'DOC'\n${class_exists($name)}\nDOC;",
+		`<?php echo "${'class_exists($name)'}";`,
+	} {
+		if hasDynamicPatterns([]byte(source), "source.php", false) {
+			t.Errorf("detected literal interpolation: %q", source)
+		}
+	}
+}
+
+func TestInterpolationLineCommentClosesPHPRegion(t *testing.T) {
+	for _, opener := range []string{`{$a[`, `${`} {
+		for _, comment := range []string{"//", "#"} {
+			source := `<?php echo "` + opener + comment + ` ?><?php new $type;`
+			wantEnd := strings.Index(source, "?>")
+			end, next := findPHPRegionEnd(source, len("<?php"))
+			if end != wantEnd || next != wantEnd+2 {
+				t.Errorf("region = (%d, %d), want (%d, %d): %q", end, next, wantEnd, wantEnd+2, source)
+			}
+			if !hasDynamicPatterns([]byte(source), "source.php", false) {
+				t.Errorf("missed new PHP region: %q", source)
+			}
+		}
+	}
+	for _, expression := range []string{`{$a[/* ?> */ 0]}`, `${"?>"}`, `{$a[0]}?>`} {
+		source := `<?php echo "` + expression + `"; ?>`
+		end, _ := findPHPRegionEnd(source, len("<?php"))
+		if end != strings.LastIndex(source, "?>") {
+			t.Errorf("literal close tag ended PHP region: %q", source)
+		}
 	}
 }

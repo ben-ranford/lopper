@@ -1077,7 +1077,10 @@ func findPHPRegionEnd(text string, offset int) (int, int) {
 			return offset, offset + len("?>")
 		}
 		if state == phpStateDoubleQuote || state == phpStateBacktick {
-			if next, _ := scanDynamicInterpolationAt(text, offset); next > offset {
+			if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+				if closed {
+					return next, next + len("?>")
+				}
 				offset = next
 				continue
 			}
