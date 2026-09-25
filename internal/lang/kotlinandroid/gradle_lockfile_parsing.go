@@ -12,7 +12,7 @@ var gradleLockCoordinatePattern = regexp.MustCompile(`^\s*([^:#=\s]+):([^:#=\s]+
 
 func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []string) {
 	var descriptors []dependencyDescriptor
-	discovery, walkErr := discoverGradleLockfiles(repoPath, func(_ string, content string) {
+	discovery, walkErr := discoverGradleLockfiles(repoPath, func(_, content string) {
 		descriptors = append(descriptors, detachGradleDescriptors(parseGradleLockfileContent(content))...)
 	})
 	warnings := discovery.Warnings

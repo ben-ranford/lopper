@@ -77,7 +77,7 @@ func TestGradleLockfileDiscoveryAndParsingStages(t *testing.T) {
 
 	var descriptors []dependencyDescriptor
 	readCount := 0
-	discovery, walkErr := discoverGradleLockfiles(repo, func(_ string, content string) {
+	discovery, walkErr := discoverGradleLockfiles(repo, func(_, content string) {
 		readCount++
 		descriptors = parseGradleLockfileContent(content)
 	})

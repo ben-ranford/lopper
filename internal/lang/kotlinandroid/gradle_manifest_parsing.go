@@ -60,7 +60,7 @@ func parseBuildFiles(repoPath string, parser func(content string) []dependencyDe
 }
 
 func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) ([]dependencyDescriptor, []string) {
-	return parseBuildFilesWithPath(repoPath, func(_ string, content string) ([]dependencyDescriptor, []string) {
+	return parseBuildFilesWithPath(repoPath, func(_, content string) ([]dependencyDescriptor, []string) {
 		return parser(content), nil
 	}, names...)
 }
