@@ -389,6 +389,10 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 	if len(value) > maxPomPropertyValueBytes {
 		return "", false, true, 0
 	}
+	return replacePomPropertyTokensWithinBounds(value, properties, tokensRemaining)
+}
+
+func replacePomPropertyTokensWithinBounds(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
 	var updated strings.Builder
 	replaced := false
 	unresolved := false
@@ -398,25 +402,19 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 	search := 0
 	updatedBytes := len(value)
 	for search < len(value) {
-		open := strings.Index(value[search:], "${")
-		if open < 0 {
+		start, end, nextSearch, found := nextPomPropertyToken(value, search)
+		if !found {
 			break
 		}
-		start := search + open
-		keyStart := start + 2
-		closingBrace := strings.IndexByte(value[keyStart:], '}')
-		if closingBrace < 0 {
-			break
-		}
-		end := keyStart + closingBrace + 1
-		search = end
-		if closingBrace == 0 {
+		search = nextSearch
+		if end-start == 3 {
 			continue
 		}
 		tokensScanned++
 		if tokensScanned > maxPomPropertyTokens {
 			return "", false, true, 0
 		}
+		keyStart := start + 2
 		replacement, ok := pomPropertyValue(value[keyStart:end-1], properties)
 		if !ok {
 			unresolved = true
@@ -425,18 +423,10 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 		if tokensUsed == tokensRemaining {
 			return "", false, true, 0
 		}
-		updatedBytes -= end - start
-		if len(replacement) > maxPomPropertyValueBytes-updatedBytes {
+		updatedBytes, ok = appendPomPropertyReplacement(&updated, value, cursor, start, end, replacement, updatedBytes, replaced)
+		if !ok {
 			return "", false, true, 0
 		}
-		updatedBytes += len(replacement)
-		if !replaced {
-			updated.Grow(updatedBytes)
-			updated.WriteString(value[:start])
-		} else {
-			updated.WriteString(value[cursor:start])
-		}
-		updated.WriteString(replacement)
 		cursor = end
 		tokensUsed++
 		replaced = true
@@ -446,6 +436,37 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 	}
 	updated.WriteString(value[cursor:])
 	return updated.String(), true, unresolved, tokensUsed
+}
+
+func nextPomPropertyToken(value string, search int) (int, int, int, bool) {
+	open := strings.Index(value[search:], "${")
+	if open < 0 {
+		return 0, 0, 0, false
+	}
+	start := search + open
+	keyStart := start + 2
+	closingBrace := strings.IndexByte(value[keyStart:], '}')
+	if closingBrace < 0 {
+		return 0, 0, 0, false
+	}
+	end := keyStart + closingBrace + 1
+	return start, end, end, true
+}
+
+func appendPomPropertyReplacement(updated *strings.Builder, value string, cursor, start, end int, replacement string, updatedBytes int, alreadyReplaced bool) (int, bool) {
+	updatedBytes -= end - start
+	if len(replacement) > maxPomPropertyValueBytes-updatedBytes {
+		return 0, false
+	}
+	updatedBytes += len(replacement)
+	if alreadyReplaced {
+		updated.WriteString(value[cursor:start])
+	} else {
+		updated.Grow(updatedBytes)
+		updated.WriteString(value[:start])
+	}
+	updated.WriteString(replacement)
+	return updatedBytes, true
 }
 
 func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
