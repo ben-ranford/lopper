@@ -98,7 +98,7 @@ def clone_context(finding, contents):
 
 
 def test_clones(files, dupl_version, threshold):
-    if not re.fullmatch(r'(?:[0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)', dupl_version):
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|v\d+\.\d+\.\d+)', dupl_version, flags=re.ASCII):
         raise ValueError('dupl version must be a full commit hash or release version')
     threshold = int(threshold)
     if threshold <= 0:
