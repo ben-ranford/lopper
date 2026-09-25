@@ -92,6 +92,9 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 }
 
 func (p *analysisPipeline) finalReport() (report.Report, error) {
+	return p.finalReportWithContext(context.Background())
+}
+func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.Report, error) {
 	reportData := report.Report{
 		RepoPath: p.repoPath,
 		Warnings: p.collectWarnings(),
@@ -99,13 +102,13 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 	}
 	if len(p.reports) == 0 {
 		reportData.Warnings = append(reportData.Warnings, "no language adapter produced results")
-		return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
+		return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
 	}
 
-	merged := mergeReports(p.repoPath, p.reports)
+	merged := mergeReportsWithIdentityRoot(p.repoPath, p.analysisRepoPath, p.reports)
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
-	return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
+	return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
 }
 
 func (p *analysisPipeline) collectWarnings() []string {
@@ -128,7 +131,10 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReport(req Request, repoPath string, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+func finalizeReportWithContext(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+	if err := ctx.Err(); err != nil {
+		return report.Report{}, err
+	}
 	var err error
 	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
@@ -140,7 +146,10 @@ func finalizeReport(req Request, repoPath string, identityRepoPath string, analy
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
 	annotateDerivedDependencyMetrics(reportData.Dependencies)
 	if identityPreviewEnabled(req) {
-		annotateDependencyIdentities(identityRepoPath, &reportData)
+		annotateDependencyIdentitiesWithContext(ctx, identityRepoPath, &reportData)
+		if err := ctx.Err(); err != nil {
+			return report.Report{}, err
+		}
 	}
 	report.AnnotateReachabilityConfidence(&reportData)
 	report.AnnotateFindingConfidence(reportData.Dependencies)

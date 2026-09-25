@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/mod/modfile"
 	"gopkg.in/yaml.v3"
 
@@ -119,6 +119,9 @@ type identityEvidenceLanguages struct {
 }
 
 func annotateDependencyIdentities(repoPath string, reportData *report.Report) {
+	annotateDependencyIdentitiesWithContext(context.Background(), repoPath, reportData)
+}
+func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath string, reportData *report.Report) {
 	if reportData == nil || len(reportData.Dependencies) == 0 {
 		return
 	}
@@ -130,7 +133,15 @@ func annotateDependencyIdentities(repoPath string, reportData *report.Report) {
 		ruby:     hasDependencyLanguage(reportData.Dependencies, "ruby"),
 		elixir:   hasDependencyLanguage(reportData.Dependencies, "elixir"),
 	}
-	index, warnings := collectIdentityEvidence(repoPath, languages)
+	if reportData.PythonManifestCatalog {
+		languages.python = false
+	}
+	index, warnings := collectIdentityEvidenceWithContext(ctx, repoPath, languages)
+	if reportData.PythonManifestCatalog {
+		collector := newIdentityWarningCollector(repoPath)
+		collectPythonCatalogEvidence(repoPath, index, reportData.PythonManifests, collector)
+		warnings = append(warnings, collector.list()...)
+	}
 	for i := range reportData.Dependencies {
 		dep := &reportData.Dependencies[i]
 		evidence := identityEvidenceForDependency(index, *dep)
@@ -149,32 +160,35 @@ func hasDependencyLanguage(dependencies []report.DependencyReport, language stri
 }
 
 func collectIdentityEvidence(repoPath string, languages identityEvidenceLanguages) (identityIndex, []string) {
+	return collectIdentityEvidenceWithContext(context.Background(), repoPath, languages)
+}
+func collectIdentityEvidenceWithContext(ctx context.Context, repoPath string, languages identityEvidenceLanguages) (identityIndex, []string) {
 	index := identityIndex{}
 	warnings := newIdentityWarningCollector(repoPath)
-	snapshot := discoverIdentityManifestSnapshot(repoPath, warnings)
+	snapshot := discoverIdentityManifestSnapshotWithContext(ctx, repoPath, warnings)
 	if languages.python {
-		discoverPythonIdentityManifests(repoPath, &snapshot, warnings)
+		discoverPythonIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
 	}
 	if languages.dotnet {
-		discoverDotNetIdentityManifests(repoPath, &snapshot, warnings)
+		discoverDotNetIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
 	}
 	if languages.composer {
 		discoverComposerIdentityManifests(repoPath, &snapshot, warnings)
 	}
 	if languages.pub {
-		discoverPubIdentityManifests(repoPath, &snapshot, warnings)
+		discoverPubIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
 	}
 	if languages.ruby {
-		discoverRubyIdentityManifests(repoPath, &snapshot, warnings)
+		discoverRubyIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
 	}
 	if languages.elixir {
-		discoverElixirIdentityManifests(repoPath, &snapshot, warnings)
+		discoverElixirIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
 	}
 	if languages.hasDedicatedDiscovery() {
 		sortIdentityManifestSnapshot(&snapshot)
 	}
 	collectGoIdentityEvidenceFromSnapshot(repoPath, index, snapshot, warnings)
-	collectJSIdentityEvidenceFromSnapshot(repoPath, index, snapshot, warnings)
+	collectJSIdentityEvidenceFromSnapshotWithContext(ctx, repoPath, index, snapshot, warnings)
 	if languages.python {
 		collectPythonIdentityEvidenceFromPaths(repoPath, index, snapshot.pythonFiles, warnings)
 	}
@@ -203,17 +217,37 @@ func (l *identityEvidenceLanguages) hasDedicatedDiscovery() bool {
 	return l.python || l.dotnet || l.composer || l.pub || l.ruby || l.elixir
 }
 
+const maxIdentityDiscoveryFiles = 100000
+
+func walkIdentityFiles(ctx context.Context, repo string, warnings *identityWarningCollector, skip func(string) bool, visit fs.WalkDirFunc) error {
+	return walkIdentityFilesWithinLimit(ctx, repo, warnings, maxIdentityDiscoveryFiles, skip, visit)
+}
+
+func walkIdentityFilesWithinLimit(ctx context.Context, repo string, warnings *identityWarningCollector, limit int, skip func(string) bool, visit fs.WalkDirFunc) error {
+	truncated, err := shared.WalkRepoFilesWithStatus(ctx, repo, limit, skip, func(path string, entry fs.DirEntry) error { return visit(path, entry, nil) })
+	if truncated {
+		warnings.append(fmt.Sprintf("identity manifest discovery truncated for %s: exceeds %d files", relativeIdentitySource(repo, repo), limit))
+	}
+	if err != nil && ctx.Err() == nil {
+		path := repo
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			path = pathErr.Path
+		}
+		return visit(path, nil, err)
+	}
+	return err
+}
+
 func discoverIdentityManifestSnapshot(repoPath string, warnings *identityWarningCollector) identityManifestSnapshot {
+	return discoverIdentityManifestSnapshotWithContext(context.Background(), repoPath, warnings)
+}
+
+func discoverIdentityManifestSnapshotWithContext(ctx context.Context, repoPath string, warnings *identityWarningCollector) identityManifestSnapshot {
 	snapshot := identityManifestSnapshot{}
-	if err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	if err := walkIdentityFiles(ctx, repoPath, warnings, shouldSkipIdentityDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			warnings.addFailure("discovery", path, identityDiscoveryFailed, err)
-			return nil
-		}
-		if entry.IsDir() {
-			if path != repoPath && shouldSkipIdentityDir(entry.Name()) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		rel := relativeIdentitySource(repoPath, path)
@@ -254,7 +288,11 @@ func recordDiscoveredIdentityManifest(snapshot *identityManifestSnapshot, relPat
 }
 
 func discoverPythonIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	snapshot.pythonFiles = append(snapshot.pythonFiles, discoverAdapterIdentityManifests(repoPath, warnings, pythonlang.ShouldSkipDirectory, isPythonIdentityManifest)...)
+	discoverPythonIdentityManifestsWithContext(context.Background(), repoPath, snapshot, warnings)
+}
+
+func discoverPythonIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	snapshot.pythonFiles = append(snapshot.pythonFiles, discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, pythonlang.ShouldSkipDirectory, isPythonIdentityManifest)...)
 }
 
 func discoverComposerIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
@@ -270,21 +308,15 @@ func discoverComposerIdentityManifests(repoPath string, snapshot *identityManife
 	}
 }
 
-func discoverPubIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	snapshot.pubFiles = append(snapshot.pubFiles, discoverAdapterIdentityManifests(repoPath, warnings, dartlang.ShouldSkipDirectory, isPubIdentityManifest)...)
+func discoverPubIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	snapshot.pubFiles = append(snapshot.pubFiles, discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, dartlang.ShouldSkipDirectory, isPubIdentityManifest)...)
 }
 
-func discoverAdapterIdentityManifests(repoPath string, warnings *identityWarningCollector, shouldSkip func(string) bool, isManifest func(string) bool) []string {
+func discoverAdapterIdentityManifestsWithContext(ctx context.Context, repoPath string, warnings *identityWarningCollector, shouldSkip func(string) bool, isManifest func(string) bool) []string {
 	paths := make([]string, 0)
-	if err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	if err := walkIdentityFiles(ctx, repoPath, warnings, shouldSkip, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			warnings.addFailure("discovery", path, identityDiscoveryFailed, err)
-			return nil
-		}
-		if entry.IsDir() {
-			if path != repoPath && shouldSkip(entry.Name()) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		if isManifest(entry.Name()) {
@@ -315,16 +347,10 @@ func isPubIdentityManifest(name string) bool {
 	}
 }
 
-func discoverDotNetIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	if err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+func discoverDotNetIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	if err := walkIdentityFiles(ctx, repoPath, warnings, shouldSkipDotNetIdentityDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			warnings.addFailure("discovery", path, identityDiscoveryFailed, err)
-			return nil
-		}
-		if entry.IsDir() {
-			if path != repoPath && shouldSkipDotNetIdentityDir(entry.Name()) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		recordDiscoveredDotNetIdentityManifest(snapshot, relativeIdentitySource(repoPath, path), path, entry.Name())
@@ -1143,8 +1169,8 @@ func collectJSLockfileIdentityEvidence(repoPath string, index identityIndex) {
 	collectJSLockfileIdentityEvidenceFromPaths(repoPath, index, findJSLockfilePaths(repoPath), nil)
 }
 
-func collectJSIdentityEvidenceFromSnapshot(repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
-	collectRootNodeModulesIdentityEvidence(repoPath, index, warnings)
+func collectJSIdentityEvidenceFromSnapshotWithContext(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
+	collectRootNodeModulesIdentityEvidenceWithContext(ctx, repoPath, index, warnings)
 	collectJSLockfileIdentityEvidenceFromPaths(repoPath, index, snapshot.jsLockfiles, warnings)
 }
 
@@ -1166,6 +1192,10 @@ func findJSLockfilePaths(repoPath string) []string {
 }
 
 func collectRootNodeModulesIdentityEvidence(repoPath string, index identityIndex, warnings *identityWarningCollector) {
+	collectRootNodeModulesIdentityEvidenceWithContext(context.Background(), repoPath, index, warnings)
+}
+
+func collectRootNodeModulesIdentityEvidenceWithContext(ctx context.Context, repoPath string, index identityIndex, warnings *identityWarningCollector) {
 	nodeModulesPath := filepath.Join(repoPath, "node_modules")
 	// Root node_modules package manifests require a dedicated bounded walk because
 	// repo-wide manifest discovery intentionally skips recursive node_modules trees
@@ -1176,7 +1206,7 @@ func collectRootNodeModulesIdentityEvidence(repoPath string, index identityIndex
 		}
 		return
 	}
-	if err := filepath.WalkDir(nodeModulesPath, func(path string, entry fs.DirEntry, err error) error {
+	if err := walkIdentityFiles(ctx, nodeModulesPath, warnings, func(name string) bool { return name == "node_modules" }, func(path string, entry fs.DirEntry, err error) error {
 		return collectJSIdentityEvidenceEntry(repoPath, nodeModulesPath, path, entry, err, index, warnings)
 	}); err != nil {
 		warnings.addFailure("discovery", nodeModulesPath, identityDiscoveryFailed, err)
@@ -1780,16 +1810,13 @@ func collectPythonIdentityEvidenceFromPaths(repoPath string, index identityIndex
 }
 
 func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
-	if err != nil {
-		warnings.addFailure("read", path, identityReadFailed, err)
-		return
+	document, ok := readPythonManifestDocument(repoPath, path, warnings)
+	if ok {
+		collectPythonTOMLLockDocument(repoPath, path, index, document)
 	}
-	var doc map[string]any
-	if err := toml.Unmarshal(data, &doc); err != nil {
-		warnings.addFailure("parse", path, identityParseFailed, err)
-		return
-	}
+}
+
+func collectPythonTOMLLockDocument(repoPath, path string, index identityIndex, doc map[string]any) {
 	source := relativeIdentitySource(repoPath, path)
 	packages, _ := doc["package"].([]any)
 	for _, entry := range packages {
@@ -1804,33 +1831,9 @@ func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, w
 }
 
 func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
-	if err != nil {
-		warnings.addFailure("read", path, identityReadFailed, err)
-		return
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(data, &doc); err != nil {
-		warnings.addFailure("parse", path, identityParseFailed, err)
-		return
-	}
-	source := relativeIdentitySource(repoPath, path)
-	for _, section := range []string{"default", "develop"} {
-		raw, ok := doc[section]
-		if !ok {
-			continue
-		}
-		var packages map[string]struct {
-			Version string `json:"version"`
-		}
-		if err := json.Unmarshal(raw, &packages); err != nil {
-			warnings.addSectionParseFailure(path, section)
-			continue
-		}
-		for name, item := range packages {
-			version := strings.TrimPrefix(strings.TrimSpace(item.Version), "==")
-			addPythonEvidence(index, name, version, source, "high")
-		}
+	document, ok := readPythonManifestDocument(repoPath, path, warnings)
+	if ok {
+		collectPipfileLockDocument(repoPath, path, index, document, warnings)
 	}
 }
 
@@ -1842,6 +1845,10 @@ func collectRequirementsEvidence(repoPath, path string, index identityIndex, war
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
 	}
+	collectRequirementsContent(repoPath, path, index, string(data))
+}
+
+func collectRequirementsContent(repoPath, path string, index identityIndex, data string) {
 	source := relativeIdentitySource(repoPath, path)
 	for _, line := range strings.Split(string(data), "\n") {
 		matches := requirementVersionPattern.FindStringSubmatch(line)

@@ -34,6 +34,7 @@ type lockFallback struct {
 type dependencyParser func(repoPath, path string) (map[string]struct{}, []string, error)
 
 type packagingDiscoveryCoordinator struct {
+	catalog       *packagingCatalog
 	repoPath      string
 	excludedPaths map[string]struct{}
 	dependencies  map[string]struct{}
@@ -41,7 +42,11 @@ type packagingDiscoveryCoordinator struct {
 }
 
 func collectDeclaredDependencies(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
+	return collectDeclaredDependenciesWithCatalog(ctx, repoPath, excludedPaths, nil)
+}
+func collectDeclaredDependenciesWithCatalog(ctx context.Context, repoPath string, excludedPaths map[string]struct{}, catalog *packagingCatalog) (map[string]struct{}, []string, error) {
 	coordinator := packagingDiscoveryCoordinator{
+		catalog:       catalog,
 		repoPath:      repoPath,
 		excludedPaths: excludedPaths,
 		dependencies:  make(map[string]struct{}),
@@ -76,7 +81,7 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 		return filepath.SkipDir
 	}
 
-	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependencies(c.repoPath, path, c.excludedPaths)
+	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependenciesWithCatalog(c.repoPath, path, c.excludedPaths, c.catalog)
 	if err != nil {
 		return err
 	}
@@ -86,6 +91,9 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 }
 
 func collectDirectoryDeclaredDependencies(repoPath, dir string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
+	return collectDirectoryDeclaredDependenciesWithCatalog(repoPath, dir, excludedPaths, nil)
+}
+func collectDirectoryDeclaredDependenciesWithCatalog(repoPath, dir string, excludedPaths map[string]struct{}, catalog *packagingCatalog) (map[string]struct{}, []string, error) {
 	files, err := pythonPackagingFiles(dir, excludedPaths)
 	if err != nil {
 		return nil, nil, normalizePackagingStageError("discovery", err)
@@ -97,17 +105,27 @@ func collectDirectoryDeclaredDependencies(repoPath, dir string, excludedPaths ma
 	dependencies := make(map[string]struct{})
 	warnings := make([]string, 0)
 
-	manifestDependencies, manifestWarnings, err := collectManifestDependencies(repoPath, dir, files)
+	manifestDependencies, manifestWarnings, err := collectManifestDependenciesWithCatalog(repoPath, dir, files, catalog)
 	if err != nil {
 		return nil, nil, normalizePackagingStageError("manifest parsing", err)
 	}
 	addDependencySet(dependencies, manifestDependencies)
 	warnings = append(warnings, manifestWarnings...)
+	if catalog != nil {
+		for _, name := range []string{pythonPoetryLockName, pythonPipfileLockName, pythonUVLockName} {
+			if hasFile(files, name) {
+				if _, err := catalog.read(repoPath, filepath.Join(dir, name)); err != nil {
+					// Catalog retains failures for identity diagnostics without altering inventory fallback policy.
+					continue
+				}
+			}
+		}
+	}
 	if len(dependencies) > 0 {
 		return dependencies, warnings, nil
 	}
 
-	lockFallbacks, lockWarnings, err := collectLockFallbacks(repoPath, dir, files)
+	lockFallbacks, lockWarnings, err := collectLockFallbacksWithCatalog(repoPath, dir, files, catalog)
 	if err != nil {
 		return nil, nil, normalizePackagingStageError("lockfile parsing", err)
 	}
