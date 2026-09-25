@@ -33,6 +33,7 @@ func TestSuppressionArtifactWait(t *testing.T) {
 		{"stale-cancelled", "accepted:42:99"},
 		{"same-second-replacement", "accepted:42:99"},
 		{"empty-run-association", "accepted:42:99"},
+		{"stale-empty-run-association", "Timed out"},
 		{"empty-run-association-missing", "Timed out"},
 		{"empty-run-association-failure", "Timed out"},
 		{"stale-only", "Timed out"},
@@ -81,7 +82,8 @@ global.setTimeout = (callback, ms) => {
   callback();
 };
 const outputs = {};
-const eventUpdatedAt = scenario === 'same-second-ambiguous-failure' ? start :
+const eventUpdatedAt = scenario === 'stale-empty-run-association' ? start + 1000 :
+ scenario === 'same-second-ambiguous-failure' ? start :
  scenario === 'same-second-replacement' ? start - 1000 : start - 90000;
 const context = {repo: {owner: 'owner', repo: 'repo'}, payload: {pull_request: {
  number: 7, updated_at: new Date(eventUpdatedAt).toISOString(),
@@ -107,10 +109,14 @@ const github = {
     base: {sha: 'base', ref: 'main', repo: {full_name: 'owner/repo'}}}];
   }
   if (method === 'runs') {
-   if (args.workflow_id !== 'ci.yml' || args.event !== 'pull_request' || args.head_sha !== 'expected') {
-    throw new Error('untrusted workflow query');
-   }
-   if (scenario === 'missing-run') return [];
+    if (args.workflow_id !== 'ci.yml' || args.event !== 'pull_request' || args.head_sha !== 'expected') {
+     throw new Error('untrusted workflow query');
+    }
+    if (scenario === 'missing-run') return [];
+    if (scenario === 'stale-empty-run-association') {
+     return [{id: 41, head_sha: 'expected', created_at: new Date(start).toISOString(),
+      pull_requests: [], updated_at: new Date(now).toISOString(), status: 'completed', conclusion: 'success'}];
+    }
    if (scenario.startsWith('prestart-')) {
     return [{id: 42, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
      pull_requests: [{number: 7, head: {sha: 'expected'}, base: {sha: 'base'}}],
@@ -141,7 +147,7 @@ const github = {
     conclusion: ['failure', 'cancelled', 'empty-run-association-failure', 'same-second-ambiguous-failure'].includes(scenario) ?
      (['empty-run-association-failure', 'same-second-ambiguous-failure'].includes(scenario) ? 'failure' : scenario) : 'success'}];
   }
-  if (method !== 'artifacts' || args.run_id !== 42) throw new Error('wrong artifact query');
+  if (method !== 'artifacts' || ![41, 42].includes(args.run_id)) throw new Error('wrong artifact query');
   return [{id: 99, name: scenario === 'wrong-name' ? 'pr-report-inputs-8' : 'pr-report-inputs-7',
    expired: scenario === 'expired'}];
  }

@@ -115,7 +115,7 @@ jobs:
                 .filter((run) => {
                   const runPulls = run.pull_requests || [];
                   if (runPulls.length === 0) {
-                    return expectedAssociation;
+                    return expectedAssociation && new Date(run.created_at).getTime() > eventCreatedMs;
                   }
                   return runPulls.some((candidate) =>
                     candidate.number === pullNumber &&
