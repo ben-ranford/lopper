@@ -175,6 +175,105 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	waitForPreflightInstallRollback(t, fixture, tmpDir)
 }
 
+func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
+	for _, previousPath := range []string{"", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) {
+			t.Parallel()
+			fixture := newPreflightTimeoutFixture(t, "hooks-install")
+			if previousPath != "" {
+				runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+			}
+			assertInterruptedRollbackOnce(t, fixture)
+		})
+	}
+}
+
+func assertInterruptedRollbackOnce(t *testing.T, fixture preflightTimeoutFixture) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	attempts := filepath.Join(t.TempDir(), "rollback-attempts")
+	env := append(postWriteBlockingGitEnv(t), "HOOK_TIMEOUT_FIFO_CONFIG=1", "HOOK_ROLLBACK_ATTEMPTS="+attempts, "TMPDIR="+tmpDir)
+	// Run the exact recipe directly so signals target the installer shell, not make.
+	recipe := exec.Command("make", "--no-print-directory", "-n", "hooks-install")
+	recipe.Dir = fixture.repoDir
+	recipe.Env = withoutGitEnv()
+	script, err := recipe.Output()
+	if err != nil {
+		t.Fatalf("read hooks-install recipe: %v", err)
+	}
+	command := exec.Command("sh", "-c", string(script))
+	command.Dir = fixture.repoDir
+	command.Env = append(withoutGitEnv(), env...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start installer shell: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	defer killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGKILL)
+	waitForHookConfigFIFO(t, fixture.configPath)
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("interrupt installer: %v", err)
+	}
+	waitForHookRollbackAttempt(t, attempts)
+	for _, signal := range []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM} {
+		if err := command.Process.Signal(signal); err != nil {
+			t.Fatalf("signal during rollback: %v", err)
+		}
+	}
+	select {
+	case err := <-done:
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 143 {
+			t.Fatalf("interrupted installer = %v, want status 143; output=%s", err, output.String())
+		}
+	case <-time.After(25 * time.Second):
+		killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGKILL)
+		<-done
+		t.Fatalf("interrupted installer exceeded bounded rollback; output=%s", output.String())
+	}
+	if got := string(readPreflightFile(t, attempts)); got != "attempt\n" {
+		t.Fatalf("rollback attempts = %q, want one attempt", got)
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
+	assertCommonConfigFIFO(t, fixture.configPath, false)
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.configPath+".before-timeout", fixture.configPath); err != nil {
+		t.Fatal(err)
+	}
+	runCommand(t, fixture.repoDir, fixture.managedHook)
+}
+
+func waitForHookRollbackAttempt(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("installer did not start rollback after interruption")
+}
+
+func waitForHookConfigFIFO(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := os.Stat(path)
+		if err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("installer did not reach blocking post-write config read")
+}
+
 func killPreflightTestProcessGroup(t *testing.T, pid int, signal syscall.Signal) {
 	t.Helper()
 	if err := syscall.Kill(-pid, signal); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -195,6 +294,9 @@ func postWriteBlockingGitEnv(t *testing.T) []string {
 		t.Fatalf("find git: %v", err)
 	}
 	shim := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --local ] && [ -p .git/config ] && [ -n "${HOOK_ROLLBACK_ATTEMPTS-}" ]; then
+	printf 'attempt\n' >>"$HOOK_ROLLBACK_ATTEMPTS"
+fi
 if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ]; then
 	count=0
 	[ ! -f "$HOOK_TIMEOUT_COUNTER" ] || count=$(cat "$HOOK_TIMEOUT_COUNTER")
