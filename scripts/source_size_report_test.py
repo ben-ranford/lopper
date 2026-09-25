@@ -76,7 +76,7 @@ class SourceSizeReportTest(unittest.TestCase):
             for ref in ('--help', '-cfoo', 'HEAD\n--help', 'HEAD --help'):
                 with self.subTest(ref=ref), self.assertRaises(ValueError):
                     report.snapshot(ref)
-            for version in ('--help', 'latest', 'v1.0.0 --help', '../tool'):
+            for version in ('--help', 'latest', 'v1.0.0 --help', '../tool', 'v١.٢.٣'):
                 with self.subTest(version=version), self.assertRaises(ValueError):
                     report.test_clones([], version, 55)
             for threshold in ('--help', '55 --help', 0, -1):
