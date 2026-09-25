@@ -69,3 +69,26 @@ func TestDynamicInterpolationIndirectVariables(t *testing.T) {
 		}
 	}
 }
+
+func TestDynamicInterpolationNestedExpressions(t *testing.T) {
+	for _, expression := range []string{`{$arr[$type::$$property]}`, `{$arr[class_exists($name)]}`} {
+		for _, source := range []string{
+			`<?php echo "` + expression + `";`,
+			"<?php echo `" + expression + "`;",
+			"<?php $doc = <<<DOC\n" + expression + "\nDOC;",
+		} {
+			if !hasDynamicPatterns([]byte(source), "source.php", false) {
+				t.Errorf("executable nested interpolation missed: %q", source)
+			}
+		}
+	}
+	for _, source := range []string{
+		`<?php echo "{$arr['class_exists($name)']}";`,
+		`<?php echo "{$arr['$type::$$property']}";`,
+		`<?php /* "{$arr[$type::$$property]}" */`,
+	} {
+		if hasDynamicPatterns([]byte(source), "source.php", false) {
+			t.Errorf("literal nested interpolation detected: %q", source)
+		}
+	}
+}
