@@ -10,14 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/testutil"
+
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
-	lodashFixturePackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
-	mapImportFixtureSource   = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
-	lodashMapSubpath         = "lodash/map"
+	mapImportFixtureSource = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
+	lodashMapSubpath       = "lodash/map"
 )
 
 func TestAdapterAnalyseSuggestOnlyCodemodPreview(t *testing.T) {
@@ -213,24 +214,8 @@ func TestSubpathResolverResolve(t *testing.T) {
 func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
 	t.Helper()
 	repo = t.TempDir()
-	sourcePath = filepath.Join(repo, "index.js")
-	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+	sourcePath = testutil.WriteLodashMapFixture(t, repo, source)
 
-	depRoot := filepath.Join(repo, "node_modules", "lodash")
-	if err := os.MkdirAll(depRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dependency root: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(lodashFixturePackageJSON), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export { map } from './map.js'\n"), 0o644); err != nil {
-		t.Fatalf("write entrypoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default function map() {}\n"), 0o644); err != nil {
-		t.Fatalf("write map.js: %v", err)
-	}
 	return repo, sourcePath, source
 }
 
