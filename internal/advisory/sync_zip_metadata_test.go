@@ -32,6 +32,22 @@ func TestSyncOSVZipPreservesInventory(t *testing.T) {
 	}
 }
 
+func TestSyncOSVZipRejectsDuplicatePackageEcosystem(t *testing.T) {
+	advisory := strings.Replace(testOSVAdvisory("GO-1"), `"ecosystem":"Go"`, `"ecosystem":"Go","ecosystem":"PyPI"`, 1)
+	payload := testOSVZip(t, "GO-1.json", advisory)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := w.Write(payload); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+
+	_, err := SyncOSV(context.Background(), SyncOptions{SourceURL: server.URL, CachePath: t.TempDir(), Client: server.Client()})
+	if err == nil || !strings.Contains(err.Error(), "duplicate package ecosystem field") {
+		t.Fatalf("expected duplicate ecosystem field to be rejected, got %v", err)
+	}
+}
+
 func assertSyncedOSVZipInventory(t *testing.T, payload []byte, count int, ecosystems []string) {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

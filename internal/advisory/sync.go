@@ -1254,20 +1254,20 @@ func validateOSVJSONPackage(decoder *json.Decoder, inventory *osvZipInventory) (
 	if err := requireJSONDelimiter(decoder, '{'); err != nil {
 		return false, fmt.Errorf("affected package must be an object: %w", err)
 	}
-	foundName := false
+	foundName, foundEcosystem := false, false
 	for decoder.More() {
 		name, err := readJSONObjectName(decoder)
 		if err != nil {
 			return false, err
 		}
-		if err := readOSVJSONPackageField(decoder, name, &foundName, inventory); err != nil {
+		if err := readOSVJSONPackageField(decoder, name, &foundName, &foundEcosystem, inventory); err != nil {
 			return false, err
 		}
 	}
 	return foundName, requireJSONDelimiter(decoder, '}')
 }
 
-func readOSVJSONPackageField(decoder *json.Decoder, name string, foundName *bool, inventory *osvZipInventory) error {
+func readOSVJSONPackageField(decoder *json.Decoder, name string, foundName, foundEcosystem *bool, inventory *osvZipInventory) error {
 	if name == "name" {
 		if *foundName {
 			return errors.New("duplicate package name field")
@@ -1278,8 +1278,14 @@ func readOSVJSONPackageField(decoder *json.Decoder, name string, foundName *bool
 		*foundName = true
 		return nil
 	}
-	if name == "ecosystem" && inventory != nil {
-		return inventory.readEcosystem(decoder)
+	if name == "ecosystem" {
+		if *foundEcosystem {
+			return errors.New("duplicate package ecosystem field")
+		}
+		*foundEcosystem = true
+		if inventory != nil {
+			return inventory.readEcosystem(decoder)
+		}
 	}
 	if err := discardJSONValue(decoder); err != nil {
 		return fmt.Errorf("read package field %q: %w", name, err)
