@@ -68,28 +68,56 @@ func scanDynamicInterpolationAt(text string, offset int) (int, bool) {
 	if offset+1 >= len(text) || text[offset] != '{' || text[offset+1] != '$' {
 		return offset, false
 	}
-	end := interpolationExpressionEnd(text, offset)
-	return min(end+1, len(text)), hasDynamicInterpolationExpression(text[offset+1 : end])
+	return scanPHPInterpolationExpression(text, offset+1)
 }
 
-func interpolationExpressionEnd(text string, start int) int {
+type interpolationQuoteFrame struct {
+	state       phpCodeState
+	resumeDepth int
+}
+
+// Scan each interpolation expression once. Nested interpolations temporarily
+// leave their containing quote and resume it after the matching brace, so
+// quotes inside nested comments cannot corrupt the surrounding lexical state.
+func scanPHPInterpolationExpression(text string, offset int) (int, bool) {
 	depth := 1
 	state := phpStateCode
-	for offset := start + 1; offset < len(text); {
+	var quotes []interpolationQuoteFrame
+	dynamic := false
+	for offset < len(text) {
 		if state == phpStateCode {
+			if next, found := scanDynamicInterpolationToken(text, offset); next > offset {
+				dynamic = dynamic || found
+				offset = next
+				continue
+			}
 			switch text[offset] {
 			case '{':
 				depth++
+				offset++
+				continue
 			case '}':
 				depth--
+				offset++
 				if depth == 0 {
-					return offset
+					return offset, dynamic
 				}
+				if len(quotes) > 0 && depth == quotes[len(quotes)-1].resumeDepth {
+					state = quotes[len(quotes)-1].state
+					quotes = quotes[:len(quotes)-1]
+				}
+				continue
 			}
+		} else if (state == phpStateDoubleQuote || state == phpStateBacktick) && offset+1 < len(text) && text[offset] == '{' && text[offset+1] == '$' {
+			quotes = append(quotes, interpolationQuoteFrame{state: state, resumeDepth: depth})
+			depth++
+			state = phpStateCode
+			offset++
+			continue
 		}
 		offset = advancePHPCodeState(text, offset, &state)
 	}
-	return len(text)
+	return len(text), dynamic
 }
 
 func hasDynamicInterpolationExpression(expression string) bool {
