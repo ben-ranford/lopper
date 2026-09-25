@@ -82,7 +82,7 @@ class DuplicationRunnerTest(unittest.TestCase):
                     self.assertIn(expected + "^{commit}", checked.call_args_list[-2].args[0])
 
     def test_base_arguments_reject_options_and_revision_expressions(self):
-        for base in ("--help", "-c", "target;echo marker", "target\n", "HEAD~1", "HEAD^{tree}", "target:original.go"):
+        for base in ("--help", "-c", "target;echo marker", "target\n", "HEAD~1", "HEAD^{tree}", "target:original.go", "rélease"):
             for requested, environment in ((base, {}), ("", {"BASE_SHA": base}), ("", {"GITHUB_BASE_REF": base}), ("", {"BASE_REF": base})):
                 with self.subTest(base=base, environment=environment), mock.patch.object(runner.subprocess, "run") as run:
                     with self.assertRaisesRegex(runner.AnalysisError, "Unsupported comparison base.*No fallback"):
