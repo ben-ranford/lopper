@@ -10,6 +10,7 @@ function makePull(number, overrides = {}) {
   return {
     number,
     node_id: `PR_${number}`,
+    state: 'open',
     labels: [{ name: 'queue-me' }],
     draft: false,
     maintainer_can_modify: true,
@@ -215,6 +216,18 @@ function makeHarness(options = {}) {
       },
       pulls: {
         list: async () => {},
+        get: async ({ pull_number }) => {
+          const listedPull = allPulls.find((pull) => pull.number === pull_number);
+          const overrides = options.pullGetOverrides?.[pull_number] || {};
+          return {
+            data: {
+              ...listedPull,
+              ...overrides,
+              base: { ...listedPull.base, ...overrides.base },
+              head: { ...listedPull.head, ...overrides.head },
+            },
+          };
+        },
         updateBranch: async (input) => {
           calls.branchUpdates.push(input);
           if (options.branchUpdateError) throw options.branchUpdateError;
@@ -798,6 +811,21 @@ test('controller requests a guarded base update for a stale same-repository lead
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /GitHub is updating this pull request branch/);
   assert.match(harness.calls.comments[0].body, /before enabling auto-merge/);
+});
+
+test('controller revalidates queue eligibility and PR base immediately before updating a branch', async () => {
+  const leader = makePull(10);
+  const retargeted = makeHarness({
+    pulls: [leader],
+    comparisonStatus: 'diverged',
+    pullGetOverrides: { 10: { base: { ref: 'release' } } },
+  });
+
+  await runController(retargeted.args);
+
+  assert.deepEqual(retargeted.calls.branchUpdates, []);
+  assert.deepEqual(retargeted.calls.armed, []);
+  assert.match(commentsFor(retargeted, 10), /base changed from main to release before updating its branch/);
 });
 
 test('controller audits the queue App merge commit before arming the updated head', async () => {

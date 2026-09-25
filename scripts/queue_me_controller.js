@@ -260,6 +260,43 @@ function assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid)
   }
 }
 
+async function revalidateBranchUpdate({
+  github,
+  owner,
+  repo,
+  pullNumber,
+  defaultBranch,
+  defaultBranchSHA,
+  queueLabel,
+  expectedHeadSHA,
+}) {
+  const [{ data: pull }, { data: branch }] = await Promise.all([
+    github.rest.pulls.get({ owner, repo, pull_number: pullNumber }),
+    github.rest.repos.getBranch({ owner, repo, branch: defaultBranch }),
+  ]);
+  if (pull.state !== 'open' || pull.draft || !hasLabel(pull, queueLabel)) {
+    throw new Error(`Pull request #${pullNumber} is no longer eligible for the ${queueLabel} queue.`);
+  }
+  if (pull.base?.ref !== defaultBranch) {
+    throw new Error(
+      `Pull request base changed from ${defaultBranch} to ${pull.base?.ref || 'unknown'} before updating its branch.`,
+    );
+  }
+  if (pull.head?.repo?.full_name !== `${owner}/${repo}`) {
+    throw new Error(`Pull request #${pullNumber} no longer has a same-repository branch to update.`);
+  }
+  if (pull.head?.sha !== expectedHeadSHA) {
+    throw new Error(
+      `Pull request head moved from ${shortSHA(expectedHeadSHA)} to ${shortSHA(pull.head?.sha)} before updating its branch.`,
+    );
+  }
+  if (branch.commit.sha !== defaultBranchSHA) {
+    throw new Error(
+      `Default branch ${defaultBranch} moved from ${shortSHA(defaultBranchSHA)} to ${shortSHA(branch.commit.sha)} before updating the pull request branch.`,
+    );
+  }
+}
+
 async function syncStatusComment(
   github,
   owner,
@@ -646,6 +683,7 @@ async function advanceQueuedPull({
   candidate,
   defaultBranch,
   defaultBranchSHA,
+  queueLabel,
   queueAppSlug,
   hasFollower,
 }) {
@@ -690,6 +728,16 @@ async function advanceQueuedPull({
       return true;
     }
     try {
+      await revalidateBranchUpdate({
+        github,
+        owner,
+        repo,
+        pullNumber: candidate.number,
+        defaultBranch,
+        defaultBranchSHA,
+        queueLabel,
+        expectedHeadSHA: update.headSHA,
+      });
       await github.rest.pulls.updateBranch({
         owner,
         repo,
@@ -788,6 +836,7 @@ async function runController({
       candidate,
       defaultBranch,
       defaultBranchSHA: branch.commit.sha,
+      queueLabel,
       queueAppSlug,
       hasFollower: index + 1 < queued.length,
     });
