@@ -122,17 +122,13 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"!candidate.expired",
 		"core.setOutput('artifact-id'",
 		"core.setOutput('run-id'",
-		// The same head SHA can be shared by more than one open PR (e.g.
-		// one branch opened against both a release branch and main, or --
-		// for forks, where GitHub does not expose a pull_requests
-		// association at all -- the same fork branch/commit reused across
-		// PRs with different bases). Matching runs after the fact by
-		// association or repository is not sufficient to disambiguate every
-		// such case; only an artifact name bound to this PR's own number
-		// (set by "ci.yml" from its own event payload, not forgeable by PR
-		// content) can.
 		"pullNumber = context.payload.pull_request.number",
+		"baseSha = context.payload.pull_request.base.sha",
+		"eventCreatedMs = new Date(context.payload.pull_request.updated_at).getTime()",
 		"artifactName = `pr-report-inputs-${pullNumber}`",
+		"candidate.number === pullNumber",
+		"candidate.head.sha === headSha",
+		"candidate.base.sha === baseSha",
 		"const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success')",
 		// An empty candidate list must be treated as "still pending", not
 		// "no run will ever appear": this verifier and the "ci" run it
@@ -144,16 +140,9 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"return null",
 		"if (result) {",
 		"if (Date.now() >= deadlineMs)",
-		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
-		// at the same head SHA while an earlier, already-completed run
-		// (computed against the base this PR has since moved away from)
-		// still exists there; excluding runs created before this event
-		// (with a skew allowance, since both workflows fire from the same
-		// webhook delivery) stops that stale run's artifact from being
-		// trusted while the fresh one is still in flight.
-		"baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base)",
-		"earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0",
-		".filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs)",
+		"run.created_at).getTime() >= eventCreatedMs",
+		"github.rest.pulls.get",
+		"delayMs = Math.min(delayMs * 2, 2 * 60 * 1000)",
 	})
 
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")

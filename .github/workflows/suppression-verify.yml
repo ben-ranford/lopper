@@ -56,35 +56,14 @@ jobs:
           script: |
             const headSha = process.env.EXPECTED_HEAD_SHA;
             const pullNumber = context.payload.pull_request.number;
+            const baseSha = context.payload.pull_request.base.sha;
+            const eventCreatedMs = new Date(context.payload.pull_request.updated_at).getTime();
             const jobStartMs = Number(process.env.JOB_START_MS);
-            // A base-only edit (retargeting this PR) leaves any earlier,
-            // already-completed "ci" run at this same head SHA in place,
-            // still carrying a "pr-report-inputs-<PR>" artifact computed
-            // against the base this PR has since moved away from -- and
-            // that same "edited" event dispatches a fresh "ci" run at this
-            // identical head SHA to replace it. Both this run and that one
-            // are triggered by the exact same webhook event, so the fresh
-            // run is never meaningfully older than this very job; a 5
-            // -minute floor tolerates ordinary Actions dispatch/queueing
-            // skew between the two workflows while still excluding the
-            // stale pre-retarget run. Every other trigger type (a plain
-            // push, label, etc.) leaves the base untouched, so an already
-            // -completed run's artifact from before this event is still
-            // valid and the floor is skipped.
-            const baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base);
-            const earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0;
-            // Named with the producing PR's own number (set by "ci.yml"
-            // from its own pull_request event payload -- GitHub-assigned,
-            // not something PR-controlled code or workflow-file edits can
-            // forge). Matching on this exact name, rather than trying to
-            // infer after the fact which run "belongs" to this PR, is what
-            // actually closes the ambiguity a bare head-SHA match has: the
-            // same head SHA can be shared by more than one open PR (same
-            // branch against two bases; or, for forks, the same fork
-            // branch/commit reused across PRs with different bases, where
-            // GitHub does not otherwise expose which PR a run belongs to).
-            // Only the run that was genuinely dispatched for this exact PR
-            // number can have uploaded an artifact under this exact name.
+            // GitHub creates the ci run before this job reaches its first
+            // step. Its API record links a pull_request run to the exact PR,
+            // head, and base; use that metadata rather than head SHA alone.
+            // The PR event timestamp distinguishes a current failed run
+            // from an older failure for the same head and base.
             const artifactName = `pr-report-inputs-${pullNumber}`;
             // Suppression verification has a one-hour SLO, independent of
             // GitHub's longer default CI timeout. Five minutes remain for
@@ -96,18 +75,18 @@ jobs:
             // report steps to still run and update the head check, instead
             // of leaving it stuck "in_progress" when GitHub cancels the job.
             const deadlineMs = jobStartMs + (60 * 60) * 1000;
-            const delayMs = 15000;
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            });
+            if (pull.head.sha !== headSha) {
+              throw new Error(`Pull request head ${headSha} was superseded; refusing stale artifacts.`);
+            }
+
             const findArtifact = async () => {
-              const { data: pull } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pullNumber,
-              });
-              if (pull.head.sha !== headSha) {
-                throw new Error(`Pull request head ${headSha} was superseded; refusing stale artifacts.`);
-              }
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -118,7 +97,11 @@ jobs:
               });
               const candidates = runs
                 .filter((run) => run.head_sha === headSha)
-                .filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs);
+                .filter((run) => (run.pull_requests || []).some((candidate) =>
+                  candidate.number === pullNumber &&
+                  candidate.head.sha === headSha &&
+                  candidate.base.sha === baseSha
+                ));
               const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success');
               for (const run of completed) {
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
@@ -132,16 +115,23 @@ jobs:
                   return { run, artifact };
                 }
               }
-              // Workflow runs expose no identity tying a same-head candidate
-              // to this pull-request event. A completed failure or cancelled
-              // run may belong to an earlier event, even if it was created
-              // shortly before this verifier started. Only a matching
-              // successful artifact is decisive; otherwise keep polling to
-              // the shared deadline rather than failing on ambiguous state.
+              // Only a terminal run created for this PR event can fail fast.
+              // A run may be created before this verifier starts, so compare
+              // against the webhook timestamp instead of JOB_START_MS.
+              const currentTerminal = candidates
+                .filter((run) => new Date(run.created_at).getTime() >= eventCreatedMs)
+                .filter((run) => run.status === 'completed')
+                .sort((left, right) =>
+                  new Date(right.created_at).getTime() - new Date(left.created_at).getTime() || right.id - left.id
+                )[0];
+              if (currentTerminal && currentTerminal.conclusion !== 'success') {
+                throw new Error(`Current ci workflow run ${currentTerminal.id} completed with ${currentTerminal.conclusion}; no trusted PR report artifact was produced.`);
+              }
               return null;
             };
 
             let result;
+            let delayMs = 15000;
             for (;;) {
               result = await findArtifact();
               if (result) {
@@ -151,6 +141,7 @@ jobs:
                 throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
               }
               await sleep(delayMs);
+              delayMs = Math.min(delayMs * 2, 2 * 60 * 1000);
             }
 
             core.setOutput('run-id', String(result.run.id));
