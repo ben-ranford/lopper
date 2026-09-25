@@ -173,14 +173,21 @@ jobs:
             let result;
             let delayMs = 15000;
             for (;;) {
-              result = await findArtifact();
-              if (result) {
-                break;
-              }
               if (Date.now() >= deadlineMs) {
                 throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
               }
-              await sleep(delayMs);
+              result = await findArtifact();
+              if (Date.now() >= deadlineMs) {
+                throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
+              }
+              if (result) {
+                break;
+              }
+              const remainingMs = deadlineMs - Date.now();
+              if (remainingMs <= 0) {
+                throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
+              }
+              await sleep(Math.min(delayMs, remainingMs));
               delayMs = Math.min(delayMs * 2, 2 * 60 * 1000);
             }
 

@@ -37,6 +37,7 @@ func TestSuppressionArtifactWait(t *testing.T) {
 		{"empty-run-association-failure", "Timed out"},
 		{"stale-only", "Timed out"},
 		{"same-second-ambiguous-failure", "Timed out"},
+		{"deadline-artifact", "Timed out"},
 		{"failure", "completed with failure"},
 		{"cancelled", "completed with cancelled"},
 		{"timeout", "Timed out"},
@@ -66,13 +67,15 @@ const suppressionArtifactWaitHarness = `
 const scenario = process.env.WAIT_SCENARIO;
 const start = 1000000;
 let now = start;
+const deadline = start + 60 * 60 * 1000;
 let polls = 0;
 let pullGets = 0;
 let associationLookups = 0;
 let expectedDelay = 15000;
 Date.now = () => now;
 global.setTimeout = (callback, ms) => {
-  if (ms !== expectedDelay || ++polls > 40) throw new Error('unexpected or unbounded polling delay: ' + ms);
+  const expectedSleep = Math.min(expectedDelay, deadline - now);
+  if (ms !== expectedSleep || ++polls > 40) throw new Error('unexpected or unbounded polling delay: ' + ms);
   expectedDelay = Math.min(expectedDelay * 2, 2 * 60 * 1000);
   now += ms;
   callback();
@@ -129,6 +132,7 @@ const github = {
     ];
    }
    const pending = ['timeout', 'superseded'].includes(scenario) ||
+    (scenario === 'deadline-artifact' && now < deadline) ||
     ((scenario === 'late-success' || scenario.startsWith('stale-')) && now - start < 30 * 60 * 1000);
    return [{id: 42, head_sha: scenario === 'wrong-head' ? 'other' : 'expected',
     created_at: new Date(start).toISOString(), updated_at: new Date(now).toISOString(), status: pending ? 'in_progress' : 'completed',
