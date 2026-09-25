@@ -83,6 +83,34 @@ function makeRenovateActivity(sha = 'renovate-commit', overrides = {}) {
   };
 }
 
+function makeQueueBranchUpdateCommit(sha = 'queue-update-commit', appSlug = 'lopper-queue-controller', overrides = {}) {
+  const appLogin = `${appSlug}[bot]`;
+  const { commit: commitOverrides = {}, ...rest } = overrides;
+  return {
+    sha,
+    parents: [{ sha: 'pr-head' }, { sha: 'base-head' }],
+    author: { login: appLogin, type: 'Bot', id: 123456 },
+    committer: { login: 'web-flow', type: 'User', id: 19864447 },
+    commit: {
+      author: { name: appLogin, email: `123456+${appLogin}@users.noreply.github.com` },
+      committer: { name: 'GitHub', email: 'noreply@github.com' },
+      verification: { verified: true, reason: 'valid' },
+      ...commitOverrides,
+    },
+    ...rest,
+  };
+}
+
+function makeQueueBranchUpdateActivity(sha = 'queue-update-commit', appSlug = 'lopper-queue-controller', overrides = {}) {
+  return {
+    after: sha,
+    actor: { login: `${appSlug}[bot]`, type: 'Bot', id: 123456 },
+    activity_type: 'push',
+    ref: 'refs/heads/queue-me-10',
+    ...overrides,
+  };
+}
+
 function makeHarness(options = {}) {
   const pulls = options.pulls || [];
   const eventPull = options.eventPull;
@@ -116,6 +144,10 @@ function makeHarness(options = {}) {
   const trustedRenovateCommits = fixtureCommits.filter(
     (commit) => commit?.author?.login === 'renovate[bot]' && commit?.author?.id === 29139614,
   );
+  const trustedQueueUpdateCommits = fixtureCommits.filter((commit) =>
+    options.queueAppSlug && commit?.author?.login === `${options.queueAppSlug}[bot]` &&
+    commit?.parents?.length >= 2,
+  );
   const calls = {
     activities: [],
     armed: [],
@@ -135,12 +167,20 @@ function makeHarness(options = {}) {
     request: async (route, input) => {
       calls.activities.push({ route, input });
       if (options.activityError) throw options.activityError;
-      const activities = options.activities || trustedRenovateCommits.map((commit) => ({
-        after: commit.sha,
-        actor: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
-        activity_type: 'push',
-        ref: input.ref,
-      }));
+      const activities = options.activities || [
+        ...trustedRenovateCommits.map((commit) => ({
+          after: commit.sha,
+          actor: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
+          activity_type: 'push',
+          ref: input.ref,
+        })),
+        ...trustedQueueUpdateCommits.map((commit) => ({
+          after: commit.sha,
+          actor: { login: `${options.queueAppSlug}[bot]`, type: 'Bot', id: 123456 },
+          activity_type: 'push',
+          ref: input.ref,
+        })),
+      ];
       return { data: activities };
     },
     rest: {
@@ -579,34 +619,31 @@ test('commit identity audit permits only verified same-repository Renovate commi
   }
 });
 
-test('commit identity audit permits a queue App base-update merge commit only', () => {
+test('commit identity audit permits only a signed queue App update with GitHub committer', () => {
   const appSlug = 'lopper-queue-controller';
-  const appIdentity = {
-    login: `${appSlug}[bot]`,
-    type: 'Bot',
-  };
-  const gitIdentity = {
-    name: `${appSlug}[bot]`,
-    email: `123456+${appSlug}[bot]@users.noreply.github.com`,
-  };
-  const syncCommit = {
-    ...makeComparisonCommit('sync-merge'),
-    parents: [{ sha: 'pr-head' }, { sha: 'base-head' }],
-    author: appIdentity,
-    committer: appIdentity,
-    commit: {
-      author: gitIdentity,
-      committer: gitIdentity,
-    },
-  };
+  const pull = makePull(10);
+  const syncCommit = makeQueueBranchUpdateCommit('sync-merge', appSlug);
 
-  assert.equal(testables.commitIdentityFailure(syncCommit, makePull(10), appSlug), '');
+  assert.equal(testables.commitIdentityFailure(syncCommit, pull, appSlug), '');
   assert.match(
-    testables.commitIdentityFailure({ ...syncCommit, parents: [{ sha: 'pr-head' }] }, makePull(10), appSlug),
+    testables.commitIdentityFailure({ ...syncCommit, parents: [{ sha: 'pr-head' }] }, pull, appSlug),
     /author is a bot identity/,
   );
   assert.match(
-    testables.commitIdentityFailure(syncCommit, makePull(10), 'another-app'),
+    testables.commitIdentityFailure(syncCommit, pull, 'another-app'),
+    /author is a bot identity/,
+  );
+  for (const mutation of [
+    { commit: { verification: { verified: false, reason: 'unsigned' } } },
+    { commit: { committer: { name: 'queue bot', email: 'bot@example.com' } } },
+    { committer: { login: 'attacker', type: 'User', id: 1 } },
+  ]) {
+    assert.notEqual(testables.commitIdentityFailure({ ...syncCommit, ...mutation }, pull, appSlug), '');
+  }
+  assert.match(
+    testables.commitIdentityFailure(syncCommit, makePull(10, {
+      head: { ...pull.head, repo: { full_name: 'contributor/lopper' } },
+    }), appSlug),
     /author is a bot identity/,
   );
 });
@@ -765,18 +802,7 @@ test('controller requests a guarded base update for a stale same-repository lead
 
 test('controller audits the queue App merge commit before arming the updated head', async () => {
   const appSlug = 'lopper-queue-controller';
-  const appIdentity = { login: `${appSlug}[bot]`, type: 'Bot' };
-  const gitIdentity = {
-    name: `${appSlug}[bot]`,
-    email: `123456+${appSlug}[bot]@users.noreply.github.com`,
-  };
-  const queueMerge = {
-    ...makeComparisonCommit('queue-base-update'),
-    parents: [{ sha: 'old-head' }, { sha: 'main-head' }],
-    author: appIdentity,
-    committer: appIdentity,
-    commit: { author: gitIdentity, committer: gitIdentity },
-  };
+  const queueMerge = makeQueueBranchUpdateCommit('queue-base-update', appSlug);
   const harness = makeHarness({
     pulls: [makePull(10)],
     comparisonCommits: [makeComparisonCommit(), queueMerge],
@@ -787,6 +813,68 @@ test('controller audits the queue App merge commit before arming the updated hea
 
   assert.deepEqual(harness.calls.armed, [10]);
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
+});
+
+test('controller requires exact queue App branch activity before trusting its update commit', async (t) => {
+  const appSlug = 'lopper-queue-controller';
+  const queueMerge = makeQueueBranchUpdateCommit('queue-base-update', appSlug);
+  const cases = [
+    { name: 'missing activity', activities: [] },
+    { name: 'wrong commit SHA', activities: [makeQueueBranchUpdateActivity('other-sha', appSlug)] },
+    {
+      name: 'spoofed actor',
+      activities: [makeQueueBranchUpdateActivity(queueMerge.sha, appSlug, {
+        actor: { login: 'attacker', type: 'User', id: 1 },
+      })],
+    },
+    {
+      name: 'wrong branch',
+      activities: [makeQueueBranchUpdateActivity(queueMerge.sha, appSlug, { ref: 'refs/heads/other' })],
+    },
+    {
+      name: 'wrong activity type',
+      activities: [makeQueueBranchUpdateActivity(queueMerge.sha, appSlug, { activity_type: 'branch_deletion' })],
+    },
+    { name: 'activity API failure', activityError: new Error('activity unavailable') },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const harness = makeHarness({
+        pulls: [makePull(10)],
+        comparisonCommits: [queueMerge],
+        queueAppSlug: appSlug,
+        ...scenario,
+      });
+
+      await runController(harness.args);
+
+      assert.equal(harness.calls.activities.length, 1);
+      assert.deepEqual(harness.calls.armed, []);
+      assert.match(harness.calls.comments[0].body, /identity audit|provenance/i);
+    });
+  }
+});
+
+test('controller proves queue App update commit SHA from branch activity', async () => {
+  const appSlug = 'lopper-queue-controller';
+  const queueMerge = makeQueueBranchUpdateCommit('queue-base-update', appSlug);
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonCommits: [queueMerge],
+    queueAppSlug: appSlug,
+    activities: [makeQueueBranchUpdateActivity(queueMerge.sha, appSlug)],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.activities, [{
+    route: 'GET /repos/{owner}/{repo}/activity',
+    input: {
+      owner: 'octo', repo: 'lopper', ref: 'refs/heads/queue-me-10', per_page: 100, direction: 'desc',
+    },
+  }]);
+  assert.deepEqual(harness.calls.armed, [10]);
 });
 
 test('controller updates a stale same-repository Renovate pull after provenance audit', async () => {

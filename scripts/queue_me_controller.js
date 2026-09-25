@@ -108,17 +108,34 @@ function isVerifiedRenovateCommit(commit, pull) {
       committer?.email === 'noreply@github.com');
 }
 
-function isQueueBranchUpdateCommit(commit, queueAppSlug) {
-  if (!queueAppSlug || !Array.isArray(commit?.parents) || commit.parents.length < 2) {
+function isQueueAppAccount(identity, queueAppSlug) {
+  return Boolean(queueAppSlug) && identity?.login === `${queueAppSlug}[bot]` &&
+    identity?.type === 'Bot';
+}
+
+function isQueueBranchUpdateCommit(commit, pull, queueAppSlug) {
+  const baseRepo = pull?.base?.repo;
+  const appLogin = `${queueAppSlug}[bot]`;
+  const rawAuthor = commit?.commit?.author;
+  const rawCommitter = commit?.commit?.committer;
+  const appEmailSuffix = `+${appLogin}@users.noreply.github.com`;
+  const appEmailPrefix = typeof rawAuthor?.email === 'string' &&
+    rawAuthor.email.endsWith(appEmailSuffix)
+    ? rawAuthor.email.slice(0, -appEmailSuffix.length)
+    : '';
+  if (!queueAppSlug || !baseRepo?.owner?.login || !baseRepo?.name ||
+      pull?.head?.repo?.full_name !== `${baseRepo.owner.login}/${baseRepo.name}` ||
+      !Array.isArray(commit?.parents) || commit.parents.length < 2 ||
+      !isQueueAppAccount(commit.author, queueAppSlug) ||
+      !/^\d+$/.test(appEmailPrefix) || rawAuthor?.name !== appLogin ||
+      commit?.committer?.login !== 'web-flow' || commit?.committer?.type !== 'User' ||
+      commit?.committer?.id !== 19864447 || rawCommitter?.name !== 'GitHub' ||
+      rawCommitter?.email !== 'noreply@github.com' ||
+      commit?.commit?.verification?.verified !== true ||
+      commit?.commit?.verification?.reason !== 'valid') {
     return false;
   }
-  const appLogin = `${queueAppSlug}[bot]`;
-  const identity = (candidate) => candidate?.login === appLogin && candidate?.type === 'Bot';
-  const gitIdentity = (candidate) => candidate?.name === appLogin &&
-    typeof candidate?.email === 'string' &&
-    candidate.email.endsWith(`+${appLogin}@users.noreply.github.com`);
-  return identity(commit.author) && identity(commit.committer) &&
-    gitIdentity(commit.commit?.author) && gitIdentity(commit.commit?.committer);
+  return true;
 }
 
 function commitIdentityFailure(commit, pull, queueAppSlug) {
@@ -136,7 +153,7 @@ function commitIdentityFailure(commit, pull, queueAppSlug) {
   if (isVerifiedRenovateCommit(commit, pull)) {
     return '';
   }
-  if (isQueueBranchUpdateCommit(commit, queueAppSlug)) {
+  if (isQueueBranchUpdateCommit(commit, pull, queueAppSlug)) {
     return '';
   }
   if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
@@ -366,6 +383,36 @@ async function verifyRenovateProvenance(github, pull, commits) {
   }
 }
 
+async function verifyQueueBranchUpdateProvenance(github, pull, commits, queueAppSlug) {
+  const updateCommits = commits.filter((commit) =>
+    isQueueBranchUpdateCommit(commit, pull, queueAppSlug),
+  );
+  if (updateCommits.length === 0) {
+    return;
+  }
+  if (!pull.head.ref) {
+    throw queuePauseError('Queue identity audit failed: missing pull request branch reference for queue update provenance.');
+  }
+  const ref = `refs/heads/${pull.head.ref}`;
+  const { data: activities } = await github.request('GET /repos/{owner}/{repo}/activity', {
+    owner: pull.base.repo.owner.login,
+    repo: pull.base.repo.name,
+    ref,
+    per_page: 100,
+    direction: 'desc',
+  });
+  const trustedHeads = new Set((Array.isArray(activities) ? activities : [])
+    .filter((activity) => activity?.ref === ref &&
+      isQueueAppAccount(activity?.actor, queueAppSlug) &&
+      ['push', 'force_push', 'branch_creation'].includes(activity?.activity_type))
+    .map((activity) => activity.after));
+  if (updateCommits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
+    throw queuePauseError(
+      'Queue identity audit failed: cannot prove GitHub recorded the queue App pushing every branch-update commit from the latest 100 branch activities.',
+    );
+  }
+}
+
 async function verifyHeadForQueue(
   github,
   pull,
@@ -403,6 +450,7 @@ async function verifyHeadForQueue(
   const comparison = { ...firstComparison, commits };
   assertCanonicalCommitIdentity(comparison, pull, queueAppSlug);
   await verifyRenovateProvenance(github, pull, commits);
+  await verifyQueueBranchUpdateProvenance(github, pull, commits, queueAppSlug);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };
   }
