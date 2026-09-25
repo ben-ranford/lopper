@@ -28,17 +28,18 @@ func TestSuppressionArtifactWait(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
 		{"late-success", "accepted:42:99"},
 		{"prestart-success", "accepted:42:99"},
-		{"prestart-failure", "Timed out"},
+		{"prestart-failure", "completed with failure"},
 		{"stale-failure", "accepted:42:99"},
 		{"stale-cancelled", "accepted:42:99"},
-		{"stale-cancelled-after-start", "accepted:42:99"},
 		{"stale-only", "Timed out"},
-		{"failure", "Timed out"},
-		{"cancelled", "Timed out"},
+		{"failure", "completed with failure"},
+		{"cancelled", "completed with cancelled"},
 		{"timeout", "Timed out"},
 		{"missing-run", "Timed out"},
 		{"superseded", "superseded"},
 		{"wrong-head", "Timed out"},
+		{"wrong-pr", "Timed out"},
+		{"wrong-base", "Timed out"},
 		{"wrong-name", "Timed out"},
 		{"expired", "Timed out"},
 	} {
@@ -54,27 +55,35 @@ func TestSuppressionArtifactWait(t *testing.T) {
 }
 
 // Execute the workflow's actual resolver while advancing time without sleeping.
-// Same-head terminal runs cannot be linked to the current PR event, so only
-// an exact successful artifact proves completion; all other cases stay bounded.
+// Run metadata ties candidates to the exact PR/head/base; event time identifies
+// the current producer, including when Actions creates it before this job starts.
 const suppressionArtifactWaitHarness = `
 const scenario = process.env.WAIT_SCENARIO;
 const start = 1000000;
 let now = start;
 let polls = 0;
+let pullGets = 0;
+let expectedDelay = 15000;
 Date.now = () => now;
 global.setTimeout = (callback, ms) => {
-  if (ms !== 15000 || ++polls > 260) throw new Error('unbounded polling');
+  if (ms !== expectedDelay || ++polls > 40) throw new Error('unexpected or unbounded polling delay: ' + ms);
+  expectedDelay = Math.min(expectedDelay * 2, 2 * 60 * 1000);
   now += ms;
   callback();
 };
 const outputs = {};
-const context = {repo: {owner: 'owner', repo: 'repo'}, payload: {pull_request: {number: 7}}};
+const eventUpdatedAt = start - 90000;
+const context = {repo: {owner: 'owner', repo: 'repo'}, payload: {pull_request: {
+ number: 7, updated_at: new Date(eventUpdatedAt).toISOString(),
+ head: {sha: 'expected'}, base: {sha: 'base'}
+}}};
 const core = {setOutput: (key, value) => { outputs[key] = value; }};
 const github = {
  rest: {actions: {listWorkflowRuns: 'runs', listWorkflowRunArtifacts: 'artifacts'},
   pulls: {get: async ({pull_number}) => {
+   pullGets++;
    if (pull_number !== 7) throw new Error('wrong PR');
-   return {data: {head: {sha: scenario === 'superseded' && polls > 0 ? 'new' : 'expected'}}};
+   return {data: {head: {sha: scenario === 'superseded' ? 'new' : 'expected'}}};
   }}},
  paginate: async (method, args) => {
   if (args.owner !== 'owner' || args.repo !== 'repo') throw new Error('wrong repository');
@@ -85,17 +94,20 @@ const github = {
    if (scenario === 'missing-run') return [];
    if (scenario.startsWith('prestart-')) {
     return [{id: 42, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
+     pull_requests: [{number: 7, head: {sha: 'expected'}, base: {sha: 'base'}}],
      updated_at: new Date(now).toISOString(), status: 'completed', conclusion: scenario === 'prestart-failure' ? 'failure' : 'success'}];
    }
    if (scenario === 'stale-only' || (scenario.startsWith('stale-') && polls === 0)) {
-    return [{id: 41, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
-     updated_at: new Date(scenario === 'stale-cancelled-after-start' ? start + 1 : start - 1).toISOString(),
+    return [{id: 41, head_sha: 'expected', created_at: new Date(start - 120000).toISOString(),
+     pull_requests: [{number: 7, head: {sha: 'expected'}, base: {sha: 'base'}}],
+     updated_at: new Date(start - 1).toISOString(),
      status: 'completed', conclusion: scenario.includes('cancelled') ? 'cancelled' : 'failure'}];
    }
    const pending = ['timeout', 'superseded'].includes(scenario) ||
     ((scenario === 'late-success' || scenario.startsWith('stale-')) && now - start < 30 * 60 * 1000);
    return [{id: 42, head_sha: scenario === 'wrong-head' ? 'other' : 'expected',
     created_at: new Date(start).toISOString(), updated_at: new Date(now).toISOString(), status: pending ? 'in_progress' : 'completed',
+    pull_requests: [{number: scenario === 'wrong-pr' ? 8 : 7, head: {sha: 'expected'}, base: {sha: scenario === 'wrong-base' ? 'old-base' : 'base'}}],
     conclusion: ['failure', 'cancelled'].includes(scenario) ? scenario : 'success'}];
   }
   if (method !== 'artifacts' || args.run_id !== 42) throw new Error('wrong artifact query');
@@ -106,10 +118,14 @@ const github = {
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const processStub = {env: {EXPECTED_HEAD_SHA: 'expected', JOB_START_MS: String(start)}};
 new AsyncFunction('github', 'context', 'core', 'process', process.env.WAIT_SCRIPT)(github, context, core, processStub)
- .then(() => console.log('accepted:' + outputs['run-id'] + ':' + outputs['artifact-id']))
+ .then(() => {
+  if (pullGets !== 1) throw new Error('PR head must be checked once, not on every poll: ' + pullGets);
+  console.log('accepted:' + outputs['run-id'] + ':' + outputs['artifact-id']);
+ })
  .catch(error => {
   const elapsed = now - start;
-  if (scenario !== 'superseded' && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
+  const currentFailure = ['prestart-failure', 'failure', 'cancelled'].includes(scenario);
+  if (scenario !== 'superseded' && !currentFailure && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
    throw new Error('timeout outside verification SLO/report buffer: ' + elapsed);
   }
   console.log(error.message);
