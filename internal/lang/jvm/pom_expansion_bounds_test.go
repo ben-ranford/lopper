@@ -47,6 +47,16 @@ func TestPomPropertyExpansionPreservesBoundedValues(t *testing.T) {
 	}
 }
 
+func TestPomPropertyExpansionCountsIntroducedTokens(t *testing.T) {
+	value, unresolved := resolvePomPropertyValue("${first}${second}", map[string]string{
+		"first":  strings.Repeat("${second}", maxPomPropertyTokens),
+		"second": "resolved",
+	})
+	if value != "" || !unresolved {
+		t.Fatalf("expected over-budget introduced tokens to be rejected, got %d bytes, unresolved=%v", len(value), unresolved)
+	}
+}
+
 func TestPomPropertyExpansionStopsRecursiveAmplification(t *testing.T) {
 	value, unresolved := resolvePomPropertyValue("${x}", map[string]string{"x": "${x}${x}"})
 	if value != "" || !unresolved {

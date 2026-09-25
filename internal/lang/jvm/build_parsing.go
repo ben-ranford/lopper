@@ -366,10 +366,15 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 		return "", false
 	}
 	unresolved := false
+	tokensRemaining := maxPomPropertyTokens
 	for iteration := 0; iteration < 8; iteration++ {
-		updated, replaced, missing := replacePomPropertyTokens(value, properties)
+		updated, replaced, missing, tokensUsed := replacePomPropertyTokens(value, properties, tokensRemaining)
 		unresolved = unresolved || missing
+		if updated == "" && missing {
+			return "", true
+		}
 		value = updated
+		tokensRemaining -= tokensUsed
 		if !replaced {
 			break
 		}
@@ -380,21 +385,22 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 	return strings.TrimSpace(value), unresolved
 }
 
-func replacePomPropertyTokens(value string, properties map[string]string) (string, bool, bool) {
+func replacePomPropertyTokens(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
 	if len(value) > maxPomPropertyValueBytes {
-		return "", false, true
+		return "", false, true, 0
 	}
-	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, maxPomPropertyTokens+1)
-	if len(matches) > maxPomPropertyTokens {
-		return "", false, true
+	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, tokensRemaining+1)
+	if len(matches) > tokensRemaining {
+		return "", false, true, 0
 	}
 	if len(matches) == 0 {
-		return value, false, false
+		return value, false, false, 0
 	}
 
 	updated := value
 	replaced := false
 	unresolved := false
+	tokensUsed := 0
 	for _, match := range matches {
 		token, replacement, ok := pomPropertyReplacement(match, properties)
 		if !ok {
@@ -402,15 +408,19 @@ func replacePomPropertyTokens(value string, properties map[string]string) (strin
 			continue
 		}
 		count := strings.Count(updated, token)
+		if count > tokensRemaining-tokensUsed {
+			return "", false, true, 0
+		}
 		unchangedBytes := len(updated) - count*len(token)
 		// Divide the remaining budget before multiplying an untrusted replacement size.
 		if count > 0 && len(replacement) > (maxPomPropertyValueBytes-unchangedBytes)/count {
-			return "", false, true
+			return "", false, true, 0
 		}
 		updated = strings.ReplaceAll(updated, token, replacement)
+		tokensUsed += count
 		replaced = true
 	}
-	return updated, replaced, unresolved
+	return updated, replaced, unresolved, tokensUsed
 }
 
 func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
