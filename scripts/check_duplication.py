@@ -70,13 +70,27 @@ def supported_path(raw, repo):
 
 
 def added_lines(repo, merge_base):
-    output = checked(["git", "diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACM", merge_base, "HEAD", "--", "*.go", ":(exclude)**/goleak_test.go"], repo).stdout
+    output = checked(["git", "diff", "--find-renames", "--name-status", "-z", "--diff-filter=ACMRT", merge_base, "HEAD", "--", "*.go", ":(exclude)**/goleak_test.go"], repo).stdout
     if output and not output.endswith("\0"):
         raise AnalysisError("Truncated changed-file list from Git")
     added = set()
-    for raw in output.split("\0")[:-1]:
+    fields = output.split("\0")[:-1]
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        index += 1
+        if status.startswith(("R", "C")):
+            if index + 1 >= len(fields):
+                raise AnalysisError("Truncated renamed-file record from Git")
+            previous, raw = fields[index : index + 2]
+            index += 2
+            pathspecs = [f":(literal){previous}", f":(literal){raw}"]
+        else:
+            raw = fields[index]
+            index += 1
+            pathspecs = [f":(literal){raw}"]
         path = supported_path(raw, repo)
-        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", merge_base, "HEAD", "--", f":(literal){raw}"], repo).stdout
+        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=0", merge_base, "HEAD", "--", *pathspecs], repo).stdout
         added.update(changed_hunk_lines(diff, path))
     return added
 
