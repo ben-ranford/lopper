@@ -1076,6 +1076,12 @@ func findPHPRegionEnd(text string, offset int) (int, int) {
 		if isPHPRegionCloseTagAt(text, offset, state) {
 			return offset, offset + len("?>")
 		}
+		if state == phpStateDoubleQuote || state == phpStateBacktick {
+			if next, _ := scanDynamicInterpolationAt(text, offset); next > offset {
+				offset = next
+				continue
+			}
+		}
 		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
 			if nextOffset, ok := skipHeredocNowdocBody(text, offset); ok {
 				offset = nextOffset

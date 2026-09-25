@@ -72,7 +72,7 @@ func TestDynamicInterpolationIndirectVariables(t *testing.T) {
 }
 
 func TestDynamicInterpolationNestedExpressions(t *testing.T) {
-	for _, expression := range []string{`{$arr[$type::$$property]}`, `{$arr[class_exists($name)]}`, `{$arr[0]} {$arr[class_exists($name)]}`} {
+	for _, expression := range []string{`{$arr[$type::$$property]}`, `{$arr[class_exists($name)]}`, `{$arr[(new $type)::X]}`, `{$a["?>"][class_exists($x)]}`, `{$arr[0]} {$arr[class_exists($name)]}`} {
 		for _, source := range []string{
 			`<?php echo "` + expression + `";`,
 			"<?php echo `" + expression + "`;",
@@ -86,11 +86,22 @@ func TestDynamicInterpolationNestedExpressions(t *testing.T) {
 	for _, source := range []string{
 		`<?php echo "{$arr['class_exists($name)']}";`,
 		`<?php echo "{$arr['$type::$$property']}";`,
+		`<?php echo "{$arr['new $type']}";`,
 		`<?php /* "{$arr[$type::$$property]}" */`,
 	} {
 		if hasDynamicPatterns([]byte(source), "source.php", false) {
 			t.Errorf("literal nested interpolation detected: %q", source)
 		}
+	}
+}
+
+func TestFindPHPRegionEndSkipsCloseTagInsideNestedInterpolationString(t *testing.T) {
+	source := `<?php echo "{$a["?>"][class_exists($x)]}"; ?>html`
+	codeStart := strings.Index(source, "<?php") + len("<?php")
+	wantEnd := strings.LastIndex(source, "?>")
+	end, next := findPHPRegionEnd(source, codeStart)
+	if end != wantEnd || next != wantEnd+len("?>") {
+		t.Fatalf("PHP region ended at (%d, %d), want (%d, %d)", end, next, wantEnd, wantEnd+len("?>"))
 	}
 }
 
