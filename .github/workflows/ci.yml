@@ -194,6 +194,7 @@ jobs:
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
+            export DUPLICATION_BASE="${MEMORY_BENCH_BASE}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
@@ -815,6 +816,7 @@ jobs:
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
+            export DUPLICATION_BASE="${MEMORY_BENCH_BASE}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then

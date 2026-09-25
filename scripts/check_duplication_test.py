@@ -71,6 +71,29 @@ class DuplicationRunnerTest(unittest.TestCase):
                 ("foo1.go", 1), ("foo1.go", 2), ("foo1.go", 3),
             })
 
+    def test_renamed_go_files_only_count_added_lines(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("original.go", "package fixture\nvar A = 1\nvar B = 2\nvar C = 3\nvar D = 4\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        self.git("mv", "original.go", "renamed.go")
+        self.write("renamed.go", "package fixture\nvar A = 1\nvar B = 2\nvar C = 3\nvar D = 4\nvar Added = 5\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {("renamed.go", 6)})
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_changed_go_files_are_analyzed(self):
+        self.git("checkout", "-qb", "feature")
+        (self.repo / "typed.go").symlink_to("original.go")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "typed.go").unlink()
+        self.write("typed.go", "package fixture\nvar Added = 1\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {("typed.go", 1), ("typed.go", 2)})
+
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
         self.write("unrelated.go", "package unrelated\n")
