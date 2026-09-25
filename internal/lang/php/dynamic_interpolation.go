@@ -21,7 +21,7 @@ func advancePHPDynamicInterpolation(text string, offset int, state *phpCodeState
 		}
 	}
 	if *state == phpStateDoubleQuote || *state == phpStateBacktick {
-		if next, dynamic := scanDynamicInterpolationAt(text, offset); next > offset {
+		if next, dynamic, _ := scanDynamicInterpolationAt(text, offset); next > offset {
 			return next, dynamic
 		}
 	}
@@ -52,7 +52,7 @@ func hasDynamicHeredocBody(text string) bool {
 			offset++
 			continue
 		}
-		if next, dynamic := scanDynamicInterpolationAt(text, offset); next > offset {
+		if next, dynamic, _ := scanDynamicInterpolationAt(text, offset); next > offset {
 			if dynamic {
 				return true
 			}
@@ -64,11 +64,23 @@ func hasDynamicHeredocBody(text string) bool {
 
 // Return the end of the examined expression even when it is not dynamic.
 // Nested or unterminated fragments must not rescan the same suffix repeatedly.
-func scanDynamicInterpolationAt(text string, offset int) (int, bool) {
-	if offset+1 >= len(text) || text[offset] != '{' || text[offset+1] != '$' {
-		return offset, false
+// The final result reports a PHP close tag in expression code or a line comment.
+func scanDynamicInterpolationAt(text string, offset int) (int, bool, bool) {
+	start := phpInterpolationExpressionStart(text, offset)
+	if start == offset {
+		return offset, false, false
 	}
-	return scanPHPInterpolationExpression(text, offset+1)
+	return scanPHPInterpolationExpression(text, start)
+}
+
+func phpInterpolationExpressionStart(text string, offset int) int {
+	if strings.HasPrefix(text[offset:], "{$") {
+		return offset + 1
+	}
+	if strings.HasPrefix(text[offset:], "${") {
+		return offset + 2
+	}
+	return offset
 }
 
 type interpolationQuoteFrame struct {
@@ -79,12 +91,15 @@ type interpolationQuoteFrame struct {
 // Scan each interpolation expression once. Nested interpolations temporarily
 // leave their containing quote and resume it after the matching brace, so
 // quotes inside nested comments cannot corrupt the surrounding lexical state.
-func scanPHPInterpolationExpression(text string, offset int) (int, bool) {
+func scanPHPInterpolationExpression(text string, offset int) (int, bool, bool) {
 	depth := 1
 	state := phpStateCode
 	var quotes []interpolationQuoteFrame
 	dynamic := false
 	for offset < len(text) {
+		if isPHPRegionCloseTagAt(text, offset, state) {
+			return offset, dynamic, true
+		}
 		if state == phpStateCode {
 			if next, found := scanDynamicInterpolationToken(text, offset); next > offset {
 				dynamic = dynamic || found
@@ -100,7 +115,7 @@ func scanPHPInterpolationExpression(text string, offset int) (int, bool) {
 				depth--
 				offset++
 				if depth == 0 {
-					return offset, dynamic
+					return offset, dynamic, false
 				}
 				if len(quotes) > 0 && depth == quotes[len(quotes)-1].resumeDepth {
 					state = quotes[len(quotes)-1].state
@@ -108,16 +123,17 @@ func scanPHPInterpolationExpression(text string, offset int) (int, bool) {
 				}
 				continue
 			}
-		} else if (state == phpStateDoubleQuote || state == phpStateBacktick) && offset+1 < len(text) && text[offset] == '{' && text[offset+1] == '$' {
+		} else if (state == phpStateDoubleQuote || state == phpStateBacktick) && phpInterpolationExpressionStart(text, offset) > offset {
+			next := phpInterpolationExpressionStart(text, offset)
 			quotes = append(quotes, interpolationQuoteFrame{state: state, resumeDepth: depth})
 			depth++
 			state = phpStateCode
-			offset++
+			offset = next
 			continue
 		}
 		offset = advancePHPCodeState(text, offset, &state)
 	}
-	return len(text), dynamic
+	return len(text), dynamic, false
 }
 
 func hasDynamicInterpolationExpression(expression string) bool {
