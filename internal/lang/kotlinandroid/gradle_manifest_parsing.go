@@ -69,7 +69,7 @@ func parseBuildFilesWithPath(repoPath string, parser func(path, content string) 
 	seen := make(map[string]struct{})
 	descriptors := make([]dependencyDescriptor, 0)
 	var parseWarnings []string
-	discovery, walkErr := discoverBuildFiles(repoPath, func(path, content string) {
+	discovery, walkErr := streamBuildFiles(repoPath, func(path, content string) {
 		items, warnings := parser(path, content)
 		parseWarnings = append(parseWarnings, warnings...)
 		for _, descriptor := range detachGradleDescriptors(items) {
@@ -92,4 +92,18 @@ func appendManifestDescriptor(descriptors []dependencyDescriptor, seen map[strin
 	seen[key] = struct{}{}
 	descriptor.FromManifest = true
 	return append(descriptors, descriptor)
+}
+
+func parseGradleManifestFiles(files []discoveredGradleFile, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
+	seen := make(map[string]struct{})
+	descriptors := make([]dependencyDescriptor, 0)
+	var warnings []string
+	for _, file := range files {
+		items, parseWarnings := parseGradleDependencyContentWithCatalog(file.Path, file.Content, catalogResolver)
+		warnings = append(warnings, parseWarnings...)
+		for _, descriptor := range detachGradleDescriptors(items) {
+			descriptors = appendManifestDescriptor(descriptors, seen, descriptor)
+		}
+	}
+	return descriptors, shared.DedupeWarnings(warnings)
 }
