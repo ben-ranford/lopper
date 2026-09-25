@@ -316,16 +316,7 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
-	scopeMode, err := parseScopeMode(args.ScopeMode)
-	if err != nil {
-		return AnalysisMutationRequest{}, err
-	}
-	analysisArgs := analysisArgsFromMutation(args)
-	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholds(repoPath, analysisArgs)
-	if err != nil {
-		return AnalysisMutationRequest{}, err
-	}
-	features, err := s.resolveFeatures(loadResult.Features, args.EnableFeatures, args.DisableFeatures)
+	prepared, err := s.resolveAnalysisOptions(repoPath, dependency, topN, analysisArgsFromMutation(args))
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
@@ -337,20 +328,20 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 		RepoPath:         repoPath,
 		Dependency:       dependency,
 		TopN:             topN,
-		ScopeMode:        scopeMode,
-		Language:         languageOrDefault(args.Language),
-		ConfigPath:       strings.TrimSpace(loadResult.ConfigPath),
-		IncludePatterns:  mergeStringOptions(loadResult.Scope.Include, args.Include),
-		ExcludePatterns:  mergeStringOptions(loadResult.Scope.Exclude, args.Exclude),
+		ScopeMode:        prepared.scopeMode,
+		Language:         prepared.language,
+		ConfigPath:       prepared.configPath,
+		IncludePatterns:  prepared.includePatterns,
+		ExcludePatterns:  prepared.excludePatterns,
 		CacheEnabled:     cacheEnabled(args.CacheEnabled),
 		CachePath:        strings.TrimSpace(args.CachePath),
 		CacheReadOnly:    args.CacheReadOnly,
-		RuntimeProfile:   runtimeProfileOrDefault(args.RuntimeProfile),
-		RuntimeTracePath: strings.TrimSpace(args.RuntimeTracePath),
-		Features:         features,
-		Thresholds:       thresholdsValue,
-		PolicySources:    policySources,
-		PolicyTrace:      policyTrace,
+		RuntimeProfile:   prepared.runtimeProfile,
+		RuntimeTracePath: prepared.runtimeTracePath,
+		Features:         prepared.featureSet,
+		Thresholds:       prepared.thresholds,
+		PolicySources:    prepared.policySources,
+		PolicyTrace:      prepared.policyTrace,
 	}, nil
 }
 
