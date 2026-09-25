@@ -19,88 +19,97 @@ func TestStavePreferencePromptChoicesAndInputHandoff(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"t\nquit\n", "stave"}, {"Keep current\nquit\n", "legacy"}, {"\nquit\n", ""}, {"later\nquit\n", ""}, {"invalid\ntry\nquit\n", "stave"},
 	} {
-		t.Run(tc.input, func(t *testing.T) {
-			master, slave, err := pty.Open()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if err := master.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
-			defer func() {
-				if err := slave.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
-			done := make(chan struct{})
-			var choice string
-			var promptErr error
-			var output bytes.Buffer
-			go func() { choice, promptErr = PromptPreference(context.Background(), slave, &output); close(done) }()
-			if _, err := master.Write([]byte(tc.input)); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-done:
-			case <-time.After(3 * time.Second):
-				t.Fatal("prompt blocked")
-			}
-			if promptErr != nil || choice != tc.want {
-				t.Fatalf("choice=%q err=%v", choice, promptErr)
-			}
-			var remaining [5]byte
-			if _, err := io.ReadFull(slave, remaining[:]); err != nil {
-				t.Fatal(err)
-			}
-			if string(remaining[:]) != "quit\n" {
-				t.Fatalf("lost UI command %q", remaining)
-			}
-			if !strings.Contains(output.String(), "preview") {
-				t.Fatalf("missing explanation %q", output.String())
-			}
-		})
+		t.Run(tc.input, func(t *testing.T) { checkPreferencePromptHandoff(t, tc.input, tc.want) })
+	}
+}
+
+func checkPreferencePromptHandoff(t *testing.T, input, want string) {
+	t.Helper()
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := master.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	defer func() {
+		if err := slave.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	done := make(chan struct{})
+	var choice string
+	var promptErr error
+	var output bytes.Buffer
+	go func() { choice, promptErr = PromptPreference(context.Background(), slave, &output); close(done) }()
+	if _, err := master.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("prompt blocked")
+	}
+	if promptErr != nil || choice != want {
+		t.Fatalf("choice=%q err=%v", choice, promptErr)
+	}
+	var remaining [5]byte
+	if _, err := io.ReadFull(slave, remaining[:]); err != nil {
+		t.Fatal(err)
+	}
+	if string(remaining[:]) != "quit\n" {
+		t.Fatalf("lost UI command %q", remaining)
+	}
+	if !strings.Contains(output.String(), "preview") {
+		t.Fatalf("missing explanation %q", output.String())
 	}
 }
 
 func TestStavePreferencePromptCancellationAndEOF(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	for _, eof := range []bool{false, true} {
-		master, slave, err := pty.Open()
-		if err != nil {
+		checkPreferencePromptExit(t, eof)
+	}
+}
+
+func checkPreferencePromptExit(t *testing.T, eof bool) {
+	t.Helper()
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	ready := &preferencePromptReady{ready: make(chan struct{})}
+	go func() { _, err := PromptPreference(ctx, slave, ready); done <- err }()
+	<-ready.ready
+	if eof {
+		if _, err := master.Write([]byte{4}); err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		ready := &preferencePromptReady{ready: make(chan struct{})}
-		go func() { _, err := PromptPreference(ctx, slave, ready); done <- err }()
-		<-ready.ready
-		if eof {
-			if _, err := master.Write([]byte{4}); err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			cancel()
-		}
-		select {
-		case err := <-done:
-			if eof && !errors.Is(err, io.EOF) {
-				t.Fatalf("EOF=%v", err)
-			}
-			if !eof && !errors.Is(err, context.Canceled) {
-				t.Fatalf("cancel=%v", err)
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatal("prompt blocked")
-		}
+	} else {
 		cancel()
-		if err := master.Close(); err != nil {
-			t.Error(err)
+	}
+	select {
+	case err := <-done:
+		want := context.Canceled
+		if eof {
+			want = io.EOF
 		}
-		if err := slave.Close(); err != nil {
-			t.Error(err)
+		if !errors.Is(err, want) {
+			t.Fatalf("exit=%v, want %v", err, want)
 		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("prompt blocked")
+	}
+	cancel()
+	if err := master.Close(); err != nil {
+		t.Error(err)
+	}
+	if err := slave.Close(); err != nil {
+		t.Error(err)
 	}
 }
 
