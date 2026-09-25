@@ -2032,26 +2032,6 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 }
 
 func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
-	requireMetadataPath := func(t *testing.T, repo, wantPath string) {
-		t.Helper()
-		info, err := loadGoModuleInfo(repo)
-		if err != nil {
-			t.Fatalf("loadGoModuleInfo: %v", err)
-		}
-		if info.ModulePath != wantPath {
-			t.Fatalf("module path = %q, want %q", info.ModulePath, wantPath)
-		}
-		if wantPath == "" {
-			if len(info.LocalModulePaths) != 0 {
-				t.Fatalf("expected no trusted local module paths, got %#v", info.LocalModulePaths)
-			}
-			return
-		}
-		if !slices.Contains(info.LocalModulePaths, wantPath) {
-			t.Fatalf("expected trusted local module path %q in %#v", wantPath, info.LocalModulePaths)
-		}
-	}
-
 	for name, fixture := range map[string]struct {
 		content         string
 		wantTrustedPath bool
@@ -2078,10 +2058,10 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 				t.Fatalf("analyse oversized go.mod fixture: %v", err)
 			}
 			if fixture.wantTrustedPath {
-				requireMetadataPath(t, repo, "example.com/root")
+				requireGoModuleMetadataPath(t, repo, "example.com/root")
 				return
 			}
-			requireMetadataPath(t, repo, "")
+			requireGoModuleMetadataPath(t, repo, "")
 		})
 	}
 
@@ -2090,7 +2070,27 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
 		t.Fatalf("analyse scanner-cap fixture: %v", err)
 	}
-	requireMetadataPath(t, repo, "")
+	requireGoModuleMetadataPath(t, repo, "")
+}
+
+func requireGoModuleMetadataPath(t *testing.T, repo, wantPath string) {
+	t.Helper()
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != wantPath {
+		t.Fatalf("module path = %q, want %q", info.ModulePath, wantPath)
+	}
+	if wantPath == "" {
+		if len(info.LocalModulePaths) != 0 {
+			t.Fatalf("expected no trusted local module paths, got %#v", info.LocalModulePaths)
+		}
+		return
+	}
+	if !slices.Contains(info.LocalModulePaths, wantPath) {
+		t.Fatalf("expected trusted local module path %q in %#v", wantPath, info.LocalModulePaths)
+	}
 }
 
 func TestOversizedRootGoModRejectsModuleDirectiveInsideRequireBlock(t *testing.T) {
