@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -564,7 +565,7 @@ func TestMergeSortAndPriorityHelperBranches(t *testing.T) {
 		t.Fatalf("expected recommendation tie-break sort by code, got %#v", recs)
 	}
 
-	if rank := recommendationPriorityRank("unknown"); rank != 3 {
+	if rank := report.RecommendationPriorityRank("unknown"); rank != 3 {
 		t.Fatalf("expected unknown priority rank 3, got %d", rank)
 	}
 }
@@ -727,5 +728,31 @@ func TestMergeRuntimeUsage(t *testing.T) {
 	}
 	if len(merged.Modules) != 2 || len(merged.TopSymbols) != 2 {
 		t.Fatalf("expected merged runtime modules/symbols, got %#v", merged)
+	}
+}
+
+func TestMergeRecommendationsNormalizedPriorityTies(t *testing.T) {
+	left := []report.Recommendation{
+		{Code: "b", Priority: " HIGH "}, {Code: "f", Priority: "unknown"},
+		{Code: "d", Priority: "low"}, {Code: "same", Priority: "high", Message: "old"},
+	}
+	right := []report.Recommendation{
+		{Code: "a", Priority: "high"}, {Code: "c", Priority: "Medium"},
+		{Code: "e", Priority: ""}, {Code: "same", Priority: "LOW", Message: "replacement"},
+	}
+	for range 20 {
+		got := mergeRecommendations(left, right)
+		want := []string{"a", "b", "c", "d", "same", "e", "f"}
+		if len(got) != len(want) {
+			t.Fatalf("recommendations = %#v, want %d entries", got, len(want))
+		}
+		for i, code := range want {
+			if got[i].Code != code {
+				t.Fatalf("recommendation %d = %q, want %q", i, got[i].Code, code)
+			}
+		}
+		if !reflect.DeepEqual(got[4], right[3]) {
+			t.Fatalf("merge must retain the right-hand recommendation unchanged: %#v", got[4])
+		}
 	}
 }

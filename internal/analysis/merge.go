@@ -429,24 +429,13 @@ func mergeTopSymbols(left, right []report.SymbolUsage) []report.SymbolUsage {
 	return items
 }
 
-func recommendationPriorityRank(priority string) int {
-	switch strings.ToLower(strings.TrimSpace(priority)) {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	case "low":
-		return 2
-	default:
-		return 3
-	}
-}
-
 func recommendationLess(left, right report.Recommendation) bool {
-	if left.Priority == right.Priority {
+	leftRank := report.RecommendationPriorityRank(left.Priority)
+	rightRank := report.RecommendationPriorityRank(right.Priority)
+	if leftRank == rightRank {
 		return left.Code < right.Code
 	}
-	return recommendationPriorityRank(left.Priority) < recommendationPriorityRank(right.Priority)
+	return leftRank < rightRank
 }
 
 func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {

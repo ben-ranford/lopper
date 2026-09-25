@@ -2,9 +2,9 @@ package js
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -58,12 +58,7 @@ func buildRecommendations(dependency string, dep report.DependencyReport, minUsa
 		}
 	}
 
-	sort.Slice(recs, func(i, j int) bool {
-		if recs[i].Priority == recs[j].Priority {
-			return recs[i].Code < recs[j].Code
-		}
-		return recommendationPriorityRank(recs[i].Priority) < recommendationPriorityRank(recs[j].Priority)
-	})
+	shared.SortRecommendations(recs, report.RecommendationPriorityRank)
 	return recs
 }
 
@@ -83,17 +78,6 @@ func importUsageFlags(dependency string, dep report.DependencyReport) (bool, boo
 		}
 	}
 	return rootImportUsed, subpathImportUsed, usesWildcardLike
-}
-
-func recommendationPriorityRank(priority string) int {
-	switch priority {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	default:
-		return 2
-	}
 }
 
 func replacementThreshold(minUsagePercentForRecommendations int) int {

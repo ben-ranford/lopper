@@ -390,9 +390,6 @@ func TestLowerLevelHelpers(t *testing.T) {
 	if resolveMinUsageRecommendationThreshold(nil) != thresholds.Defaults().MinUsagePercentForRecommendations {
 		t.Fatalf("expected default threshold resolution")
 	}
-	if recommendationPriorityRank("high") != 0 || recommendationPriorityRank("medium") != 1 || recommendationPriorityRank("low") != 2 {
-		t.Fatalf("unexpected recommendation priority rank")
-	}
 }
 
 func TestSummarizeUnresolvedLimitAndSort(t *testing.T) {
