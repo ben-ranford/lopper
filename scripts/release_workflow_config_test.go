@@ -190,8 +190,7 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
 	checkout := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release-please PR")
 	trustedTooling := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout trusted release-notes tooling")
@@ -258,8 +257,7 @@ func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangel
 func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/graduate-feature.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/graduate-feature.yml")
 
 	milestone, ok := workflow.On.WorkflowDispatch.Inputs["milestone"]
 	if !ok {
@@ -289,8 +287,7 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/feature-flag-enforcement.yml")
 	checkout := workflowStepByName(t, workflow.Jobs, "enforce", "Checkout")
 	if checkout.With["fetch-depth"] != "0" {
 		t.Fatal("feature flag enforcement checkout must fetch complete base history for stale PRs")
@@ -385,8 +382,7 @@ func TestGraduateFeatureWorkflowCreatesTemplateCompatiblePRBody(t *testing.T) {
 func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
 	if preparation.Outputs["trusted_main_sha"] != "${{ steps.trusted_main.outputs.trusted_main_sha }}" {
@@ -439,8 +435,7 @@ func TestReleaseWorkflowPinsTrustedMainToWorkflowRevision(t *testing.T) {
 func TestReleaseWorkflowManualDispatchUsesResolvedSourceRef(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	tag, ok := workflow.On.WorkflowDispatch.Inputs["tag"]
 	if !ok {
@@ -603,8 +598,7 @@ func TestReleaseWorkflowManualReleaseRequiresExistingReleaseAfterExplicit404(t *
 func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHistoryPush(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	releasePlease := workflowStepByName(t, workflow.Jobs, "prepare-release", "Run release-please")
 	if got := releasePlease.With["token"]; got != "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
@@ -629,19 +623,14 @@ func TestReleaseWorkflowBuildsVSIXFromFreshArtifactStaging(t *testing.T) {
 	t.Parallel()
 	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	const jobName = "build-vscode-extension"
 	build := workflowJobByName(t, workflow.Jobs, jobName)
-	syncIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Sync VS Code extension version")
-	resetIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Reset VS Code extension artifact staging")
-	packageIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Package VS Code extension")
-	validateIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Validate VS Code extension artifact")
-	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, jobName, "Upload VS Code extension artifact")
-	if resetIndex != syncIndex+1 || packageIndex != resetIndex+1 || validateIndex != packageIndex+1 || uploadIndex != validateIndex+1 {
-		t.Fatal("VS Code release packaging must sync, reset, package, validate, and upload in one contiguous sequence")
-	}
+	indices := assertWorkflowContiguousSteps(t, ".github/workflows/release.yml", workflow.Jobs, jobName,
+		"Sync VS Code extension version", "Reset VS Code extension artifact staging",
+		"Package VS Code extension", "Validate VS Code extension artifact", "Upload VS Code extension artifact")
+	syncIndex, resetIndex, packageIndex, validateIndex, uploadIndex := indices[0], indices[1], indices[2], indices[3], indices[4]
 
 	syncStep := build.Steps[syncIndex]
 	assertWorkflowStepRunContainsAll(t, syncStep, "VS Code extension version sync", []string{
@@ -705,8 +694,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
 	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	reportPreparation := workflowJobByName(t, workflow.Jobs, "prepare-release-feature-report")
 	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release", "verify-release-source-ci"})
@@ -924,8 +912,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 func TestReleaseWorkflowUsesCanonicalPublicationManifestPaths(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	assembler := workflowStepByName(t, workflow.Jobs, "prepare-release-publication", "Stage bounded release publication inputs")
 	publisher := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
@@ -974,8 +961,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	t.Parallel()
 	const hardenedShell = "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}"
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/rolling.yml")
 
 	darwinProducer := workflowJobByName(t, workflow.Jobs, "build-darwin-amd64-rolling")
 	darwinCheckout := workflowStepByName(t, workflow.Jobs, "build-darwin-amd64-rolling", "Checkout rolling source")
@@ -1576,8 +1562,7 @@ func workflowExpressionReferencesCredential(expression string) bool {
 func TestReleaseWorkflowDownloadsReleaseArtifactsByExactName(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	expectedArtifacts := map[string]string{
 		"Download feature flag release report":         "stable-feature-report",
@@ -1617,8 +1602,7 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
 	}
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-marketplace-toolchain")
 	assertWorkflowJobNeeds(t, preparation, "Marketplace tooling preparation", workflowJobNeeds{"prepare-release"})
@@ -1750,8 +1734,7 @@ func assertMarketplacePreparationGate(t *testing.T, preparation workflowJobConfi
 func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	marketplace := workflowJobByName(t, workflow.Jobs, "publish-marketplace")
 	assertWorkflowJobPermissions(t, marketplace, "Marketplace publication", nil)
@@ -1868,8 +1851,7 @@ func TestReleaseWorkflowPublishesMarketplaceFromValidatedArtifacts(t *testing.T)
 func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
 	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
 	archivePath := writeTarFixture(t, []tarFixtureMember{
@@ -1894,8 +1876,7 @@ func TestMarketplaceToolchainValidatorAcceptsTrustedArchiveShape(t *testing.T) {
 func TestMarketplaceToolchainValidatorRejectsManifestRootShapes(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	validate := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
 	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
 	fixtures := []tarValidatorFixture{
@@ -1925,8 +1906,7 @@ func TestMarketplaceToolchainValidatorRejectsManifestRootShapes(t *testing.T) {
 func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	validate := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
 	validator := embeddedPythonScript(t, validate.Run, `python3 - "${archive_file}" <<'PY'`)
 	archivePath := writeTarFixture(t, []tarFixtureMember{
@@ -1944,8 +1924,7 @@ func TestFeatureHistoryWorktreeValidatorAcceptsHiddenGitArchiveShape(t *testing.
 func TestTarValidatorsRejectNoncanonicalMemberForms(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	marketplaceStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
 	featureHistoryStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Validate prepared trusted feature history worktree")
 
@@ -1984,8 +1963,7 @@ func TestTarValidatorsRejectNoncanonicalMemberForms(t *testing.T) {
 func TestReleaseWorkflowFailsClosedWhenConfiguredMarketplaceTokenDisappears(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	publishStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Publish VS Code extension to Marketplace")
 	cmd := exec.Command("bash", "-c", publishStep.Run)
@@ -2095,8 +2073,7 @@ func marketplaceTokenBindingsInStep(t *testing.T, jobName string, step workflowS
 func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	marketplace := workflowJobByName(t, workflow.Jobs, "publish-marketplace")
 	assertWorkflowJobNeeds(t, marketplace, "Marketplace publication", workflowJobNeeds{"prepare-release", "publish", "prepare-release-publication", "prepare-marketplace-toolchain"})
@@ -2111,8 +2088,7 @@ func TestReleaseWorkflowPublishesMarketplaceAfterGitHubReleaseBoundary(t *testin
 func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	publish := workflowJobByName(t, workflow.Jobs, "publish")
 	workflowJobByName(t, workflow.Jobs, "publish-marketplace")
@@ -2149,8 +2125,7 @@ func TestReleaseWorkflowFinalizesStableReleaseAfterMarketplace(t *testing.T) {
 func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	job := workflowJobByName(t, workflow.Jobs, "finalize-release")
 	assertWorkflowJobNeeds(t, job, "action floating tag job", workflowJobNeeds{"prepare-release", "publish", "publish-marketplace"})
@@ -2243,8 +2218,7 @@ func TestReleaseWorkflowPublishesActionFloatingTags(t *testing.T) {
 func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	workflowText := readConfig(t, ".github/workflows/release.yml")
 
 	gate := workflowJobByName(t, workflow.Jobs, "homebrew-tap-token-gate")
@@ -2283,8 +2257,7 @@ func TestReleaseWorkflowHomebrewUsesGatedThreeJobGraph(t *testing.T) {
 func TestReleaseWorkflowHomebrewValidationIsTokenlessAndImmutable(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	validation := workflow.Jobs["validate-homebrew-tap"]
 	assertWorkflowJobOmitsText(t, validation, "HOMEBREW_TAP_TOKEN", "tap validation job must not receive the tap token")
 	assertWorkflowJobOmitsText(t, validation, "secrets.", "tap validation job must use only public read-only inputs")
@@ -2344,8 +2317,7 @@ func TestReleaseWorkflowHomebrewValidationIsTokenlessAndImmutable(t *testing.T) 
 func TestReleaseWorkflowHomebrewPublicationUsesFreshCredentialScopedClone(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 	publication := workflow.Jobs["update-homebrew-tap"]
 	if publication.Env["SOURCE_SHA"] != "${{ needs.prepare-release.outputs.sha }}" {
 		t.Fatalf("tap publication SOURCE_SHA = %q", publication.Env["SOURCE_SHA"])
@@ -2428,8 +2400,7 @@ func assertWorkflowJobOmitsText(t *testing.T, job workflowJobConfig, forbidden s
 func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history")
 	assertWorkflowJobNeeds(t, preparation, "feature history preparation", workflowJobNeeds{"prepare-release", "finalize-release"})
@@ -2531,8 +2502,7 @@ func TestReleaseWorkflowTransportsFeatureHistoryPatchAcrossJobs(t *testing.T) {
 func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	stampStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history", "Stamp first stable release history")
 	runnerTemp := t.TempDir()
@@ -2593,8 +2563,7 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
 	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
@@ -2691,8 +2660,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 func TestReleaseWorkflowSplitsFeatureHistoryPreparationFromTokenedPush(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
 
 	preparation := workflowJobByName(t, workflow.Jobs, "prepare-feature-release-history-push")
 	assertWorkflowJobNeeds(t, preparation, "feature history push preparation", workflowJobNeeds{"prepare-release", "prepare-feature-release-history"})
@@ -3106,8 +3074,7 @@ func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 func TestRollingDarwinProducerPinsTrustedActions(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/rolling.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/rolling.yml")
 
 	testCases := []struct {
 		stepName string
@@ -3255,16 +3222,11 @@ func TestReleaseArchiveProducersUseFreshExactArtifactStaging(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var workflow workflowConfig
-			readYAMLConfig(t, tc.path, &workflow)
+			workflow := readWorkflowConfig(t, tc.path)
 			job := workflowJobByName(t, workflow.Jobs, tc.jobName)
-			resetIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.resetStepName)
-			buildIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.buildStepName)
-			validateIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.validateStepName)
-			uploadIndex := workflowStepIndexByName(t, workflow.Jobs, tc.jobName, tc.uploadStepName)
-			if buildIndex != resetIndex+1 || validateIndex != buildIndex+1 || uploadIndex != validateIndex+1 {
-				t.Fatal("archive release producer must reset, build, validate, and upload in one contiguous sequence")
-			}
+			indices := assertWorkflowContiguousSteps(t, tc.path, workflow.Jobs, tc.jobName,
+				tc.resetStepName, tc.buildStepName, tc.validateStepName, tc.uploadStepName)
+			resetIndex, validateIndex, uploadIndex := indices[0], indices[2], indices[3]
 
 			resetStep := job.Steps[resetIndex]
 			assertWorkflowStringValues(t, []workflowStringValue{
@@ -5126,8 +5088,7 @@ func TestReleaseOrchestrationImageTagStepsUseSanitizer(t *testing.T) {
 func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	prepare, ok := workflow.Jobs["prepare-ghcr"]
 	if !ok {
@@ -5177,8 +5138,7 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
@@ -5193,8 +5153,7 @@ func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t 
 func TestReleaseSourceCIRunsExactSourceGate(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-source-ci.yml")
 	source, ok := workflow.On.WorkflowCall.Inputs["source_sha"]
 	if !ok {
 		t.Fatal("release source CI must define a source_sha input")
@@ -5332,8 +5291,7 @@ func TestReleaseCallersWaitForExactSourceCIBeforeProducingArtifacts(t *testing.T
 		t.Run(testCase.path, func(t *testing.T) {
 			t.Parallel()
 
-			var workflow workflowConfig
-			readYAMLConfig(t, testCase.path, &workflow)
+			workflow := readWorkflowConfig(t, testCase.path)
 
 			gate := workflowJobByName(t, workflow.Jobs, testCase.gate)
 			assertWorkflowJobNeeds(t, gate, testCase.gate, workflowJobNeeds{testCase.preparation})
@@ -5360,8 +5318,7 @@ func TestReleaseCallersWaitForExactSourceCIBeforeProducingArtifacts(t *testing.T
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	architectures := []ghcrArchitecture{
 		{name: "amd64", platform: "linux/amd64"},
@@ -5532,8 +5489,7 @@ func assertTrustedGHCRManifestPublisher(t *testing.T, workflow workflowConfig) {
 func TestReleaseOrchestrationRequiresIntegrityBoundManifestPayload(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	manifestPayload := workflowStepByName(t, workflow.Jobs, "prepare-ghcr-manifest", "Prepare manifest publication payload")
 	assertWorkflowStepRunContainsAll(t, manifestPayload, "manifest payload preparation", []string{
@@ -5578,8 +5534,7 @@ func TestReleaseOrchestrationRequiresIntegrityBoundManifestPayload(t *testing.T)
 func TestReleaseOrchestrationRequiresDigestPinnedGHCRManifests(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	architectures := []struct {
@@ -5648,8 +5603,7 @@ func TestReleaseOrchestrationRequiresDigestPinnedGHCRManifests(t *testing.T) {
 func TestReleaseOrchestrationDedupesPlatformOCIManifestDescriptorsByDigest(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
 	assertWorkflowStepRunContainsAll(t, validation, "unique OCI image digest validation", []string{
@@ -5661,8 +5615,7 @@ func TestReleaseOrchestrationDedupesPlatformOCIManifestDescriptorsByDigest(t *te
 func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) {
 	t.Parallel()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+	workflow := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
@@ -6155,8 +6108,7 @@ func assertHomebrewTapWorkflowUsesFreshPrivilegedJob(t *testing.T, tc homebrewTa
 func assertHomebrewTapWorkflowSkipsAllJobsWithoutToken(t *testing.T, tc homebrewTapWorkflowCase) {
 	t.Helper()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, tc.workflowPath, &workflow)
+	workflow := readWorkflowConfig(t, tc.workflowPath)
 	workflowText := readConfig(t, tc.workflowPath)
 
 	assertTapTokenGateJob(t, workflow.Jobs, workflowText, tc)
@@ -6456,6 +6408,31 @@ func releaseImageTagScriptCommand(t *testing.T, imageTags string, suffix string)
 	cmd := exec.Command("bash", repoPath(t, "scripts/release-image-tags.sh"))
 	cmd.Env = append(os.Environ(), "IMAGE_NAME=ghcr.io/example/lopper", "IMAGE_TAGS="+imageTags, "IMAGE_ARCH_SUFFIX="+suffix)
 	return cmd
+}
+
+func assertWorkflowContiguousSteps(t *testing.T, path string, jobs map[string]workflowJobConfig, jobName string, names ...string) []int {
+	t.Helper()
+	job := workflowJobByName(t, jobs, jobName)
+	indices, err := workflowContiguousStepIndices(job, names)
+	if err != nil {
+		t.Fatalf("%s job %s: %v", path, jobName, err)
+	}
+	return indices
+}
+
+func workflowContiguousStepIndices(job workflowJobConfig, names []string) ([]int, error) {
+	indices := make([]int, 0, len(names))
+	for _, name := range names {
+		index := slices.IndexFunc(job.Steps, func(step workflowStepConfig) bool { return step.Name == name })
+		if index < 0 {
+			return nil, fmt.Errorf("must define step %q", name)
+		}
+		if len(indices) > 0 && index != indices[len(indices)-1]+1 {
+			return nil, fmt.Errorf("step %q must immediately follow %q", name, names[len(indices)-1])
+		}
+		indices = append(indices, index)
+	}
+	return indices, nil
 }
 
 func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) workflowStepConfig {
@@ -6835,6 +6812,13 @@ func readJSONConfig(t *testing.T, path string, target any) {
 	if err := json.Unmarshal([]byte(data), target); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
+}
+
+func readWorkflowConfig(t *testing.T, path string) workflowConfig {
+	t.Helper()
+	var workflow workflowConfig
+	readYAMLConfig(t, path, &workflow)
+	return workflow
 }
 
 func readYAMLConfig(t *testing.T, path string, target any) {
