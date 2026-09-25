@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,25 @@ func TestCommandErrorFormattingAndUnwrap(t *testing.T) {
 	errWithoutOutput := &commandError{name: "go", args: []string{"test"}, err: errors.New("exit")}
 	if got := errWithoutOutput.Error(); strings.Contains(got, "boom") {
 		t.Fatalf("Error() = %q, want no stale output", got)
+	}
+}
+
+func TestExecRunnerSuccessfulCommandIgnoresStderrDiagnostics(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+
+	script := filepath.Join(t.TempDir(), "go-list-fixture.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'github.com/example/pkg\\n'\nprintf 'go: downloading example/module v1.0.0\\n' >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := (&execRunner{}).Run(context.Background(), "sh", []string{script}, "", nil)
+	if err != nil {
+		t.Fatalf("successful command: %v", err)
+	}
+	if got, want := string(output), "github.com/example/pkg\n"; got != want {
+		t.Fatalf("successful command output = %q, want stdout only %q", got, want)
 	}
 }
 

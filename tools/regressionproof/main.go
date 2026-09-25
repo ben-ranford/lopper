@@ -69,8 +69,9 @@ func (*execRunner) Run(ctx context.Context, name string, args []string, dir stri
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	output := append(stdout.Bytes(), stderr.Bytes()...)
+	output := stdout.Bytes()
 	if err != nil {
+		output = append(append([]byte(nil), output...), stderr.Bytes()...)
 		return output, &commandError{name: name, args: args, output: output, err: err}
 	}
 	return output, nil
