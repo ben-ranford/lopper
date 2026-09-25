@@ -38,27 +38,28 @@ func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, depen
 
 func collectGradleDeclaredDependencyDescriptors(repoPath string) ([]dependencyDescriptor, []dependencyDescriptor, bool, []string) {
 	lockfileMatched := false
+	catalogResolver, catalogWarnings := shared.LoadGradleCatalogResolver(repoPath)
+	manifestDescriptors := make([]dependencyDescriptor, 0)
+	var lockfileDescriptors []dependencyDescriptor
+	var manifestWarnings []string
+	seen := make(map[string]struct{})
 	discovery, walkErr := discoverGradleFiles(repoPath, func(fileName string) bool {
 		if strings.EqualFold(fileName, gradleLockfileName) {
 			lockfileMatched = true
 		}
 		return matchesBuildFile(fileName, []string{buildGradleName, buildGradleKTSName}) || strings.EqualFold(fileName, gradleLockfileName)
-	})
-
-	catalogResolver, catalogWarnings := shared.LoadGradleCatalogResolver(repoPath)
-	manifestFiles := make([]discoveredGradleFile, 0, len(discovery.Files))
-	lockfileFiles := make([]discoveredGradleFile, 0, len(discovery.Files))
-	for _, file := range discovery.Files {
-		switch {
-		case strings.EqualFold(filepath.Base(file.Path), gradleLockfileName):
-			lockfileFiles = append(lockfileFiles, file)
-		default:
-			manifestFiles = append(manifestFiles, file)
+	}, func(path, content string) {
+		if strings.EqualFold(filepath.Base(path), gradleLockfileName) {
+			lockfileDescriptors = append(lockfileDescriptors, detachGradleDescriptors(parseGradleLockfileContent(content))...)
+			return
 		}
-	}
-
-	manifestDescriptors, manifestWarnings := parseGradleManifestFiles(manifestFiles, catalogResolver)
-	lockfileDescriptors := parseGradleLockfileFiles(lockfileFiles)
+		items, warnings := parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
+		manifestWarnings = append(manifestWarnings, warnings...)
+		for _, descriptor := range detachGradleDescriptors(items) {
+			manifestDescriptors = appendManifestDescriptor(manifestDescriptors, seen, descriptor)
+		}
+	})
+	lockfileDescriptors = dedupeDescriptors(lockfileDescriptors)
 
 	warnings := append([]string{}, discovery.Warnings...)
 	warnings = append(warnings, catalogWarnings...)
