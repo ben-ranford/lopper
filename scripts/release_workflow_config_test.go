@@ -2834,6 +2834,9 @@ func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage)
 		if !exists {
 			continue
 		}
+		if strings.TrimSpace(string(raw)) == "null" {
+			return fmt.Errorf("renovate %s review settings must be an object", updateType)
+		}
 		var settings struct {
 			Enabled   *bool           `json:"enabled"`
 			Automerge *bool           `json:"automerge"`
@@ -2880,6 +2883,7 @@ func assertRenovateUpdateTypeReviewSettings(t *testing.T, updateType string) {
 		{name: "explicit review", block: `{"automerge":false}`},
 		{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
 		{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
+		{name: "null block", block: `null`, wantErr: true},
 		{name: "invalid block", block: `true`, wantErr: true},
 	} {
 		t.Run(updateType+"/"+tc.name, func(t *testing.T) {
