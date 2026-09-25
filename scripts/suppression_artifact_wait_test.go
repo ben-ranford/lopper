@@ -33,6 +33,11 @@ func TestSuppressionArtifactWait(t *testing.T) {
 		{"stale-cancelled", "accepted:42:99"},
 		{"same-second-replacement", "accepted:42:99"},
 		{"empty-run-association", "accepted:42:99"},
+		{"empty-run-association-same-second", "accepted:42:99"},
+		{"empty-run-association-same-second-old-retarget", "accepted:42:99"},
+		{"empty-run-association-same-second-retarget", "Timed out"},
+		{"empty-run-association-same-second-auto-retarget", "Timed out"},
+		{"empty-run-association-same-second-retarget-payload", "Timed out"},
 		{"stale-empty-run-association", "Timed out"},
 		{"empty-run-association-missing", "Timed out"},
 		{"empty-run-association-failure", "Timed out"},
@@ -83,17 +88,19 @@ global.setTimeout = (callback, ms) => {
 };
 const outputs = {};
 const eventUpdatedAt = scenario === 'stale-empty-run-association' ? start + 1000 :
- scenario === 'same-second-ambiguous-failure' ? start :
+ scenario === 'same-second-ambiguous-failure' || scenario.startsWith('empty-run-association-same-second') ? start :
  scenario === 'same-second-replacement' ? start - 1000 : start - 90000;
 const context = {repo: {owner: 'owner', repo: 'repo'}, payload: {pull_request: {
  number: 7, updated_at: new Date(eventUpdatedAt).toISOString(),
  head: {sha: 'expected', ref: 'branch', repo: {full_name: 'fork/repo'}},
  base: {sha: 'base', ref: 'main', repo: {full_name: 'owner/repo'}}
 }}};
+if (scenario === 'empty-run-association-same-second-retarget-payload') context.payload.changes = {base: {ref: {from: 'old'}}};
 const core = {setOutput: (key, value) => { outputs[key] = value; }};
 const github = {
  rest: {actions: {listWorkflowRuns: 'runs', listWorkflowRunArtifacts: 'artifacts'},
   repos: {listPullRequestsAssociatedWithCommit: 'associated'},
+  issues: {listEventsForTimeline: 'timeline'},
   pulls: {get: async ({pull_number}) => {
    pullGets++;
    if (pull_number !== 7) throw new Error('wrong PR');
@@ -101,6 +108,18 @@ const github = {
   }}},
  paginate: async (method, args) => {
   if (args.owner !== 'owner' || args.repo !== 'repo') throw new Error('wrong repository');
+  if (method === 'timeline') {
+   if (args.issue_number !== 7 || args.per_page !== 100) throw new Error('wrong timeline query');
+   if (scenario === 'empty-run-association-same-second-retarget') {
+    return [{event: 'base_ref_changed', created_at: new Date(start).toISOString()}];
+   }
+   if (scenario === 'empty-run-association-same-second-auto-retarget') {
+    return [{event: 'automatic_base_change_succeeded', created_at: new Date(start).toISOString()}];
+   }
+   return scenario === 'empty-run-association-same-second-old-retarget' ?
+    [{event: 'base_ref_changed', created_at: new Date(start - 1000).toISOString()}] :
+    [{event: 'labeled', created_at: new Date(start).toISOString()}];
+  }
   if (method === 'associated') {
    associationLookups++;
    if (args.commit_sha !== 'expected') throw new Error('wrong associated commit');
