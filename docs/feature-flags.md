@@ -104,7 +104,9 @@ Policy-pack traversal and list semantics are unchanged: later packs and local co
 | `analyse`, `pr-review` | Discovered config or `--config`, including policy packs | Yes; CLI wins per feature |
 | `tui`, bare `lopper` | Discovered config under the selected repository; `tui --config` accepts absolute or repository-relative paths | Yes for `tui`; bare `lopper` uses the current repository |
 | `dashboard` | Repository `features` are not loaded for activation; its `--config` selects dashboard configuration | Yes |
-| `baseline`, `advisory`, `profile`, `mcp` | Repository `features` are not loaded for activation | Yes on their supported operations |
+| `baseline`, `advisory`, `profile` | Repository `features` are not loaded for activation | Yes on their supported operations |
+| `mcp` server startup | Repository `features` are not loaded for server activation | Yes; controls server startup features |
+| MCP tool calls | Analysis, codemod apply, and baseline save load repository/policy-pack features; `list_languages` does so when `repoPath` or `configPath` is supplied. Dashboard baseline save does not load repository features. | Tool arguments `enableFeatures` and `disableFeatures` are combined with config; opposing choices produce a conflict rather than overriding config |
 | `features` | Reports build/channel/release defaults, not repository configuration | No enable/disable overrides |
 
 TUI discovery uses `.lopper.yml`, `.lopper.yaml`, then `lopper.json`. Invalid discovered files and missing explicit paths fail before the UI starts. Config support does not introduce prompts or write preferences. For Stave, an effective config enable counts as explicit consent just like `--enable-feature`; defaults alone never select the preview. See [Stave activation and rollback](stave-tui-preview.md).
