@@ -28,22 +28,30 @@ dependencies {
 		t.Fatalf("create broken build symlink: %v", err)
 	}
 
-	discovery, walkErr := discoverBuildFiles(repo, buildGradleName, buildGradleKTSName)
+	catalogResolver, catalogWarnings := shared.LoadGradleCatalogResolver(repo)
+	if len(catalogWarnings) != 0 {
+		t.Fatalf("catalog warnings: %v", catalogWarnings)
+	}
+	var descriptors []dependencyDescriptor
+	var parseWarnings []string
+	readCount := 0
+	discovery, walkErr := discoverBuildFiles(repo, func(path, content string) {
+		readCount++
+		descriptors, parseWarnings = parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
+		for i := range descriptors {
+			descriptors[i].FromManifest = true
+		}
+	}, buildGradleName, buildGradleKTSName)
 	if walkErr != nil {
 		t.Fatalf("discover build files: %v", walkErr)
 	}
-	if len(discovery.Files) != 1 {
-		t.Fatalf("expected one readable build file, got %#v", discovery.Files)
+	if readCount != 1 {
+		t.Fatalf("expected one readable build file, got %#v", readCount)
 	}
 	if len(discovery.Warnings) == 0 {
 		t.Fatalf("expected unreadable build warning from discovery stage")
 	}
 
-	catalogResolver, catalogWarnings := shared.LoadGradleCatalogResolver(repo)
-	if len(catalogWarnings) != 0 {
-		t.Fatalf("unexpected catalog warnings: %#v", catalogWarnings)
-	}
-	descriptors, parseWarnings := parseGradleManifestFiles(discovery.Files, catalogResolver)
 	if len(parseWarnings) != 0 {
 		t.Fatalf("unexpected manifest parse warnings: %#v", parseWarnings)
 	}
@@ -67,21 +75,25 @@ func TestGradleLockfileDiscoveryAndParsingStages(t *testing.T) {
 		t.Fatalf("create broken lock symlink: %v", err)
 	}
 
-	discovery, walkErr := discoverGradleLockfiles(repo)
+	var descriptors []dependencyDescriptor
+	readCount := 0
+	discovery, walkErr := discoverGradleLockfiles(repo, func(_ string, content string) {
+		readCount++
+		descriptors = parseGradleLockfileContent(content)
+	})
 	if walkErr != nil {
 		t.Fatalf("discover lockfiles: %v", walkErr)
 	}
 	if !discovery.Matched {
 		t.Fatalf("expected lockfile discovery to record a matched entry")
 	}
-	if len(discovery.Files) != 1 {
-		t.Fatalf("expected one readable lockfile, got %#v", discovery.Files)
+	if readCount != 1 {
+		t.Fatalf("expected one readable lockfile, got %#v", readCount)
 	}
 	if len(discovery.Warnings) == 0 {
 		t.Fatalf("expected unreadable lockfile warning from discovery stage")
 	}
 
-	descriptors := parseGradleLockfileFiles(discovery.Files)
 	if len(descriptors) != 1 {
 		t.Fatalf("expected one lockfile descriptor, got %#v", descriptors)
 	}
