@@ -542,3 +542,7 @@ test-tui: build
 
 tui-demo: build
 	$(BIN_DIR)/$(BINARY_NAME) tui --repo testdata/ui/pty-fixture --language js-ts --sort name --page-size 1
+
+.PHONY: source-size-report
+source-size-report:
+	python3 scripts/source_size_report.py --base "$(DUPLICATION_BASE)" --dupl-version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)"

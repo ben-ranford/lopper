@@ -175,3 +175,7 @@ Please include reproduction steps and environment details for bugs.
 - `internal/report`: report model, formatting, baseline math
 - `internal/ui`: TUI summary/detail
 - `internal/runtime`: runtime trace parsing and annotation
+
+Repository size and advisory test-clone reports are available with
+`make --silent source-size-report DUPLICATION_BASE=origin/main`. See
+[the methodology and helper ownership guidance](docs/source-size-report.md).
