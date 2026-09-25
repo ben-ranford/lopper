@@ -16,7 +16,7 @@ func TestInstalledPreCommitRunsStagedCI(t *testing.T) {
 	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nexit 99\n", 0o755)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git diff HEAD^ HEAD -- sample.go | grep -F 'return 2'\n\t@printf ci >"+sentinel+"\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
+	testutil.RunGit(t, repoDir, "add", "sample.go", "Makefile")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@exit 99\n")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "full CI")
 	if err != nil {
@@ -32,7 +32,7 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo fixture-ci-failed; exit 42\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go", "Makefile")
+	testutil.RunGit(t, repoDir, "add", "sample.go", "Makefile")
 	before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "failing CI")
 	if err == nil || !strings.Contains(output, "fixture-ci-failed") {
@@ -51,7 +51,7 @@ func TestInstalledPreCommitIgnoresCheckoutHooks(t *testing.T) {
 			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 			writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\nprintf 'ci:\\n\\t@true\\n' > Makefile\nexit "+hookExit+"\n", 0o755)
 			writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo staged-ci-failed; exit 42\n")
-			runCommand(t, repoDir, "git", "add", "Makefile")
+			testutil.RunGit(t, repoDir, "add", "Makefile")
 			before := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD")
 			output, err := hookCommand(repoDir, "git", "commit", "-m", "staged CI failure")
 			if err == nil || !strings.Contains(output, "staged-ci-failed") {
@@ -76,11 +76,11 @@ func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
 func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${LOPPER_HOOK_AMEND-}\"\n\t@test \"$$(git rev-parse HEAD^)\" = \"$$(git rev-parse before-amend^)\"\n\t@! git merge-base --is-ancestor before-amend HEAD\n")
-	runCommand(t, repoDir, "git", "add", "Makefile")
-	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "amend fixture")
-	runCommand(t, repoDir, "git", "tag", "before-amend")
+	testutil.RunGit(t, repoDir, "add", "Makefile")
+	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "amend fixture")
+	testutil.RunGit(t, repoDir, "tag", "before-amend")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	if output, err := hookCommandWithEnv(repoDir, []string{"LOPPER_HOOK_AMEND=1"}, "git", "commit", "--amend", "--no-edit"); err != nil {
 		t.Fatalf("CI did not model amend parents: %v\n%s", err, output)
 	}
@@ -89,15 +89,15 @@ func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
 
 func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
 	repoDir := newHookFixture(t)
-	runCommand(t, repoDir, "git", "checkout", "-b", "incoming")
+	testutil.RunGit(t, repoDir, "checkout", "-b", "incoming")
 	writeFile(t, filepath.Join(repoDir, "incoming.txt"), "incoming change\n")
-	runCommand(t, repoDir, "git", "add", "incoming.txt")
-	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "incoming change")
-	runCommand(t, repoDir, "git", "checkout", "main")
+	testutil.RunGit(t, repoDir, "add", "incoming.txt")
+	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "incoming change")
+	testutil.RunGit(t, repoDir, "checkout", "main")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@git merge-base --is-ancestor incoming HEAD\n\t@test \"$$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')\" = 3\n")
-	runCommand(t, repoDir, "git", "add", "Makefile")
-	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "local change")
-	runCommand(t, repoDir, "git", "merge", "--no-commit", "--no-ff", "incoming")
+	testutil.RunGit(t, repoDir, "add", "Makefile")
+	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "local change")
+	testutil.RunGit(t, repoDir, "merge", "--no-commit", "--no-ff", "incoming")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "merge incoming")
 	if err != nil {
 		t.Fatalf("merge CI snapshot lost incoming ancestry: %v\n%s", err, output)
@@ -110,11 +110,11 @@ func TestInstalledPreCommitChecksFullTreeFromSparseCheckout(t *testing.T) {
 	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "keep\n")
 	writeFile(t, filepath.Join(repoDir, "excluded", "required.txt"), "required\n")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -f included/keep.txt\n\t@test -f excluded/required.txt\n")
-	runCommand(t, repoDir, "git", "add", ".")
-	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "sparse fixture")
-	runCommand(t, repoDir, "git", "sparse-checkout", "set", "included")
+	testutil.RunGit(t, repoDir, "add", ".")
+	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "sparse fixture")
+	testutil.RunGit(t, repoDir, "sparse-checkout", "set", "included")
 	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "updated\n")
-	runCommand(t, repoDir, "git", "add", "included/keep.txt")
+	testutil.RunGit(t, repoDir, "add", "included/keep.txt")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "sparse commit")
 	if err != nil {
 		t.Fatalf("CI did not check the full staged tree: %v\n%s", err, output)
@@ -157,7 +157,7 @@ func assertInstalledPreCommitRejects(t *testing.T, path, contents, message, expe
 
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, path), contents)
-	runCommand(t, repoDir, "git", "add", path)
+	testutil.RunGit(t, repoDir, "add", path)
 	output, err := hookCommand(repoDir, "git", "commit", "-m", message)
 	if err == nil || !strings.Contains(output, expected) {
 		t.Fatalf("expected staged %s rejection, got %v:\n%s", expected, err, output)
@@ -167,7 +167,7 @@ func assertInstalledPreCommitRejects(t *testing.T, path, contents, message, expe
 func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int {return 3}\n")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "staged formatting")
 	if err != nil {
@@ -195,7 +195,7 @@ func TestInstalledPreCommitRejectsExternalGofmtLinkIntoCheckout(t *testing.T) {
 		t.Fatalf("create checkout formatter link: %v", err)
 	}
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
 	if err != nil {
 		t.Fatalf("read managed hook path: %v", err)
@@ -216,7 +216,7 @@ func TestInstalledPreCommitRejectsDirectCheckoutGofmt(t *testing.T) {
 	toolsDir := filepath.Join(repoDir, "tools")
 	writeFileMode(t, filepath.Join(toolsDir, "gofmt"), "#!/bin/sh\nprintf branch >"+sentinel+"\n", 0o755)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
 	if err != nil {
 		t.Fatalf("read managed hook path: %v", err)
@@ -249,7 +249,7 @@ func TestInstalledPreCommitUsesSelectedExternalGofmt(t *testing.T) {
 		t.Fatalf("create trusted formatter link: %v", err)
 	}
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
 	if err != nil {
 		t.Fatalf("read managed hook path: %v", err)
@@ -266,7 +266,7 @@ func TestInstalledPreCommitUsesSelectedExternalGofmt(t *testing.T) {
 func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
-	runCommand(t, repoDir, "git", "config", "core.hooksPath", "/custom/hooks")
+	testutil.RunGit(t, repoDir, "config", "core.hooksPath", "/custom/hooks")
 	output, err := hookCommand(repoDir, "make", "hooks-install")
 	if err == nil || !strings.Contains(output, "Refusing to replace") {
 		t.Fatalf("expected custom hook path refusal, got %v:\n%s", err, output)
@@ -276,7 +276,7 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	if getErr != nil || got != "/custom/hooks\n" {
 		t.Fatalf("custom hook path changed: %v, %q", getErr, got)
 	}
-	runCommand(t, repoDir, "git", "config", "--unset", "core.hooksPath")
+	testutil.RunGit(t, repoDir, "config", "--unset", "core.hooksPath")
 	runCommand(t, repoDir, "make", "hooks-install")
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	output, err = hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
@@ -289,7 +289,7 @@ func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "legacy-hook-ran")
 	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf legacy >"+sentinel+"\n", 0o755)
-	runCommand(t, repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	testutil.RunGit(t, repoDir, "config", "--local", "core.hooksPath", ".githooks")
 
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	output, err := hookCommand(repoDir, "git", "config", "--local", "--get", "core.hooksPath")
@@ -298,7 +298,7 @@ func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
 	}
 
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "sample.go")
+	testutil.RunGit(t, repoDir, "add", "sample.go")
 	output, err = hookCommand(repoDir, "git", "commit", "-m", "uninstall legacy hook")
 	if err != nil {
 		t.Fatalf("commit after legacy hook uninstall: %v\n%s", err, output)
@@ -332,11 +332,11 @@ func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	linkedDir := filepath.Join(filepath.Dir(repoDir), "linked")
-	runCommand(t, repoDir, "git", "worktree", "add", linkedDir)
+	testutil.RunGit(t, repoDir, "worktree", "add", linkedDir)
 	runCommand(t, linkedDir, "make", "hooks-install")
-	runCommand(t, repoDir, "git", "config", "core.bare", "true")
+	testutil.RunGit(t, repoDir, "config", "core.bare", "true")
 	writeFile(t, filepath.Join(linkedDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, linkedDir, "git", "add", "sample.go")
+	testutil.RunGit(t, linkedDir, "add", "sample.go")
 	output, err := hookCommandWithEnv(linkedDir, []string{"GIT_CONFIG_COUNT=01", "GIT_CONFIG_KEY_0=advice.detachedHead", "GIT_CONFIG_VALUE_0=false"}, "git", "-c", "core.bare=false", "commit", "-m", "linked hook")
 	if err != nil {
 		t.Fatalf("commit from linked worktree: %v\n%s", err, output)
@@ -419,14 +419,14 @@ func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
 func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "0:formatted.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repoDir, "git", "add", "0:formatted.go")
+	testutil.RunGit(t, repoDir, "add", "0:formatted.go")
 	output, err := hookCommand(repoDir, "git", "commit", "-m", "stage-like formatted filename")
 	if err != nil {
 		t.Fatalf("commit formatted stage-like filename: %v\n%s", err, output)
 	}
 
 	writeFile(t, filepath.Join(repoDir, "1:unformatted.go"), "package sample\n\nfunc Value() int {return 3}\n")
-	runCommand(t, repoDir, "git", "add", "1:unformatted.go")
+	testutil.RunGit(t, repoDir, "add", "1:unformatted.go")
 	output, err = hookCommand(repoDir, "git", "commit", "-m", "stage-like unformatted filename")
 	if err == nil || !strings.Contains(output, "gofmt-formatted") {
 		t.Fatalf("expected unformatted stage-like filename rejection, got %v:\n%s", err, output)
@@ -435,7 +435,7 @@ func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
 	repoDir = newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "foo.go"), "package sample\n\nfunc Value() int { return 4 }\n")
 	writeFile(t, filepath.Join(repoDir, "0:foo.go"), "package sample\n\nfunc Value() int {return 5}\n")
-	runCommand(t, repoDir, "git", "add", "foo.go", "0:foo.go")
+	testutil.RunGit(t, repoDir, "add", "foo.go", "0:foo.go")
 	output, err = hookCommand(repoDir, "git", "commit", "-m", "stage-like sibling filename")
 	if err == nil || !strings.Contains(output, "gofmt-formatted") {
 		t.Fatalf("expected unformatted stage-like sibling rejection, got %v:\n%s", err, output)
@@ -446,8 +446,8 @@ func newHookFixture(t *testing.T) string {
 	t.Helper()
 	repoDir := filepath.Join(t.TempDir(), "repo")
 	runCommand(t, filepath.Dir(repoDir), "git", "init", "-b", "main", repoDir)
-	runCommand(t, repoDir, "git", "config", "user.name", "Hook Test")
-	runCommand(t, repoDir, "git", "config", "user.email", "hook-test@example.com")
+	testutil.RunGit(t, repoDir, "config", "user.name", "Hook Test")
+	testutil.RunGit(t, repoDir, "config", "user.email", "hook-test@example.com")
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
@@ -464,8 +464,8 @@ func newHookFixture(t *testing.T) string {
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
-	runCommand(t, repoDir, "git", "add", ".")
-	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "revision A")
+	testutil.RunGit(t, repoDir, "add", ".")
+	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "revision A")
 	runCommand(t, repoDir, "make", "hooks-install")
 	return repoDir
 }
@@ -520,7 +520,7 @@ func assertSiblingHookToolExcluded(t *testing.T, direction, tool string, link bo
 	t.Helper()
 	main := newHookFixture(t)
 	linked := filepath.Join(filepath.Dir(main), "linked\ncheckout")
-	runCommand(t, main, "git", "worktree", "add", "--detach", linked)
+	testutil.RunGit(t, main, "worktree", "add", "--detach", linked)
 	current, foreign := main, linked
 	if direction == "linked-to-main" {
 		current, foreign = linked, main
@@ -536,7 +536,7 @@ func assertSiblingHookToolExcluded(t *testing.T, direction, tool string, link bo
 		toolDir = external
 	}
 	writeFile(t, filepath.Join(current, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, current, "git", "add", "sample.go")
+	testutil.RunGit(t, current, "add", "sample.go")
 	hook := strings.TrimSpace(testutil.GitOutput(t, current, "config", "--get", "core.hooksPath"))
 	output, err := hookCommandWithEnv(current, []string{"PATH=" + toolDir + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
@@ -552,7 +552,7 @@ func TestInstalledPreCommitKeepsFilteredPathInCI(t *testing.T) {
 	tools := filepath.Join(repo, "tools")
 	writeFileMode(t, filepath.Join(tools, "untrusted-probe"), "#!/bin/sh\nexit 99\n", 0o755)
 	writeFile(t, filepath.Join(repo, "Makefile"), "ci:\n\t@! command -v untrusted-probe\n")
-	runCommand(t, repo, "git", "add", "Makefile")
+	testutil.RunGit(t, repo, "add", "Makefile")
 	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
 	output, err := hookCommandWithEnv(repo, []string{"PATH=" + tools + ":.:" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
 	if err != nil {
@@ -563,7 +563,7 @@ func TestInstalledPreCommitKeepsFilteredPathInCI(t *testing.T) {
 func TestInstalledPreCommitAcceptsExternalPrefixAndMissingWorktree(t *testing.T) {
 	repo := newHookFixture(t)
 	missing := filepath.Join(filepath.Dir(repo), "missing")
-	runCommand(t, repo, "git", "worktree", "add", "--detach", missing)
+	testutil.RunGit(t, repo, "worktree", "add", "--detach", missing)
 	if err := os.RemoveAll(missing); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestInstalledPreCommitAcceptsExternalPrefixAndMissingWorktree(t *testing.T)
 	}
 	writeFileMode(t, filepath.Join(tools, "gofmt"), "#!/bin/sh\nexec '"+host+"' \"$@\"\n", 0o755)
 	writeFile(t, filepath.Join(repo, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repo, "git", "add", "sample.go")
+	testutil.RunGit(t, repo, "add", "sample.go")
 	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
 	output, err := hookCommandWithEnv(repo, []string{"PATH=" + tools + ":" + os.Getenv("PATH")}, filepath.Join(hook, "pre-commit"))
 	if err != nil {
@@ -667,9 +667,9 @@ func TestInstalledPreCommitDisablesGitExecutableConfiguration(t *testing.T) {
 		"exec /usr/bin/git --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null \"$@\"\n"
 	writeFileMode(t, filepath.Join(external, "git"), wrapper, 0o755)
 	writeFileMode(t, filepath.Join(external, "monitor"), "#!/bin/sh\nexit 99\n", 0o755)
-	runCommand(t, repo, "git", "config", "core.fsmonitor", filepath.Join(external, "monitor"))
+	testutil.RunGit(t, repo, "config", "core.fsmonitor", filepath.Join(external, "monitor"))
 	writeFile(t, filepath.Join(repo, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
-	runCommand(t, repo, "git", "-c", "core.fsmonitor=false", "add", "sample.go")
+	testutil.RunGit(t, repo, "-c", "core.fsmonitor=false", "add", "sample.go")
 	hook := strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath"))
 	output, err := hookCommandWithEnv(repo, []string{"PATH=" + external + ":" + os.Getenv("PATH"), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.bare", "GIT_CONFIG_VALUE_0=true"}, filepath.Join(hook, "pre-commit"))
 	if err != nil {
@@ -683,7 +683,7 @@ func TestInstalledPreCommitDisablesGitExecutableConfiguration(t *testing.T) {
 func TestInstalledPreCommitAllowsInaccessibleForeignWorktree(t *testing.T) {
 	repo := newHookFixture(t)
 	foreign := filepath.Join(filepath.Dir(repo), "inaccessible")
-	runCommand(t, repo, "git", "worktree", "add", "--detach", foreign)
+	testutil.RunGit(t, repo, "worktree", "add", "--detach", foreign)
 	if err := os.Chmod(foreign, 0); err != nil {
 		t.Fatal(err)
 	}
