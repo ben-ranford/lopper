@@ -302,6 +302,9 @@ func TestSyncOSVStreamsLargeZipSnapshots(t *testing.T) {
 	if snapshot.Schema != "osv-zip" || snapshot.SizeBytes <= maxSyncMetadataBytes {
 		t.Fatalf("expected streamed large zip snapshot metadata, got %#v", snapshot)
 	}
+	if snapshot.EntryCount != 1 || len(snapshot.Ecosystems) != 1 || snapshot.Ecosystems[0] != "Go" {
+		t.Fatalf("unexpected large ZIP metadata: %#v", snapshot)
+	}
 }
 
 func TestDownloadSnapshotUnderRootRejectsOversizedContentLength(t *testing.T) {
@@ -1874,7 +1877,7 @@ func TestValidateDownloadedOSVZipErrors(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateDownloadedOSVZip(tc.openSnapshot, int64(len(payload)))
+			_, err := validateDownloadedOSVZip(tc.openSnapshot, int64(len(payload)))
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("expected %q validation error, got %v", tc.wantError, err)
 			}
@@ -1892,7 +1895,7 @@ func TestValidateOSVZipSnapshotRejectsUnusableArchives(t *testing.T) {
 		{name: "directory only", payload: testOSVZip(t, "nested/", "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateOSVZipSnapshot(bytes.NewReader(tc.payload), int64(len(tc.payload))); err == nil {
+			if _, err := validateOSVZipSnapshot(bytes.NewReader(tc.payload), int64(len(tc.payload))); err == nil {
 				t.Fatal("expected unusable ZIP archive to be rejected")
 			}
 		})
@@ -1902,14 +1905,14 @@ func TestValidateOSVZipSnapshotRejectsUnusableArchives(t *testing.T) {
 func TestValidateOSVZipSnapshotValidatesEveryEntry(t *testing.T) {
 	t.Run("multiple valid entries", func(t *testing.T) {
 		payload := testOSVZipEntries(t, testOSVZipEntry{name: "GO-1.json", payload: testOSVAdvisory("GO-1"), method: zip.Deflate}, testOSVZipEntry{name: "README.txt", payload: "OSV snapshot", method: zip.Store}, testOSVZipEntry{name: "GO-2.json", payload: testOSVAdvisory("GO-2"), method: zip.Deflate})
-		if err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err != nil {
+		if _, err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err != nil {
 			t.Fatalf("validate complete OSV ZIP snapshot: %v", err)
 		}
 	})
 
 	t.Run("invalid later JSON", func(t *testing.T) {
 		payload := testOSVZipEntries(t, testOSVZipEntry{name: "GO-1.json", payload: testOSVAdvisory("GO-1"), method: zip.Deflate}, testOSVZipEntry{name: "response.json", payload: `{"error":"quota exceeded"}`, method: zip.Deflate})
-		if err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err == nil {
+		if _, err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err == nil {
 			t.Fatal("expected invalid later JSON entry to be rejected")
 		}
 	})
@@ -1923,7 +1926,7 @@ func TestValidateOSVZipSnapshotValidatesEveryEntry(t *testing.T) {
 		}
 		payload[payloadOffset] ^= 0xff
 
-		if err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); !errors.Is(err, zip.ErrChecksum) {
+		if _, err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); !errors.Is(err, zip.ErrChecksum) {
 			t.Fatalf("expected later ZIP checksum error, got %v", err)
 		}
 	})
@@ -1931,7 +1934,7 @@ func TestValidateOSVZipSnapshotValidatesEveryEntry(t *testing.T) {
 	t.Run("excessive expansion", func(t *testing.T) {
 		largeAdvisory := strings.Replace(testOSVAdvisory("GO-1"), `"affected":`, `"details":"`+strings.Repeat("a", 2*1024*1024)+`","affected":`, 1)
 		payload := testOSVZip(t, "GO-1.json", largeAdvisory)
-		if err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err == nil {
+		if _, err := validateOSVZipSnapshot(bytes.NewReader(payload), int64(len(payload))); err == nil {
 			t.Fatal("expected excessive ZIP expansion to be rejected")
 		}
 	})
