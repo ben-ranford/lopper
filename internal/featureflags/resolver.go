@@ -282,3 +282,17 @@ func mergeDeprecatedReferences(groups ...[]DeprecatedReference) []DeprecatedRefe
 	}
 	return merged
 }
+
+// WithOverrides returns an independent set with explicit choices applied, retaining
+// all unrelated feature decisions and diagnostics from the original resolution.
+func (s *Set) WithOverrides(overrides Overrides) (Set, error) {
+	registry := &Registry{byCode: s.byCode, byName: s.byName}
+	result := *s
+	result.enabled = s.Snapshot()
+	deprecations, err := registry.applyExplicitOverrides(result.enabled, overrides.Enable, overrides.Disable)
+	if err != nil {
+		return Set{}, err
+	}
+	result.deprecations = mergeDeprecatedReferences(s.deprecations, deprecations)
+	return result, nil
+}

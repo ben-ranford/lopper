@@ -31,7 +31,7 @@ func newStaveTerminalInput(source io.Reader) (*staveTerminalInput, error) {
 	if !ok || file == nil {
 		return nil, fmt.Errorf("full-screen terminal input requires a file, got %T", source)
 	}
-	reader, err := uv.NewCancelReader(file)
+	reader, err := newStaveCancelReader(file)
 	if err != nil {
 		return nil, err
 	}

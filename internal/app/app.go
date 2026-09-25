@@ -12,6 +12,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
+	"github.com/ben-ranford/lopper/internal/uipreference"
 )
 
 var (
@@ -31,14 +32,18 @@ var (
 )
 
 type App struct {
-	Analyzer  analysis.Analyser
-	In        io.Reader
-	Out       io.Writer
-	Formatter *report.Formatter
-	TUI       ui.TUI
-	Notify    *notify.Dispatcher
-	Features  *featureflags.Registry
-	Languages *language.Registry
+	Preferences   uipreference.Storage
+	UIInteractive func() bool
+	UIEligible    func() bool
+	UIPrompt      func(context.Context) (string, error)
+	Analyzer      analysis.Analyser
+	In            io.Reader
+	Out           io.Writer
+	Formatter     *report.Formatter
+	TUI           ui.TUI
+	Notify        *notify.Dispatcher
+	Features      *featureflags.Registry
+	Languages     *language.Registry
 }
 
 func New(out io.Writer, in io.Reader) *App {
@@ -109,7 +114,14 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 		UseStavePreview:   req.TUI.UseStavePreview,
 	}
 	if req.TUI.SnapshotPath != "" {
+		if req.TUI.UIPreference != "" {
+			return "", errors.New("--ui-preference requires an interactive launch, not a snapshot")
+		}
 		return "", a.TUI.Snapshot(ctx, opts, req.TUI.SnapshotPath)
+	}
+	start, err := a.prepareTUI(ctx, req.TUI, &opts)
+	if err != nil || !start {
+		return "", err
 	}
 	return "", a.TUI.Start(ctx, opts)
 }
