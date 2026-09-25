@@ -123,19 +123,18 @@ function isQueueBranchUpdateCommit(commit, pull, queueAppSlug) {
     rawAuthor.email.endsWith(appEmailSuffix)
     ? rawAuthor.email.slice(0, -appEmailSuffix.length)
     : '';
-  if (!queueAppSlug || !baseRepo?.owner?.login || !baseRepo?.name ||
-      pull?.head?.repo?.full_name !== `${baseRepo.owner.login}/${baseRepo.name}` ||
-      !Array.isArray(commit?.parents) || commit.parents.length < 2 ||
-      !isQueueAppAccount(commit.author, queueAppSlug) ||
-      !/^\d+$/.test(appEmailPrefix) || rawAuthor?.name !== appLogin ||
-      commit?.committer?.login !== 'web-flow' || commit?.committer?.type !== 'User' ||
-      commit?.committer?.id !== 19864447 || rawCommitter?.name !== 'GitHub' ||
-      rawCommitter?.email !== 'noreply@github.com' ||
-      commit?.commit?.verification?.verified !== true ||
-      commit?.commit?.verification?.reason !== 'valid') {
-    return false;
-  }
-  return true;
+  return Boolean(
+    queueAppSlug && baseRepo?.owner?.login && baseRepo?.name &&
+    pull?.head?.repo?.full_name === `${baseRepo.owner.login}/${baseRepo.name}` &&
+    Array.isArray(commit?.parents) && commit.parents.length >= 2 &&
+    isQueueAppAccount(commit.author, queueAppSlug) &&
+    /^\d+$/.test(appEmailPrefix) && rawAuthor?.name === appLogin &&
+    commit?.committer?.login === 'web-flow' && commit?.committer?.type === 'User' &&
+    commit?.committer?.id === 19864447 && rawCommitter?.name === 'GitHub' &&
+    rawCommitter?.email === 'noreply@github.com' &&
+    commit?.commit?.verification?.verified === true &&
+    commit?.commit?.verification?.reason === 'valid',
+  );
 }
 
 function commitIdentityFailure(commit, pull, queueAppSlug) {
