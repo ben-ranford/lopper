@@ -224,17 +224,9 @@ func walkIdentityFiles(ctx context.Context, repo string, warnings *identityWarni
 }
 
 func walkIdentityFilesWithinLimit(ctx context.Context, repo string, warnings *identityWarningCollector, limit int, skip func(string) bool, visit fs.WalkDirFunc) error {
-	truncated, err := shared.WalkRepoFilesWithStatus(ctx, repo, limit, skip, func(path string, entry fs.DirEntry) error { return visit(path, entry, nil) })
+	truncated, err := shared.WalkRepoFilesWithErrors(ctx, repo, limit, skip, func(path string, entry fs.DirEntry) error { return visit(path, entry, nil) }, func(path string, err error) error { return visit(path, nil, err) })
 	if truncated {
 		warnings.append(fmt.Sprintf("identity manifest discovery truncated for %s: exceeds %d files", relativeIdentitySource(repo, repo), limit))
-	}
-	if err != nil && ctx.Err() == nil {
-		path := repo
-		var pathErr *fs.PathError
-		if errors.As(err, &pathErr) {
-			path = pathErr.Path
-		}
-		return visit(path, nil, err)
 	}
 	return err
 }

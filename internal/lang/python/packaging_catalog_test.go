@@ -48,20 +48,15 @@ func TestPackagingCatalogReadsAndDecodesEachManifestOnce(t *testing.T) {
 func TestPackagingCatalogReadFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name, content string
-		parse         bool
 	}{
-		{pythonPyprojectFile, "[invalid", true},
-		{pythonPipfileLockName, "{invalid", true},
-		{pythonRequirementsTxt, "requests==1.0", false},
+		{pythonPyprojectFile, "[invalid"},
+		{pythonPipfileLockName, "{invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
 			path := filepath.Join(repo, tc.name)
 			testutil.MustWriteFile(t, path, tc.content)
 			catalog := newPackagingCatalog()
-			if !tc.parse {
-				catalog.bytes = maxPackagingCatalogBytes
-			}
 			doc, err := catalog.read(repo, path)
 			if err == nil || doc.Failure == "" {
 				t.Fatalf("expected bounded decode error: %#v %v", doc, err)
@@ -150,5 +145,34 @@ func assertPackagingCatalogBoundedRead(t *testing.T, name string) {
 	}
 	if err != nil || len(warnings) != 1 || len(dependencies) != 0 {
 		t.Fatalf("bounded optional parse: %v %v %v", dependencies, warnings, err)
+	}
+}
+
+func TestPackagingCatalogRetentionLimitPreservesInventory(t *testing.T) {
+	repo := t.TempDir()
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	for _, tc := range []struct{ name, content string }{
+		{pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n"},
+		{pythonRequirementsTxt, "requests==2.32.3\n"},
+		{pythonPoetryLockName, "[[package]]\nname='requests'\nversion='2.32.3'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(repo, tc.name)
+			testutil.MustWriteFile(t, path, tc.content)
+			for range 2 {
+				deps, warnings, err := catalog.parse(repo, path)
+				if _, ok := deps["requests"]; !ok || err != nil || len(warnings) != 0 {
+					t.Fatalf("retention exhaustion changed inventory: %v %v %v", deps, warnings, err)
+				}
+			}
+			doc := catalog.documents[path]
+			if !doc.Deferred || doc.Document != nil || doc.Text != "" || doc.Failure != "" {
+				t.Fatalf("expected deferred path without retained contents: %+v", doc)
+			}
+		})
+	}
+	if catalog.bytes != maxPackagingCatalogBytes || len(catalog.snapshot()) != 3 {
+		t.Fatalf("retention accounting or discovery changed: %d %v", catalog.bytes, catalog.snapshot())
 	}
 }

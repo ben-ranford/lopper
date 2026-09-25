@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"errors"
+	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"io/fs"
@@ -10,46 +11,60 @@ import (
 )
 
 func collectPythonCatalogEvidence(repo string, index identityIndex, documents []report.PythonManifestDocument, warnings *identityWarningCollector) {
-	for _, document := range documents {
-		path := filepath.Join(repo, filepath.FromSlash(document.Path))
-		if document.Failure != "" {
-			kind := identityReadFailed
-			if document.FailureStage == "parse" {
-				kind = identityParseFailed
+	for _, manifestPhase := range []bool{false, true} {
+		for _, document := range documents {
+			name := filepath.Base(document.Path)
+			isManifest := name == pythonProjectFileName || name == pythonPipfileName
+			if isManifest == manifestPhase {
+				collectPythonCatalogDocument(repo, index, document, warnings)
 			}
-			failure := errors.New(document.Failure)
-			switch document.FailureKind {
-			case "permission":
-				failure = fs.ErrPermission
-			case "missing":
-				failure = fs.ErrNotExist
-			case "large":
-				failure = safeio.ErrFileTooLarge
-			}
-			warnings.addFailure(document.FailureStage, path, kind, failure)
-			continue
-		}
-		switch filepath.Base(path) {
-		case poetryLockFileName, uvLockFileName:
-			collectPythonTOMLLockDocument(repo, path, index, document.Document)
-		case "Pipfile.lock":
-			collectPipfileLockDocument(repo, path, index, document.Document, warnings)
-		case "requirements.txt":
-			collectRequirementsContent(repo, path, index, document.Text)
 		}
 	}
-	for _, document := range documents {
-		if document.Failure != "" {
-			continue
-		}
-		path := filepath.Join(repo, filepath.FromSlash(document.Path))
-		switch filepath.Base(path) {
-		case pythonProjectFileName:
-			collectPyprojectManifestEvidenceDocument(repo, path, index, document.Document)
-		case pythonPipfileName:
-			collectPipfileManifestEvidenceDocument(repo, path, index, document.Document)
+}
+
+func collectPythonCatalogDocument(repo string, index identityIndex, document report.PythonManifestDocument, warnings *identityWarningCollector) {
+	path := filepath.Join(repo, filepath.FromSlash(document.Path))
+	if document.Deferred {
+		decoded, err := pythonlang.ReadPackagingDocument(repo, path)
+		document = decoded
+		if err != nil {
+			addPythonCatalogFailure(path, document, warnings)
+			return
 		}
 	}
+	if document.Failure != "" {
+		addPythonCatalogFailure(path, document, warnings)
+		return
+	}
+	switch filepath.Base(path) {
+	case poetryLockFileName, uvLockFileName:
+		collectPythonTOMLLockDocument(repo, path, index, document.Document)
+	case "Pipfile.lock":
+		collectPipfileLockDocument(repo, path, index, document.Document, warnings)
+	case "requirements.txt":
+		collectRequirementsContent(repo, path, index, document.Text)
+	case pythonProjectFileName:
+		collectPyprojectManifestEvidenceDocument(repo, path, index, document.Document)
+	case pythonPipfileName:
+		collectPipfileManifestEvidenceDocument(repo, path, index, document.Document)
+	}
+}
+
+func addPythonCatalogFailure(path string, document report.PythonManifestDocument, warnings *identityWarningCollector) {
+	kind := identityReadFailed
+	if document.FailureStage == "parse" {
+		kind = identityParseFailed
+	}
+	failure := errors.New(document.Failure)
+	switch document.FailureKind {
+	case "permission":
+		failure = fs.ErrPermission
+	case "missing":
+		failure = fs.ErrNotExist
+	case "large":
+		failure = safeio.ErrFileTooLarge
+	}
+	warnings.addFailure(document.FailureStage, path, kind, failure)
 }
 
 func collectPipfileLockDocument(repo, path string, index identityIndex, document map[string]any, warnings *identityWarningCollector) {
