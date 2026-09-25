@@ -133,25 +133,7 @@ func TestPythonCatalogPreservesIdentityEvidenceAndFailures(t *testing.T) {
 		{"Pipfile.lock", `{"default":{"requests":{"version":42}}}`, "", "default section"},
 	} {
 		t.Run(tc.name+tc.content, func(t *testing.T) {
-			repo := t.TempDir()
-			path := filepath.Join(repo, tc.name)
-			testutil.MustWriteFile(t, path, tc.content)
-			document, readErr := pythonlang.ReadPackagingDocument(repo, path)
-			if readErr != nil && tc.warning == "" {
-				t.Fatal(readErr)
-			}
-			if err := os.Remove(path); err != nil {
-				t.Fatal(err)
-			}
-			result := report.Report{PythonManifestCatalog: true, PythonManifests: []report.PythonManifestDocument{document}, Dependencies: []report.DependencyReport{{Language: "python", Name: "requests"}}}
-			annotateDependencyIdentities(repo, &result)
-			dep := findIdentityDependency(t, result, "python", "requests")
-			if dep.Identity.Version != tc.version {
-				t.Fatalf("identity: %#v", dep.Identity)
-			}
-			if tc.warning != "" && !strings.Contains(strings.Join(result.Warnings, "\n"), tc.warning) {
-				t.Fatalf("warnings: %v", result.Warnings)
-			}
+			assertPythonCatalogIdentityEvidence(t, tc.name, tc.content, tc.version, tc.warning)
 		})
 	}
 	for _, kind := range []string{"permission", "missing", "large", "other"} {
@@ -163,6 +145,29 @@ func TestPythonCatalogPreservesIdentityEvidenceAndFailures(t *testing.T) {
 				t.Fatalf("warnings: %v", warnings.list())
 			}
 		})
+	}
+}
+
+func assertPythonCatalogIdentityEvidence(t *testing.T, name, content, version, warning string) {
+	t.Helper()
+	repo := t.TempDir()
+	path := filepath.Join(repo, name)
+	testutil.MustWriteFile(t, path, content)
+	document, readErr := pythonlang.ReadPackagingDocument(repo, path)
+	if readErr != nil && warning == "" {
+		t.Fatal(readErr)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	result := report.Report{PythonManifestCatalog: true, PythonManifests: []report.PythonManifestDocument{document}, Dependencies: []report.DependencyReport{{Language: "python", Name: "requests"}}}
+	annotateDependencyIdentities(repo, &result)
+	dep := findIdentityDependency(t, result, "python", "requests")
+	if dep.Identity.Version != version {
+		t.Fatalf("identity: %#v", dep.Identity)
+	}
+	if warning != "" && !strings.Contains(strings.Join(result.Warnings, "\n"), warning) {
+		t.Fatalf("warnings: %v", result.Warnings)
 	}
 }
 
@@ -199,5 +204,56 @@ func TestPythonCatalogScopedCacheHitKeepsIdentitySource(t *testing.T) {
 	after := findIdentityDependency(t, second, "python", "requests").Identity
 	if before.Source != "pkg/pyproject.toml" || after.Source != before.Source || after.Version != before.Version {
 		t.Fatalf("scoped cache changed identity: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestPythonCatalogDeferredIdentityEvidence(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), "[project]\ndependencies=['requests==2.32.3']\n")
+	result := report.Report{PythonManifestCatalog: true, PythonManifests: []report.PythonManifestDocument{
+		{Path: "pyproject.toml", Deferred: true},
+		{Path: "missing/requirements.txt", Deferred: true},
+	}, Dependencies: []report.DependencyReport{{Language: "python", Name: "requests"}}}
+	payload, err := json.Marshal(result.PythonManifests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(payload, &result.PythonManifests); err != nil {
+		t.Fatal(err)
+	}
+	annotateDependencyIdentities(repo, &result)
+	if result.Dependencies[0].Identity == nil || result.Dependencies[0].Identity.Version != "2.32.3" {
+		t.Fatalf("deferred evidence lost: %+v", result.Dependencies)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected missing deferred document warning")
+	}
+}
+
+func TestIdentityDiscoveryContinuesAfterUnreadableDirectory(t *testing.T) {
+	repo := t.TempDir()
+	blocked := filepath.Join(repo, "a-blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "z-readable", "go.mod"), "module example.com/app\n")
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(blocked, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := os.ReadDir(blocked); err == nil {
+		t.Skip("filesystem does not enforce directory permissions")
+	}
+	warnings := newIdentityWarningCollector(repo)
+	snapshot := discoverIdentityManifestSnapshotWithContext(context.Background(), repo, warnings)
+	if len(snapshot.goModFiles) != 1 {
+		t.Fatalf("sibling discovery stopped: %+v", snapshot)
+	}
+	if messages := warnings.list(); len(messages) != 1 || !strings.Contains(messages[0], "a-blocked") {
+		t.Fatalf("expected path-specific discovery warning: %v", messages)
 	}
 }

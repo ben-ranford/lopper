@@ -34,7 +34,7 @@ func ReadPackagingDocument(repo, path string) (report.PythonManifestDocument, er
 }
 
 func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocument, error) {
-	if document, ok := c.documents[path]; ok {
+	if document, ok := c.documents[path]; ok && !document.Deferred {
 		return document, c.errors[path]
 	}
 	document := report.PythonManifestDocument{Path: relativePackagingPath(repo, path)}
@@ -44,19 +44,16 @@ func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocumen
 		limit = ManifestReadLimitBytes
 	}
 	data, err := safeio.ReadFileUnderLimit(repo, path, limit)
-	if err == nil && int64(len(data)) > maxPackagingCatalogBytes-c.bytes {
-		err = fmt.Errorf("python manifest catalog exceeds %d bytes: %w", maxPackagingCatalogBytes, safeio.ErrFileTooLarge)
-	}
 	if err != nil {
 		document.FailureStage = "read"
 	} else {
-		c.bytes += int64(len(data))
 		err = decodePackagingDocument(name, data, &document)
 		if err != nil {
 			document.FailureStage = "parse"
 		}
 	}
 	if err != nil {
+		document.Document = nil
 		document.Failure = err.Error()
 		switch {
 		case errors.Is(err, os.ErrPermission):
@@ -67,9 +64,20 @@ func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocumen
 			document.FailureKind = "large"
 		}
 	}
+	c.retain(path, document, err, int64(len(data)))
+	return document, err
+}
+
+func (c *packagingCatalog) retain(path string, document report.PythonManifestDocument, err error, size int64) {
+	if err == nil && size > maxPackagingCatalogBytes-c.bytes {
+		c.documents[path] = report.PythonManifestDocument{Path: document.Path, Deferred: true}
+		return
+	}
 	c.documents[path] = document
 	c.errors[path] = err
-	return document, err
+	if err == nil {
+		c.bytes += size
+	}
 }
 
 func (c *packagingCatalog) parse(repo, path string) (map[string]struct{}, []string, error) {

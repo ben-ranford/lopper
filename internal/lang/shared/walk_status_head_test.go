@@ -48,3 +48,22 @@ func TestWalkRepoFilesWithStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestWalkRepoFilesTraversalErrorHandler(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, handlerErr := range []error{nil, fs.ErrPermission} {
+		calls := 0
+		truncated, err := WalkRepoFilesWithErrors(context.Background(), missing, 1, nil,
+			func(string, fs.DirEntry) error { t.Fatal("unexpected file visit"); return nil },
+			func(path string, walkErr error) error {
+				calls++
+				if path != missing || !errors.Is(walkErr, fs.ErrNotExist) {
+					t.Fatalf("unexpected traversal error: %s %v", path, walkErr)
+				}
+				return handlerErr
+			})
+		if truncated || calls != 1 || !errors.Is(err, handlerErr) {
+			t.Fatalf("handler result: truncated=%v calls=%d error=%v", truncated, calls, err)
+		}
+	}
+}
