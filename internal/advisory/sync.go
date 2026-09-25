@@ -37,6 +37,12 @@ const (
 	schemaOSVZip                 = "osv-zip"
 )
 
+// Bound retained archive-wide metadata independently of expanded ZIP size.
+const (
+	maxOSVZipEcosystems     = 1024
+	maxOSVZipEcosystemBytes = 1024 * 1024
+)
+
 type SyncOptions struct {
 	SourceURL string
 	CachePath string
@@ -967,6 +973,7 @@ func validateOSVZipSnapshotMetadata(reader io.ReaderAt, sizeBytes int64) (osvZip
 	jsonEntries := 0
 	metadata := osvZipMetadata{}
 	seen := map[string]struct{}{}
+	ecosystemBytes := 0
 	for _, entry := range archive.File {
 		isJSON := !entry.FileInfo().IsDir() && strings.EqualFold(filepath.Ext(entry.Name), ".json")
 		if isJSON && entry.UncompressedSize64 > uint64(maxSyncMetadataBytes) {
@@ -984,8 +991,9 @@ func validateOSVZipSnapshotMetadata(reader io.ReaderAt, sizeBytes int64) (osvZip
 		}
 		jsonEntries++
 		metadata.entryCount += entryMetadata.entryCount
-		for _, ecosystem := range entryMetadata.ecosystems {
-			seen[ecosystem] = struct{}{}
+		ecosystemBytes, err = mergeOSVZipEcosystems(seen, entryMetadata.ecosystems, ecosystemBytes)
+		if err != nil {
+			return osvZipMetadata{}, err
 		}
 	}
 	if jsonEntries == 0 {
@@ -996,6 +1004,23 @@ func validateOSVZipSnapshotMetadata(reader io.ReaderAt, sizeBytes int64) (osvZip
 	}
 	sort.Strings(metadata.ecosystems)
 	return metadata, nil
+}
+
+func mergeOSVZipEcosystems(seen map[string]struct{}, ecosystems []string, totalBytes int) (int, error) {
+	for _, ecosystem := range ecosystems {
+		if _, exists := seen[ecosystem]; exists {
+			continue
+		}
+		if len(seen) >= maxOSVZipEcosystems {
+			return totalBytes, fmt.Errorf("zip archive ecosystem count exceeds %d limit", maxOSVZipEcosystems)
+		}
+		if len(ecosystem) > maxOSVZipEcosystemBytes-totalBytes {
+			return totalBytes, fmt.Errorf("zip archive ecosystem metadata exceeds %d-byte limit", maxOSVZipEcosystemBytes)
+		}
+		seen[ecosystem] = struct{}{}
+		totalBytes += len(ecosystem)
+	}
+	return totalBytes, nil
 }
 
 func validateOSVZipBounds(entries []*zip.File, sizeBytes int64) error {

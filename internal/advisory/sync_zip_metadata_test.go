@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -89,5 +90,48 @@ func TestSyncOSVZipMetadataRejectsInvalidArchives(t *testing.T) {
 func TestValidateOSVZipBoundsRejectsEntryCount(t *testing.T) {
 	if err := validateOSVZipBounds(make([]*zip.File, maxOSVZipEntries+1), 1); err == nil || !strings.Contains(err.Error(), "entries; limit") {
 		t.Fatalf("expected entry-count limit, got %v", err)
+	}
+}
+
+func TestValidateOSVZipMetadataAggregateBounds(t *testing.T) {
+	const ecosystemByteLimit = 1024 * 1024
+	const ecosystemCountLimit = 1024
+	for _, tc := range []struct {
+		name      string
+		count     int
+		ecosystem func(int) string
+		wantError string
+	}{
+		{name: "count boundary", count: ecosystemCountLimit, ecosystem: func(i int) string { return fmt.Sprintf("ecosystem-%d", i) }},
+		{name: "count exceeded", count: ecosystemCountLimit + 1, ecosystem: func(i int) string { return fmt.Sprintf("ecosystem-%d", i) }, wantError: "ecosystem count exceeds"},
+		{name: "byte boundary with duplicates", count: 3, ecosystem: func(i int) string { return strings.Repeat(string(rune('a'+i%2)), ecosystemByteLimit/2) }},
+		{name: "aggregate bytes exceeded", count: 2, ecosystem: func(i int) string { return strings.Repeat(string(rune('a'+i)), ecosystemByteLimit/2+1) }, wantError: "ecosystem metadata exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := make([]testOSVZipEntry, tc.count)
+			expected := map[string]struct{}{}
+			for i := range entries {
+				ecosystem := tc.ecosystem(i)
+				expected[ecosystem] = struct{}{}
+				entries[i] = testOSVZipEntry{name: fmt.Sprintf("%d.json", i), payload: strings.ReplaceAll(testOSVAdvisory(fmt.Sprintf("OSV-%d", i)), `"Go"`, `"`+ecosystem+`"`)}
+			}
+			payload := testOSVZipEntries(t, entries...)
+			metadata, err := validateOSVZipSnapshotMetadata(bytes.NewReader(payload), int64(len(payload)))
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("expected %q, got %v", tc.wantError, err)
+				}
+				if metadata.entryCount != 0 || len(metadata.ecosystems) != 0 {
+					t.Fatal("rejected archive returned partial metadata")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validate boundary archive: %v", err)
+			}
+			if metadata.entryCount != tc.count || len(metadata.ecosystems) != len(expected) {
+				t.Fatalf("unexpected metadata counts: entries=%d ecosystems=%d", metadata.entryCount, len(metadata.ecosystems))
+			}
+		})
 	}
 }
