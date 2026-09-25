@@ -132,32 +132,20 @@ jobs:
                   return { run, artifact };
                 }
               }
-              // A run at this head SHA that has not completed yet might
-              // still be this PR's own "ci" run; only once every candidate
-              // has completed without producing a matching artifact is it
-              // safe to fail closed instead of continuing to poll. An empty
-              // candidate list is treated the same way: this verifier and
-              // the "ci" run it waits on are dispatched by the same event,
-              // but their runs are not guaranteed to become visible through
-              // the API in lockstep, so seeing none yet must not be treated
-              // as proof none will ever appear.
-              // Attempts created before this verifier started
-              // cannot prove that a concurrently dispatched retry has failed:
-              // the new run may not yet be visible in the API. Cancellation
-              // can update an old run after startup, so use creation time.
-              const currentTerminal = candidates.some((run) => run.status === 'completed' && new Date(run.created_at).getTime() >= jobStartMs);
-              const stillPending = !currentTerminal || candidates.some((run) => run.status !== 'completed');
-              return { run: null, artifact: null, stillPending };
+              // Workflow runs expose no identity tying a same-head candidate
+              // to this pull-request event. A completed failure or cancelled
+              // run may belong to an earlier event, even if it was created
+              // shortly before this verifier started. Only a matching
+              // successful artifact is decisive; otherwise keep polling to
+              // the shared deadline rather than failing on ambiguous state.
+              return null;
             };
 
             let result;
             for (;;) {
               result = await findArtifact();
-              if (result.artifact) {
+              if (result) {
                 break;
-              }
-              if (!result.stillPending) {
-                throw new Error(`No completed "ci" workflow run at head SHA ${headSha} carries an unexpired "${artifactName}" artifact.`);
               }
               if (Date.now() >= deadlineMs) {
                 throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);

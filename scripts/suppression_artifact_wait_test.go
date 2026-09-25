@@ -27,18 +27,20 @@ func TestSuppressionArtifactWait(t *testing.T) {
 	resolve := workflowStepByName(t, workflow.Jobs, "verify", "Resolve trusted ci artifact for this pull request head")
 	for _, tc := range []struct{ name, want string }{
 		{"late-success", "accepted:42:99"},
+		{"prestart-success", "accepted:42:99"},
+		{"prestart-failure", "Timed out"},
 		{"stale-failure", "accepted:42:99"},
 		{"stale-cancelled", "accepted:42:99"},
 		{"stale-cancelled-after-start", "accepted:42:99"},
 		{"stale-only", "Timed out"},
-		{"failure", "No completed"},
-		{"cancelled", "No completed"},
+		{"failure", "Timed out"},
+		{"cancelled", "Timed out"},
 		{"timeout", "Timed out"},
 		{"missing-run", "Timed out"},
 		{"superseded", "superseded"},
 		{"wrong-head", "Timed out"},
-		{"wrong-name", "No completed"},
-		{"expired", "No completed"},
+		{"wrong-name", "Timed out"},
+		{"expired", "Timed out"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("node", "-e", suppressionArtifactWaitHarness)
@@ -52,7 +54,8 @@ func TestSuppressionArtifactWait(t *testing.T) {
 }
 
 // Execute the workflow's actual resolver while advancing time without sleeping.
-// Even failed CI advertises an artifact, so only successful runs may supply it.
+// Same-head terminal runs cannot be linked to the current PR event, so only
+// an exact successful artifact proves completion; all other cases stay bounded.
 const suppressionArtifactWaitHarness = `
 const scenario = process.env.WAIT_SCENARIO;
 const start = 1000000;
@@ -80,6 +83,10 @@ const github = {
     throw new Error('untrusted workflow query');
    }
    if (scenario === 'missing-run') return [];
+   if (scenario.startsWith('prestart-')) {
+    return [{id: 42, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
+     updated_at: new Date(now).toISOString(), status: 'completed', conclusion: scenario === 'prestart-failure' ? 'failure' : 'success'}];
+   }
    if (scenario === 'stale-only' || (scenario.startsWith('stale-') && polls === 0)) {
     return [{id: 41, head_sha: 'expected', created_at: new Date(start - 60000).toISOString(),
      updated_at: new Date(scenario === 'stale-cancelled-after-start' ? start + 1 : start - 1).toISOString(),
@@ -102,11 +109,8 @@ new AsyncFunction('github', 'context', 'core', 'process', process.env.WAIT_SCRIP
  .then(() => console.log('accepted:' + outputs['run-id'] + ':' + outputs['artifact-id']))
  .catch(error => {
   const elapsed = now - start;
-  if (['timeout', 'wrong-head', 'missing-run', 'stale-only'].includes(scenario) && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
+  if (scenario !== 'superseded' && (elapsed < 60 * 60 * 1000 || elapsed >= 65 * 60 * 1000)) {
    throw new Error('timeout outside verification SLO/report buffer: ' + elapsed);
-  }
-  if (['failure', 'cancelled', 'expired', 'wrong-name'].includes(scenario) && polls !== 0) {
-   throw new Error('terminal result was polled instead of failing closed');
   }
   console.log(error.message);
  });
