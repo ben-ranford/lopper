@@ -40,19 +40,24 @@ func TestAnalysisPreparationParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := read.analysisRequest
-			got := []any{r.RepoPath, r.Dependency, r.TopN, r.ScopeMode, r.Language, r.ConfigPath, r.RuntimeProfile, r.RuntimeTracePath, r.IncludePatterns, r.ExcludePatterns, r.Features, read.thresholds, read.policySources, read.policyTrace}
-			want := []any{mutation.RepoPath, mutation.Dependency, mutation.TopN, mutation.ScopeMode, mutation.Language, mutation.ConfigPath, mutation.RuntimeProfile, mutation.RuntimeTracePath, mutation.IncludePatterns, mutation.ExcludePatterns, mutation.Features, mutation.Thresholds, mutation.PolicySources, mutation.PolicyTrace}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("read/mutation preparation differs:\n%#v\n%#v", got, want)
-			}
-			if tc.name == "overrides" && (mutation.Thresholds.LowConfidenceWarningPercent != 0 || mutation.Thresholds.LicenseFailOnDeny || mutation.Thresholds.LicenseIncludeRegistryProvenance || !reflect.DeepEqual(r.IncludePatterns, tc.args.Include)) {
-				t.Fatal("explicit overrides lost")
-			}
-			if tc.name == "empty options" && (!reflect.DeepEqual(r.IncludePatterns, []string{"src/**"}) || !reflect.DeepEqual(r.LicenseDenyList, []string{"GPL-3.0-ONLY"})) {
-				t.Fatal("empty options must retain configured scope")
-			}
+			assertAnalysisPreparationParity(t, tc.name, tc.args, read, mutation)
 		})
+	}
+}
+
+func assertAnalysisPreparationParity(t *testing.T, name string, args mutationAnalysisArguments, read resolvedToolRequest, mutation AnalysisMutationRequest) {
+	t.Helper()
+	r := read.analysisRequest
+	got := []any{r.RepoPath, r.Dependency, r.TopN, r.ScopeMode, r.Language, r.ConfigPath, r.RuntimeProfile, r.RuntimeTracePath, r.IncludePatterns, r.ExcludePatterns, r.Features, read.thresholds, read.policySources, read.policyTrace}
+	want := []any{mutation.RepoPath, mutation.Dependency, mutation.TopN, mutation.ScopeMode, mutation.Language, mutation.ConfigPath, mutation.RuntimeProfile, mutation.RuntimeTracePath, mutation.IncludePatterns, mutation.ExcludePatterns, mutation.Features, mutation.Thresholds, mutation.PolicySources, mutation.PolicyTrace}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("read/mutation preparation differs:\n%#v\n%#v", got, want)
+	}
+	if name == "overrides" && (mutation.Thresholds.LowConfidenceWarningPercent != 0 || mutation.Thresholds.LicenseFailOnDeny || mutation.Thresholds.LicenseIncludeRegistryProvenance || !reflect.DeepEqual(r.IncludePatterns, args.Include)) {
+		t.Fatal("explicit overrides lost")
+	}
+	if name == "empty options" && (!reflect.DeepEqual(r.IncludePatterns, []string{"src/**"}) || !reflect.DeepEqual(r.LicenseDenyList, []string{"GPL-3.0-ONLY"})) {
+		t.Fatal("empty options must retain configured scope")
 	}
 }
 
