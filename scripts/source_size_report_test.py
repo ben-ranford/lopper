@@ -56,7 +56,7 @@ class SourceSizeReportTest(unittest.TestCase):
         parse_error = subprocess.CompletedProcess([], 0, stdout='', stderr='a_test.go:2: expected identifier')
         with patch.object(report.subprocess, 'run', side_effect=[success, parse_error]) as run:
             with self.assertRaisesRegex(RuntimeError, 'expected identifier'):
-                report.test_clones(files, 'pinned', 55)
+                report.test_clones(files, 'v1.0.0', 55)
         self.assertEqual(run.call_args.kwargs['stderr'], subprocess.PIPE)
 
     def test_support_sources_participate_in_clone_analysis(self):
@@ -65,15 +65,29 @@ class SourceSizeReportTest(unittest.TestCase):
                  ('internal/production.go', b'100644', b'package internal\n')]
         success = subprocess.CompletedProcess([], 0, stdout='', stderr='')
         with patch.object(report.subprocess, 'run', return_value=success) as run:
-            self.assertEqual(report.test_clones(files, 'pinned', 55), [])
+            self.assertEqual(report.test_clones(files, 'v1.0.0', 55), [])
         inputs = run.call_args.kwargs['input']
         self.assertIn('/internal/testutil/fixture.go\n', inputs)
         self.assertIn('/internal/testsupport/harness.go\n', inputs)
         self.assertNotIn('/internal/production.go', inputs)
 
+    def test_rejects_command_argument_injection_before_execution(self):
+        with patch.object(report.subprocess, 'run') as run, patch.object(report.subprocess, 'check_output') as check:
+            for ref in ('--help', '-cfoo', 'HEAD\n--help', 'HEAD --help'):
+                with self.subTest(ref=ref), self.assertRaises(ValueError):
+                    report.snapshot(ref)
+            for version in ('--help', 'latest', 'v1.0.0 --help', '../tool'):
+                with self.subTest(version=version), self.assertRaises(ValueError):
+                    report.test_clones([], version, 55)
+            for threshold in ('--help', '55 --help', 0, -1):
+                with self.subTest(threshold=threshold), self.assertRaises(ValueError):
+                    report.test_clones([], 'v1.0.0', threshold)
+            run.assert_not_called()
+            check.assert_not_called()
+
     def test_signed_deltas_and_revision_identity(self):
         with patch.object(report, 'snapshot', side_effect=[('base-sha', [('a.go', b'100644', b'a\nb\n')], 0), ('head-sha', [('a.go', b'100644', b'a\n')], 1)]), patch.object(report, 'test_clones', return_value=[]):
-            result = report.build_report('base', 'head', 'pinned', 55)
+            result = report.build_report('base', 'head', 'v1.0.0', 55)
         self.assertEqual(result['baseline'], 'base-sha')
         self.assertEqual(result['head'], 'head-sha')
         self.assertEqual(result['delta']['production']['physical_lines'], -1)

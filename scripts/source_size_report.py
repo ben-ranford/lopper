@@ -42,7 +42,9 @@ def git(*args):
 
 
 def snapshot(ref):
-    revision = git('rev-parse', '--verify', ref + '^{commit}').decode().strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_./~^{}@-]*', ref):
+        raise ValueError('revision must be a Git reference without option prefixes or whitespace')
+    revision = git('rev-parse', '--verify', '--end-of-options', ref + '^{commit}').decode().strip()
     entries = []
     for entry in git('ls-tree', '-rz', '--full-tree', revision).split(b'\0'):
         if entry:
@@ -63,7 +65,7 @@ def snapshot(ref):
 
 
 def counts(files):
-    totals = {category: dict(files=0, source_files=0, physical_lines=0, nonblank_lines=0, binary_files=0, symlinks=0) for category in CATEGORIES}
+    totals = {category: {'files': 0, 'source_files': 0, 'physical_lines': 0, 'nonblank_lines': 0, 'binary_files': 0, 'symlinks': 0} for category in CATEGORIES}
     for name, mode, data in files:
         bucket = totals[classify(name, data)]
         bucket['files'] += 1
@@ -91,11 +93,16 @@ def clone_context(finding, contents):
                         if (match := re.match(r'^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(', line))]
         function = declarations[-1] if declarations else ''
         kind = 'behavioral_case' if function.startswith(('Test', 'Benchmark', 'Fuzz', 'Example')) else 'helper_candidate'
-        contexts.append(dict(path=name, function=function, kind=kind if function else 'unclassified'))
-    return dict(finding=finding, contexts=contexts)
+        contexts.append({'path': name, 'function': function, 'kind': kind if function else 'unclassified'})
+    return {'finding': finding, 'contexts': contexts}
 
 
 def test_clones(files, dupl_version, threshold):
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)', dupl_version):
+        raise ValueError('dupl version must be a full commit hash or release version')
+    threshold = int(threshold)
+    if threshold <= 0:
+        raise ValueError('clone threshold must be a positive integer')
     with tempfile.TemporaryDirectory(prefix='lopper-test-clones-') as directory:
         paths = []
         for name, mode, data in files:
@@ -123,14 +130,34 @@ def build_report(base, head, dupl_version, threshold):
     base_sha, base_files, base_modules = snapshot(base)
     head_sha, head_files, head_modules = snapshot(head)
     before, after = counts(base_files), counts(head_files)
-    return dict(schema_version=1, baseline=base_sha, head=head_sha,
-                methodology='Committed Git blobs; physical LF-delimited lines (final unterminated line included), nonblank byte-whitespace lines; not executable lines. Binary (NUL) blobs, symlinks and submodules have no line count. Unknown extensions remain visible as configuration/docs. Go-only structural test clones are advisory, not semantic equivalence; production gate unchanged.',
-                baseline_counts=before, head_counts=after,
-                delta={category: {key: after[category][key] - before[category][key] for key in before[category]} for category in CATEGORIES},
-                submodules=dict(baseline=base_modules, head=head_modules),
-                test_duplication=dict(blocking=False, tool='github.com/mibk/dupl@' + dupl_version, token_threshold=threshold,
-                                      findings=test_clones(head_files, dupl_version, threshold),
-                                      triage='Review helper/harness declarations as reuse candidates separately from behavioral Test/Benchmark/Fuzz cases; filenames and structural matches alone cannot establish safe extraction.'))
+    return {
+        'schema_version': 1,
+        'baseline': base_sha,
+        'head': head_sha,
+        'methodology': (
+            'Committed Git blobs; physical LF-delimited lines (final unterminated line included), '
+            'nonblank byte-whitespace lines; not executable lines. Binary (NUL) blobs, symlinks '
+            'and submodules have no line count. Unknown extensions remain visible as '
+            'configuration/docs. Go-only structural test clones are advisory, not semantic '
+            'equivalence; production gate unchanged.'
+        ),
+        'baseline_counts': before,
+        'head_counts': after,
+        'delta': {category: {key: after[category][key] - before[category][key]
+                             for key in before[category]} for category in CATEGORIES},
+        'submodules': {'baseline': base_modules, 'head': head_modules},
+        'test_duplication': {
+            'blocking': False,
+            'tool': 'github.com/mibk/dupl@' + dupl_version,
+            'token_threshold': threshold,
+            'findings': test_clones(head_files, dupl_version, threshold),
+            'triage': (
+                'Review helper/harness declarations as reuse candidates separately from '
+                'behavioral Test/Benchmark/Fuzz cases; filenames and structural matches '
+                'alone cannot establish safe extraction.'
+            ),
+        },
+    }
 
 
 def main():
