@@ -393,14 +393,13 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 }
 
 func replacePomPropertyTokensWithinBounds(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
-	var updated strings.Builder
+	expansion := pomPropertyExpansion{value: value, updatedBytes: len(value)}
 	replaced := false
 	unresolved := false
 	tokensUsed := 0
 	tokensScanned := 0
 	cursor := 0
 	search := 0
-	updatedBytes := len(value)
 	for search < len(value) {
 		start, end, nextSearch, found := nextPomPropertyToken(value, search)
 		if !found {
@@ -423,8 +422,7 @@ func replacePomPropertyTokensWithinBounds(value string, properties map[string]st
 		if tokensUsed == tokensRemaining {
 			return "", false, true, 0
 		}
-		updatedBytes, ok = appendPomPropertyReplacement(&updated, value, cursor, start, end, replacement, updatedBytes, replaced)
-		if !ok {
+		if !expansion.appendReplacement(cursor, start, end, replacement) {
 			return "", false, true, 0
 		}
 		cursor = end
@@ -434,8 +432,8 @@ func replacePomPropertyTokensWithinBounds(value string, properties map[string]st
 	if !replaced {
 		return value, false, unresolved, 0
 	}
-	updated.WriteString(value[cursor:])
-	return updated.String(), true, unresolved, tokensUsed
+	expansion.updated.WriteString(value[cursor:])
+	return expansion.updated.String(), true, unresolved, tokensUsed
 }
 
 func nextPomPropertyToken(value string, search int) (int, int, int, bool) {
@@ -453,20 +451,28 @@ func nextPomPropertyToken(value string, search int) (int, int, int, bool) {
 	return start, end, end, true
 }
 
-func appendPomPropertyReplacement(updated *strings.Builder, value string, cursor, start, end int, replacement string, updatedBytes int, alreadyReplaced bool) (int, bool) {
-	updatedBytes -= end - start
-	if len(replacement) > maxPomPropertyValueBytes-updatedBytes {
-		return 0, false
+type pomPropertyExpansion struct {
+	value        string
+	updated      strings.Builder
+	updatedBytes int
+	replaced     bool
+}
+
+func (e *pomPropertyExpansion) appendReplacement(cursor, start, end int, replacement string) bool {
+	e.updatedBytes -= end - start
+	if len(replacement) > maxPomPropertyValueBytes-e.updatedBytes {
+		return false
 	}
-	updatedBytes += len(replacement)
-	if alreadyReplaced {
-		updated.WriteString(value[cursor:start])
+	e.updatedBytes += len(replacement)
+	if e.replaced {
+		e.updated.WriteString(e.value[cursor:start])
 	} else {
-		updated.Grow(updatedBytes)
-		updated.WriteString(value[:start])
+		e.updated.Grow(e.updatedBytes)
+		e.updated.WriteString(e.value[:start])
 	}
-	updated.WriteString(replacement)
-	return updatedBytes, true
+	e.updated.WriteString(replacement)
+	e.replaced = true
+	return true
 }
 
 func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
