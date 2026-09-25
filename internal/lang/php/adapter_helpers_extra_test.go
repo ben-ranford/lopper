@@ -1473,6 +1473,23 @@ func TestPHPDynamicConstructorAfterHeredocInterpolationCloseTag(t *testing.T) {
 	}
 }
 
+func TestPHPDynamicConstructorAfterQuotedHeredocMarkerInInterpolation(t *testing.T) {
+	for _, expression := range []string{
+		`"{$a["<<<DOC"]}"`,
+		`"${a["<<<DOC"]}"`,
+		"`{$a[\"<<<DOC\"]}`",
+		"\"{$a[\n\"<<<DOC\"]}\"",
+	} {
+		source := "<?php echo " + expression + ";\nnew $type;"
+		if got := maskPHPHeredocNowdocBodies(source); got != source {
+			t.Errorf("quoted heredoc marker masked executable code in %q", source)
+		}
+		if !hasDynamicPatterns([]byte(source), "source.php", false) {
+			t.Errorf("dynamic constructor after quoted heredoc marker was missed in %q", source)
+		}
+	}
+}
+
 func TestParsePHPImportsDoesNotTreatArbitraryHeredocLabelTailAsTerminator(t *testing.T) {
 	content := []byte("<?php\n" +
 		"$html = <<<HTML\n" +

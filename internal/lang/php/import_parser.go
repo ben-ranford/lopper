@@ -1151,23 +1151,19 @@ func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
 
 func maskPHPHeredocNowdocBodies(text string) string {
 	var masked []byte
-	state := phpStateCode
-	for lineStart := 0; lineStart < len(text); {
-		lineEnd := nextPHPLineEnd(text, lineStart)
-		label, ok := heredocNowdocLabelWithState(text[lineStart:lineEnd], &state)
-		if !ok {
-			lineStart = nextPHPLineStart(text, lineEnd)
-			continue
+	for offset := 0; offset < len(text); {
+		markerOffset, label, found := findPHPHeredocNowdocOpener(text, offset)
+		if !found {
+			break
 		}
-		bodyStart := nextPHPLineStart(text, lineEnd)
+		bodyStart := nextPHPLineStart(text, nextPHPLineEnd(text, markerOffset))
 		terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
 		if !ok {
 			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
 			return string(masked)
 		}
 		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, terminatorStart)
-		state = phpStateCode
-		lineStart = terminatorStart
+		offset = terminatorStart
 	}
 	if len(masked) == 0 {
 		return text
@@ -1185,21 +1181,28 @@ func withMaskedPHPHeredocRange(text string, masked []byte, start, end int) []byt
 }
 
 func heredocNowdocLabel(line string) (string, bool) {
-	state := phpStateCode
-	return heredocNowdocLabelWithState(line, &state)
+	_, label, ok := findPHPHeredocNowdocOpener(line, 0)
+	return label, ok
 }
 
-func heredocNowdocLabelWithState(line string, state *phpCodeState) (string, bool) {
-	for offset := 0; offset < len(line); {
-		if *state == phpStateCode && strings.HasPrefix(line[offset:], "<<<") {
-			return parseHeredocNowdocLabelAfterMarker(line[offset+len("<<<"):])
+func findPHPHeredocNowdocOpener(text string, offset int) (int, string, bool) {
+	state := phpStateCode
+	for offset < len(text) {
+		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
+			lineEnd := nextPHPLineEnd(text, offset)
+			if label, ok := parseHeredocNowdocLabelAfterMarker(text[offset+len("<<<") : lineEnd]); ok {
+				return offset, label, true
+			}
 		}
-		offset = advancePHPCodeState(line, offset, state)
+		if state == phpStateDoubleQuote || state == phpStateBacktick {
+			if next, _, _ := scanDynamicInterpolationAt(text, offset); next > offset {
+				offset = next
+				continue
+			}
+		}
+		offset = advancePHPCodeState(text, offset, &state)
 	}
-	if *state == phpStateLineComment {
-		*state = phpStateCode
-	}
-	return "", false
+	return 0, "", false
 }
 
 func advancePHPCodeState(text string, offset int, state *phpCodeState) int {
