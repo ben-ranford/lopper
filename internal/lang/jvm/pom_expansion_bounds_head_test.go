@@ -49,8 +49,9 @@ func TestPomPropertyExpansionPreservesBoundedValues(t *testing.T) {
 }
 
 func TestPomPropertyExpansionCountsIntroducedTokens(t *testing.T) {
+	const tokenBudget = 1024
 	value, unresolved := resolvePomPropertyValue("${first}${second}", map[string]string{
-		"first":  strings.Repeat("${second}", maxPomPropertyTokens),
+		"first":  strings.Repeat("${second}", tokenBudget),
 		"second": "resolved",
 	})
 	if value != "" || !unresolved {
@@ -59,7 +60,7 @@ func TestPomPropertyExpansionCountsIntroducedTokens(t *testing.T) {
 }
 
 func TestPomPropertyExpansionBuildsEachPassInOneScan(t *testing.T) {
-	const tokenCount = maxPomPropertyTokens - 1
+	const tokenCount = 1023
 	properties := make(map[string]string, tokenCount+1)
 	var root strings.Builder
 	var want strings.Builder
@@ -85,8 +86,9 @@ func TestPomPropertyExpansionBuildsEachPassInOneScan(t *testing.T) {
 }
 
 func TestPomPropertyExpansionStopsRecursiveAmplification(t *testing.T) {
+	const maxValueBytes = 64 * 1024
 	value, unresolved := resolvePomPropertyValue("${x}", map[string]string{"x": "${x}${x}"})
-	if !unresolved || len(value) > maxPomPropertyValueBytes {
+	if !unresolved || len(value) > maxValueBytes {
 		t.Fatalf("expected bounded unresolved recursive expansion, got %d bytes, unresolved=%v", len(value), unresolved)
 	}
 }
