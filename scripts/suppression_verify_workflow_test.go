@@ -129,6 +129,10 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"candidate.number === pullNumber",
 		"candidate.head.sha === headSha",
 		"candidate.base.sha === baseSha",
+		"listPullRequestsAssociatedWithCommit",
+		"expectedAssociation = associatedPulls.some",
+		"if (runPulls.length === 0)",
+		"return expectedAssociation",
 		"const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success')",
 		// An empty candidate list must be treated as "still pending", not
 		// "no run will ever appear": this verifier and the "ci" run it
@@ -140,7 +144,9 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"return null",
 		"if (result) {",
 		"if (Date.now() >= deadlineMs)",
-		"run.created_at).getTime() >= eventCreatedMs",
+		"const latestCurrentRun = correlatedCandidates",
+		"right.id - left.id",
+		"latestCurrentRunCreatedMs > eventCreatedMs",
 		"github.rest.pulls.get",
 		"delayMs = Math.min(delayMs * 2, 2 * 60 * 1000)",
 	})
