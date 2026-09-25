@@ -1,6 +1,7 @@
 package jvm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -57,10 +58,36 @@ func TestPomPropertyExpansionCountsIntroducedTokens(t *testing.T) {
 	}
 }
 
+func TestPomPropertyExpansionBuildsEachPassInOneScan(t *testing.T) {
+	const tokenCount = maxPomPropertyTokens - 1
+	properties := make(map[string]string, tokenCount+1)
+	var root strings.Builder
+	var want strings.Builder
+	for index := 0; index < tokenCount; index++ {
+		key := fmt.Sprintf("p%d", index)
+		root.WriteString("${")
+		root.WriteString(key)
+		root.WriteByte('}')
+		properties[key] = strings.Repeat("x", 50)
+		want.WriteString(properties[key])
+	}
+	properties["root"] = root.String()
+
+	allocations := testing.AllocsPerRun(5, func() {
+		got, unresolved := resolvePomPropertyValue("${root}", properties)
+		if unresolved || got != want.String() {
+			t.Fatal("bounded one-scan expansion returned an unexpected result")
+		}
+	})
+	if allocations > 128 {
+		t.Fatalf("expansion allocated %.0f objects for %d replacements; want one bounded scan", allocations, tokenCount+1)
+	}
+}
+
 func TestPomPropertyExpansionStopsRecursiveAmplification(t *testing.T) {
 	value, unresolved := resolvePomPropertyValue("${x}", map[string]string{"x": "${x}${x}"})
-	if value != "" || !unresolved {
-		t.Fatalf("expected rejected recursive expansion, got %d bytes, unresolved=%v", len(value), unresolved)
+	if !unresolved || len(value) > maxPomPropertyValueBytes {
+		t.Fatalf("expected bounded unresolved recursive expansion, got %d bytes, unresolved=%v", len(value), unresolved)
 	}
 }
 

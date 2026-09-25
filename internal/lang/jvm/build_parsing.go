@@ -389,38 +389,63 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 	if len(value) > maxPomPropertyValueBytes {
 		return "", false, true, 0
 	}
-	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, tokensRemaining+1)
-	if len(matches) > tokensRemaining {
-		return "", false, true, 0
-	}
-	if len(matches) == 0 {
-		return value, false, false, 0
-	}
-
-	updated := value
+	var updated strings.Builder
 	replaced := false
 	unresolved := false
 	tokensUsed := 0
-	for _, match := range matches {
-		token, replacement, ok := pomPropertyReplacement(match, properties)
-		if !ok {
-			unresolved = unresolved || len(match) == 2
+	tokensScanned := 0
+	cursor := 0
+	search := 0
+	updatedBytes := len(value)
+	for search < len(value) {
+		open := strings.Index(value[search:], "${")
+		if open < 0 {
+			break
+		}
+		start := search + open
+		keyStart := start + 2
+		closingBrace := strings.IndexByte(value[keyStart:], '}')
+		if closingBrace < 0 {
+			break
+		}
+		end := keyStart + closingBrace + 1
+		search = end
+		if closingBrace == 0 {
 			continue
 		}
-		count := strings.Count(updated, token)
-		if count > tokensRemaining-tokensUsed {
+		tokensScanned++
+		if tokensScanned > maxPomPropertyTokens {
 			return "", false, true, 0
 		}
-		unchangedBytes := len(updated) - count*len(token)
-		// Divide the remaining budget before multiplying an untrusted replacement size.
-		if count > 0 && len(replacement) > (maxPomPropertyValueBytes-unchangedBytes)/count {
+		replacement, ok := pomPropertyValue(value[keyStart:end-1], properties)
+		if !ok {
+			unresolved = true
+			continue
+		}
+		if tokensUsed == tokensRemaining {
 			return "", false, true, 0
 		}
-		updated = strings.ReplaceAll(updated, token, replacement)
-		tokensUsed += count
+		updatedBytes -= end - start
+		if len(replacement) > maxPomPropertyValueBytes-updatedBytes {
+			return "", false, true, 0
+		}
+		updatedBytes += len(replacement)
+		if !replaced {
+			updated.Grow(updatedBytes)
+			updated.WriteString(value[:start])
+		} else {
+			updated.WriteString(value[cursor:start])
+		}
+		updated.WriteString(replacement)
+		cursor = end
+		tokensUsed++
 		replaced = true
 	}
-	return updated, replaced, unresolved, tokensUsed
+	if !replaced {
+		return value, false, unresolved, 0
+	}
+	updated.WriteString(value[cursor:])
+	return updated.String(), true, unresolved, tokensUsed
 }
 
 func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
@@ -429,16 +454,25 @@ func pomPropertyReplacement(match []string, properties map[string]string) (strin
 	}
 
 	key := strings.TrimSpace(match[1])
-	replacement, ok := properties[key]
+	replacement, ok := pomPropertyValue(key, properties)
 	if !ok {
 		return match[0], "", false
+	}
+	return match[0], replacement, true
+}
+
+func pomPropertyValue(key string, properties map[string]string) (string, bool) {
+	key = strings.TrimSpace(key)
+	replacement, ok := properties[key]
+	if !ok {
+		return "", false
 	}
 
 	replacement = strings.TrimSpace(replacement)
 	if replacement == "" {
-		return match[0], "", false
+		return "", false
 	}
-	return match[0], replacement, true
+	return replacement, true
 }
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
