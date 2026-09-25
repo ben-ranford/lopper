@@ -2,6 +2,8 @@ package php
 
 import "strings"
 
+const phpInterpolationWhitespace = " \t\r\n\f"
+
 func hasPHPDynamicInterpolation(text string) bool {
 	state := phpStateCode
 	for offset := 0; offset < len(text); {
@@ -97,43 +99,61 @@ func scanPHPInterpolationExpression(text string, offset int) (int, bool, bool) {
 	var quotes []interpolationQuoteFrame
 	dynamic := false
 	for offset < len(text) {
-		if isPHPRegionCloseTagAt(text, offset, state) {
-			return offset, dynamic, true
+		next, complete, closed := advancePHPInterpolationExpression(text, offset, &depth, &state, &quotes, &dynamic)
+		if complete {
+			return next, dynamic, closed
 		}
-		if state == phpStateCode {
-			if next, found := scanDynamicInterpolationToken(text, offset); next > offset {
-				dynamic = dynamic || found
-				offset = next
-				continue
-			}
-			switch text[offset] {
-			case '{':
-				depth++
-				offset++
-				continue
-			case '}':
-				depth--
-				offset++
-				if depth == 0 {
-					return offset, dynamic, false
-				}
-				if len(quotes) > 0 && depth == quotes[len(quotes)-1].resumeDepth {
-					state = quotes[len(quotes)-1].state
-					quotes = quotes[:len(quotes)-1]
-				}
-				continue
-			}
-		} else if (state == phpStateDoubleQuote || state == phpStateBacktick) && phpInterpolationExpressionStart(text, offset) > offset {
-			next := phpInterpolationExpressionStart(text, offset)
-			quotes = append(quotes, interpolationQuoteFrame{state: state, resumeDepth: depth})
-			depth++
-			state = phpStateCode
-			offset = next
-			continue
-		}
-		offset = advancePHPCodeState(text, offset, &state)
+		offset = next
 	}
 	return len(text), dynamic, false
+}
+
+func advancePHPInterpolationExpression(text string, offset int, depth *int, state *phpCodeState, quotes *[]interpolationQuoteFrame, dynamic *bool) (int, bool, bool) {
+	if isPHPRegionCloseTagAt(text, offset, *state) {
+		return offset, true, true
+	}
+	if *state != phpStateCode {
+		if next, entered := startNestedPHPInterpolation(text, offset, depth, state, quotes); entered {
+			return next, false, false
+		}
+		return advancePHPCodeState(text, offset, state), false, false
+	}
+	if next, found := scanDynamicInterpolationToken(text, offset); next > offset {
+		*dynamic = *dynamic || found
+		return next, false, false
+	}
+	switch text[offset] {
+	case '{':
+		(*depth)++
+		return offset + 1, false, false
+	case '}':
+		(*depth)--
+		next := offset + 1
+		if *depth == 0 {
+			return next, true, false
+		}
+		if len(*quotes) > 0 && *depth == (*quotes)[len(*quotes)-1].resumeDepth {
+			*state = (*quotes)[len(*quotes)-1].state
+			*quotes = (*quotes)[:len(*quotes)-1]
+		}
+		return next, false, false
+	default:
+		return advancePHPCodeState(text, offset, state), false, false
+	}
+}
+
+func startNestedPHPInterpolation(text string, offset int, depth *int, state *phpCodeState, quotes *[]interpolationQuoteFrame) (int, bool) {
+	if *state != phpStateDoubleQuote && *state != phpStateBacktick {
+		return offset, false
+	}
+	next := phpInterpolationExpressionStart(text, offset)
+	if next == offset {
+		return offset, false
+	}
+	*quotes = append(*quotes, interpolationQuoteFrame{state: *state, resumeDepth: *depth})
+	(*depth)++
+	*state = phpStateCode
+	return next, true
 }
 
 func hasDynamicInterpolationExpression(expression string) bool {
@@ -177,7 +197,7 @@ func scanDynamicInterpolationToken(text string, start int) (int, bool) {
 			}
 			offset += 2
 		}
-		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], " \t\r\n\f"), "::")
+		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], phpInterpolationWhitespace), "::")
 	}
 	offset = interpolationIdentifierEnd(text, offset)
 	if offset == start {
@@ -185,9 +205,9 @@ func scanDynamicInterpolationToken(text string, start int) (int, bool) {
 	}
 	switch text[start:offset] {
 	case "new":
-		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], " \t\r\n\f"), "$")
+		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], phpInterpolationWhitespace), "$")
 	case "class_exists", "interface_exists", "trait_exists", "method_exists":
-		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], " \t\r\n\f"), "(")
+		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], phpInterpolationWhitespace), "(")
 	default:
 		return offset, false
 	}

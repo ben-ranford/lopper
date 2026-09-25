@@ -1466,6 +1466,13 @@ func TestParsePHPImportsReturnsToTemplateAfterHeredocTerminatorCloseTag(t *testi
 	}
 }
 
+func TestPHPDynamicConstructorAfterHeredocInterpolationCloseTag(t *testing.T) {
+	source := "<?php echo <<<DOC\n{$a[// ?><?php new $type;"
+	if !hasDynamicPatterns([]byte(source), "source.php", false) {
+		t.Fatal("dynamic constructor in PHP reopened after heredoc interpolation close tag was missed")
+	}
+}
+
 func TestParsePHPImportsDoesNotTreatArbitraryHeredocLabelTailAsTerminator(t *testing.T) {
 	content := []byte("<?php\n" +
 		"$html = <<<HTML\n" +

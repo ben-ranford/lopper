@@ -1076,24 +1076,56 @@ func findPHPRegionEnd(text string, offset int) (int, int) {
 		if isPHPRegionCloseTagAt(text, offset, state) {
 			return offset, offset + len("?>")
 		}
-		if state == phpStateDoubleQuote || state == phpStateBacktick {
-			if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
-				if closed {
-					return next, next + len("?>")
-				}
-				offset = next
-				continue
+		if next, closed := skipPHPRegionConstruct(text, offset, &state); next > offset {
+			if closed {
+				return next, next + len("?>")
 			}
-		}
-		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
-			if nextOffset, ok := skipHeredocNowdocBody(text, offset); ok {
-				offset = nextOffset
-				continue
-			}
+			offset = next
+			continue
 		}
 		offset = advancePHPCodeState(text, offset, &state)
 	}
 	return len(text), len(text)
+}
+
+func skipPHPRegionConstruct(text string, offset int, state *phpCodeState) (int, bool) {
+	if *state == phpStateDoubleQuote || *state == phpStateBacktick {
+		if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+			return next, closed
+		}
+	}
+	if *state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
+		if next, ok := skipHeredocNowdocBody(text, offset); ok {
+			if closeTag, found := findPHPRegionCloseTagInHeredoc(text, offset, next); found {
+				return closeTag, true
+			}
+			return next, false
+		}
+	}
+	return offset, false
+}
+
+func findPHPRegionCloseTagInHeredoc(text string, markerOffset, bodyEnd int) (int, bool) {
+	lineEnd := nextPHPLineEnd(text, markerOffset)
+	marker := strings.TrimLeft(text[markerOffset+len("<<<"):lineEnd], " \t")
+	if _, ok := parseHeredocNowdocLabelAfterMarker(marker); !ok || strings.HasPrefix(marker, "'") {
+		return 0, false
+	}
+	for offset := nextPHPLineStart(text, lineEnd); offset < bodyEnd; {
+		if text[offset] == '\\' && offset+1 < bodyEnd {
+			offset += 2
+			continue
+		}
+		if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+			if closed {
+				return next, true
+			}
+			offset = next
+			continue
+		}
+		offset++
+	}
+	return 0, false
 }
 
 func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
