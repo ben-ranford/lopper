@@ -69,7 +69,7 @@ func (i *osvZipInventory) addEcosystem(value string) error {
 	if i.ecosystems == nil {
 		i.ecosystems = make(map[string]struct{})
 	}
-	i.ecosystems[ecosystem] = struct{}{}
+	i.ecosystems[strings.Clone(ecosystem)] = struct{}{}
 	i.ecosystemBytes += cost
 	return nil
 }

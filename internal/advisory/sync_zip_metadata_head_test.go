@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestValidateDownloadedOSVZipErrors(t *testing.T) {
@@ -128,5 +129,24 @@ func TestOSVZipInventoryRejectsMalformedEcosystem(t *testing.T) {
 	payload := strings.ReplaceAll(testOSVAdvisory("GO-1"), `"Go"`, `{}`)
 	if err := inspectOSVJSONSnapshot(strings.NewReader(payload), &osvZipInventory{}); err == nil {
 		t.Fatal("expected non-string ecosystem to be rejected")
+	}
+}
+
+func TestOSVZipInventoryDoesNotRetainEcosystemPadding(t *testing.T) {
+	padded := strings.Repeat(" ", 1024*1024) + "Go" + strings.Repeat(" ", 1024*1024)
+	inventory := osvZipInventory{}
+	if err := inventory.addEcosystem(padded); err != nil {
+		t.Fatal(err)
+	}
+	ecosystems := inventory.sortedEcosystems()
+	if len(ecosystems) != 1 || ecosystems[0] != "Go" {
+		t.Fatalf("expected normalized Go ecosystem, got %v", ecosystems)
+	}
+	// Pointer equality observes retention without GC timing or heap-size assumptions.
+	if unsafe.StringData(ecosystems[0]) == unsafe.StringData(strings.TrimSpace(padded)) {
+		t.Fatal("normalized ecosystem retains the padded input allocation")
+	}
+	if inventory.ecosystemBytes != len(`"Go"`)+128 {
+		t.Fatalf("unexpected normalized ecosystem budget: %d", inventory.ecosystemBytes)
 	}
 }
