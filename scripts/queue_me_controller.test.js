@@ -126,6 +126,7 @@ function makeHarness(options = {}) {
     disabled: [],
     merged: [],
     notices: [],
+    branchUpdates: [],
     rebased: [],
   };
   const repository = { default_branch: 'main', full_name: 'octo/lopper' };
@@ -174,6 +175,11 @@ function makeHarness(options = {}) {
       },
       pulls: {
         list: async () => {},
+        updateBranch: async (input) => {
+          calls.branchUpdates.push(input);
+          if (options.branchUpdateError) throw options.branchUpdateError;
+          return { status: 202, data: { message: 'Updating pull request branch.' } };
+        },
       },
       repos: {
         get: async () => ({ data: repository }),
@@ -573,6 +579,38 @@ test('commit identity audit permits only verified same-repository Renovate commi
   }
 });
 
+test('commit identity audit permits a queue App base-update merge commit only', () => {
+  const appSlug = 'lopper-queue-controller';
+  const appIdentity = {
+    login: `${appSlug}[bot]`,
+    type: 'Bot',
+  };
+  const gitIdentity = {
+    name: `${appSlug}[bot]`,
+    email: `123456+${appSlug}[bot]@users.noreply.github.com`,
+  };
+  const syncCommit = {
+    ...makeComparisonCommit('sync-merge'),
+    parents: [{ sha: 'pr-head' }, { sha: 'base-head' }],
+    author: appIdentity,
+    committer: appIdentity,
+    commit: {
+      author: gitIdentity,
+      committer: gitIdentity,
+    },
+  };
+
+  assert.equal(testables.commitIdentityFailure(syncCommit, makePull(10), appSlug), '');
+  assert.match(
+    testables.commitIdentityFailure({ ...syncCommit, parents: [{ sha: 'pr-head' }] }, makePull(10), appSlug),
+    /author is a bot identity/,
+  );
+  assert.match(
+    testables.commitIdentityFailure(syncCommit, makePull(10), 'another-app'),
+    /author is a bot identity/,
+  );
+});
+
 test('Renovate exception rejects every trusted identity tuple mutation', () => {
   const pull = makePull(10, { user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 } });
   const commit = makeRenovateCommit();
@@ -702,7 +740,7 @@ test('queue refresh updates a stale follower position after the leader advances'
   assert.doesNotMatch(commentsFor(harness, 8), /Queued behind #3/);
 });
 
-test('controller pauses a stale leader before GitHub can rewrite committers', async () => {
+test('controller requests a guarded base update for a stale same-repository leader', async () => {
   const leader = makePull(10);
   const harness = makeHarness({
     pulls: [leader],
@@ -715,16 +753,43 @@ test('controller pauses a stale leader before GitHub can rewrite committers', as
 
   await runController(harness.args);
 
+  assert.deepEqual(harness.calls.branchUpdates, [{
+    owner: 'octo', repo: 'lopper', pull_number: 10, expected_head_sha: 'head-10',
+  }]);
   assert.deepEqual(harness.calls.rebased, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.comments[0].body, /rewrites PR commits/);
-  assert.match(harness.calls.comments[0].body, /lopper-queue-controller\[bot\]/);
-  assert.match(harness.calls.comments[0].body, /retried after a clean identity audit/);
-  assert.match(harness.calls.notices.at(-1), /waiting for a clean queue identity audit/);
+  assert.match(harness.calls.comments[0].body, /GitHub is updating this pull request branch/);
+  assert.match(harness.calls.comments[0].body, /before enabling auto-merge/);
 });
 
-test('controller tells a stale Renovate pull to rebase and never updates its branch', async () => {
+test('controller audits the queue App merge commit before arming the updated head', async () => {
+  const appSlug = 'lopper-queue-controller';
+  const appIdentity = { login: `${appSlug}[bot]`, type: 'Bot' };
+  const gitIdentity = {
+    name: `${appSlug}[bot]`,
+    email: `123456+${appSlug}[bot]@users.noreply.github.com`,
+  };
+  const queueMerge = {
+    ...makeComparisonCommit('queue-base-update'),
+    parents: [{ sha: 'old-head' }, { sha: 'main-head' }],
+    author: appIdentity,
+    committer: appIdentity,
+    commit: { author: gitIdentity, committer: gitIdentity },
+  };
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonCommits: [makeComparisonCommit(), queueMerge],
+    queueAppSlug: appSlug,
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
+});
+
+test('controller updates a stale same-repository Renovate pull after provenance audit', async () => {
   const renovatePull = makePull(10, {
     user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
   });
@@ -737,10 +802,35 @@ test('controller tells a stale Renovate pull to rebase and never updates its bra
 
   await runController(harness.args);
 
+  assert.equal(harness.calls.branchUpdates.length, 1);
   assert.deepEqual(harness.calls.rebased, []);
   assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.comments[0].body, /Ask Renovate to rebase this pull request/);
-  assert.match(harness.calls.comments[0].body, /will not call GitHub branch update/);
+  assert.match(harness.calls.comments[0].body, /GitHub is updating this pull request branch/);
+});
+
+test('controller does not update a stale fork branch', async () => {
+  const forkPull = makePull(10, {
+    head: { sha: 'head-10', ref: 'queue-me-10', repo: { full_name: 'contributor/lopper' } },
+  });
+  const harness = makeHarness({ pulls: [forkPull], comparisonStatus: 'behind' });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.branchUpdates, []);
+  assert.match(harness.calls.comments[0].body, /belongs to a fork/);
+});
+
+test('controller reports a rejected branch update and does not arm auto-merge', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)], comparisonStatus: 'behind',
+    branchUpdateError: new Error('branch update failed'),
+  });
+
+  await runController(harness.args);
+
+  assert.equal(harness.calls.branchUpdates.length, 1);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.comments[0].body, /Queue paused while updating/);
 });
 
 test('controller arms a verified same-repository Renovate pull without rewriting its branch', async () => {
@@ -862,7 +952,7 @@ test('drafts and stale fork branches pause before branch update or auto-merge', 
         head: { sha: 'fork-head', repo: { full_name: 'contributor/lopper' } },
       }),
       options: { comparisonStatus: 'behind' },
-      message: /will not call GitHub branch update/,
+      message: /belongs to a fork/,
     },
   ];
 
@@ -871,6 +961,9 @@ test('drafts and stale fork branches pause before branch update or auto-merge', 
       const harness = makeHarness({ pulls: [scenario.pull], ...scenario.options });
       await runController(harness.args);
       assert.deepEqual(harness.calls.rebased, []);
+      if (scenario.name === 'stale fork') {
+        assert.deepEqual(harness.calls.branchUpdates, []);
+      }
       assert.deepEqual(harness.calls.armed, []);
       assert.match(harness.calls.comments[0].body, scenario.message);
     });
@@ -903,7 +996,8 @@ test('a stale leader advances the queue to the next eligible pull request', asyn
 
   assert.deepEqual(harness.calls.armed, [20]);
   assert.deepEqual(harness.calls.merged, []);
-  assert.match(commentsFor(harness, 10), /will not call GitHub branch update/);
+  assert.equal(harness.calls.branchUpdates[0].pull_number, 10);
+  assert.match(commentsFor(harness, 10), /GitHub is updating this pull request branch/);
   assert.match(commentsFor(harness, 10), /next queued pull request/);
   assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
@@ -921,7 +1015,8 @@ test('a stale leader skip refreshes queued followers behind the selected eligibl
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.armed, [20]);
-  assert.match(commentsFor(harness, 10), /will not call GitHub branch update/);
+  assert.equal(harness.calls.branchUpdates[0].pull_number, 10);
+  assert.match(commentsFor(harness, 10), /GitHub is updating this pull request branch/);
   assert.match(commentsFor(harness, 30), /Queued behind #20/);
   assert.match(commentsFor(harness, 30), /retried after their branches/);
 });

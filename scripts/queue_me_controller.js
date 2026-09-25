@@ -108,7 +108,20 @@ function isVerifiedRenovateCommit(commit, pull) {
       committer?.email === 'noreply@github.com');
 }
 
-function commitIdentityFailure(commit, pull) {
+function isQueueBranchUpdateCommit(commit, queueAppSlug) {
+  if (!queueAppSlug || !Array.isArray(commit?.parents) || commit.parents.length < 2) {
+    return false;
+  }
+  const appLogin = `${queueAppSlug}[bot]`;
+  const identity = (candidate) => candidate?.login === appLogin && candidate?.type === 'Bot';
+  const gitIdentity = (candidate) => candidate?.name === appLogin &&
+    typeof candidate?.email === 'string' &&
+    candidate.email.endsWith(`+${appLogin}@users.noreply.github.com`);
+  return identity(commit.author) && identity(commit.committer) &&
+    gitIdentity(commit.commit?.author) && gitIdentity(commit.commit?.committer);
+}
+
+function commitIdentityFailure(commit, pull, queueAppSlug) {
   const author = commit?.commit?.author || {};
   const committer = commit?.commit?.committer || {};
   const authorName = String(author.name || '').trim();
@@ -121,6 +134,9 @@ function commitIdentityFailure(commit, pull) {
     return `${sha}: author and committer metadata must both be present`;
   }
   if (isVerifiedRenovateCommit(commit, pull)) {
+    return '';
+  }
+  if (isQueueBranchUpdateCommit(commit, queueAppSlug)) {
     return '';
   }
   if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
@@ -153,14 +169,16 @@ function queueIdentityFailureMessage(failures) {
   return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity or a verified Renovate identity on a same-repository Renovate pull request. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
 }
 
-function assertCanonicalCommitIdentity(comparison, pull) {
+function assertCanonicalCommitIdentity(comparison, pull, queueAppSlug) {
   const commits = comparison?.commits || [];
   if (comparison?.total_commits > commits.length) {
     throw queuePauseError(
       `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
     );
   }
-  const failures = commits.map((commit) => commitIdentityFailure(commit, pull)).filter(Boolean);
+  const failures = commits.map((commit) =>
+    commitIdentityFailure(commit, pull, queueAppSlug),
+  ).filter(Boolean);
   if (failures.length > 0) {
     throw queuePauseError(queueIdentityFailureMessage(failures));
   }
@@ -352,6 +370,7 @@ async function verifyHeadForQueue(
   github,
   pull,
   defaultBranchSHA,
+  queueAppSlug,
 ) {
   const comparisonRequest = {
     owner: pull.base.repo.owner.login,
@@ -382,7 +401,7 @@ async function verifyHeadForQueue(
     }
   }
   const comparison = { ...firstComparison, commits };
-  assertCanonicalCommitIdentity(comparison, pull);
+  assertCanonicalCommitIdentity(comparison, pull, queueAppSlug);
   await verifyRenovateProvenance(github, pull, commits);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };
@@ -596,7 +615,7 @@ async function advanceQueuedPull({
   }
   let update;
   try {
-    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA);
+    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA, queueAppSlug);
   } catch (error) {
     const pauseMessage = error?.queuePauseMessage ||
       `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
@@ -613,20 +632,42 @@ async function advanceQueuedPull({
     return true;
   }
   if (update.needsCurrentBase) {
-    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    if (candidate.head.repo?.full_name !== `${owner}/${repo}`) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: this pull request branch is behind \`${defaultBranch}\` and belongs to a fork, so the queue cannot update it. Update the branch in its source repository and the queue will retry the identity audit.`,
+      );
+      return true;
+    }
+    try {
+      await github.rest.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: candidate.number,
+        expected_head_sha: update.headSHA,
+      });
+    } catch (error) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused while updating this pull request branch with current \`${defaultBranch}\`.\n\n\`${safeError(error)}\``,
+      );
+      return true;
+    }
     const retrySummary = hasFollower
-      ? 'The queue will continue with the next queued pull request. This pull request will be retried after a clean identity audit.'
-      : 'This pull request will be retried after a clean identity audit.';
-    const refreshInstruction = isRenovatePull(candidate)
-      ? 'Ask Renovate to rebase this pull request so its verified commits contain the current base.'
-      : 'Push a history that contains the current base while preserving canonical author and committer identity.';
-    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. ${refreshInstruction} ${retrySummary}`;
+      ? 'The queue will continue with the next queued pull request. This pull request will be retried after GitHub updates its head and the queue reruns the identity audit.'
+      : 'The queue will retry after GitHub updates the head and reruns the identity audit.';
     await syncStatusComment(
       github,
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\nQueue paused: ${message}`,
+      `## Queue status\n\nGitHub is updating this pull request branch with current \`${defaultBranch}\`. The queue will wait for the updated head to pass its identity audit before enabling auto-merge. ${retrySummary}`,
     );
     return true;
   }
