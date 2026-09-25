@@ -24,17 +24,15 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	}
 
 	const maxFiles = 1200
-	visited := 0
 	state := detectionWalkState{
 		repoPath:              repoPath,
 		roots:                 roots,
 		detection:             &detection,
-		visited:               &visited,
-		maxFiles:              maxFiles,
 		androidSpecificSignal: &androidSpecificSignal,
 	}
 	err := shared.WalkRepoFiles(ctx, repoPath, maxFiles, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return walkKotlinAndroidDetectionEntry(path, entry, state)
+		updateKotlinAndroidDetection(path, entry, state)
+		return nil
 	})
 	if err != nil {
 		return language.Detection{}, err
@@ -52,24 +50,7 @@ type detectionWalkState struct {
 	repoPath              string
 	roots                 map[string]struct{}
 	detection             *language.Detection
-	visited               *int
-	maxFiles              int
 	androidSpecificSignal *bool
-}
-
-func walkKotlinAndroidDetectionEntry(path string, entry fs.DirEntry, state detectionWalkState) error {
-	if entry.IsDir() {
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-	(*state.visited)++
-	if *state.visited > state.maxFiles {
-		return fs.SkipAll
-	}
-	updateKotlinAndroidDetection(path, entry, state)
-	return nil
 }
 
 func applyKotlinAndroidRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {

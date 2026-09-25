@@ -1121,21 +1121,6 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 		t.Fatalf("expected updateGoDetection to match")
 	}
 
-	// walk entry helpers
-	visited := 0
-	roots2 := map[string]struct{}{}
-	detection := language.Detection{}
-	if err := os.MkdirAll(filepath.Join(repo, "vendor"), 0o755); err != nil {
-		t.Fatalf("mkdir vendor: %v", err)
-	}
-	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected skip dir from walk helper, got %v", err)
-	}
-	filePath := writeTempFile(t, repo, "tiny.go", packageMainLine)
-	visited = 6
-	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected fs.SkipAll from max file bound, got %v", err)
-	}
 }
 
 func TestBuildRecommendationsMatrix(t *testing.T) {

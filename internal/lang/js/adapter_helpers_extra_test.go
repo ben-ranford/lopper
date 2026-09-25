@@ -2,8 +2,6 @@ package js
 
 import (
 	"context"
-	"errors"
-	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,9 +35,9 @@ func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 
 	detect := &language.Detection{Matched: false}
 	roots := map[string]struct{}{}
-	err := scanFilesForJSDetection(repo, detect, roots)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected io.EOF when max files exceeded, got %v", err)
+	err := scanFilesForJSDetection(context.Background(), repo, detect, roots)
+	if err != nil {
+		t.Fatalf("expected file cap to stop successfully, got %v", err)
 	}
 }
 

@@ -48,20 +48,32 @@ func TestAdapterAnalyseHonoursExcludedPathsDuringScan(t *testing.T) {
 	excludedDir := filepath.Join(repo, ".artifacts")
 	testutil.MustWriteFile(t, filepath.Join(excludedDir, "trace_helper.py"), "import requests\nrequests.get('x')\n")
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:      repo,
-		Dependency:    "requests",
-		ExcludedPaths: []string{excludedDir},
-	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 0 {
-		t.Fatalf("expected excluded directory's import to be skipped, got used count %d", dep.UsedExportsCount)
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		files []string
+	}{
+		{"directory", []string{excludedDir}, nil},
+		{"file", nil, []string{filepath.Join(excludedDir, "trace_helper.py")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+				RepoPath:      repo,
+				Dependency:    "requests",
+				ExcludedPaths: tc.paths,
+				ExcludedFiles: tc.files,
+			})
+			if err != nil {
+				t.Fatalf("analyse: %v", err)
+			}
+			if len(reportData.Dependencies) != 1 {
+				t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+			}
+			dep := reportData.Dependencies[0]
+			if dep.UsedExportsCount != 0 {
+				t.Fatalf("expected excluded directory's import to be skipped, got used count %d", dep.UsedExportsCount)
+			}
+		})
 	}
 }
 
