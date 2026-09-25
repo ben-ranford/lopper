@@ -1481,7 +1481,7 @@ func TestPHPDynamicConstructorAfterQuotedHeredocMarkerInInterpolation(t *testing
 		"\"{$a[\n\"<<<DOC\"]}\"",
 	} {
 		source := "<?php echo " + expression + ";\nnew $type;"
-		if got := maskPHPHeredocNowdocBodies(source); got != source {
+		if maskPHPHeredocNowdocBodies(source) != source {
 			t.Errorf("quoted heredoc marker masked executable code in %q", source)
 		}
 		if !hasDynamicPatterns([]byte(source), "source.php", false) {
