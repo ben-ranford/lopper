@@ -24,10 +24,19 @@ def checked(command, repo, *, environment=None):
 
 
 def comparison_base(repo, requested, environment):
+    target = None
     base = requested or environment.get("BASE_SHA")
     if not base:
         target = environment.get("GITHUB_BASE_REF") or environment.get("BASE_REF")
-        base = f"refs/remotes/origin/{target}" if target else "origin/main"
+        base = target or "origin/main"
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base):
+        raise AnalysisError(
+            f"Unsupported comparison base {base!r}. Use a named ref containing letters, digits, "
+            "underscores, dots, slashes, or hyphens (not a leading hyphen), or a commit SHA. "
+            "No fallback comparison was used."
+        )
+    if target:
+        base = f"refs/remotes/origin/{base}"
     try:
         commit = checked(["git", "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"], repo).stdout.strip()
         merge_base = checked(["git", "merge-base", "--", commit, "HEAD"], repo).stdout.strip()
