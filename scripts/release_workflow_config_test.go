@@ -2835,10 +2835,14 @@ func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage)
 			continue
 		}
 		var settings struct {
+			Enabled   *bool `json:"enabled"`
 			Automerge *bool `json:"automerge"`
 		}
 		if err := json.Unmarshal(raw, &settings); err != nil {
 			return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+		}
+		if settings.Enabled != nil && !*settings.Enabled {
+			return fmt.Errorf("renovate %s updates must not disable dependency update PR creation", updateType)
 		}
 		if settings.Automerge != nil && *settings.Automerge {
 			return fmt.Errorf("renovate %s updates must not enable unattended automerge", updateType)
@@ -2865,6 +2869,9 @@ func assertRenovateUpdateTypeReviewSettings(t *testing.T, updateType string) {
 	}{
 		{name: "absent"},
 		{name: "no override", block: `{}`},
+		{name: "explicitly enabled", block: `{"enabled":true}`},
+		{name: "disabled update type", block: `{"enabled":false}`, wantErr: true},
+		{name: "invalid enabled", block: `{"enabled":"false"}`, wantErr: true},
 		{name: "explicit review", block: `{"automerge":false}`},
 		{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
 		{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
