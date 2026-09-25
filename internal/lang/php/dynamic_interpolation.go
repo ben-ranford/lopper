@@ -168,6 +168,8 @@ func scanDynamicInterpolationToken(text string, start int) (int, bool) {
 		return start, false
 	}
 	switch text[start:offset] {
+	case "new":
+		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], " \t\r\n\f"), "$")
 	case "class_exists", "interface_exists", "trait_exists", "method_exists":
 		return offset, strings.HasPrefix(strings.TrimLeft(text[offset:], " \t\r\n\f"), "(")
 	default:
