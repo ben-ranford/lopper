@@ -101,6 +101,20 @@ jobs:
               candidate.head.repo?.full_name?.toLowerCase() === expectedHeadRepository
             );
 
+            // Empty run associations have no historical base identity. A
+            // same-second run is usable only if GitHub's trusted timeline
+            // rules out a retarget in that second (including automatic ones).
+            const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const sameSecondBaseUnchanged = !context.payload.changes?.base && timeline.every((event) =>
+              !['base_ref_changed', 'automatic_base_change_succeeded'].includes(event.event) ||
+              new Date(event.created_at).getTime() < eventCreatedMs
+            );
+
             const findArtifact = async () => {
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner: context.repo.owner,
@@ -115,7 +129,11 @@ jobs:
                 .filter((run) => {
                   const runPulls = run.pull_requests || [];
                   if (runPulls.length === 0) {
-                    return expectedAssociation && new Date(run.created_at).getTime() > eventCreatedMs;
+                    const runCreatedMs = new Date(run.created_at).getTime();
+                    return expectedAssociation && (
+                      runCreatedMs > eventCreatedMs ||
+                      (runCreatedMs === eventCreatedMs && sameSecondBaseUnchanged)
+                    );
                   }
                   return runPulls.some((candidate) =>
                     candidate.number === pullNumber &&
