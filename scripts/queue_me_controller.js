@@ -356,13 +356,19 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
-async function verifyRenovateProvenance(github, pull, commits) {
-  const renovateCommits = commits.filter((commit) => isVerifiedRenovateCommit(commit, pull));
-  if (renovateCommits.length === 0) {
+async function verifyBranchActivityProvenance(
+  github,
+  pull,
+  commits,
+  isTrustedActor,
+  missingRefMessage,
+  missingActivityMessage,
+) {
+  if (commits.length === 0) {
     return;
   }
   if (!pull.head.ref) {
-    throw queuePauseError('Queue identity audit failed: missing Renovate branch reference.');
+    throw queuePauseError(missingRefMessage);
   }
   const ref = `refs/heads/${pull.head.ref}`;
   const { data: activities } = await github.request('GET /repos/{owner}/{repo}/activity', {
@@ -373,44 +379,38 @@ async function verifyRenovateProvenance(github, pull, commits) {
     direction: 'desc',
   });
   const trustedHeads = new Set((Array.isArray(activities) ? activities : [])
-    .filter((activity) => activity?.ref === ref && isRenovateAccount(activity?.actor) &&
+    .filter((activity) => activity?.ref === ref && isTrustedActor(activity?.actor) &&
       ['push', 'force_push', 'branch_creation'].includes(activity?.activity_type))
     .map((activity) => activity.after));
-  if (renovateCommits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
-    throw queuePauseError(
-      'Queue identity audit failed: cannot prove Renovate pushed every bot commit from the latest 100 branch activities. Ask Renovate to rebase this pull request.',
-    );
+  if (commits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
+    throw queuePauseError(missingActivityMessage);
   }
+}
+
+async function verifyRenovateProvenance(github, pull, commits) {
+  const renovateCommits = commits.filter((commit) => isVerifiedRenovateCommit(commit, pull));
+  await verifyBranchActivityProvenance(
+    github,
+    pull,
+    renovateCommits,
+    isRenovateAccount,
+    'Queue identity audit failed: missing Renovate branch reference.',
+    'Queue identity audit failed: cannot prove Renovate pushed every bot commit from the latest 100 branch activities. Ask Renovate to rebase this pull request.',
+  );
 }
 
 async function verifyQueueBranchUpdateProvenance(github, pull, commits, queueAppSlug) {
   const updateCommits = commits.filter((commit) =>
     isQueueBranchUpdateCommit(commit, pull, queueAppSlug),
   );
-  if (updateCommits.length === 0) {
-    return;
-  }
-  if (!pull.head.ref) {
-    throw queuePauseError('Queue identity audit failed: missing pull request branch reference for queue update provenance.');
-  }
-  const ref = `refs/heads/${pull.head.ref}`;
-  const { data: activities } = await github.request('GET /repos/{owner}/{repo}/activity', {
-    owner: pull.base.repo.owner.login,
-    repo: pull.base.repo.name,
-    ref,
-    per_page: 100,
-    direction: 'desc',
-  });
-  const trustedHeads = new Set((Array.isArray(activities) ? activities : [])
-    .filter((activity) => activity?.ref === ref &&
-      isQueueAppAccount(activity?.actor, queueAppSlug) &&
-      ['push', 'force_push', 'branch_creation'].includes(activity?.activity_type))
-    .map((activity) => activity.after));
-  if (updateCommits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
-    throw queuePauseError(
-      'Queue identity audit failed: cannot prove GitHub recorded the queue App pushing every branch-update commit from the latest 100 branch activities.',
-    );
-  }
+  await verifyBranchActivityProvenance(
+    github,
+    pull,
+    updateCommits,
+    (actor) => isQueueAppAccount(actor, queueAppSlug),
+    'Queue identity audit failed: missing pull request branch reference for queue update provenance.',
+    'Queue identity audit failed: cannot prove GitHub recorded the queue App pushing every branch-update commit from the latest 100 branch activities.',
+  );
 }
 
 async function verifyHeadForQueue(
