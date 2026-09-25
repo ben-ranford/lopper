@@ -8,19 +8,25 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+type discoveredGradleFile struct {
+	Path    string
+	Content string
+}
+
 type gradleFileDiscoveryResult struct {
+	Files    []discoveredGradleFile
 	Warnings []string
 	Matched  bool
 }
 
-func discoverBuildFiles(repoPath string, consume func(path, content string), names ...string) (gradleFileDiscoveryResult, error) {
-	return discoverGradleFiles(repoPath, func(fileName string) bool {
+func streamBuildFiles(repoPath string, consume func(path, content string), names ...string) (gradleFileDiscoveryResult, error) {
+	return streamGradleFiles(repoPath, func(fileName string) bool {
 		return matchesBuildFile(fileName, names)
 	}, consume)
 }
 
-func discoverGradleLockfiles(repoPath string, consume func(path, content string)) (gradleFileDiscoveryResult, error) {
-	return discoverGradleFiles(repoPath, func(fileName string) bool {
+func streamGradleLockfiles(repoPath string, consume func(path, content string)) (gradleFileDiscoveryResult, error) {
+	return streamGradleFiles(repoPath, func(fileName string) bool {
 		return strings.EqualFold(fileName, gradleLockfileName)
 	}, consume)
 }
@@ -36,7 +42,7 @@ func detachGradleDescriptors(items []dependencyDescriptor) []dependencyDescripto
 	return items
 }
 
-func discoverGradleFiles(repoPath string, matches func(fileName string) bool, consume func(path, content string)) (gradleFileDiscoveryResult, error) {
+func streamGradleFiles(repoPath string, matches func(fileName string) bool, consume func(path, content string)) (gradleFileDiscoveryResult, error) {
 	result := gradleFileDiscoveryResult{}
 	walkErr := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -70,4 +76,24 @@ func matchesBuildFile(fileName string, names []string) bool {
 		}
 	}
 	return false
+}
+
+// discoverBuildFiles preserves the materialized stage interface for callers that
+// explicitly need snapshots. Production dependency collection uses streamBuildFiles.
+func discoverBuildFiles(repoPath string, names ...string) (gradleFileDiscoveryResult, error) {
+	var files []discoveredGradleFile
+	result, err := streamBuildFiles(repoPath, func(path, content string) {
+		files = append(files, discoveredGradleFile{Path: path, Content: content})
+	}, names...)
+	result.Files = files
+	return result, err
+}
+
+func discoverGradleLockfiles(repoPath string) (gradleFileDiscoveryResult, error) {
+	var files []discoveredGradleFile
+	result, err := streamGradleLockfiles(repoPath, func(path, content string) {
+		files = append(files, discoveredGradleFile{Path: path, Content: content})
+	})
+	result.Files = files
+	return result, err
 }

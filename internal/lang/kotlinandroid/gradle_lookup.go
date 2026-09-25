@@ -43,7 +43,7 @@ func collectGradleDeclaredDependencyDescriptors(repoPath string) ([]dependencyDe
 	var lockfileDescriptors []dependencyDescriptor
 	var manifestWarnings []string
 	seen := make(map[string]struct{})
-	discovery, walkErr := discoverGradleFiles(repoPath, func(fileName string) bool {
+	discovery, walkErr := streamGradleFiles(repoPath, func(fileName string) bool {
 		if strings.EqualFold(fileName, gradleLockfileName) {
 			lockfileMatched = true
 		}
