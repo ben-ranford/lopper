@@ -39,6 +39,7 @@ func TestReviewedExceptionIsExactSourceScoped(t *testing.T) {
 		strings.Replace(document, "Preserve an audited compatibility contract", " ", 1),
 		strings.Replace(document, "https://github.com/ben-ranford/lopper/issues/1615", "", 1),
 		strings.Replace(document, fmt.Sprintf("%x", sha256.Sum256(source)), "invalid", 1),
+		strings.Replace(document, fmt.Sprintf("%x", sha256.Sum256(source)), fmt.Sprintf("%X", sha256.Sum256(source)), 1),
 		strings.TrimSuffix(document, "]") + "," + strings.TrimPrefix(document, "["),
 	} {
 		if _, err := ReadExceptions(strings.NewReader(invalid)); err == nil {

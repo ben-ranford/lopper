@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+const sharedPackage = module + "lang/shared"
+
 type Finding struct {
 	Path     string `json:"path"`
 	Line     int    `json:"line"`
@@ -79,7 +81,7 @@ func decorativeCall(statement ast.Stmt, packages map[string]string) bool {
 	if !ok {
 		return false
 	}
-	owned := imported(call.Fun, packages, module+"report", "SortedUniqueTrimmedStrings") || imported(call.Fun, packages, module+"lang/shared", "SortedKeys") || imported(call.Fun, packages, module+"lang/shared", "SortedDependencyUnion")
+	owned := imported(call.Fun, packages, module+"report", "SortedUniqueTrimmedStrings") || imported(call.Fun, packages, sharedPackage, "SortedKeys") || imported(call.Fun, packages, sharedPackage, "SortedDependencyUnion")
 	if !owned {
 		return false
 	}
@@ -113,17 +115,24 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 func dependencyStats(declaration ast.Node, packages map[string]string) bool {
 	switch decl := declaration.(type) {
 	case *ast.Field:
-		return imported(decl.Type, packages, module+"lang/shared", "DependencyStats")
+		return imported(decl.Type, packages, sharedPackage, "DependencyStats")
 	case *ast.ValueSpec:
-		return imported(decl.Type, packages, module+"lang/shared", "DependencyStats")
-	case *ast.AssignStmt:
-		if len(decl.Rhs) != 1 || len(decl.Lhs) != 1 {
-			return false
+		if decl.Type != nil {
+			return imported(decl.Type, packages, sharedPackage, "DependencyStats")
 		}
-		call, ok := decl.Rhs[0].(*ast.CallExpr)
-		return ok && imported(call.Fun, packages, module+"lang/shared", "BuildDependencyStats")
+		return len(decl.Names) == 1 && dependencyStatsFactory(decl.Values, packages)
+	case *ast.AssignStmt:
+		return len(decl.Lhs) == 1 && dependencyStatsFactory(decl.Rhs, packages)
 	}
 	return false
+}
+
+func dependencyStatsFactory(values []ast.Expr, packages map[string]string) bool {
+	if len(values) != 1 {
+		return false
+	}
+	call, ok := values[0].(*ast.CallExpr)
+	return ok && imported(call.Fun, packages, sharedPackage, "BuildDependencyStats")
 }
 
 func (f *Finding) String() string {
