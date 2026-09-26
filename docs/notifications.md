@@ -74,4 +74,4 @@ Trigger policy: `CLI > env > config > defaults`
 ## Payload format
 
 - Slack receives a Block Kit payload (`text` fallback + `blocks`).
-- Teams receives a Microsoft Adaptive Card envelope (`application/vnd.microsoft.card.adaptive`).
+- Teams receives a Microsoft Adaptive Card envelope (`application/vnd.microsoft.card.adaptive`) with the HTTPS schema location `https://adaptivecards.io/schemas/adaptive-card.json`.

@@ -76,6 +76,7 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"enablePullRequestAutoMerge",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
+		"updateBranch",
 		"mergeMethod: SQUASH",
 		"left.number - right.number",
 		"COMMENT_MARKER",
@@ -87,7 +88,6 @@ func TestQueueMeControllerContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"requestReviews",
 		"force-push",
-		"updatePullRequestBranch",
 		"updateMethod: REBASE",
 		"process.env.QUEUE_APP_PRIVATE_KEY",
 	} {
@@ -111,8 +111,8 @@ func TestQueueMeControllerAdvancesPastConflictingLeaderContract(t *testing.T) {
 		}
 	}
 	for _, fragment := range []string{
-		"skips to the next queued pull request",
-		"retries the blocked entry only after that branch or",
+		"skipped while GitHub performs its branch update",
+		"later run observes the updated head and reruns the identity audit",
 	} {
 		if !strings.Contains(docs, fragment) {
 			t.Fatalf("queue-me docs conflict ordering contract missing %q", fragment)
