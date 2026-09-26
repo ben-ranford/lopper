@@ -20,6 +20,7 @@ cleanup_preflight_git() {
 	preflight_state_dir=
 	rm -f "$preflight_output_file"
 	preflight_output_file=
+	return 0
 }
 
 run_preflight_git() {
