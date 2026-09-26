@@ -163,6 +163,8 @@ func TestStatsDeclarationForms(t *testing.T) {
 		{"measured := s.DependencyStats{}", 1},
 		{"var measured = &s.DependencyStats{}", 1},
 		{"measured := &s.DependencyStats{}", 1},
+		{"measured := &(s.DependencyStats{})", 1},
+		{"var measured = &((s.DependencyStats{}))", 1},
 		{"var measured = new(s.DependencyStats)", 1},
 		{"measured := new(s.DependencyStats)", 1},
 		{"measured := new((s.DependencyStats))", 1},
