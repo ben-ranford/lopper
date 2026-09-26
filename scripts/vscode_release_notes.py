@@ -79,21 +79,57 @@ def validate(repo: Path) -> list[str]:
     return errors
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+def git_file(repo: Path, revision: str, path: Path) -> str:
+    if not (STABLE_TAG.fullmatch(revision) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\^?", revision)):
+        raise ValueError("invalid release-note revision")
+    if path not in (PACKAGE_PATH, LOCKFILE_PATH, Path("go.mod")):
+        raise ValueError("unsupported release-note file")
+    # The object expression is protocol data, never a command-line option.
+    output = subprocess.check_output(
+        ["git", "-C", str(repo), "cat-file", "--batch"],
+        input=f"{revision}:{path.as_posix()}\n".encode("utf-8"),
+    )
+    header, separator, content = output.partition(b"\n")
+    fields = header.split()
+    if len(fields) == 2 and fields[1] == b"missing":
+        raise subprocess.CalledProcessError(1, ["git", "cat-file", "--batch"], output=output)
+    if not separator or len(fields) != 3 or fields[1] != b"blob":
+        raise ValueError("Git returned an invalid release-note object")
+    size = int(fields[2])
+    if len(content) != size + 1 or not content.endswith(b"\n"):
+        raise ValueError("Git returned an incomplete release-note object")
+    return content[:size].decode("utf-8")
+
+
+def git_extension_log(repo: Path, previous_tag: str) -> str:
+    if not STABLE_TAG.fullmatch(previous_tag):
+        raise ValueError(INVALID_STABLE_TAG)
+    return subprocess.check_output(
+        ["git", "-C", str(repo), "log", "--format=%H%x00%s", "--stdin", "--", "extensions/vscode-lopper"],
+        input=f"{previous_tag}..HEAD\n", text=True,
+    ).strip()
+
+
+def git_commit_paths(repo: Path, sha: str) -> list[str]:
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha):
+        raise ValueError("invalid release-note commit ID")
+    return subprocess.check_output(
+        ["git", "-C", str(repo), "diff-tree", "--no-commit-id", "--name-only", "-r", "--stdin"],
+        input=f"{sha}\n", text=True,
+    ).splitlines()
 
 
 def old_lockfile(repo: Path, previous_tag: str) -> dict:
     if not STABLE_TAG.fullmatch(previous_tag):
         raise ValueError(INVALID_STABLE_TAG)
-    raw = git(repo, "show", f"{previous_tag}:{LOCKFILE_PATH.as_posix()}")
+    raw = git_file(repo, previous_tag, LOCKFILE_PATH)
     return json.loads(raw)
 
 
 def old_package(repo: Path, previous_tag: str) -> dict:
     if not STABLE_TAG.fullmatch(previous_tag):
         raise ValueError(INVALID_STABLE_TAG)
-    raw = git(repo, "show", f"{previous_tag}:{PACKAGE_PATH.as_posix()}")
+    raw = git_file(repo, previous_tag, PACKAGE_PATH)
     return json.loads(raw)
 
 
@@ -150,10 +186,10 @@ def clean_root_note(line: str) -> str:
 
 def visible_extension_commits(repo: Path, previous_tag: str) -> list[tuple[str, str]]:
     commits: list[tuple[str, str]] = []
-    raw = git(repo, "log", "--format=%H%x00%s", f"{previous_tag}..HEAD", "--", EXTENSION_DIR.as_posix())
+    raw = git_extension_log(repo, previous_tag)
     for row in filter(None, raw.splitlines()):
         sha, subject = row.split("\x00", 1)
-        paths = git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines()
+        paths = git_commit_paths(repo, sha)
         source_paths = [
             path for path in paths
             if (path.startswith(f"{EXTENSION_DIR.as_posix()}/src/") and "/src/test/" not in path)
@@ -175,7 +211,7 @@ def marketplace_visible_package_document_changed(repo: Path, sha: str, paths: li
 
 def configured_marketplace_icon_path(repo: Path, sha: str) -> str | None:
     try:
-        package = json.loads(git(repo, "show", f"{sha}:{PACKAGE_PATH.as_posix()}"))
+        package = json.loads(git_file(repo, sha, PACKAGE_PATH))
     except (json.JSONDecodeError, subprocess.CalledProcessError):
         return None
     if not isinstance(package, dict):
@@ -191,8 +227,8 @@ def configured_marketplace_icon_path(repo: Path, sha: str) -> str | None:
 
 def user_visible_manifest_change(repo: Path, sha: str) -> bool:
     try:
-        previous = json.loads(git(repo, "show", f"{sha}^:{PACKAGE_PATH.as_posix()}"))
-        current = json.loads(git(repo, "show", f"{sha}:{PACKAGE_PATH.as_posix()}"))
+        previous = json.loads(git_file(repo, f"{sha}^", PACKAGE_PATH))
+        current = json.loads(git_file(repo, sha, PACKAGE_PATH))
     except (json.JSONDecodeError, subprocess.CalledProcessError):
         return False
     for manifest in (previous, current):

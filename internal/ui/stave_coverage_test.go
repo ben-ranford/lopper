@@ -110,7 +110,7 @@ func TestRunStaveTerminalQuitsFromInput(t *testing.T) {
 	defer cancel()
 	var output bytes.Buffer
 	preview := &StavePreview{legacy: shared.summary}
-	if err := preview.runStaveTerminal(ctx, opts, prepared, bytes.NewBufferString("q"), &output, false); err != nil {
+	if err := preview.runStaveTerminal(ctx, opts, prepared, staveTerminalTestInput(t, bytes.NewBufferString("q")), &output, false); err != nil {
 		t.Fatal(err)
 	}
 }
