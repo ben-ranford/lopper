@@ -32,6 +32,15 @@ check_reference() {
  [ ! "$resolved/pre-commit" -ef "$managed/pre-commit" ] || return 255
 }
 
+hook_working_directory() {
+ bare=$(run_preflight_git git rev-parse --is-bare-repository) || return 255
+ case "$bare" in
+  true) run_preflight_git git rev-parse --absolute-git-dir ;;
+  false) run_preflight_git git rev-parse --show-toplevel ;;
+  *) return 255 ;;
+ esac
+}
+
 check_worktree() {
  managed_dir=$1
  reference_file=$2
@@ -49,6 +58,11 @@ check_worktree() {
   status=0
   run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$reference_file" || status=$?
   case "$status" in 0) ;; 1) return 0 ;; *) return 255 ;; esac
+  # Relative hook paths use Git's effective worktree root, which core.worktree
+  # can redirect away from the directory recorded in the worktree inventory.
+  hook_root=$(hook_working_directory && printf x) || return 255
+  hook_root=${hook_root%x}; hook_root=${hook_root%?}
+  cd "$hook_root" || return 255
   xargs -0 -n 1 sh "$script" reference "$managed_dir" <"$reference_file" || return 255
   ;;
  *) return 0 ;;
