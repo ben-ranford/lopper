@@ -88,3 +88,40 @@ func TestHooksCleanupWindowsPathNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestHooksCleanupStatVariantsAndFailures(t *testing.T) {
+	for _, mode := range []string{"gnu", "bsd", "unavailable", "malformed"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := newHookFixture(t)
+			managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
+			custom := filepath.Join(repo, "custom-hooks")
+			if err := os.Mkdir(custom, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(managed, "pre-commit"), filepath.Join(custom, "pre-commit")); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			stat := "#!/bin/sh\n[ \"$1\" = -L ] || exit 1\n" +
+				"case " + mode + ":\"$2\" in gnu:-c|bsd:-f) ;; malformed:*) printf invalid; exit ;; *) exit 1 ;; esac\n" +
+				"case \"$4\" in */pre-commit) printf '1:3\\n' ;; */lopper-hooks) printf '1:1\\n' ;; *) printf '1:2\\n' ;; esac\n"
+			writeFileMode(t, filepath.Join(bin, "stat"), stat, 0o755)
+			cmd := exec.Command("sh", "scripts/cleanup-hook-snapshot.sh", "reference", managed, custom)
+			cmd.Dir = repo
+			cmd.Env = append(withoutGitEnv(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("%s inspection allowed referenced/ambiguous snapshot removal: %s", mode, output)
+			}
+			if mode == "gnu" || mode == "bsd" {
+				stat = strings.Replace(stat, "*/pre-commit)", "*/custom-hooks/pre-commit) printf '1:4\\n' ;; */pre-commit)", 1)
+				writeFileMode(t, filepath.Join(bin, "stat"), stat, 0o755)
+				distinct := exec.Command("sh", "scripts/cleanup-hook-snapshot.sh", "reference", managed, custom)
+				distinct.Dir = repo
+				distinct.Env = cmd.Env
+				if output, err := distinct.CombinedOutput(); err != nil {
+					t.Fatalf("%s inspection rejected distinct identities: %v\n%s", mode, err, output)
+				}
+			}
+		})
+	}
+}
