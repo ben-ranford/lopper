@@ -33,6 +33,7 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	filter := fs.String("filter", req.TUI.Filter, "filter dependencies")
 	sortMode := fs.String("sort", req.TUI.Sort, "sort mode")
 	pageSize := fs.Int("page-size", req.TUI.PageSize, "page size")
+	uiPreference := fs.String("ui-preference", "", "personal UI preference: stave, legacy, or ask")
 	snapshot := fs.String("snapshot", req.TUI.SnapshotPath, snapshotOutputPathUsage)
 	outputFlag := fs.String("output", "", snapshotOutputPathUsage)
 	outputShortFlag := fs.String("o", "", snapshotOutputPathUsage)
@@ -65,9 +66,13 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 		return req, err
 	}
 
+	if err := validateUIPreference(fs, *uiPreference, snapshotPath, enableFeatures.Values(), disableFeatures.Values()); err != nil {
+		return req, err
+	}
 	req.Mode = app.ModeTUI
 	req.RepoPath = *repoPath
 	req.TUI = app.TUIRequest{
+		UIPreference:      *uiPreference,
 		Language:          strings.TrimSpace(*languageFlag),
 		SnapshotPath:      snapshotPath,
 		Filter:            strings.TrimSpace(*filter),
@@ -78,24 +83,25 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 		BaselineStorePath: strings.TrimSpace(*baselineStorePath),
 		BaselineKey:       strings.TrimSpace(*baselineKey),
 	}
-	features, useStave, err := resolveTUIFeatures(*repoPath, *configPath, enableFeatures.Values(), disableFeatures.Values())
+	features, useStave, explicit, err := resolveTUIFeatures(*repoPath, *configPath, enableFeatures.Values(), disableFeatures.Values())
 	if err != nil {
 		return req, err
 	}
 	req.TUI.Features = features
 	req.TUI.UseStavePreview = useStave
+	req.TUI.StaveExplicit = explicit
 
 	return req, nil
 }
 
-func resolveTUIFeatures(repoPath, configPath string, enable, disable []string) (featureflags.Set, bool, error) {
+func resolveTUIFeatures(repoPath, configPath string, enable, disable []string) (featureflags.Set, bool, bool, error) {
 	config, err := thresholds.LoadWithPolicy(strings.TrimSpace(repoPath), configPath)
 	if err != nil {
-		return featureflags.Set{}, false, err
+		return featureflags.Set{}, false, false, err
 	}
 	channel, lock, err := resolveFeatureBuildContext()
 	if err != nil {
-		return featureflags.Set{}, false, err
+		return featureflags.Set{}, false, false, err
 	}
 	features, err := featureRegistryProvider().ResolveLayers(featureflags.ResolveOptions{
 		Channel: channel,
@@ -104,10 +110,11 @@ func resolveTUIFeatures(repoPath, configPath string, enable, disable []string) (
 		Disable: config.Features.Disable,
 	}, featureflags.Overrides{Enable: enable, Disable: disable})
 	if err != nil {
-		return featureflags.Set{}, false, err
+		return featureflags.Set{}, false, false, err
 	}
 	explicit := featureExplicitlyEnabled(enable, staveTUIFeatureName) || featureExplicitlyEnabled(config.Features.Enable, staveTUIFeatureName)
-	return features, explicit && features.Enabled(staveTUIFeatureName), nil
+	decided := explicit || featureExplicitlyEnabled(disable, staveTUIFeatureName) || featureExplicitlyEnabled(config.Features.Disable, staveTUIFeatureName)
+	return features, explicit && features.Enabled(staveTUIFeatureName), decided, nil
 }
 
 func featureExplicitlyEnabled(refs []string, canonical string) bool {
@@ -123,4 +130,28 @@ func featureExplicitlyEnabled(refs []string, canonical string) bool {
 
 func resolveTUISnapshotPath(snapshotPath, outputPath string) (string, error) {
 	return resolveMatchingPath(snapshotPath, outputPath, "--snapshot", "--output")
+}
+
+func validateUIPreference(fs *flag.FlagSet, preference, snapshot string, enable, disable []string) error {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ui-preference" {
+			set = true
+		}
+	})
+	if !set {
+		return nil
+	}
+	switch preference {
+	case "stave", "legacy", "ask":
+	default:
+		return fmt.Errorf("--ui-preference must be stave, legacy, or ask")
+	}
+	if snapshot != "" {
+		return fmt.Errorf("--ui-preference requires an interactive launch, not a snapshot")
+	}
+	if featureExplicitlyEnabled(enable, staveTUIFeatureName) || featureExplicitlyEnabled(disable, staveTUIFeatureName) {
+		return fmt.Errorf("--ui-preference conflicts with an explicit Stave CLI feature choice")
+	}
+	return nil
 }

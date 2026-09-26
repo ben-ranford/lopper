@@ -75,6 +75,8 @@ type AnalyseRequest struct {
 }
 
 type TUIRequest struct {
+	UIPreference      string
+	StaveExplicit     bool
 	Language          string
 	SnapshotPath      string
 	Filter            string
