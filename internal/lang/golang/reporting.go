@@ -29,14 +29,7 @@ func buildTopGoReports(topN int, dependencies []string, scan scanResult, weights
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
 	stats := shared.BuildDependencyStats(dependency, goFileUsages(scan), normalizeDependencyID)
-	dep := report.DependencyReport{Language: "go", Name: dependency}
-	dep.UsedExportsCount = stats.UsedCount
-	dep.TotalExportsCount = stats.TotalCount
-	dep.UsedPercent = stats.UsedPercent
-	dep.EstimatedUnusedBytes = 0
-	dep.TopUsedSymbols = stats.TopSymbols
-	dep.UsedImports = stats.UsedImports
-	dep.UnusedImports = stats.UnusedImports
+	dep := shared.BuildDependencyReportFromStats(dependency, "go", stats)
 	dep.Provenance = buildGoDependencyProvenance(scan.DependencyProvenanceByDep[dependency])
 
 	warnings := dependencyWarnings(dependency, stats.HasImports)

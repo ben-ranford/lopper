@@ -885,7 +885,7 @@ function hasInlineSuppressionMarker(content, file, initialQuote, initialGoState,
 }
 
 function parseHunkHeader(rawLine, file) {
-  const match = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(rawLine);
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(rawLine);
   if (!match) {
     throw new SyntaxError(`Unable to parse inline suppression diff hunk for ${file}.`);
   }
@@ -1002,58 +1002,47 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   const headContent = await fetchFullFileContent({ github, context, file, ref: headSHA });
   const headLines = headContent.split('\n').map(stripTrailingCR);
 
+  scanPatchLines(records, { file, patch, context, headSHA, headLines });
+}
+
+function scanPatchLines(records, { file, patch, context, headSHA, headLines }) {
   let line = 0;
-  // Quote state carries across lines within a hunk: a multi-line string
-  // (e.g. a JavaScript template literal) that closes partway through a
-  // later line must not make that line's scan think the closing delimiter
-  // opens a new quoted region, which would mask a real suppression comment
-  // following it on the same line.
-  let quoteState;
-  let goState;
-  let shellState;
+  let state = {};
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
-      const seededState = scanStateSeedFromLines(headLines, line, file);
-      quoteState = seededState.quoteState;
-      goState = seededState.goState;
-      shellState = seededState.shellState;
+      state = scanStateSeedFromLines(headLines, line, file);
       continue;
     }
+    if (rawLine.startsWith('-') || rawLine.startsWith('\\')) {
+      continue;
+    }
+    const content = stripTrailingCR(rawLine.slice(1));
+    const goScan = scanGoLine(content, file, state.goState);
+    const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(content, state.shellState) : undefined;
     if (rawLine.startsWith('+')) {
-      const content = stripTrailingCR(rawLine.slice(1));
-      const goScan = scanGoLine(content, file, goState);
-      const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(content, shellState) : undefined;
-      const markerIndex = commentPrefixIndexForMarker(content, file, quoteState, goScan, shellScan);
-      if (markerIndex !== -1) {
-        if (records.size >= MAX_RECORDS) {
-          throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
-        }
-        const occurrence = occurrenceInLines(headLines, line, content);
-        addSuppression(records, { file, line, content, context, headSHA, occurrence, markerIndex });
-      }
-      goState = goScan.state;
-      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState, shellScan);
-      if (shellScan) shellState = shellScan.state;
-      line += 1;
-      continue;
+      recordPatchSuppression(records, { file, line, content, context, headSHA, headLines, state, goScan, shellScan });
     }
-    if (rawLine.startsWith('-')) {
-      continue;
-    }
-    if (!rawLine.startsWith('\\')) {
-      // Context line: part of the resulting file, so its quote-affecting
-      // characters must still be tracked even though it isn't scanned for
-      // suppression markers (it isn't newly added by this pull request).
-      const content = stripTrailingCR(rawLine.slice(1));
-      const goScan = scanGoLine(content, file, goState);
-      goState = goScan.state;
-      const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(content, shellState) : undefined;
-      quoteState = goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, quoteState, shellScan);
-      if (shellScan) shellState = shellScan.state;
-      line += 1;
-    }
+    // Both added and context lines contribute to the resulting file's state.
+    state = {
+      goState: goScan.state,
+      quoteState: goScan.hasColonLineComment ? undefined : carryQuoteState(content, file, state.quoteState, shellScan),
+      shellState: shellScan?.state ?? state.shellState,
+    };
+    line += 1;
   }
+}
+
+function recordPatchSuppression(records, { file, line, content, context, headSHA, headLines, state, goScan, shellScan }) {
+  const markerIndex = commentPrefixIndexForMarker(content, file, state.quoteState, goScan, shellScan);
+  if (markerIndex === -1) {
+    return;
+  }
+  if (records.size >= MAX_RECORDS) {
+    throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
+  }
+  const occurrence = occurrenceInLines(headLines, line, content);
+  addSuppression(records, { file, line, content, context, headSHA, occurrence, markerIndex });
 }
 
 async function changedFileCount({ github, context, pull }) {
@@ -1204,7 +1193,7 @@ function fingerprintFromIssueBody(body) {
   if (typeof body !== 'string') {
     return undefined;
   }
-  return body.match(/lopper-inline-suppression:([0-9a-f]{64})/)?.[1];
+  return /lopper-inline-suppression:([0-9a-f]{64})/.exec(body)?.[1];
 }
 
 function issueBodyIncludesMarker(issue, marker) {
