@@ -1050,6 +1050,21 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	}
 }
 
+func TestCISourceSizeReportUsesResolvedMemoryBenchmarkBase(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	reportStep := workflowStepByName(t, workflow.Jobs, "verify-checks", "Report repository size and advisory test clones")
+	assertWorkflowStepRunContainsAll(t, reportStep, "repository size base resolution", []string{
+		`size_base="${MEMORY_BENCH_BASE:-origin/main}"`,
+		`DUPLICATION_BASE="${size_base}"`,
+	})
+	if strings.Contains(reportStep.Run, "github.event.pull_request.base.sha") {
+		t.Fatal("repository size report must use the resolved memory benchmark base instead of the event base SHA")
+	}
+}
+
 func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {
 	t.Parallel()
 	assertPullRequestTriggerTypes(t, ".github/workflows/pr-metadata.yml")

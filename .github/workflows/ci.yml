@@ -356,6 +356,20 @@ jobs:
           path: ${{ runner.temp }}/pr-report-inputs
           if-no-files-found: error
 
+      - name: Report repository size and advisory test clones
+        run: |
+          python3 -m unittest discover -s scripts -p 'source_size_report_test.py'
+          size_base="${MEMORY_BENCH_BASE:-origin/main}"
+          make --silent source-size-report DUPLICATION_BASE="${size_base}" > "$RUNNER_TEMP/source-size-report.json"
+
+      - name: Upload source size report
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-size-report
+          path: ${{ runner.temp }}/source-size-report.json
+          if-no-files-found: error
+
       - name: Upload binary artifact
         if: ${{ always() && !env.ACT }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
