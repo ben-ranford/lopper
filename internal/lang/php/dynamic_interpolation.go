@@ -118,6 +118,10 @@ func advancePHPInterpolationExpression(text string, offset int, depth *int, stat
 		}
 		return advancePHPCodeState(text, offset, state), false, false
 	}
+	if next, found, closed := scanPHPInterpolationHeredoc(text, offset); next > offset {
+		*dynamic = *dynamic || found
+		return next, closed, closed
+	}
 	if next, found := scanDynamicInterpolationToken(text, offset); next > offset {
 		*dynamic = *dynamic || found
 		return next, false, false
@@ -140,6 +144,20 @@ func advancePHPInterpolationExpression(text string, offset int, depth *int, stat
 	default:
 		return advancePHPCodeState(text, offset, state), false, false
 	}
+}
+
+func scanPHPInterpolationHeredoc(text string, offset int) (int, bool, bool) {
+	if !strings.HasPrefix(text[offset:], "<<<") {
+		return offset, false, false
+	}
+	next, dynamic := dynamicHeredocInterpolation(text, offset)
+	if next == offset {
+		return offset, false, false
+	}
+	if closeTag, found := findPHPRegionCloseTagInHeredoc(text, offset, next); found {
+		return closeTag, dynamic, true
+	}
+	return next, dynamic, false
 }
 
 func startNestedPHPInterpolation(text string, offset int, depth *int, state *phpCodeState, quotes *[]interpolationQuoteFrame) (int, bool) {

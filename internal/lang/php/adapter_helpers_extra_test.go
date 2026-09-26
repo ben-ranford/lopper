@@ -1473,6 +1473,52 @@ func TestPHPDynamicConstructorAfterHeredocInterpolationCloseTag(t *testing.T) {
 	}
 }
 
+func TestPHPDynamicInterpolationNestedHeredocBodies(t *testing.T) {
+	for _, marker := range []string{"INNER", `"INNER"`, "'INNER'"} {
+		for _, tc := range []struct {
+			body string
+			tail string
+			want bool
+		}{
+			{"class_exists($name)", "", false},
+			{"} ?> class_exists($name)", "", false},
+			{"}", "[class_exists($name)]", true},
+			{"{$type::$$property}", "", marker != "'INNER'"},
+		} {
+			expression := "{$arr[<<<" + marker + "\n" + tc.body + "\nINNER]" + tc.tail + "}"
+			for _, source := range []string{
+				`<?php echo "` + expression + `";`,
+				"<?php echo `" + expression + "`;",
+				"<?php echo <<<OUTER\n" + expression + "\nOUTER;",
+			} {
+				if got := hasDynamicPatterns([]byte(source), "source.php", false); got != tc.want {
+					t.Errorf("nested document source %q: got %v, want %v", source, got, tc.want)
+				}
+			}
+		}
+	}
+}
+
+func TestPHPDynamicInterpolationNestedHeredocBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		expression string
+		closed     bool
+	}{
+		{"{$arr[<<<\n]}", false},
+		{"{$arr[<<<INNER\ninert }", false},
+		{"{$arr[<<<INNER\n{$a[// ?>\nINNER]}", true},
+	} {
+		next, dynamic, closed := scanDynamicInterpolationAt(tc.expression, 0)
+		wantNext := len(tc.expression)
+		if tc.closed {
+			wantNext = strings.Index(tc.expression, "?>")
+		}
+		if next != wantNext || dynamic || closed != tc.closed {
+			t.Errorf("expression %q: got (%d, %v, %v), want (%d, false, %v)", tc.expression, next, dynamic, closed, wantNext, tc.closed)
+		}
+	}
+}
+
 func TestPHPDynamicConstructorAfterQuotedHeredocMarkerInInterpolation(t *testing.T) {
 	for _, expression := range []string{
 		`"{$a["<<<DOC"]}"`,
