@@ -245,3 +245,73 @@ func TestInterpolationLineCommentClosesPHPRegion(t *testing.T) {
 		}
 	}
 }
+
+func TestPHPDynamicConstructorAfterHeredocInterpolationCloseTag(t *testing.T) {
+	source := "<?php echo <<<DOC\n{$a[// ?><?php new $type;"
+	if !hasDynamicPatterns([]byte(source), "source.php", false) {
+		t.Fatal("dynamic constructor in PHP reopened after heredoc interpolation close tag was missed")
+	}
+}
+
+func TestPHPDynamicInterpolationNestedHeredocBodies(t *testing.T) {
+	for _, marker := range []string{"INNER", `"INNER"`, "'INNER'"} {
+		for _, tc := range []struct {
+			body string
+			tail string
+			want bool
+		}{
+			{"class_exists($name)", "", false},
+			{"} ?> class_exists($name)", "", false},
+			{"}", "[class_exists($name)]", true},
+			{"{$type::$$property}", "", marker != "'INNER'"},
+		} {
+			expression := "{$arr[<<<" + marker + "\n" + tc.body + "\nINNER]" + tc.tail + "}"
+			for _, source := range []string{
+				`<?php echo "` + expression + `";`,
+				"<?php echo `" + expression + "`;",
+				"<?php echo <<<OUTER\n" + expression + "\nOUTER;",
+			} {
+				if got := hasDynamicPatterns([]byte(source), "source.php", false); got != tc.want {
+					t.Errorf("nested document source %q: got %v, want %v", source, got, tc.want)
+				}
+			}
+		}
+	}
+}
+
+func TestPHPDynamicInterpolationNestedHeredocBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		expression string
+		closed     bool
+	}{
+		{"{$arr[<<<\n]}", false},
+		{"{$arr[<<<INNER\ninert }", false},
+		{"{$arr[<<<INNER\n{$a[// ?>\nINNER]}", true},
+	} {
+		next, dynamic, closed := scanDynamicInterpolationAt(tc.expression, 0)
+		wantNext := len(tc.expression)
+		if tc.closed {
+			wantNext = strings.Index(tc.expression, "?>")
+		}
+		if next != wantNext || dynamic || closed != tc.closed {
+			t.Errorf("expression %q: got (%d, %v, %v), want (%d, false, %v)", tc.expression, next, dynamic, closed, wantNext, tc.closed)
+		}
+	}
+}
+
+func TestPHPDynamicConstructorAfterQuotedHeredocMarkerInInterpolation(t *testing.T) {
+	for _, expression := range []string{
+		`"{$a["<<<DOC"]}"`,
+		`"${a["<<<DOC"]}"`,
+		"`{$a[\"<<<DOC\"]}`",
+		"\"{$a[\n\"<<<DOC\"]}\"",
+	} {
+		source := "<?php echo " + expression + ";\nnew $type;"
+		if maskPHPHeredocNowdocBodies(source) != source {
+			t.Errorf("quoted heredoc marker masked executable code in %q", source)
+		}
+		if !hasDynamicPatterns([]byte(source), "source.php", false) {
+			t.Errorf("dynamic constructor after quoted heredoc marker was missed in %q", source)
+		}
+	}
+}
