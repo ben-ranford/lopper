@@ -36,17 +36,7 @@ func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int) report.DependencyReport {
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
-	dep := report.DependencyReport{
-		Language:             "rust",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "rust", stats)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "broad-imports",

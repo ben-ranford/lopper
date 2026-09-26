@@ -187,3 +187,7 @@ CycloneDX characteristics:
   older saved reports as historical input rather than current-format validation
   targets.
 - Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed. The stable `lopper baseline list` and `lopper baseline show KEY` commands expose bounded snapshot metadata; they do not print dependency rows from the stored report. The former `baseline-store-discovery-preview` feature name remains accepted for compatibility.
+
+CycloneDX report and dashboard portfolio exports use the HTTPS `$schema` location
+`https://cyclonedx.org/schema/bom-1.6.schema.json`. The `specVersion` remains
+`1.6`; consumers comparing the former HTTP location should accept HTTPS.

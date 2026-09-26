@@ -38,7 +38,7 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 	if err == nil || !strings.Contains(output, "fixture-ci-failed") {
 		t.Fatalf("expected CI failure to block commit, got %v:\n%s", err, output)
 	}
-	if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+	if testutil.GitOutput(t, repoDir, "rev-parse", "HEAD") != before {
 		t.Fatal("failed CI created a commit")
 	}
 	assertHookWorktreeCleaned(t, repoDir)
@@ -57,7 +57,7 @@ func TestInstalledPreCommitIgnoresCheckoutHooks(t *testing.T) {
 			if err == nil || !strings.Contains(output, "staged-ci-failed") {
 				t.Fatalf("expected staged CI failure despite checkout hook, got %v:\n%s", err, output)
 			}
-			if after := testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"); after != before {
+			if testutil.GitOutput(t, repoDir, "rev-parse", "HEAD") != before {
 				t.Fatal("failed staged CI created a commit")
 			}
 			assertHookWorktreeCleaned(t, repoDir)

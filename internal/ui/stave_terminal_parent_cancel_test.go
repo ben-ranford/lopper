@@ -164,6 +164,9 @@ func TestStavePreviewParentCancellationRestoresTerminalAndReturnsCause(t *testin
 	waitForParentCancellationRefresh(t, analyzer.started, "startup", staveSignalSubprocessBound, capture)
 
 	parentCause := errors.New("parent cancellation")
+	if _, err := master.Write([]byte(strings.Repeat("x", 1024))); err != nil {
+		t.Fatal(err)
+	}
 	cancelParent(parentCause)
 	waitForParentCancellationRefresh(t, analyzer.cancelled, "cancellation", time.Second, capture)
 	if err := waitForParentCancellationReturn(returned); !errors.Is(err, parentCause) {
