@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
@@ -257,5 +258,64 @@ func TestConservativeSyntaxBoundaries(t *testing.T) {
 func TestInvalidRuleTemplateFailsClosed(t *testing.T) {
 	if _, err := contractFingerprints("package contracts; func"); err == nil {
 		t.Fatal("invalid embedded rule was accepted")
+	}
+}
+
+func TestSamePackageDecorativeHelperCalls(t *testing.T) {
+	for _, tc := range []struct {
+		function, signature, helper, path string
+	}{
+		{"exact", "func exact(values []string) []string {", "uniqueSorted", "internal/analysis/copy.go"},
+		{"trimmed", "func trimmed(values []string) []string {", "SortedUniqueTrimmedStrings", "internal/report/copy.go"},
+		{"keys", "func keys(values map[string]struct{}) []string {", "SortedKeys", "internal/lang/shared/copy.go"},
+		{"union", "func union(values ...map[string]struct{}) []string {", "SortedDependencyUnion", "internal/lang/shared/copy.go"},
+	} {
+		t.Run(tc.helper, func(t *testing.T) {
+			for _, prefix := range []string{"", "_ = "} {
+				arguments := "values"
+				if tc.function == "union" {
+					arguments += "..."
+				}
+				call := prefix + tc.helper + "(" + arguments + ")"
+				source := strings.Replace(collectionContracts, tc.signature, tc.signature+"\n"+call, 1)
+				for _, path := range []string{tc.path, strings.Replace(tc.path, "/copy.go", "/nested/copy.go", 1)} {
+					findings, err := Analyze(path, []byte(source))
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, finding := range findings {
+						found = found || finding.Function == tc.function
+					}
+					if found != (path == tc.path) {
+						t.Fatalf("path=%s call=%s findings=%+v", path, call, findings)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSamePackageHelperRejectsShadowedNames(t *testing.T) {
+	for _, tc := range []struct {
+		declaration string
+		want        bool
+	}{
+		{"var SortedKeys func(any)", false},
+		{"const SortedKeys = 1", false},
+		{"func SortedKeys(any) {}", true},
+	} {
+		file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package fixture;"+tc.declaration+";func copy(){SortedKeys(values)}", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				if got := samePackageHelper("internal/lang/shared/copy.go", call.Fun); got != tc.want {
+					t.Fatalf("declaration=%s owned=%v, want %v", tc.declaration, got, tc.want)
+				}
+			}
+			return true
+		})
 	}
 }
