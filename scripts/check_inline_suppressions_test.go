@@ -444,6 +444,7 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	writeFile(t, filepath.Join(repoDir, mainGoPath), prContent)
 	runCommand(t, repoDir, "git", "add", mainGoPath)
 	runCommand(t, repoDir, "git", "commit", "-m", "pr adds its own suppression")
+	prHeadSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
 	runCommand(t, repoDir, "git", "checkout", "main")
 	mainContent := "package main\n\nfunc main() {\n" + line + "\n\tx := 1\n}\n"
@@ -454,32 +455,45 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	runCommand(t, repoDir, "git", "merge", "--no-edit", "pr")
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	mergeSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"SUPPRESSION_BASE="+baseSHA,
 		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
 		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+		"GITHUB_SHA="+mergeSHA,
+		"SUPPRESSION_GITHUB_REPOSITORY=owner/repo",
 	)
 	if err != nil {
 		t.Fatalf("expected the merge-commit scan to pass, output:\n%s", output)
 	}
 
 	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 2 {
-		t.Fatalf("expected two suppression records (one per branch's addition), got %#v", records.Suppressions)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected only the PR-head suppression, got %#v", records.Suppressions)
+	}
+	record := records.Suppressions[0]
+	wantSourceSuffix := "/blob/" + prHeadSHA + "/main.go#L5"
+	if record.File != mainGoPath || record.Line != 5 || !strings.HasSuffix(record.Source, wantSourceSuffix) || record.Content != line || record.Fingerprint != suppressionFingerprint(mainGoPath, line, 1) {
+		t.Fatalf("record does not match the PR-head tree: %#v", record)
 	}
 
-	prFingerprint := suppressionFingerprint(mainGoPath, line, 1)
-	found := false
-	for _, record := range records.Suppressions {
-		if record.Fingerprint == prFingerprint {
-			found = true
-		}
-		if record.Fingerprint == suppressionFingerprint(mainGoPath, line, 2) {
-			t.Fatalf("a record used the occurrence-2 fingerprint, meaning it counted main's independent addition against the PR's own occurrence: %#v", records.Suppressions)
-		}
+	// The current base tip is the first merge parent, but coordinates must
+	// still come from the PR head and its merge base with that tip.
+	output, err = runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE=HEAD^1",
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+		"GITHUB_SHA="+mergeSHA,
+		"SUPPRESSION_GITHUB_REPOSITORY=owner/repo",
+	)
+	if err != nil {
+		t.Fatalf("expected current-base scan to pass, output:\n%s", output)
 	}
-	if !found {
-		t.Fatalf("expected a record with the PR's own occurrence-1 fingerprint %s, got %#v", prFingerprint, records.Suppressions)
+	currentBaseRecords := readSuppressionRecords(t, outputPath)
+	if len(currentBaseRecords.Suppressions) != 1 || currentBaseRecords.Suppressions[0] != record {
+		t.Fatalf("current-base records differ from PR-head coordinates: %#v", currentBaseRecords.Suppressions)
 	}
 }
 
@@ -516,10 +530,17 @@ func TestInlineSuppressionCheckIgnoresOrdinaryLocalMergeCommits(t *testing.T) {
 
 	runCommand(t, repoDir, "git", "checkout", "topic")
 	runCommand(t, repoDir, "git", "merge", "--no-edit", "main")
+	prHeadSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	// Deliberately not setting GITHUB_EVENT_NAME, simulating a local run.
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_BASE="+baseSHA, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	// This PR's actual head is itself an ordinary branch merge. Its second
+	// parent must not be mistaken for GitHub's synthetic merge head.
+	output, err := runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE="+baseSHA,
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+	)
 	if err != nil {
 		t.Fatalf("expected a local merge-commit scan to fall back to the working tree and pass, output:\n%s", output)
 	}
@@ -1459,13 +1480,15 @@ func withoutGitEnv() []string {
 		if strings.HasPrefix(entry, "GIT_") {
 			continue
 		}
-		// This test binary itself runs as a step inside GitHub Actions CI,
-		// so GITHUB_EVENT_NAME is ambiently "pull_request" there even
-		// though these tests aren't simulating that context by default;
-		// leaving it in would leak actual CI state into subprocess runs
-		// that specifically mean to exercise the non-CI (local dev) path.
-		// Tests that do want it set pass it explicitly via env... instead.
-		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") {
+		// CI-specific GitHub values must not leak into local fixture repos:
+		// tests set only the event, head, and source URL inputs they intend
+		// to model, and otherwise exercise the local developer path.
+		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") ||
+			strings.HasPrefix(entry, "GITHUB_SHA=") ||
+			strings.HasPrefix(entry, "GITHUB_REPOSITORY=") ||
+			strings.HasPrefix(entry, "GITHUB_SERVER_URL=") ||
+			strings.HasPrefix(entry, "PR_HEAD_SHA=") ||
+			strings.HasPrefix(entry, "SUPPRESSION_GITHUB_REPOSITORY=") {
 			continue
 		}
 		filtered = append(filtered, entry)
