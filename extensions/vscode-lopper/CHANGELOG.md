@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.9 (2026-09-26)
+
+- No user-visible VS Code extension changes.
+
 ## 1.8.8 (2026-09-22)
 
 - Updated the bundled `adm-zip` dependency from 0.6.0 to 0.6.1.
