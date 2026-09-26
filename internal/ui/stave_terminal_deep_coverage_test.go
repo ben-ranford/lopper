@@ -89,7 +89,7 @@ func TestStaveTerminalDeepCoverageRunStaveTerminalClosedSessionError(t *testing.
 	prepared.Session.Close()
 	var output bytes.Buffer
 	preview := &StavePreview{legacy: shared.summary}
-	err = preview.runStaveTerminal(context.Background(), opts, prepared, strings.NewReader("x"), &output, false)
+	err = preview.runStaveTerminal(context.Background(), opts, prepared, staveTerminalTestInput(t, strings.NewReader("x")), &output, false)
 	if err == nil {
 		t.Fatal("closed session run unexpectedly succeeded")
 	}
@@ -114,7 +114,7 @@ func TestStaveTerminalDeepCoverageRunStaveTerminalNormalQuit(t *testing.T) {
 	defer cancel()
 	var output bytes.Buffer
 	preview := &StavePreview{legacy: shared.summary}
-	if err := preview.runStaveTerminal(ctx, opts, prepared, strings.NewReader("q"), &output, false); err != nil {
+	if err := preview.runStaveTerminal(ctx, opts, prepared, staveTerminalTestInput(t, strings.NewReader("q")), &output, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -546,7 +546,7 @@ func checkDispatchactionEventValidationAndRunstaveterminalExits(t *testing.T) {
 	cancel()
 	var output bytes.Buffer
 	preview := &StavePreview{legacy: shared.summary}
-	if err := preview.runStaveTerminal(ctx, opts, prepared, bytes.NewBuffer(nil), &output, false); err == nil {
+	if err := preview.runStaveTerminal(ctx, opts, prepared, staveTerminalTestInput(t, bytes.NewBuffer(nil)), &output, false); err == nil {
 		t.Fatal("canceled runStaveTerminal unexpectedly succeeded")
 	}
 }

@@ -17,7 +17,7 @@ import (
 var ErrInvalidWebhookURL = errors.New("invalid webhook URL")
 
 const (
-	teamsAdaptiveCardSchema = "http://adaptivecards.io/schemas/adaptive-card.json"
+	teamsAdaptiveCardSchema = "https://adaptivecards.io/schemas/adaptive-card.json"
 	defaultRepoPath         = "."
 	redactedWebhookValue    = "<redacted-webhook>"
 )

@@ -606,7 +606,7 @@ func remediationByTeam(items []RemediationItem) map[string][]RemediationItem {
 
 func formatPortfolioCycloneDX(reportData Report) (string, error) {
 	bom := map[string]any{
-		"$schema":     "http://cyclonedx.org/schema/bom-1.6.schema.json",
+		"$schema":     "https://cyclonedx.org/schema/bom-1.6.schema.json",
 		"bomFormat":   "CycloneDX",
 		"specVersion": "1.6",
 		"version":     1,

@@ -32,17 +32,7 @@ func buildDependencyReport(dependency string, scan scanResult, req language.Requ
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
 	}
 
-	dep := report.DependencyReport{
-		Language:             "python",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "python", stats)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "wildcard-import",
