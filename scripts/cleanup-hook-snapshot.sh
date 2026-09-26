@@ -31,28 +31,39 @@ check_reference() {
 }
 
 check_worktree() {
- case "$3" in
+ managed_dir=$1
+ reference_file=$2
+ worktree_record=$3
+ case "$worktree_record" in
  "worktree "*)
   printf x
-  root=${3#worktree }
+  root=${worktree_record#worktree }
   cd "$root" || return 255
   # A stale inventory entry may now name an unrelated repository. Verify its
   # backpointer before trusting configuration read from that directory.
   owner=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || return 255
   owner=${owner%x}; owner=${owner%?}
-  [ "$owner" -ef "${1%/lopper-hooks}" ] || return 255
+  [ "$owner" -ef "${managed_dir%/lopper-hooks}" ] || return 255
   status=0
-  run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$2" || status=$?
+  run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$reference_file" || status=$?
   case "$status" in 0) ;; 1) return 0 ;; *) return 255 ;; esac
-  xargs -0 -n 1 sh "$script" reference "$1" <"$2" || return 255
+  xargs -0 -n 1 sh "$script" reference "$managed_dir" <"$reference_file" || return 255
   ;;
+ *) return 0 ;;
  esac
 }
 
-case "${1-}" in
- reference) shift; check_reference "$@"; exit ;;
- worktree) shift; check_worktree "$@"; exit ;;
-esac
+if [ "${1-}" = reference ]; then
+	shift
+	check_reference "$@"
+	exit
+fi
+if [ "${1-}" = worktree ]; then
+	shift
+	check_worktree "$@"
+	exit
+fi
+if [ -n "${1-}" ]; then exit 0; fi
 
 common_dir=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || exit 0
 common_dir=${common_dir%x}
