@@ -315,7 +315,12 @@ func TestHooksInstallRejectsNonExecutableManagedHook(t *testing.T) {
 		t.Fatalf("read retained managed hook path: %v", err)
 	}
 	managedHook := filepath.Join(strings.TrimSpace(hookDir), "pre-commit")
+	contents, readErr := os.ReadFile(managedHook)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
 	runCommand(t, repoDir, "make", "hooks-uninstall")
+	writeFileMode(t, managedHook, string(contents), 0o644)
 	if err := os.Chmod(managedHook, 0o644); err != nil {
 		t.Fatalf("make managed hook non-executable: %v", err)
 	}
@@ -463,6 +468,9 @@ func newHookFixture(t *testing.T) string {
 	installers, _, _ = strings.Cut(installers, "\nvscode-extension-install:")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
+	for _, name := range []string{"cleanup-hook-snapshot.sh", "hook-config-preflight.sh"} {
+		copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "scripts", name), filepath.Join(repoDir, "scripts", name), 0o644)
+	}
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
 	runCommand(t, repoDir, "git", "add", ".")
 	runCommand(t, repoDir, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", "revision A")

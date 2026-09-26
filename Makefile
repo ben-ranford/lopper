@@ -519,7 +519,8 @@ hooks-uninstall:
 		config_error="$$(mktemp)"; cleanup() { rm -f "$$config_error"; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 		configured_path="$$(git config --local --get core.hooksPath 2>"$$config_error")" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; configured_path=; }; \
 		case "$$configured_path" in "$$managed_dir"|.githooks) git config --local --unset core.hooksPath ;; esac; \
-		echo "Removed managed core.hooksPath hook configuration"
+		echo "Removed managed core.hooksPath hook configuration"; \
+		sh scripts/cleanup-hook-snapshot.sh
 
 vscode-extension-install:
 	cd $(VSCODE_EXTENSION_DIR) && npm ci
