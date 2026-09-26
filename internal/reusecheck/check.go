@@ -141,6 +141,13 @@ func dependencyStats(declaration ast.Node, packages map[string]string, info *typ
 }
 
 func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
 	if imported(expression, packages, sharedPackage, "DependencyStats") {
 		return true
 	}

@@ -158,6 +158,7 @@ func TestStatsDeclarationForms(t *testing.T) {
 		want        int
 	}{
 		{"var measured s.DependencyStats", 1},
+		{"var measured (*s.DependencyStats)", 1},
 		{"var measured = s.BuildDependencyStats(name,nil,nil)", 1},
 		{"var measured = s.DependencyStats{}", 1},
 		{"measured := s.DependencyStats{}", 1},
