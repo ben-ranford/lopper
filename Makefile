@@ -468,21 +468,26 @@ clean:
 
 hooks-install:
 	@set -eu; \
+		preflight_runner_pid=; preflight_watchdog_pid=; preflight_state_dir=; preflight_output_file=; preflight_git_output=; config_error=; value_file=; values_file=; error_file=; markers_file=; references_file=; tmp_hook=; managed_dir=; managed_hook=; local_path=; local_path_present=0; created_dir=0; created_hook=0; install_started=0; activation_may_be_written=0; install_completed=0; \
+		cleanup_preflight_git() { if [ -n "$$preflight_watchdog_pid" ]; then kill "$$preflight_watchdog_pid" 2>/dev/null || :; wait "$$preflight_watchdog_pid" 2>/dev/null || :; preflight_watchdog_pid=; fi; if [ -n "$$preflight_runner_pid" ]; then kill -TERM "$$preflight_runner_pid" 2>/dev/null || :; wait "$$preflight_runner_pid" 2>/dev/null || :; preflight_runner_pid=; fi; rm -rf "$$preflight_state_dir"; preflight_state_dir=; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		run_preflight_git() { preflight_state_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; mkdir "$$preflight_state_dir/active" || { rmdir "$$preflight_state_dir"; preflight_state_dir=; return 1; }; ( git_pid=; hold_pid=; stop_runner() { trap - EXIT HUP INT TERM; if [ -n "$$git_pid" ]; then kill -TERM "$$git_pid" 2>/dev/null || :; wait "$$git_pid" 2>/dev/null || :; fi; if [ -n "$$hold_pid" ]; then kill "$$hold_pid" 2>/dev/null || :; wait "$$hold_pid" 2>/dev/null || :; fi; exit 124; }; trap stop_runner HUP INT TERM; "$$@" & git_pid=$$!; status=0; wait "$$git_pid" || status=$$?; git_pid=; if rmdir "$$preflight_state_dir/active" 2>/dev/null; then exit "$$status"; fi; while :; do sleep 1 & hold_pid=$$!; wait "$$hold_pid" || :; hold_pid=; done ) & preflight_runner_pid=$$!; ( sleeper_pid=; stop_watchdog() { trap - EXIT HUP INT TERM; if [ -n "$$sleeper_pid" ]; then kill "$$sleeper_pid" 2>/dev/null || :; wait "$$sleeper_pid" 2>/dev/null || :; fi; exit 0; }; trap stop_watchdog HUP INT TERM; sleep 10 & sleeper_pid=$$!; wait "$$sleeper_pid" || exit 0; sleeper_pid=; if rmdir "$$preflight_state_dir/active" 2>/dev/null; then printf x >"$$preflight_state_dir/expired"; kill -TERM "$$preflight_runner_pid" 2>/dev/null || :; fi ) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$$!; status=0; wait "$$preflight_runner_pid" || status=$$?; preflight_runner_pid=; kill "$$preflight_watchdog_pid" 2>/dev/null || :; wait "$$preflight_watchdog_pid" 2>/dev/null || :; preflight_watchdog_pid=; if [ -f "$$preflight_state_dir/expired" ]; then rm -rf "$$preflight_state_dir"; preflight_state_dir=; echo "Timed out while reading Git preflight configuration" >&2; return 124; fi; rmdir "$$preflight_state_dir" 2>/dev/null || rm -rf "$$preflight_state_dir"; preflight_state_dir=; return "$$status"; }; \
+		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		cleanup_preflight_temps() { trap - EXIT; trap '' HUP INT TERM; cleanup_preflight_git; if [ "$$install_started" -eq 1 ] && [ "$$install_completed" -eq 0 ]; then config_restored=0; if [ "$$local_path_present" -eq 1 ]; then if run_preflight_git git config --local core.hooksPath "$$local_path" >/dev/null 2>&1; then config_restored=1; fi; else if run_preflight_git git config --local --unset core.hooksPath >/dev/null 2>&1; then config_restored=1; fi; fi; if [ "$$config_restored" -eq 1 ] || [ "$$activation_may_be_written" -eq 0 ]; then [ "$$created_hook" -eq 0 ] || rm -f "$$managed_hook"; [ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir" 2>/dev/null || :; else echo "Unable to restore core.hooksPath; retaining managed hook at $$managed_hook" >&2; fi; fi; rm -f "$$config_error" "$$value_file" "$$values_file" "$$error_file" "$$markers_file" "$$references_file" "$$tmp_hook"; }; trap 'cleanup_preflight_temps; exit 129' HUP; trap 'cleanup_preflight_temps; exit 130' INT; trap 'cleanup_preflight_temps; exit 143' TERM; trap 'cleanup_preflight_temps' EXIT; \
 		source_hook=".githooks/pre-commit"; \
 		[ -f "$$source_hook" ] && [ ! -L "$$source_hook" ] || { echo "Missing reviewed pre-commit hook: $$source_hook" >&2; exit 1; }; \
-		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		read_preflight_git git rev-parse --path-format=absolute --git-common-dir; common_dir="$$preflight_git_output"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
-		config_error="$$(mktemp)"; tmp_hook=; cleanup() { rm -f "$$config_error" "$${tmp_hook:-}"; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-		read_config() { value="$$("$$@" 2>"$$config_error")" && return 0; status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] && { value=; return 0; }; cat "$$config_error" >&2; exit "$$status"; }; \
+		config_error="$$(mktemp)"; \
+		read_config() { preflight_git_output=; read_preflight_git "$$@" 2>"$$config_error" && { value="$$preflight_git_output"; value_present=1; return 0; }; status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] && { value=; value_present=0; return 0; }; cat "$$config_error" >&2; exit "$$status"; }; \
 		read_config git config --get core.hooksPath; effective_path="$$value"; \
-		read_config git config --local --get core.hooksPath; local_path="$$value"; \
+		read_config git config --local --get core.hooksPath; local_path="$$value"; local_path_present="$$value_present"; \
 		case "$$effective_path:$$local_path" in \
 			:|"$$managed_dir":|"$$managed_dir":"$$managed_dir"|.githooks:.githooks) ;; \
 			*) echo "Refusing to replace existing core.hooksPath: $$effective_path" >&2; exit 1 ;; \
 		esac; \
-		created_dir=0; \
-		if [ ! -e "$$managed_dir" ]; then mkdir -p "$$managed_dir"; created_dir=1; fi; \
+		install_started=1; \
+		if [ ! -e "$$managed_dir" ]; then created_dir=1; mkdir -p "$$managed_dir"; fi; \
 		[ -d "$$managed_dir" ] && [ ! -L "$$managed_dir" ] || { echo "Unsafe managed hook directory: $$managed_dir" >&2; exit 1; }; \
 		created_hook=0; \
 		if [ -L "$$managed_hook" ]; then \
@@ -491,33 +496,33 @@ hooks-install:
 			[ -f "$$managed_hook" ] && [ ! -L "$$managed_hook" ] || { echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; }; \
 			[ -x "$$managed_hook" ] || { echo "Managed pre-commit hook is not executable: $$managed_hook" >&2; exit 1; }; \
 		else \
+			created_hook=1; \
 			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
-			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; created_hook=1; \
+			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; tmp_hook=; \
 		fi; \
-		if ! git config --local core.hooksPath "$$managed_dir"; then \
-			[ "$$created_hook" -eq 0 ] || rm -f "$$managed_hook"; \
-			[ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir"; \
-			exit 1; \
-		fi; \
+		activation_may_be_written=1; if ! git config --local core.hooksPath "$$managed_dir"; then activation_may_be_written=0; exit 1; fi; \
 		read_config git config --get core.hooksPath; \
 		if [ "$$value" != "$$managed_dir" ]; then \
-			if [ -n "$$local_path" ]; then git config --local core.hooksPath "$$local_path"; else git config --local --unset core.hooksPath || :; fi; \
-			[ "$$created_hook" -eq 0 ] || rm -f "$$managed_hook"; \
-			[ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir"; \
 			echo "Unable to activate managed core.hooksPath" >&2; exit 1; \
 		fi; \
 		if [ "$$created_hook" -eq 0 ]; then \
 			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
 			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; \
 		fi; \
-		echo "Installed full-CI pre-commit hook at $$managed_hook"
+		install_completed=1; echo "Installed full-CI pre-commit hook at $$managed_hook"
 
 hooks-uninstall:
 	@set -eu; \
-		common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)"; \
+		value_file=; values_file=; error_file=; markers_file=; references_file=; config_error=; \
+		preflight_runner_pid=; preflight_watchdog_pid=; preflight_state_dir=; preflight_output_file=; preflight_git_output=; \
+		cleanup_preflight_git() { if [ -n "$$preflight_watchdog_pid" ]; then kill "$$preflight_watchdog_pid" 2>/dev/null || :; wait "$$preflight_watchdog_pid" 2>/dev/null || :; preflight_watchdog_pid=; fi; if [ -n "$$preflight_runner_pid" ]; then kill -TERM "$$preflight_runner_pid" 2>/dev/null || :; wait "$$preflight_runner_pid" 2>/dev/null || :; preflight_runner_pid=; fi; rm -rf "$$preflight_state_dir"; preflight_state_dir=; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		run_preflight_git() { preflight_state_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; mkdir "$$preflight_state_dir/active" || { rmdir "$$preflight_state_dir"; preflight_state_dir=; return 1; }; ( git_pid=; hold_pid=; stop_runner() { trap - EXIT HUP INT TERM; if [ -n "$$git_pid" ]; then kill -TERM "$$git_pid" 2>/dev/null || :; wait "$$git_pid" 2>/dev/null || :; fi; if [ -n "$$hold_pid" ]; then kill "$$hold_pid" 2>/dev/null || :; wait "$$hold_pid" 2>/dev/null || :; fi; exit 124; }; trap stop_runner HUP INT TERM; "$$@" & git_pid=$$!; status=0; wait "$$git_pid" || status=$$?; git_pid=; if rmdir "$$preflight_state_dir/active" 2>/dev/null; then exit "$$status"; fi; while :; do sleep 1 & hold_pid=$$!; wait "$$hold_pid" || :; hold_pid=; done ) & preflight_runner_pid=$$!; ( sleeper_pid=; stop_watchdog() { trap - EXIT HUP INT TERM; if [ -n "$$sleeper_pid" ]; then kill "$$sleeper_pid" 2>/dev/null || :; wait "$$sleeper_pid" 2>/dev/null || :; fi; exit 0; }; trap stop_watchdog HUP INT TERM; sleep 10 & sleeper_pid=$$!; wait "$$sleeper_pid" || exit 0; sleeper_pid=; if rmdir "$$preflight_state_dir/active" 2>/dev/null; then printf x >"$$preflight_state_dir/expired"; kill -TERM "$$preflight_runner_pid" 2>/dev/null || :; fi ) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$$!; status=0; wait "$$preflight_runner_pid" || status=$$?; preflight_runner_pid=; kill "$$preflight_watchdog_pid" 2>/dev/null || :; wait "$$preflight_watchdog_pid" 2>/dev/null || :; preflight_watchdog_pid=; if [ -f "$$preflight_state_dir/expired" ]; then rm -rf "$$preflight_state_dir"; preflight_state_dir=; echo "Timed out while reading Git preflight configuration" >&2; return 124; fi; rmdir "$$preflight_state_dir" 2>/dev/null || rm -rf "$$preflight_state_dir"; preflight_state_dir=; return "$$status"; }; \
+		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		cleanup_preflight_temps() { cleanup_preflight_git; rm -f "$$config_error"; }; trap 'cleanup_preflight_temps; exit 129' HUP; trap 'cleanup_preflight_temps; exit 130' INT; trap 'cleanup_preflight_temps; exit 143' TERM; trap 'cleanup_preflight_temps' EXIT; \
+		read_preflight_git git rev-parse --path-format=absolute --git-common-dir; common_dir="$$preflight_git_output"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
-		config_error="$$(mktemp)"; cleanup() { rm -f "$$config_error"; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
-		configured_path="$$(git config --local --get core.hooksPath 2>"$$config_error")" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; configured_path=; }; \
+		config_error="$$(mktemp)"; \
+		read_preflight_git git config --local --get core.hooksPath 2>"$$config_error" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; }; configured_path="$$preflight_git_output"; \
 		case "$$configured_path" in "$$managed_dir"|.githooks) git config --local --unset core.hooksPath ;; esac; \
 		echo "Removed managed core.hooksPath hook configuration"
 
