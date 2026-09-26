@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -201,6 +202,31 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.assertIn("No fallback", result.stderr)
         with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "added_lines", return_value={("b.go", 1)}), mock.patch.object(runner, "scan", return_value={("b.go", 1)}), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(runner.main(["--version", "pinned", "--base", "target"]), 1)
+
+    def test_clone_records_preserve_validated_endpoints(self):
+        records = []
+        runner.parse_findings(self.pair(), self.repo, records=records)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0], (("dir with spaces/a.go", 1, 2), ("b.go", 1, 2)))
+
+    def test_occurrence_gate_uses_target_policy_and_rejects_pr_expansion(self):
+        empty = {"version": 1, "families": [], "exceptions": []}
+        self.write("baseline.json", json.dumps(empty))
+        self.commit()
+        self.git("checkout", "-qb", "feature")
+        self.write("added.go", "package fixture\n")
+        self.commit()
+        fn = {"path": "original.go", "name": "Original", "shape": "a", "start": 1, "end": 2}
+        other = dict(fn, name="Copy", path="added.go")
+        def detector(*args, records=None):
+            records.append((("original.go", 1, 2), ("added.go", 1, 2)))
+            return set()
+        command = ["--version", "pinned", "--base", "target", "--baseline", "baseline.json"]
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "scan", side_effect=detector), mock.patch.object(runner.policy, "function_index", return_value=[fn, other]), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.main(command), 1)
+            proposal = runner.policy.propose_baseline(runner.policy.clone_pairs([(("original.go", 1, 2), ("added.go", 1, 2))], [fn, other]))
+            self.write("baseline.json", json.dumps(proposal))
+            self.assertEqual(runner.main(command), 2)
 
     def test_invalid_threshold_cannot_disable_gate(self):
         for option, value in (("--max", "nan"), ("--max", "inf"), ("--max", "-1"), ("--threshold", "0")):

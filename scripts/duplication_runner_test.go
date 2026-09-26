@@ -23,3 +23,11 @@ func TestDuplicationMissingBaseFailsClosed(t *testing.T) {
 		t.Fatalf("missing comparison base must fail with recovery instructions: %v\n%s", err, output)
 	}
 }
+
+func TestDuplicationOccurrencePolicy(t *testing.T) {
+	t.Parallel()
+	command := exec.Command("python3", "-B", repoPath(t, "scripts/duplication_policy_test.py"))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("duplication occurrence policy fixtures failed: %v\n%s", err, output)
+	}
+}

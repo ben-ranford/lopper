@@ -3,6 +3,7 @@
 
 import argparse
 import math
+import json
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+import duplication_policy as policy
 
 
 class AnalysisError(Exception):
@@ -127,18 +130,20 @@ def parse_location(location, repo, line_counts):
     return finding_location(raw, start, end, repo, line_counts)
 
 
-def parse_findings(output, repo):
+def parse_findings(output, repo, *, records=None):
     if output and not output.endswith("\n"):
         raise AnalysisError("Truncated detector output (missing final newline)")
     sources, destinations, duplicated = set(), set(), set()
     line_counts = {}
     for record in output.splitlines():
-        records = record.split(": duplicate of ")
-        if len(records) != 2:
+        endpoints = record.split(": duplicate of ")
+        if len(endpoints) != 2:
             raise AnalysisError(f"Malformed detector record: {record!r}")
-        locations = [parse_location(location, repo, line_counts) for location in records]
+        locations = [parse_location(location, repo, line_counts) for location in endpoints]
         if locations[0] == locations[1]:
             raise AnalysisError(f"Detector reported a self-duplicate: {record!r}")
+        if records is not None:
+            records.append(tuple(locations))
         sources.add(locations[0])
         destinations.add(locations[1])
         path, start, end = locations[0]
@@ -150,7 +155,7 @@ def parse_findings(output, repo):
     return duplicated
 
 
-def scan(repo, go_command, version, threshold):
+def scan(repo, go_command, version, threshold, *, records=None):
     if not re.fullmatch(r"[0-9a-f]{40}", version):
         raise AnalysisError("Detector version must be pinned to a full lowercase commit SHA")
     go_executable = shutil.which(go_command)
@@ -165,7 +170,31 @@ def scan(repo, go_command, version, threshold):
         # partially parsed input as a successful no-match scan.
         if result.stderr.strip():
             raise AnalysisError(f"Detector diagnostics indicate incomplete analysis: {result.stderr.strip()}")
-        return parse_findings(result.stdout, repo)
+        return parse_findings(result.stdout, repo, records=records)
+
+
+def occurrence_gate(repo, merge_base, args):
+    records = []
+    scan(repo, args.go, args.version, args.threshold, records=records)
+    functions = policy.function_index(repo, args.go)
+    pairs = policy.clone_pairs(records, functions)
+    if args.propose_baseline:
+        Path(args.propose_baseline).write_text(json.dumps(policy.propose_baseline(pairs), indent=2) + "\n")
+        print("Baseline proposal written; it does not authorize new clones")
+    if not args.baseline:
+        return 0
+    baseline_path = Path(args.baseline)
+    if baseline_path.is_absolute() or ".." in baseline_path.parts:
+        raise AnalysisError("Baseline must be a repository-relative policy path")
+    # The protected target, never the contributor's new policy, grants exceptions.
+    approved = json.loads(checked(["git", "show", f"{merge_base}:{baseline_path.as_posix()}"], repo).stdout)
+    proposed = json.loads((repo / baseline_path).read_text())
+    policy.validate_reduction(approved, proposed)
+    report = policy.evaluate(pairs, proposed)
+    if args.report:
+        Path(args.report).write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+    print(policy.render(report))
+    return int(bool(report['stale_exceptions']) or any(finding['status'] == 'violation' for finding in report['findings']))
 
 
 def main(argv=None):
@@ -175,12 +204,17 @@ def main(argv=None):
     parser.add_argument("--version", required=True)
     parser.add_argument("--threshold", type=int, default=55)
     parser.add_argument("--max", type=float, default=3)
+    parser.add_argument("--baseline", help="Reviewed baseline path; enables occurrence enforcement")
+    parser.add_argument("--report", help="Write deterministic occurrence report JSON")
+    parser.add_argument("--propose-baseline", help="Write a baseline proposal for separate review, never authorize it")
     args = parser.parse_args(argv)
     try:
         if args.threshold < 1 or not math.isfinite(args.max) or not 0 <= args.max <= 100:
             raise AnalysisError("Threshold must be positive and maximum percentage must be finite within 0..100")
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
         base, merge_base = comparison_base(repo, args.base, os.environ)
+        if args.baseline or args.propose_baseline:
+            return occurrence_gate(repo, merge_base, args)
         added = added_lines(repo, merge_base)
         if not added:
             print(f"New-code duplication: no changed Go lines (base: {base}, merge base: {merge_base}); detector not required")
@@ -193,7 +227,7 @@ def main(argv=None):
             print("Duplication gate failed: new-code duplication exceeds the configured maximum", file=sys.stderr)
             return 1
         return 0
-    except (AnalysisError, OSError, UnicodeError) as error:
+    except (AnalysisError, policy.PolicyError, OSError, UnicodeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Duplication analysis failed: {error}", file=sys.stderr)
         return 2
 
