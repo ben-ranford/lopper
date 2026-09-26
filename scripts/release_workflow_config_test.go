@@ -2837,6 +2837,15 @@ func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage)
 		if strings.TrimSpace(string(raw)) == "null" {
 			return fmt.Errorf("renovate %s review settings must be an object", updateType)
 		}
+		var rawSettings map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &rawSettings); err != nil {
+			return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+		}
+		for _, key := range []string{"enabled", "automerge"} {
+			if value, exists := rawSettings[key]; exists && strings.TrimSpace(string(value)) == "null" {
+				return fmt.Errorf("renovate %s %s must be a boolean", updateType, key)
+			}
+		}
 		var settings struct {
 			Enabled   *bool           `json:"enabled"`
 			Automerge *bool           `json:"automerge"`
@@ -2877,10 +2886,12 @@ func assertRenovateUpdateTypeReviewSettings(t *testing.T, updateType string) {
 		{name: "absent"},
 		{name: "no override", block: `{}`},
 		{name: "explicitly enabled", block: `{"enabled":true}`},
+		{name: "null enabled", block: `{"enabled":null}`, wantErr: true},
 		{name: "disabled update type", block: `{"enabled":false}`, wantErr: true},
 		{name: "invalid enabled", block: `{"enabled":"false"}`, wantErr: true},
 		{name: "preset can override review settings", block: `{"extends":[":automergeMinor"]}`, wantErr: true},
 		{name: "explicit review", block: `{"automerge":false}`},
+		{name: "null automerge", block: `{"automerge":null}`, wantErr: true},
 		{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
 		{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
 		{name: "null block", block: `null`, wantErr: true},
