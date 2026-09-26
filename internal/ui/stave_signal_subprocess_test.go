@@ -147,6 +147,9 @@ func runStaveSignalParent(t *testing.T, sig os.Signal) {
 	default:
 	}
 
+	if _, err := ptmx.Write([]byte(strings.Repeat("x", 1024))); err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Process.Signal(sig); err != nil {
 		t.Fatalf("send %s: %v", sig, err)
 	}
