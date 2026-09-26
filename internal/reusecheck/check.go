@@ -61,6 +61,9 @@ func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[str
 }
 
 func decorativeCall(path string, statement ast.Stmt, packages map[string]string) bool {
+	if block, ok := statement.(*ast.BlockStmt); ok {
+		return len(block.List) > 0 && len(withoutDecorativeCalls(path, block.List, packages)) == 0
+	}
 	var expr ast.Expr
 	switch item := statement.(type) {
 	case *ast.ExprStmt:
@@ -208,6 +211,10 @@ func localDeclarations(fn *ast.FuncDecl, info *types.Info) map[types.Object]ast.
 			names = item.Names
 		case *ast.ValueSpec:
 			names = item.Names
+		case *ast.RangeStmt:
+			if ident, ok := item.Value.(*ast.Ident); ok {
+				names = append(names, ident)
+			}
 		case *ast.AssignStmt:
 			for _, expr := range item.Lhs {
 				if ident, ok := expr.(*ast.Ident); ok {
@@ -252,10 +259,7 @@ func contractFingerprints(source string) (map[string]contract, error) {
 
 func functionFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
 	var findings []Finding
-	statements := fn.Body.List
-	fn.Body.List = withoutDecorativeCalls(path, statements, packages)
-	matched, found := fingerprints[canonicalFunction(fn, packages, info)]
-	fn.Body.List = statements
+	matched, found := fingerprints[canonicalWithoutDecorativeCalls(path, fn, packages, info)]
 	if matched.rule == "sorted-set-keys" && !strings.HasPrefix(filepath.ToSlash(path), "internal/lang/") {
 		found = false
 	}
@@ -305,7 +309,11 @@ func mappedStatsObject(expression ast.Expr, field string, packages map[string]st
 		return nil
 	}
 	object := info.ObjectOf(receiver)
-	if object == nil || !dependencyStats(declarations[object], packages, info) {
+	declaration := declarations[object]
+	if ranged, ok := declaration.(*ast.RangeStmt); ok {
+		declaration = &ast.Field{Type: rangeValueType(ranged.X, info, declarations)}
+	}
+	if object == nil || !dependencyStats(declaration, packages, info) {
 		return nil
 	}
 	return object

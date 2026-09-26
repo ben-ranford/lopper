@@ -130,3 +130,64 @@ func isLocalObject(object types.Object) bool {
 	_, imported := object.(*types.PkgName)
 	return !imported
 }
+
+// Normalize only discarded helper calls, preserving all meaningful block scopes.
+// Restore the parsed tree before report-mapping analysis inspects declarations.
+func canonicalWithoutDecorativeCalls(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info) string {
+	original := make(map[*ast.BlockStmt][]ast.Stmt)
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if block, ok := node.(*ast.BlockStmt); ok {
+			original[block] = block.List
+			block.List = withoutDecorativeCalls(path, block.List, packages)
+		}
+		return true
+	})
+	defer func() {
+		for block, statements := range original {
+			block.List = statements
+		}
+	}()
+	return canonicalFunction(fn, packages, info)
+}
+
+func rangeValueType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	expression = unparen(expression)
+	if ident, ok := expression.(*ast.Ident); ok {
+		expression = declaredCollectionType(declarations[info.ObjectOf(ident)])
+	} else if literal, ok := expression.(*ast.CompositeLit); ok {
+		expression = literal.Type
+	}
+	switch collection := unparen(expression).(type) {
+	case *ast.ArrayType:
+		return collection.Elt
+	case *ast.MapType:
+		return collection.Value
+	default:
+		return nil
+	}
+}
+
+func declaredCollectionType(declaration ast.Node) ast.Expr {
+	var values []ast.Expr
+	switch item := declaration.(type) {
+	case *ast.Field:
+		return item.Type
+	case *ast.ValueSpec:
+		if item.Type != nil {
+			return item.Type
+		}
+		if len(item.Names) == 1 {
+			values = item.Values
+		}
+	case *ast.AssignStmt:
+		if len(item.Lhs) == 1 {
+			values = item.Rhs
+		}
+	}
+	if len(values) == 1 {
+		if literal, ok := unparen(values[0]).(*ast.CompositeLit); ok {
+			return literal.Type
+		}
+	}
+	return nil
+}

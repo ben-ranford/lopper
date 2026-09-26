@@ -86,7 +86,7 @@ func build(name string, measured s.DependencyStats) r.DependencyReport {
 
 func TestDecorativeCollectionCall(t *testing.T) {
 	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
-	for _, call := range []string{"_ = shared.SortedKeys(values)", "shared.SortedKeys(values)"} {
+	for _, call := range []string{"_ = shared.SortedKeys(values)", "shared.SortedKeys(values)", "{ _ = shared.SortedKeys(values) }", "{ { shared.SortedKeys(values) } }"} {
 		current := strings.Replace(source, "func keys(values map[string]struct{}) []string {", "func keys(values map[string]struct{}) []string { "+call, 1)
 		findings, err := Analyze("internal/lang/fixture.go", []byte(current))
 		if err != nil {
@@ -209,7 +209,7 @@ func TestPointerStatsParameterMapsReport(t *testing.T) {
 
 func TestDecorativeCallBoundariesAndDomain(t *testing.T) {
 	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
-	for _, statement := range []string{"_, _ = 1, 2", "_ = 1", "shared.SortedKeys(make(map[string]struct{}))"} {
+	for _, statement := range []string{"_, _ = 1, 2", "_ = 1", "shared.SortedKeys(make(map[string]struct{}))", "{}", "{ _ = shared.SortedKeys(values); _ = 1 }"} {
 		current := strings.Replace(source, "func keys(values map[string]struct{}) []string {", "func keys(values map[string]struct{}) []string { "+statement, 1)
 		findings, err := Analyze("internal/lang/fixture.go", []byte(current))
 		for _, finding := range findings {
@@ -366,4 +366,50 @@ func TestSamePackageHelperRejectsShadowedNames(t *testing.T) {
 			return true
 		})
 	}
+}
+
+func TestRangeStatsMapping(t *testing.T) {
+	for _, tc := range []struct {
+		parameter, setup, loop string
+		want                   int
+	}{
+		{"values []s.DependencyStats", "", "for _, measured := range values {", 1},
+		{"values []*s.DependencyStats", "", "for _, measured := range values {", 1},
+		{"values [2]s.DependencyStats", "", "for _, measured := range values {", 1},
+		{"values map[string]s.DependencyStats", "", "for _, measured := range values {", 1},
+		{"unused string", "var values []s.DependencyStats;", "for _, measured := range values {", 1},
+		{"unused string", "var values = []s.DependencyStats{};", "for _, measured := range values {", 1},
+		{"unused string", "values := []s.DependencyStats{};", "for _, measured := range values {", 1},
+		{"unused string", "", "for _, measured := range ([]s.DependencyStats{}) {", 1},
+		{"values []OtherStats", "", "for _, measured := range values {", 0},
+		{"values []s.DependencyStats", "", "for measured := range values {", 0},
+		{"unused string", "", "for _, measured := range unknown() {", 0},
+		{"values string", "", "for _, measured := range values {", 0},
+		{"unused string", "var values = unknown();", "for _, measured := range values {", 0},
+		{"unused string", "var values, other = unknown(); _ = other;", "for _, measured := range values {", 0},
+		{"unused string", "values, other := unknown(); _ = other;", "for _, measured := range values {", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.setup+tc.loop+"\n _ = s.BuildDependencyReportFromStats", 1)
+		source += "\n return r.DependencyReport{} }"
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.parameter+tc.setup+tc.loop, findings, err)
+		}
+	}
+}
+
+func TestDecorativeCallWithinLoop(t *testing.T) {
+	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
+	source = strings.Replace(source, "for value := range values {", "for value := range values { { _ = shared.SortedKeys(values) };", 1)
+	findings, err := Analyze("internal/lang/fixture.go", []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.Rule == "sorted-set-keys" {
+			return
+		}
+	}
+	t.Fatal("nested decorative call waived exact keys contract")
 }
