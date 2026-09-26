@@ -3,8 +3,10 @@ package advisory
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -148,5 +150,57 @@ func TestOSVZipInventoryDoesNotRetainEcosystemPadding(t *testing.T) {
 	}
 	if inventory.ecosystemBytes != len(`"Go"`)+128 {
 		t.Fatalf("unexpected normalized ecosystem budget: %d", inventory.ecosystemBytes)
+	}
+}
+
+func TestOSVZipInventoryRejectsEscapedMetadataWithoutAllocatingCopy(t *testing.T) {
+	value := strings.Repeat("<", 1024*1024)
+	inventory := osvZipInventory{ecosystemBytes: maxOSVZipEcosystemBytes - 132}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err := inventory.addEcosystem(value)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("expected metadata budget rejection")
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1024*1024 {
+		t.Fatalf("budget rejection allocated %d bytes for an escaped copy", allocated)
+	}
+	if len(inventory.ecosystems) != 0 {
+		t.Fatal("rejected ecosystem was retained")
+	}
+}
+
+func TestOSVZipInventoryJSONEscapingMatchesManifest(t *testing.T) {
+	for _, value := range []string{"Go", "x\"\\\b\f\n\r\tx", "<>&", "x\x00\x01\x1f", "日é😀", "x\u2028\u2029x", "\ufffd"} {
+		encoded, err := json.Marshal(strings.TrimSpace(value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cost := len(encoded) + 128
+		for _, spare := range []int{0, -1} {
+			inventory := osvZipInventory{ecosystemBytes: maxOSVZipEcosystemBytes - cost - spare}
+			err := inventory.addEcosystem(value)
+			if spare == 0 {
+				if err != nil {
+					t.Fatalf("exact budget for %q (encoded %q, cost %d): %v", value, encoded, cost, err)
+				}
+				if inventory.ecosystemBytes != maxOSVZipEcosystemBytes {
+					t.Fatalf("incorrect escaped size for %q", value)
+				}
+			} else if err == nil {
+				t.Fatalf("accepted %q over budget", value)
+			}
+		}
+	}
+}
+
+func TestOSVZipInventoryInvalidUTF8Budget(t *testing.T) {
+	inventory := osvZipInventory{ecosystemBytes: maxOSVZipEcosystemBytes - 142}
+	if err := inventory.addEcosystem("\xff\xfe"); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.ecosystemBytes != maxOSVZipEcosystemBytes {
+		t.Fatal("invalid UTF-8 must reserve escaped replacement bytes")
 	}
 }
