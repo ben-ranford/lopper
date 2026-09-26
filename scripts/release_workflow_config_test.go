@@ -2803,6 +2803,12 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 
 	assertRenovateGlobalReviewSettings(t, config.Enabled, config.Automerge, config.PlatformAutomerge)
 
+	var updateConfig map[string]json.RawMessage
+	readJSONConfig(t, "renovate.json", &updateConfig)
+	if err := validateRenovateUpdateTypeReviewSettings(updateConfig); err != nil {
+		t.Fatal(err)
+	}
+
 	var matcherConfig struct {
 		PackageRules []map[string]json.RawMessage `json:"packageRules"`
 	}
@@ -2810,6 +2816,114 @@ func TestRenovateRequiresHumanReviewForAllUpdates(t *testing.T) {
 
 	if err := validateRenovatePackageRules(config.PackageRules, matcherConfig.PackageRules); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Renovate's hosted app is not version-pinned in this repository. These are the
+// update-specific and vulnerability-alert object blocks in its public schema:
+// https://docs.renovatebot.com/renovate-schema.json
+// matchUpdateTypes also supports "bump", but there is no top-level bump block.
+var renovateUpdateTypeBlocks = []string{
+	"major", "minor", "patch", "pin", "digest", "pinDigest",
+	"rollback", "replacement", "lockFileMaintenance", "vulnerabilityAlerts",
+}
+
+func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage) error {
+	for _, updateType := range renovateUpdateTypeBlocks {
+		raw, exists := config[updateType]
+		if !exists {
+			continue
+		}
+		if err := validateRenovateUpdateTypeBlock(updateType, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRenovateUpdateTypeBlock(updateType string, raw json.RawMessage) error {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return fmt.Errorf("renovate %s review settings must be an object", updateType)
+	}
+	var rawSettings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawSettings); err != nil {
+		return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+	}
+	for _, key := range []string{"enabled", "automerge"} {
+		if err := validateRenovateBooleanSetting(updateType, key, rawSettings[key]); err != nil {
+			return err
+		}
+	}
+	var settings struct {
+		Enabled   *bool           `json:"enabled"`
+		Automerge *bool           `json:"automerge"`
+		Extends   json.RawMessage `json:"extends"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+	}
+	if len(settings.Extends) > 0 {
+		return fmt.Errorf("renovate %s updates must not import review-setting presets with extends", updateType)
+	}
+	if settings.Enabled != nil && !*settings.Enabled {
+		return fmt.Errorf("renovate %s updates must not disable dependency update PR creation", updateType)
+	}
+	if settings.Automerge != nil && *settings.Automerge {
+		return fmt.Errorf("renovate %s updates must not enable unattended automerge", updateType)
+	}
+	return nil
+}
+
+func validateRenovateBooleanSetting(updateType, key string, raw json.RawMessage) error {
+	if len(raw) > 0 && strings.TrimSpace(string(raw)) == "null" {
+		return fmt.Errorf("renovate %s %s must be a boolean", updateType, key)
+	}
+	return nil
+}
+
+func TestRenovateUpdateTypeReviewSettings(t *testing.T) {
+	t.Parallel()
+
+	for _, updateType := range renovateUpdateTypeBlocks {
+		assertRenovateUpdateTypeReviewSettings(t, updateType)
+	}
+}
+
+func assertRenovateUpdateTypeReviewSettings(t *testing.T, updateType string) {
+	t.Helper()
+
+	for _, tc := range []struct {
+		name    string
+		block   string
+		wantErr bool
+	}{
+		{name: "absent"},
+		{name: "no override", block: `{}`},
+		{name: "explicitly enabled", block: `{"enabled":true}`},
+		{name: "null enabled", block: `{"enabled":null}`, wantErr: true},
+		{name: "disabled update type", block: `{"enabled":false}`, wantErr: true},
+		{name: "invalid enabled", block: `{"enabled":"false"}`, wantErr: true},
+		{name: "preset can override review settings", block: `{"extends":[":automergeMinor"]}`, wantErr: true},
+		{name: "explicit review", block: `{"automerge":false}`},
+		{name: "null automerge", block: `{"automerge":null}`, wantErr: true},
+		{name: "unattended merge", block: `{"automerge":true}`, wantErr: true},
+		{name: "invalid automerge", block: `{"automerge":"true"}`, wantErr: true},
+		{name: "null block", block: `null`, wantErr: true},
+		{name: "invalid block", block: `true`, wantErr: true},
+	} {
+		t.Run(updateType+"/"+tc.name, func(t *testing.T) {
+			config := map[string]json.RawMessage{}
+			if tc.block != "" {
+				config[updateType] = json.RawMessage(tc.block)
+			}
+			err := validateRenovateUpdateTypeReviewSettings(config)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateRenovateUpdateTypeReviewSettings() = %v, want error %t", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), updateType) {
+				t.Fatalf("error must identify update type %q: %v", updateType, err)
+			}
+		})
 	}
 }
 
