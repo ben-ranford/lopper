@@ -357,11 +357,10 @@ jobs:
           if-no-files-found: error
 
       - name: Report repository size and advisory test clones
-        env:
-          SIZE_BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
         run: |
           python3 -m unittest discover -s scripts -p 'source_size_report_test.py'
-          make --silent source-size-report DUPLICATION_BASE="$SIZE_BASE" > "$RUNNER_TEMP/source-size-report.json"
+          size_base="${MEMORY_BENCH_BASE:-origin/main}"
+          make --silent source-size-report DUPLICATION_BASE="${size_base}" > "$RUNNER_TEMP/source-size-report.json"
 
       - name: Upload source size report
         if: ${{ !env.ACT }}
