@@ -125,6 +125,38 @@ func assertHookSnapshotRetention(t *testing.T, managed string, tc hookReferenceC
 	}
 }
 
+func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(string, string) error
+	}{
+		{name: "symlink", link: os.Symlink},
+		{name: "hard link", link: os.Link},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
+			custom := filepath.Join(linked, "custom hooks")
+			if err := os.Mkdir(custom, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			managedHook := filepath.Join(managed, "pre-commit")
+			customHook := filepath.Join(custom, "pre-commit")
+			if err := tc.link(managedHook, customHook); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skipf("hook file links unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", "custom hooks")
+			runCommand(t, repo, "make", "hooks-uninstall")
+			assertHookSnapshotRetention(t, managed, hookReferenceCase{alias: true})
+			if _, err := os.Stat(customHook); err != nil {
+				t.Fatalf("custom hook no longer resolves: %v", err)
+			}
+		})
+	}
+}
+
 func TestHooksCleanupRetainsOnInspectionFailure(t *testing.T) {
 	for _, failure := range []string{"missing", "malformed", "replaced"} {
 		t.Run(failure, func(t *testing.T) {
