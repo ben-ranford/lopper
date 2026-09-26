@@ -292,42 +292,26 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 		return resolvedToolRequest{}, err
 	}
 
-	scopeMode, err := parseScopeMode(args.ScopeMode)
+	prepared, err := s.resolveAnalysisOptions(repoPath, dependency, topN, args)
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholds(repoPath, args)
-	if err != nil {
-		return resolvedToolRequest{}, err
-	}
-	features, err := s.resolveFeatures(loadResult.Features, args.EnableFeatures, args.DisableFeatures)
-	if err != nil {
-		return resolvedToolRequest{}, err
-	}
-	analysisReq := newAnalysisRequest(args, analysisRequestContext{
-		repoPath:   repoPath,
-		dependency: dependency,
-		topN:       topN,
-		scopeMode:  scopeMode,
-		loadResult: loadResult,
-		thresholds: thresholdsValue,
-		featureSet: features,
-	})
+	analysisReq := newAnalysisRequest(args, prepared)
 
 	baselinePath, baselineKey, currentKey, err := resolveBaselineComparison(repoPath, args)
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	advisorySourcePath, advisorySourceRoot := resolveAdvisorySource(loadResult, args)
-	if err := validateAnalysisVulnerabilityFeature(features, thresholdsValue, advisorySourcePath); err != nil {
+	advisorySourcePath, advisorySourceRoot := resolveAdvisorySource(prepared.loadResult, args)
+	if err := validateAnalysisVulnerabilityFeature(prepared.featureSet, prepared.thresholds, advisorySourcePath); err != nil {
 		return resolvedToolRequest{}, err
 	}
 	return resolvedToolRequest{
 		analysisRequest:    analysisReq,
 		repoPath:           repoPath,
-		thresholds:         thresholdsValue,
-		policySources:      policySources,
-		policyTrace:        policyTrace,
+		thresholds:         prepared.thresholds,
+		policySources:      prepared.policySources,
+		policyTrace:        prepared.policyTrace,
 		advisorySourcePath: advisorySourcePath,
 		advisorySourceRoot: advisorySourceRoot,
 		baselinePath:       baselinePath,
@@ -336,14 +320,56 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	}, ctx.Err()
 }
 
+// analysisRequestContext contains only preparation shared by read and mutation
+// endpoints. Target validation, cache policy and cancellation stay at the caller.
 type analysisRequestContext struct {
-	repoPath   string
-	dependency string
-	topN       int
-	scopeMode  string
-	loadResult thresholds.LoadResult
-	thresholds thresholds.Values
-	featureSet featureflags.Set
+	repoPath         string
+	dependency       string
+	topN             int
+	scopeMode        string
+	loadResult       thresholds.LoadResult
+	thresholds       thresholds.Values
+	featureSet       featureflags.Set
+	policySources    []string
+	policyTrace      []report.PolicyMergeTrace
+	language         string
+	configPath       string
+	runtimeProfile   string
+	runtimeTracePath string
+	includePatterns  []string
+	excludePatterns  []string
+}
+
+func (s *Server) resolveAnalysisOptions(repoPath, dependency string, topN int, args analysisToolArguments) (analysisRequestContext, error) {
+	scopeMode, err := parseScopeMode(args.ScopeMode)
+	if err != nil {
+		return analysisRequestContext{}, err
+	}
+	loadResult, values, sources, trace, err := resolveThresholds(repoPath, args)
+	if err != nil {
+		return analysisRequestContext{}, err
+	}
+	features, err := s.resolveFeatures(loadResult.Features, args.EnableFeatures, args.DisableFeatures)
+	if err != nil {
+		return analysisRequestContext{}, err
+	}
+	return analysisRequestContext{
+		repoPath:         repoPath,
+		dependency:       dependency,
+		topN:             topN,
+		scopeMode:        scopeMode,
+		loadResult:       loadResult,
+		thresholds:       values,
+		featureSet:       features,
+		policySources:    sources,
+		policyTrace:      trace,
+		language:         languageOrDefault(args.Language),
+		configPath:       strings.TrimSpace(loadResult.ConfigPath),
+		runtimeProfile:   runtimeProfileOrDefault(args.RuntimeProfile),
+		runtimeTracePath: strings.TrimSpace(args.RuntimeTracePath),
+		includePatterns:  mergeStringOptions(loadResult.Scope.Include, args.Include),
+		excludePatterns:  mergeStringOptions(loadResult.Scope.Exclude, args.Exclude),
+	}, nil
 }
 
 func resolveAnalysisTarget(args analysisToolArguments, kind analysisToolKind) (string, int, error) {
@@ -380,7 +406,7 @@ func hasBaselineInput(args analysisToolArguments) bool {
 }
 
 func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) analysis.Request {
-	runtimeTracePath := strings.TrimSpace(args.RuntimeTracePath)
+	runtimeTracePath := req.runtimeTracePath
 	lowConfidence := req.thresholds.LowConfidenceWarningPercent
 	minUsage := req.thresholds.MinUsagePercentForRecommendations
 	weights := thresholds.RemovalCandidateWeights(req.thresholds)
@@ -390,13 +416,13 @@ func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) 
 		Dependency:                        req.dependency,
 		TopN:                              req.topN,
 		ScopeMode:                         req.scopeMode,
-		Language:                          languageOrDefault(args.Language),
-		ConfigPath:                        strings.TrimSpace(req.loadResult.ConfigPath),
-		RuntimeProfile:                    runtimeProfileOrDefault(args.RuntimeProfile),
+		Language:                          req.language,
+		ConfigPath:                        req.configPath,
+		RuntimeProfile:                    req.runtimeProfile,
 		RuntimeTracePath:                  runtimeTracePath,
 		RuntimeTracePathExplicit:          runtimeTracePath != "",
-		IncludePatterns:                   mergeStringOptions(req.loadResult.Scope.Include, args.Include),
-		ExcludePatterns:                   mergeStringOptions(req.loadResult.Scope.Exclude, args.Exclude),
+		IncludePatterns:                   req.includePatterns,
+		ExcludePatterns:                   req.excludePatterns,
 		Features:                          req.featureSet,
 		LowConfidenceWarningPercent:       &lowConfidence,
 		MinUsagePercentForRecommendations: &minUsage,
