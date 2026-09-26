@@ -189,6 +189,9 @@ func collectIdentityEvidenceWithContext(ctx context.Context, repoPath string, la
 	}
 	collectGoIdentityEvidenceFromSnapshot(repoPath, index, snapshot, warnings)
 	collectJSIdentityEvidenceFromSnapshotWithContext(ctx, repoPath, index, snapshot, warnings)
+	if ctx.Err() != nil {
+		return index, warnings.list()
+	}
 	if languages.python {
 		collectPythonIdentityEvidenceFromPaths(repoPath, index, snapshot.pythonFiles, warnings)
 	}
@@ -1163,11 +1166,18 @@ func collectJSLockfileIdentityEvidence(repoPath string, index identityIndex) {
 
 func collectJSIdentityEvidenceFromSnapshotWithContext(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
 	collectRootNodeModulesIdentityEvidenceWithContext(ctx, repoPath, index, warnings)
-	collectJSLockfileIdentityEvidenceFromPaths(repoPath, index, snapshot.jsLockfiles, warnings)
+	collectJSLockfileIdentityEvidenceFromPathsWithContext(ctx, repoPath, index, snapshot.jsLockfiles, warnings)
 }
 
 func collectJSLockfileIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+	collectJSLockfileIdentityEvidenceFromPathsWithContext(context.Background(), repoPath, index, paths, warnings)
+}
+
+func collectJSLockfileIdentityEvidenceFromPathsWithContext(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return
+		}
 		switch filepath.Base(path) {
 		case packageLockFileName:
 			collectPackageLockIdentityEvidenceAtPath(repoPath, path, index, warnings)

@@ -1274,6 +1274,20 @@ func TestCollectJSLockfileIdentityEvidenceWrapperUsesDiscoveredPaths(t *testing.
 	assertNoIdentityEvidence(t, index, identityKey("js-ts", "ignored-dot-cache"))
 }
 
+func TestCollectJSLockfileIdentityEvidenceStopsAfterContextCancellation(t *testing.T) {
+	repoPath := t.TempDir()
+	firstPath := filepath.Join(repoPath, "package-lock.json")
+	secondPath := filepath.Join(repoPath, "apps", "web", "package-lock.json")
+	testutil.MustWriteFile(t, firstPath, `{"dependencies":{"first":{"version":"1.0.0"}}}`)
+	testutil.MustWriteFile(t, secondPath, `{"dependencies":{"second":{"version":"2.0.0"}}}`)
+
+	index := identityIndex{}
+	collectJSLockfileIdentityEvidenceFromPathsWithContext(&catalogCancelContext{remaining: 1}, repoPath, index, []string{firstPath, secondPath}, newIdentityWarningCollector(repoPath))
+
+	assertSingleIdentityEvidence(t, index, identityKey("js-ts", "first"), "1.0.0", "package-lock.json")
+	assertNoIdentityEvidence(t, index, identityKey("js-ts", "second"))
+}
+
 func TestCollectJSIdentityEvidenceAggregatesRootAndNestedSourcesWithoutMasking(t *testing.T) {
 	repoPath := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"1.3.0"}`)
