@@ -13,21 +13,11 @@ func parseGradleDependencies(repoPath string) []dependencyDescriptor {
 
 func parseGradleDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	discover := func(path string) (gradleFileDiscoveryResult, error) {
-		return discoverBuildFiles(path, buildGradleName, buildGradleKTSName)
-	}
-	parser := func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
-		return parseGradleManifestFiles(files, catalogResolver)
-	}
-	descriptors, _, parseWarnings := collectGradleFileDescriptorsWithWarnings(repoPath, discover, parser, "build files")
+	descriptors, parseWarnings := parseBuildFilesWithPath(repoPath, func(path, content string) ([]dependencyDescriptor, []string) {
+		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
+	}, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
 	return descriptors, shared.DedupeWarnings(warnings)
-}
-
-func parseGradleManifestFiles(files []discoveredGradleFile, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
-	return parseDiscoveredBuildFilesWithPath(files, func(path, content string) ([]dependencyDescriptor, []string) {
-		return parseGradleDependencyContentWithCatalog(path, content, catalogResolver)
-	})
 }
 
 func parseGradleDependencyContent(content string) []dependencyDescriptor {
@@ -70,35 +60,26 @@ func parseBuildFiles(repoPath string, parser func(content string) []dependencyDe
 }
 
 func parseBuildFilesWithWarnings(repoPath string, parser func(content string) []dependencyDescriptor, names ...string) ([]dependencyDescriptor, []string) {
-	discovery, walkErr := discoverBuildFiles(repoPath, names...)
-	warnings := append([]string{}, discovery.Warnings...)
+	return parseBuildFilesWithPath(repoPath, func(_, content string) ([]dependencyDescriptor, []string) {
+		return parser(content), nil
+	}, names...)
+}
+
+func parseBuildFilesWithPath(repoPath string, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string) {
+	seen := make(map[string]struct{})
+	descriptors := make([]dependencyDescriptor, 0)
+	var parseWarnings []string
+	discovery, walkErr := streamBuildFiles(repoPath, func(path, content string) {
+		items, warnings := parser(path, content)
+		parseWarnings = append(parseWarnings, warnings...)
+		for _, descriptor := range detachGradleDescriptors(items) {
+			descriptors = appendManifestDescriptor(descriptors, seen, descriptor)
+		}
+	}, names...)
+	warnings := discovery.Warnings
+	warnings = append(warnings, parseWarnings...)
 	if walkErr != nil {
 		warnings = append(warnings, fmt.Sprintf("unable to scan build files: %v", walkErr))
-	}
-	return parseDiscoveredBuildFiles(discovery.Files, parser), shared.DedupeWarnings(warnings)
-}
-
-func parseDiscoveredBuildFiles(files []discoveredGradleFile, parser func(content string) []dependencyDescriptor) []dependencyDescriptor {
-	seen := make(map[string]struct{})
-	descriptors := make([]dependencyDescriptor, 0)
-	for _, file := range files {
-		for _, descriptor := range parser(file.Content) {
-			descriptors = appendManifestDescriptor(descriptors, seen, descriptor)
-		}
-	}
-	return descriptors
-}
-
-func parseDiscoveredBuildFilesWithPath(files []discoveredGradleFile, parser func(path, content string) ([]dependencyDescriptor, []string)) ([]dependencyDescriptor, []string) {
-	seen := make(map[string]struct{})
-	descriptors := make([]dependencyDescriptor, 0)
-	warnings := make([]string, 0)
-	for _, file := range files {
-		items, parseWarnings := parser(file.Path, file.Content)
-		warnings = append(warnings, parseWarnings...)
-		for _, descriptor := range items {
-			descriptors = appendManifestDescriptor(descriptors, seen, descriptor)
-		}
 	}
 	return descriptors, shared.DedupeWarnings(warnings)
 }
@@ -111,4 +92,18 @@ func appendManifestDescriptor(descriptors []dependencyDescriptor, seen map[strin
 	seen[key] = struct{}{}
 	descriptor.FromManifest = true
 	return append(descriptors, descriptor)
+}
+
+func parseGradleManifestFiles(files []discoveredGradleFile, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
+	seen := make(map[string]struct{})
+	descriptors := make([]dependencyDescriptor, 0)
+	var warnings []string
+	for _, file := range files {
+		items, parseWarnings := parseGradleDependencyContentWithCatalog(file.Path, file.Content, catalogResolver)
+		warnings = append(warnings, parseWarnings...)
+		for _, descriptor := range detachGradleDescriptors(items) {
+			descriptors = appendManifestDescriptor(descriptors, seen, descriptor)
+		}
+	}
+	return descriptors, shared.DedupeWarnings(warnings)
 }
