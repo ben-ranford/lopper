@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Streaming validation retains only the count and a bounded ecosystem set.
@@ -56,16 +57,19 @@ func (i *osvZipInventory) addEcosystem(value string) error {
 	if _, exists := i.ecosystems[ecosystem]; exists {
 		return nil
 	}
-	// Marshal uses the same JSON escaping as the manifest. The allowance covers
-	// indentation, separators, and the in-memory set/sorted-output bookkeeping.
-	encoded, err := json.Marshal(ecosystem)
-	if err != nil {
-		return fmt.Errorf("encode ecosystem metadata: %w", err)
+	// Count JSON escaping without allocating the encoded string. The allowance
+	// covers indentation, separators, and set/sorted-output bookkeeping.
+	cost := 2 + 128 // JSON string quotes and bookkeeping.
+	remaining := maxOSVZipEcosystemBytes - i.ecosystemBytes
+	for offset := 0; offset < len(ecosystem) && cost <= remaining; {
+		r, size := utf8.DecodeRuneInString(ecosystem[offset:])
+		cost += ecosystemJSONRuneBytes(r, size)
+		offset += size
 	}
-	cost := len(encoded) + 128
-	if cost > maxOSVZipEcosystemBytes-i.ecosystemBytes {
+	if cost > remaining {
 		return fmt.Errorf("zip ecosystem metadata exceeds %d-byte manifest budget", maxOSVZipEcosystemBytes)
 	}
+
 	if i.ecosystems == nil {
 		i.ecosystems = make(map[string]struct{})
 	}
@@ -95,4 +99,22 @@ func recordOSVJSONSingleAdvisory(shape osvJSONAdvisoryShape, inventory, objectIn
 		return err
 	}
 	return inventory.merge(objectInventory)
+}
+
+// Match encoding/json's HTML-safe string escaping, including invalid UTF-8.
+func ecosystemJSONRuneBytes(r rune, size int) int {
+	switch r {
+	case '"', '\\', '\b', '\f', '\n', '\r', '\t':
+		return 2
+	case '<', '>', '&', '\u2028', '\u2029':
+		return 6
+	case utf8.RuneError:
+		if size == 1 {
+			return 6
+		}
+	}
+	if r < 0x20 {
+		return 6
+	}
+	return size
 }
