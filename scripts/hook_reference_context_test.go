@@ -216,3 +216,21 @@ func TestHooksCleanupForeignWindowsPathsAreAmbiguous(t *testing.T) {
 		})
 	}
 }
+
+func TestHooksUninstallRetainsDefaultHookFileLink(t *testing.T) {
+	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
+	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
+	defaultHooks := testutil.GitOutput(t, linked, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	defaultHook := filepath.Join(defaultHooks, "pre-commit")
+	if err := os.Symlink(filepath.Join(managed, "pre-commit"), defaultHook); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("hook file links unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	runCommand(t, repo, "make", "hooks-uninstall")
+	assertHookSnapshotRetention(t, managed, hookReferenceCase{alias: true})
+	if _, err := os.Stat(defaultHook); err != nil {
+		t.Fatalf("default hook no longer resolves: %v", err)
+	}
+}
