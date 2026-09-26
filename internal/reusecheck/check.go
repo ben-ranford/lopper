@@ -128,16 +128,24 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 func dependencyStats(declaration ast.Node, packages map[string]string) bool {
 	switch decl := declaration.(type) {
 	case *ast.Field:
-		return imported(decl.Type, packages, sharedPackage, "DependencyStats")
+		return dependencyStatsType(decl.Type, packages)
 	case *ast.ValueSpec:
 		if decl.Type != nil {
-			return imported(decl.Type, packages, sharedPackage, "DependencyStats")
+			return dependencyStatsType(decl.Type, packages)
 		}
 		return len(decl.Names) == 1 && dependencyStatsFactory(decl.Values, packages)
 	case *ast.AssignStmt:
 		return len(decl.Lhs) == 1 && dependencyStatsFactory(decl.Rhs, packages)
 	}
 	return false
+}
+
+func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
+	if imported(expression, packages, sharedPackage, "DependencyStats") {
+		return true
+	}
+	pointer, ok := expression.(*ast.StarExpr)
+	return ok && imported(pointer.X, packages, sharedPackage, "DependencyStats")
 }
 
 func dependencyStatsFactory(values []ast.Expr, packages map[string]string) bool {
@@ -163,18 +171,12 @@ func (f *Finding) String() string {
 }
 
 // LegacyAdvisory scopes migration debt to exact owners, not directory-wide waivers.
-// Remove these entries when #1613/#1614 land; new function/path copies still fail.
+// Remaining entries cover pre-helper adapters; new function/path copies still fail.
 func LegacyAdvisory(f Finding, source []byte) bool {
 	sites := map[string]map[string]string{
 		"dependency-report-mapping": {
-			"internal/lang/python/reporting.go": "buildDependencyReport",
-			"internal/lang/dotnet/reporting.go": "buildDependencyReport",
-			"internal/lang/rust/reporting.go":   "buildDependencyReport",
-			"internal/lang/elixir/reporting.go": "buildRequestedDependencies",
-			"internal/lang/golang/reporting.go": "buildDependencyReport",
-			"internal/lang/dart/reporting.go":   "buildDependencyReport",
-			"internal/lang/jvm/reporting.go":    "buildDependencyReport",
-			"internal/lang/php/reporting.go":    "buildDependencyReport",
+			"internal/lang/jvm/reporting.go": "buildDependencyReport",
+			"internal/lang/php/reporting.go": "buildDependencyReport",
 		},
 		"sorted-unique-exact":     {"internal/analysis/identity_enrichment.go": "sortedUnique"},
 		"sorted-unique-trimmed":   {"internal/report/vulnerability.go": "sortedUniqueStrings"},
