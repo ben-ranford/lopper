@@ -152,7 +152,15 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	if len(values) != 1 {
 		return false
 	}
-	switch value := values[0].(type) {
+	valueExpression := values[0]
+	for {
+		parenthesized, ok := valueExpression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		valueExpression = parenthesized.X
+	}
+	switch value := valueExpression.(type) {
 	case *ast.CallExpr:
 		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
 			return true
