@@ -125,7 +125,7 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 	return true
 }
 
-func dependencyStats(declaration ast.Node, packages map[string]string) bool {
+func dependencyStats(declaration ast.Node, packages map[string]string, info *types.Info) bool {
 	switch decl := declaration.(type) {
 	case *ast.Field:
 		return dependencyStatsType(decl.Type, packages)
@@ -133,9 +133,9 @@ func dependencyStats(declaration ast.Node, packages map[string]string) bool {
 		if decl.Type != nil {
 			return dependencyStatsType(decl.Type, packages)
 		}
-		return len(decl.Names) == 1 && dependencyStatsFactory(decl.Values, packages)
+		return len(decl.Names) == 1 && dependencyStatsFactory(decl.Values, packages, info)
 	case *ast.AssignStmt:
-		return len(decl.Lhs) == 1 && dependencyStatsFactory(decl.Rhs, packages)
+		return len(decl.Lhs) == 1 && dependencyStatsFactory(decl.Rhs, packages, info)
 	}
 	return false
 }
@@ -148,13 +148,21 @@ func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
 	return ok && imported(pointer.X, packages, sharedPackage, "DependencyStats")
 }
 
-func dependencyStatsFactory(values []ast.Expr, packages map[string]string) bool {
+func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info *types.Info) bool {
 	if len(values) != 1 {
 		return false
 	}
 	switch value := values[0].(type) {
 	case *ast.CallExpr:
-		return imported(value.Fun, packages, sharedPackage, "BuildDependencyStats")
+		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
+			return true
+		}
+		builtin, ok := value.Fun.(*ast.Ident)
+		if !ok || info == nil {
+			return false
+		}
+		object, resolvesToBuiltin := info.ObjectOf(builtin).(*types.Builtin)
+		return resolvesToBuiltin && object.Name() == "new" && len(value.Args) == 1 && imported(value.Args[0], packages, sharedPackage, "DependencyStats")
 	case *ast.CompositeLit:
 		return imported(value.Type, packages, sharedPackage, "DependencyStats")
 	case *ast.UnaryExpr:
@@ -294,7 +302,7 @@ func mappedStatsObject(expression ast.Expr, field string, packages map[string]st
 		return nil
 	}
 	object := info.ObjectOf(receiver)
-	if object == nil || !dependencyStats(declarations[object], packages) {
+	if object == nil || !dependencyStats(declarations[object], packages, info) {
 		return nil
 	}
 	return object
