@@ -500,6 +500,7 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	runCI := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run CI target")
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify run target", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+		`export DUPLICATION_BASE="${MEMORY_BENCH_BASE}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci-checks`,
 	})
@@ -553,6 +554,7 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling-checks", "Run CI target with rolling defaults")
 	assertWorkflowStepRunContainsAll(t, runCI, "run rolling CI target", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+		`export DUPLICATION_BASE="${MEMORY_BENCH_BASE}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"`,
 	})
