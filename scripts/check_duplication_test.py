@@ -259,6 +259,23 @@ class DuplicationRunnerTest(unittest.TestCase):
             self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
             self.assertEqual(runner.main(command), 2)
 
+    def test_proposal_only_does_not_require_active_baseline(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("added.go", "package fixture\n")
+        self.commit()
+        fn = {"path": "original.go", "name": "Original", "shape": "a", "start": 1, "end": 2}
+        other = dict(fn, name="Copy", path="added.go")
+
+        def detector(*args, records=None):
+            records.append((("original.go", 1, 2), ("added.go", 1, 2)))
+            return set()
+
+        proposal_path = "proposal.json"
+        command = ["--version", "pinned", "--base", "target", "--propose-baseline", proposal_path]
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "scan", side_effect=detector), mock.patch.object(runner.policy, "function_index", return_value=[fn, other]), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.main(command), 0)
+        self.assertTrue((self.repo / proposal_path).is_file())
+
     def test_occurrence_settings_must_match_protected_configuration(self):
         class Settings:
             baseline = ".github/duplication-baseline.json"

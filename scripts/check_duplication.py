@@ -177,7 +177,8 @@ def scan(repo, go_command, version, threshold, *, records=None):
 
 
 def occurrence_gate(repo, merge_base, args):
-    validate_occurrence_settings(repo, merge_base, args)
+    if args.baseline:
+        validate_occurrence_settings(repo, merge_base, args)
     records = []
     scan(repo, args.go, args.version, args.threshold, records=records)
     functions = policy.function_index(repo, args.go)
