@@ -66,16 +66,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsagePercentFo
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 
-	dep := report.DependencyReport{
-		Language:          "dotnet",
-		Name:              dependency,
-		UsedExportsCount:  stats.UsedCount,
-		TotalExportsCount: stats.TotalCount,
-		UsedPercent:       stats.UsedPercent,
-		TopUsedSymbols:    stats.TopSymbols,
-		UsedImports:       stats.UsedImports,
-		UnusedImports:     stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "dotnet", stats)
 
 	ambiguousCount := scan.AmbiguousByDependency[dependency]
 	undeclaredCount := scan.UndeclaredByDependency[dependency]
