@@ -322,7 +322,7 @@ func vulnerabilityVersionRangeKey(versionRange VulnerabilityVersionRange) string
 }
 
 func appendOSVEvaluationWarnings(existing, warnings []string) []string {
-	warnings = sortedUniqueStrings(warnings)
+	warnings = SortedUniqueTrimmedStrings(warnings)
 	if len(warnings) == 0 {
 		return existing
 	}

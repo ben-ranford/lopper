@@ -327,9 +327,9 @@ func TestLookupBuilderBranches(t *testing.T) {
 		t.Fatalf("expected ambiguity metadata after conflicting lookup values")
 	}
 
-	values := uniqueSortedStrings([]string{"", " dep-b ", "dep-a", "dep-a"})
+	values := sortedUniqueTrimmedStringsNonNil([]string{"", " dep-b ", "dep-a", "dep-a"})
 	if strings.Join(values, ",") != "dep-a,dep-b" {
-		t.Fatalf("unexpected uniqueSortedStrings output: %#v", values)
+		t.Fatalf("unexpected sortedUniqueTrimmedStringsNonNil output: %#v", values)
 	}
 	if prefixes, aliases := groupLookupStrategy("", ""); len(prefixes) != 0 || len(aliases) != 0 {
 		t.Fatalf("expected empty lookups for empty group")

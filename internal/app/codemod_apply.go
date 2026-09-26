@@ -262,7 +262,7 @@ func buildCodemodSkipResults(skips []report.CodemodSkip) []report.CodemodApplyRe
 
 	results := make([]report.CodemodApplyResult, 0, len(files))
 	for _, file := range files {
-		reasons := uniqueSortedStrings(grouped[file])
+		reasons := report.SortedUniqueTrimmedStrings(grouped[file])
 		results = append(results, report.CodemodApplyResult{
 			File:       file,
 			Status:     codemodApplyStatusSkipped,
@@ -543,27 +543,6 @@ func sortCodemodApplyResults(results []report.CodemodApplyResult) {
 		}
 		return results[i].PatchCount < results[j].PatchCount
 	})
-}
-
-func uniqueSortedStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(values))
-	unique := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		unique = append(unique, trimmed)
-	}
-	sort.Strings(unique)
-	return unique
 }
 
 func sanitizeArtifactName(value string) string {

@@ -147,7 +147,7 @@ require 'local_gem'
 	if err != nil {
 		t.Fatalf(rubyScanRepoErrFmt, err)
 	}
-	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Contains(got, "rack") {
+	if got := shared.SortedDependencyUnion(scan.DeclaredDependencies); !slices.Contains(got, "rack") {
 		t.Fatalf("expected lockfile dependency preservation, got %#v", got)
 	}
 
@@ -187,7 +187,7 @@ end
 	if err != nil {
 		t.Fatalf(rubyScanRepoErrFmt, err)
 	}
-	if got := sortedDependencyUnion(scan.DeclaredDependencies); !slices.Equal(got, []string{"httparty", "nokogiri", "rack", "rspec"}) {
+	if got := shared.SortedDependencyUnion(scan.DeclaredDependencies); !slices.Equal(got, []string{"httparty", "nokogiri", "rack", "rspec"}) {
 		t.Fatalf("unexpected declared dependency set: %#v", got)
 	}
 

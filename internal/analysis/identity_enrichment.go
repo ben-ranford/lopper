@@ -136,7 +136,7 @@ func annotateDependencyIdentities(repoPath string, reportData *report.Report) {
 		evidence := identityEvidenceForDependency(index, *dep)
 		dep.Identity = buildDependencyIdentity(*dep, evidence)
 	}
-	reportData.Warnings = sortedUnique(append(reportData.Warnings, warnings...))
+	reportData.Warnings = uniqueSorted(append(reportData.Warnings, warnings...))
 }
 
 func hasDependencyLanguage(dependencies []report.DependencyReport, language string) bool {
@@ -401,7 +401,7 @@ func buildDependencyIdentity(dep report.DependencyReport, evidence []identityEvi
 		PURLStatus:    purlStatus,
 		Source:        state.sourceOrDefault(),
 		Confidence:    state.confidence,
-		Evidence:      sortedUnique(state.evidenceLabels),
+		Evidence:      uniqueSorted(state.evidenceLabels),
 		Conflicts:     state.conflicts,
 	}
 }
@@ -2284,7 +2284,7 @@ func (c *identityWarningCollector) addSectionParseFailure(path, section string) 
 }
 
 func (c *identityWarningCollector) list() []string {
-	return sortedUnique(c.warnings)
+	return uniqueSorted(c.warnings)
 }
 
 func (c *identityWarningCollector) append(warning string) {
@@ -2338,21 +2338,6 @@ func identityParseLabel(path string) string {
 	default:
 		return "invalid manifest"
 	}
-}
-
-func sortedUnique(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	items := append([]string{}, values...)
-	sort.Strings(items)
-	unique := items[:1]
-	for i := 1; i < len(items); i++ {
-		if items[i] != items[i-1] {
-			unique = append(unique, items[i])
-		}
-	}
-	return unique
 }
 
 func firstNonBlankString(values ...string) string {

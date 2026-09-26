@@ -84,7 +84,7 @@ func TestPowerShellAdapterAnalyseNoFilesAndNoDeclarationsWarnings(t *testing.T) 
 }
 
 func TestPowerShellReportHelpersCoverNilAndEmptyBranches(t *testing.T) {
-	if got := sortedDependencyUnion(); len(got) != 0 {
+	if got := shared.SortedDependencyUnion(); len(got) != 0 {
 		t.Fatalf("expected empty dependency union for empty maps, got %#v", got)
 	}
 	if got := buildPowerShellDependencyProvenance(powerShellDependencySource{}); got != nil {
