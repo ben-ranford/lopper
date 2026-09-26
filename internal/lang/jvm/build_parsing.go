@@ -440,7 +440,26 @@ func replacePomPropertyTokensWithinBounds(value string, properties map[string]st
 		}
 		matches = append(matches, value[start:end])
 	}
-	expansion := pomPropertyExpansion{properties: properties, order: matches, tokensRemaining: tokensRemaining}
+	stages := make([]pomTokenStage, len(matches))
+	for index, token := range matches {
+		stages[index] = pomTokenStage{token: token, index: index}
+	}
+	sort.Slice(stages, func(left, right int) bool {
+		if stages[left].token == stages[right].token {
+			return stages[left].index < stages[right].index
+		}
+		return stages[left].token < stages[right].token
+	})
+	positions := make(map[string]pomStageRange, len(stages))
+	for index, stage := range stages {
+		position := positions[stage.token]
+		if position.count == 0 {
+			position.start = index
+		}
+		position.count++
+		positions[stage.token] = position
+	}
+	expansion := pomPropertyExpansion{properties: properties, order: matches, stages: stages, positions: positions, tokensRemaining: tokensRemaining}
 	if !expansion.appendValue(value, 0) {
 		return "", false, true, 0
 	}
@@ -468,10 +487,22 @@ func nextPomPropertyToken(value string, search int) (int, int, int, bool) {
 type pomPropertyExpansion struct {
 	properties      map[string]string
 	order           []string
+	stages          []pomTokenStage
+	positions       map[string]pomStageRange
 	updated         strings.Builder
 	tokensRemaining int
 	tokensUsed      int
 	unresolved      bool
+}
+
+type pomTokenStage struct {
+	token string
+	index int
+}
+
+type pomStageRange struct {
+	start int
+	count int
 }
 
 func (e *pomPropertyExpansion) appendLiteral(value string) bool {
@@ -492,16 +523,27 @@ func (e *pomPropertyExpansion) appendValue(value string, first int) bool {
 			return false
 		}
 		token := value[start:end]
-		stage := first
-		for stage < len(e.order) && e.order[stage] != token {
-			stage++
-		}
+		stage := e.nextStage(token, first)
 		if !e.appendToken(token, stage) {
 			return false
 		}
 		search = next
 	}
 	return true
+}
+
+func (e *pomPropertyExpansion) nextStage(token string, first int) int {
+	position, ok := e.positions[token]
+	if !ok {
+		return len(e.order)
+	}
+	start := position.start
+	end := start + position.count
+	index := sort.Search(position.count, func(offset int) bool { return e.stages[start+offset].index >= first })
+	if start+index == end {
+		return len(e.order)
+	}
+	return e.stages[start+index].index
 }
 
 func (e *pomPropertyExpansion) appendToken(token string, stage int) bool {
