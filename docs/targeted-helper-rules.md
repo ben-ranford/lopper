@@ -37,7 +37,7 @@ source digests in `legacyDigests`, while #1613 and
 by the scanner, without migrating those adapters here. New path/function copies and edited legacy source
 are blocking unless separately reviewed. `-legacy-advisory=false` makes legacy findings blocking too. Remove
 the migration entries as the owners adopt the helpers. The frozen catalog covers
-11 sites; this base currently emits 10 advisories (the Go reporter does not match).
+5 sites; this base currently emits 5 advisories (the Go reporter does not match).
 #1612 must remove these allowances or record reviewed exceptions before enforcing
 the completed #1613/#1614 rollout. Tests and testdata are
 excluded from production enforcement; test duplication remains advisory.
