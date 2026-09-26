@@ -15,17 +15,7 @@ func buildRequestedDependencies(req language.Request, scan scanResult) ([]report
 		if !stats.HasImports {
 			warnings = []string{fmt.Sprintf("no imports found for dependency %q", dep)}
 		}
-		return report.DependencyReport{
-			Language:             "elixir",
-			Name:                 dep,
-			UsedExportsCount:     stats.UsedCount,
-			TotalExportsCount:    stats.TotalCount,
-			UsedPercent:          stats.UsedPercent,
-			TopUsedSymbols:       stats.TopSymbols,
-			UsedImports:          stats.UsedImports,
-			UnusedImports:        stats.UnusedImports,
-			EstimatedUnusedBytes: 0,
-		}, warnings
+		return shared.BuildDependencyReportFromStats(dep, "elixir", stats), warnings
 	}
 	topBuilder := func(topN int, _ scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 		set := make(map[string]struct{})

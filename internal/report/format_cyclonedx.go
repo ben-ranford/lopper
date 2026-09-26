@@ -16,7 +16,7 @@ import (
 const (
 	cycloneDXBOMFormat   = "CycloneDX"
 	cycloneDXSpecVersion = "1.6"
-	cycloneDXSchemaURL   = "http://cyclonedx.org/schema/bom-1.6.schema.json"
+	cycloneDXSchemaURL   = "https://cyclonedx.org/schema/bom-1.6.schema.json"
 )
 
 type cycloneDXBOM struct {

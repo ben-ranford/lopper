@@ -108,7 +108,36 @@ function isVerifiedRenovateCommit(commit, pull) {
       committer?.email === 'noreply@github.com');
 }
 
-function commitIdentityFailure(commit, pull) {
+function isQueueAppAccount(identity, queueAppSlug) {
+  return Boolean(queueAppSlug) && identity?.login === `${queueAppSlug}[bot]` &&
+    identity?.type === 'Bot';
+}
+
+function isQueueBranchUpdateCommit(commit, pull, queueAppSlug) {
+  const baseRepo = pull?.base?.repo;
+  const appLogin = `${queueAppSlug}[bot]`;
+  const rawAuthor = commit?.commit?.author;
+  const rawCommitter = commit?.commit?.committer;
+  const appEmailSuffix = `+${appLogin}@users.noreply.github.com`;
+  const appEmailPrefix = typeof rawAuthor?.email === 'string' &&
+    rawAuthor.email.endsWith(appEmailSuffix)
+    ? rawAuthor.email.slice(0, -appEmailSuffix.length)
+    : '';
+  return Boolean(
+    queueAppSlug && baseRepo?.owner?.login && baseRepo?.name &&
+    pull?.head?.repo?.full_name === `${baseRepo.owner.login}/${baseRepo.name}` &&
+    Array.isArray(commit?.parents) && commit.parents.length >= 2 &&
+    isQueueAppAccount(commit.author, queueAppSlug) &&
+    /^\d+$/.test(appEmailPrefix) && rawAuthor?.name === appLogin &&
+    commit?.committer?.login === 'web-flow' && commit?.committer?.type === 'User' &&
+    commit?.committer?.id === 19864447 && rawCommitter?.name === 'GitHub' &&
+    rawCommitter?.email === 'noreply@github.com' &&
+    commit?.commit?.verification?.verified === true &&
+    commit?.commit?.verification?.reason === 'valid',
+  );
+}
+
+function commitIdentityFailure(commit, pull, queueAppSlug) {
   const author = commit?.commit?.author || {};
   const committer = commit?.commit?.committer || {};
   const authorName = String(author.name || '').trim();
@@ -121,6 +150,9 @@ function commitIdentityFailure(commit, pull) {
     return `${sha}: author and committer metadata must both be present`;
   }
   if (isVerifiedRenovateCommit(commit, pull)) {
+    return '';
+  }
+  if (isQueueBranchUpdateCommit(commit, pull, queueAppSlug)) {
     return '';
   }
   if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
@@ -153,14 +185,16 @@ function queueIdentityFailureMessage(failures) {
   return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity or a verified Renovate identity on a same-repository Renovate pull request. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
 }
 
-function assertCanonicalCommitIdentity(comparison, pull) {
+function assertCanonicalCommitIdentity(comparison, pull, queueAppSlug) {
   const commits = comparison?.commits || [];
   if (comparison?.total_commits > commits.length) {
     throw queuePauseError(
       `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
     );
   }
-  const failures = commits.map((commit) => commitIdentityFailure(commit, pull)).filter(Boolean);
+  const failures = commits.map((commit) =>
+    commitIdentityFailure(commit, pull, queueAppSlug),
+  ).filter(Boolean);
   if (failures.length > 0) {
     throw queuePauseError(queueIdentityFailureMessage(failures));
   }
@@ -222,6 +256,43 @@ function assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid)
   if (state.baseRefOid !== expectedBaseRefOid) {
     throw new Error(
       `Pull request base ${expectedBaseRefName} moved from ${shortSHA(expectedBaseRefOid)} to ${shortSHA(state.baseRefOid)} while advancing the queue.`,
+    );
+  }
+}
+
+async function revalidateBranchUpdate({
+  github,
+  owner,
+  repo,
+  pullNumber,
+  defaultBranch,
+  defaultBranchSHA,
+  queueLabel,
+  expectedHeadSHA,
+}) {
+  const [{ data: pull }, { data: branch }] = await Promise.all([
+    github.rest.pulls.get({ owner, repo, pull_number: pullNumber }),
+    github.rest.repos.getBranch({ owner, repo, branch: defaultBranch }),
+  ]);
+  if (pull.state !== 'open' || pull.draft || !hasLabel(pull, queueLabel)) {
+    throw new Error(`Pull request #${pullNumber} is no longer eligible for the ${queueLabel} queue.`);
+  }
+  if (pull.base?.ref !== defaultBranch) {
+    throw new Error(
+      `Pull request base changed from ${defaultBranch} to ${pull.base?.ref || 'unknown'} before updating its branch.`,
+    );
+  }
+  if (pull.head?.repo?.full_name !== `${owner}/${repo}`) {
+    throw new Error(`Pull request #${pullNumber} no longer has a same-repository branch to update.`);
+  }
+  if (pull.head?.sha !== expectedHeadSHA) {
+    throw new Error(
+      `Pull request head moved from ${shortSHA(expectedHeadSHA)} to ${shortSHA(pull.head?.sha)} before updating its branch.`,
+    );
+  }
+  if (branch.commit.sha !== defaultBranchSHA) {
+    throw new Error(
+      `Default branch ${defaultBranch} moved from ${shortSHA(defaultBranchSHA)} to ${shortSHA(branch.commit.sha)} before updating the pull request branch.`,
     );
   }
 }
@@ -321,13 +392,19 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
-async function verifyRenovateProvenance(github, pull, commits) {
-  const renovateCommits = commits.filter((commit) => isVerifiedRenovateCommit(commit, pull));
-  if (renovateCommits.length === 0) {
+async function verifyBranchActivityProvenance(
+  github,
+  pull,
+  commits,
+  isTrustedActor,
+  missingRefMessage,
+  missingActivityMessage,
+) {
+  if (commits.length === 0) {
     return;
   }
   if (!pull.head.ref) {
-    throw queuePauseError('Queue identity audit failed: missing Renovate branch reference.');
+    throw queuePauseError(missingRefMessage);
   }
   const ref = `refs/heads/${pull.head.ref}`;
   const { data: activities } = await github.request('GET /repos/{owner}/{repo}/activity', {
@@ -338,20 +415,45 @@ async function verifyRenovateProvenance(github, pull, commits) {
     direction: 'desc',
   });
   const trustedHeads = new Set((Array.isArray(activities) ? activities : [])
-    .filter((activity) => activity?.ref === ref && isRenovateAccount(activity?.actor) &&
+    .filter((activity) => activity?.ref === ref && isTrustedActor(activity?.actor) &&
       ['push', 'force_push', 'branch_creation'].includes(activity?.activity_type))
     .map((activity) => activity.after));
-  if (renovateCommits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
-    throw queuePauseError(
-      'Queue identity audit failed: cannot prove Renovate pushed every bot commit from the latest 100 branch activities. Ask Renovate to rebase this pull request.',
-    );
+  if (commits.some((commit) => !commit.sha || !trustedHeads.has(commit.sha))) {
+    throw queuePauseError(missingActivityMessage);
   }
+}
+
+async function verifyRenovateProvenance(github, pull, commits) {
+  const renovateCommits = commits.filter((commit) => isVerifiedRenovateCommit(commit, pull));
+  await verifyBranchActivityProvenance(
+    github,
+    pull,
+    renovateCommits,
+    isRenovateAccount,
+    'Queue identity audit failed: missing Renovate branch reference.',
+    'Queue identity audit failed: cannot prove Renovate pushed every bot commit from the latest 100 branch activities. Ask Renovate to rebase this pull request.',
+  );
+}
+
+async function verifyQueueBranchUpdateProvenance(github, pull, commits, queueAppSlug) {
+  const updateCommits = commits.filter((commit) =>
+    isQueueBranchUpdateCommit(commit, pull, queueAppSlug),
+  );
+  await verifyBranchActivityProvenance(
+    github,
+    pull,
+    updateCommits,
+    (actor) => isQueueAppAccount(actor, queueAppSlug),
+    'Queue identity audit failed: missing pull request branch reference for queue update provenance.',
+    'Queue identity audit failed: cannot prove GitHub recorded the queue App pushing every branch-update commit from the latest 100 branch activities.',
+  );
 }
 
 async function verifyHeadForQueue(
   github,
   pull,
   defaultBranchSHA,
+  queueAppSlug,
 ) {
   const comparisonRequest = {
     owner: pull.base.repo.owner.login,
@@ -382,8 +484,9 @@ async function verifyHeadForQueue(
     }
   }
   const comparison = { ...firstComparison, commits };
-  assertCanonicalCommitIdentity(comparison, pull);
+  assertCanonicalCommitIdentity(comparison, pull, queueAppSlug);
   await verifyRenovateProvenance(github, pull, commits);
+  await verifyQueueBranchUpdateProvenance(github, pull, commits, queueAppSlug);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };
   }
@@ -580,6 +683,7 @@ async function advanceQueuedPull({
   candidate,
   defaultBranch,
   defaultBranchSHA,
+  queueLabel,
   queueAppSlug,
   hasFollower,
 }) {
@@ -596,7 +700,7 @@ async function advanceQueuedPull({
   }
   let update;
   try {
-    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA);
+    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA, queueAppSlug);
   } catch (error) {
     const pauseMessage = error?.queuePauseMessage ||
       `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
@@ -613,20 +717,52 @@ async function advanceQueuedPull({
     return true;
   }
   if (update.needsCurrentBase) {
-    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    if (candidate.head.repo?.full_name !== `${owner}/${repo}`) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: this pull request branch is behind \`${defaultBranch}\` and belongs to a fork, so the queue cannot update it. Update the branch in its source repository and the queue will retry the identity audit.`,
+      );
+      return true;
+    }
+    try {
+      await revalidateBranchUpdate({
+        github,
+        owner,
+        repo,
+        pullNumber: candidate.number,
+        defaultBranch,
+        defaultBranchSHA,
+        queueLabel,
+        expectedHeadSHA: update.headSHA,
+      });
+      await github.rest.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: candidate.number,
+        expected_head_sha: update.headSHA,
+      });
+    } catch (error) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused while updating this pull request branch with current \`${defaultBranch}\`.\n\n\`${safeError(error)}\``,
+      );
+      return true;
+    }
     const retrySummary = hasFollower
-      ? 'The queue will continue with the next queued pull request. This pull request will be retried after a clean identity audit.'
-      : 'This pull request will be retried after a clean identity audit.';
-    const refreshInstruction = isRenovatePull(candidate)
-      ? 'Ask Renovate to rebase this pull request so its verified commits contain the current base.'
-      : 'Push a history that contains the current base while preserving canonical author and committer identity.';
-    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. ${refreshInstruction} ${retrySummary}`;
+      ? 'The queue will continue with the next queued pull request. This pull request will be retried after GitHub updates its head and the queue reruns the identity audit.'
+      : 'The queue will retry after GitHub updates the head and reruns the identity audit.';
     await syncStatusComment(
       github,
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\nQueue paused: ${message}`,
+      `## Queue status\n\nGitHub is updating this pull request branch with current \`${defaultBranch}\`. The queue will wait for the updated head to pass its identity audit before enabling auto-merge. ${retrySummary}`,
     );
     return true;
   }
@@ -700,6 +836,7 @@ async function runController({
       candidate,
       defaultBranch,
       defaultBranchSHA: branch.commit.sha,
+      queueLabel,
       queueAppSlug,
       hasFollower: index + 1 < queued.length,
     });

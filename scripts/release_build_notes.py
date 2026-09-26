@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from vscode_release_notes import INVALID_STABLE_TAG, STABLE_TAG, entry_version, git, release_entries
+from vscode_release_notes import INVALID_STABLE_TAG, STABLE_TAG, entry_version, git_file, release_entries
 
 
 CHANGELOG_PATH = Path("CHANGELOG.md")
@@ -89,7 +89,7 @@ def generate(repo: Path, previous_tag: str) -> None:
     changelog = changelog_path.read_text(encoding="utf-8")
     start, end = latest_release_bounds(changelog, manifest_version(repo))
     current = go_requirement((repo / "go.mod").read_text(encoding="utf-8"))
-    previous = go_requirement(git(repo, "show", f"{previous_tag}:go.mod"))
+    previous = go_requirement(git_file(repo, previous_tag, Path("go.mod")))
     block = refresh_current_block(changelog[start:end], build_note(previous, current))
     write_changelog(repo, changelog[:start] + block + changelog[end:])
 
