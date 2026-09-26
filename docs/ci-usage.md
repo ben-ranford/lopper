@@ -408,3 +408,24 @@ Install toolchain support with:
 ```bash
 make toolchain-install
 ```
+
+## Renovate review policy
+
+`renovate.json` keeps review-sensitive settings local. The Renovate contract tests
+reject `extends` at every level because inherited presets can add update blocks
+or package rules that the local JSON checks cannot inspect. The hosted app is
+not pinned to the version of a local CLI, so resolving a preset with a pinned
+CLI would not prove the configuration used by the next hosted run.
+
+The mutable `config:recommended` preset is intentionally removed. Existing local
+settings remain: dependency labels, fixture exclusions, human review, Go module
+tidying, Go toolchain grouping, VSCE grouping, and custom version managers. This
+stops inheriting the preset's dashboard enablement, semantic commit rules,
+monorepo and recommended groups, replacement and workaround rules, additional
+changelog links, and age/confidence column selection. Useful inherited behavior
+can return as explicit reviewed settings; do not restore the preset to obtain it.
+This contract covers repository configuration, not unobservable hosted-app or
+organization settings.
+
+See Renovate's [recommended preset](https://docs.renovatebot.com/presets-config/#configrecommended)
+and [hosted app version policy](https://docs.renovatebot.com/mend-hosted/hosted-apps-config/#renovate-version).
