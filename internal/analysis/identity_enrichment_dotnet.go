@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -85,15 +86,18 @@ type nugetPackageEvidence struct {
 	unknown  []identityEvidence
 }
 
-func collectDotNetIdentityEvidenceFromSnapshot(repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
-	projects := collectNuGetProjectModels(repoPath, snapshot.dotnetProjectFiles, warnings)
-	centrals := collectNuGetCentralModels(repoPath, snapshot.dotnetCentralFiles, warnings)
-	locks := collectNuGetLockModels(repoPath, snapshot.dotnetLockFiles, warnings)
+func collectDotNetIdentityEvidenceFromSnapshot(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
+	projects := collectNuGetProjectModels(ctx, repoPath, snapshot.dotnetProjectFiles, warnings)
+	centrals := collectNuGetCentralModels(ctx, repoPath, snapshot.dotnetCentralFiles, warnings)
+	locks := collectNuGetLockModels(ctx, repoPath, snapshot.dotnetLockFiles, warnings)
 	centralByDir := nugetCentralModelsByDir(centrals)
 	projectCounts := countNuGetProjectsByDir(snapshot.dotnetProjectFiles)
 	packages := map[string]*nugetPackageEvidence{}
 
 	for _, projectPath := range sortedNuGetModelPaths(projects) {
+		if ctx.Err() != nil {
+			return
+		}
 		project := projects[projectPath]
 		central := nugetCentralModel(nil)
 		if project.centralAllowed {
@@ -105,9 +109,12 @@ func collectDotNetIdentityEvidenceFromSnapshot(repoPath string, index identityIn
 	addCollectedNuGetEvidence(index, packages)
 }
 
-func collectNuGetProjectModels(repoPath string, paths []string, warnings *identityWarningCollector) map[string]nugetProjectFile {
+func collectNuGetProjectModels(ctx context.Context, repoPath string, paths []string, warnings *identityWarningCollector) map[string]nugetProjectFile {
 	models := make(map[string]nugetProjectFile, len(paths))
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return models
+		}
 		document, ok := readNuGetMSBuildDocument(repoPath, path, "PackageReference", warnings)
 		if !ok {
 			continue
@@ -124,9 +131,12 @@ func collectNuGetProjectModels(repoPath string, paths []string, warnings *identi
 	return models
 }
 
-func collectNuGetCentralModels(repoPath string, paths []string, warnings *identityWarningCollector) map[string]*nugetCentralFile {
+func collectNuGetCentralModels(ctx context.Context, repoPath string, paths []string, warnings *identityWarningCollector) map[string]*nugetCentralFile {
 	models := make(map[string]*nugetCentralFile, len(paths))
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return models
+		}
 		cleanPath := filepath.Clean(path)
 		models[cleanPath] = nil
 		document, ok := readNuGetMSBuildDocument(repoPath, path, "PackageVersion", warnings)
@@ -146,9 +156,12 @@ func collectNuGetCentralModels(repoPath string, paths []string, warnings *identi
 	return models
 }
 
-func collectNuGetLockModels(repoPath string, paths []string, warnings *identityWarningCollector) map[string]nugetLockModel {
+func collectNuGetLockModels(ctx context.Context, repoPath string, paths []string, warnings *identityWarningCollector) map[string]nugetLockModel {
 	models := make(map[string]nugetLockModel, len(paths))
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return models
+		}
 		cleanPath := filepath.Clean(path)
 		models[cleanPath] = nil
 		data, err := safeio.ReadFileUnder(repoPath, path)

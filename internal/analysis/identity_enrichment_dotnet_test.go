@@ -341,7 +341,7 @@ func TestNuGetIdentityWarnsOnMalformedAndUnreadableFiles(t *testing.T) {
 		dotnetCentralFiles: []string{missing + ".props"},
 		dotnetLockFiles:    []string{missing + ".json"},
 	}
-	collectDotNetIdentityEvidenceFromSnapshot(repoPath, identityIndex{}, snapshot, warnings)
+	collectDotNetIdentityEvidenceFromSnapshot(context.Background(), repoPath, identityIndex{}, snapshot, warnings)
 	if len(warnings.list()) != 3 {
 		t.Fatalf("expected three read warnings, got %#v", warnings.list())
 	}

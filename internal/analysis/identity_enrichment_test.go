@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"encoding/xml"
 	"os"
 	"path/filepath"
@@ -1434,10 +1435,10 @@ func TestCollectGradleIdentityEvidenceFromPathsScopesLocksToOwningProjectAndIgno
 	testutil.MustWriteFile(t, otherProjectBuild, `dependencies { implementation "com.other:other-lib:3.0.0" }`)
 
 	indexA := identityIndex{}
-	collectGradleIdentityEvidenceFromPaths(repoPath, indexA, []string{otherProjectBuild, subprojectBuild, rootBuild}, []string{subprojectLockOnly, subprojectLock, rootLock}, nil)
+	collectGradleIdentityEvidenceFromPaths(context.Background(), repoPath, indexA, []string{otherProjectBuild, subprojectBuild, rootBuild}, []string{subprojectLockOnly, subprojectLock, rootLock}, nil)
 
 	indexB := identityIndex{}
-	collectGradleIdentityEvidenceFromPaths(repoPath, indexB, []string{rootBuild, subprojectBuild, otherProjectBuild}, []string{rootLock, subprojectLock, subprojectLockOnly}, nil)
+	collectGradleIdentityEvidenceFromPaths(context.Background(), repoPath, indexB, []string{rootBuild, subprojectBuild, otherProjectBuild}, []string{rootLock, subprojectLock, subprojectLockOnly}, nil)
 
 	if !reflect.DeepEqual(indexA, indexB) {
 		t.Fatalf("expected Gradle evidence to ignore lexical input order, got %#v vs %#v", indexA, indexB)

@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"regexp"
@@ -75,11 +76,17 @@ type identityManifestPin struct {
 	source  string
 }
 
-func collectComposerIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectComposerIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	filesByDirectory := groupComposerIdentityFiles(paths)
 	for _, directory := range sortedIdentityMapKeys(filesByDirectory) {
+		if ctx.Err() != nil {
+			return
+		}
 		files := filesByDirectory[directory]
 		declared, pins := readComposerIdentityDeclarations(repoPath, files.manifestPath, warnings)
+		if ctx.Err() != nil {
+			return
+		}
 		resolved := collectComposerLockIdentityEvidence(repoPath, files.lockPath, declared, index, warnings)
 		for _, pin := range pins {
 			if _, ok := resolved[pin.name]; !ok {
@@ -220,15 +227,24 @@ func addComposerIdentityEvidence(index identityIndex, name, version, status, sou
 	})
 }
 
-func collectPubIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectPubIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	filesByDirectory := groupPubIdentityFiles(paths)
 	for _, directory := range sortedIdentityMapKeys(filesByDirectory) {
+		if ctx.Err() != nil {
+			return
+		}
 		files := filesByDirectory[directory]
 		declared := make(map[string]struct{})
 		pins := make([]identityManifestPin, 0)
 		for _, path := range files.manifestPaths {
+			if ctx.Err() != nil {
+				return
+			}
 			manifestPins := readPubIdentityDeclarations(repoPath, path, declared, warnings)
 			pins = append(pins, manifestPins...)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		resolved, nonHosted := collectPubLockIdentityEvidence(repoPath, files.lockPath, declared, index, warnings)
 		for _, pin := range pins {
