@@ -109,6 +109,58 @@ func TestHooksInstallRollbackFailureRetainsUsableHook(t *testing.T) {
 	}
 }
 
+func TestHooksInstallPostWriteInterruptRetainsUsableHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	shimDir := t.TempDir()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" = core.hooksPath ]; then
+	%s "$@" || exit "$?"
+	: >.git/config.lock
+	kill -TERM "$PPID"
+	exit 0
+fi
+exec %s "$@"
+`, shellQuote(realGit), shellQuote(realGit))
+	shimPath := filepath.Join(shimDir, "git")
+	writeFile(t, shimPath, shim)
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil {
+		t.Fatalf("installer succeeded after activation interrupt: %s", output)
+	}
+	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != filepath.Dir(fixture.managedHook) {
+		t.Fatalf("hooksPath = %q, want activated managed directory", got)
+	}
+	if err := os.Remove(fixture.configPath + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	runCommand(t, fixture.repoDir, fixture.managedHook)
+}
+
+func TestHooksInstallRollbackPreservesEmptyLocalPath(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", "")
+	globalConfig := filepath.Join(t.TempDir(), "global-config")
+	writeFile(t, globalConfig, "[core]\n\thooksPath = /global/hooks\n")
+	if err := os.Symlink(t.TempDir(), filepath.Dir(fixture.managedHook)); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "GIT_CONFIG_GLOBAL="+globalConfig)
+	if err == nil || !strings.Contains(string(output), "Unsafe managed hook directory") {
+		t.Fatalf("unsafe directory failure = %v\n%s", err, output)
+	}
+	got, err := hookCommand(fixture.repoDir, "git", "config", "--local", "--get", "core.hooksPath")
+	if err != nil || got != "\n" {
+		t.Fatalf("empty local hooksPath was not restored: value=%q error=%v", got, err)
+	}
+}
+
 func TestHooksInstallActivationFailureRemovesNewManagedHook(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	if err := os.WriteFile(fixture.configPath+".lock", nil, 0o600); err != nil {
