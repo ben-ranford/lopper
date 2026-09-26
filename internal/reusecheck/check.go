@@ -174,7 +174,15 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	case *ast.CompositeLit:
 		return imported(value.Type, packages, sharedPackage, "DependencyStats")
 	case *ast.UnaryExpr:
-		literal, ok := value.X.(*ast.CompositeLit)
+		operand := value.X
+		for {
+			parenthesized, ok := operand.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			operand = parenthesized.X
+		}
+		literal, ok := operand.(*ast.CompositeLit)
 		return value.Op == token.AND && ok && imported(literal.Type, packages, sharedPackage, "DependencyStats")
 	default:
 		return false
