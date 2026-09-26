@@ -175,3 +175,7 @@ Please include reproduction steps and environment details for bugs.
 - `internal/report`: report model, formatting, baseline math
 - `internal/ui`: TUI summary/detail
 - `internal/runtime`: runtime trace parsing and annotation
+
+When reusing repository fixtures or Git setup in tests, follow the
+[test fixture helper contracts](docs/test-fixture-helpers.md) and preserve each
+regression's permission, output, and failure boundaries.

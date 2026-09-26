@@ -14,6 +14,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/prmetadata"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestRunRejectsInvalidRegressionProofs(t *testing.T) {
@@ -1320,18 +1321,18 @@ func newRegressionProofRepo(t *testing.T, scenario regressionProofScenario) regr
 	t.Helper()
 
 	repoPath := t.TempDir()
-	runRepoCommand(t, repoPath, "git", "init")
-	runRepoCommand(t, repoPath, "git", "config", "user.name", "Test User")
-	runRepoCommand(t, repoPath, "git", "config", "user.email", "test@example.com")
+	testutil.RunGit(t, repoPath, "init")
+	testutil.RunGit(t, repoPath, "config", "user.name", "Test User")
+	testutil.RunGit(t, repoPath, "config", "user.email", "test@example.com")
 
 	writeFiles(t, repoPath, scenario.baseFiles)
-	runRepoCommand(t, repoPath, "git", "add", ".")
-	runRepoCommand(t, repoPath, "git", "commit", "-m", "base")
-	baseSHA := strings.TrimSpace(runRepoCommand(t, repoPath, "git", "rev-parse", "HEAD"))
+	testutil.RunGit(t, repoPath, "add", ".")
+	testutil.RunGit(t, repoPath, "commit", "-m", "base")
+	baseSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 
 	writeFiles(t, repoPath, scenario.headFiles)
-	runRepoCommand(t, repoPath, "git", "add", ".")
-	runRepoCommand(t, repoPath, "git", "commit", "-m", "head")
+	testutil.RunGit(t, repoPath, "add", ".")
+	testutil.RunGit(t, repoPath, "commit", "-m", "head")
 
 	return regressionProofRepo{path: repoPath, baseSHA: baseSHA}
 }
@@ -1341,40 +1342,7 @@ func writeFiles(t *testing.T, repoPath string, files map[string]string) {
 
 	for rel, content := range files {
 		path := filepath.Join(repoPath, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", rel, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", rel, err)
-		}
-	}
-}
-
-func runRepoCommand(t *testing.T, dir string, name string, args ...string) string {
-	t.Helper()
-
-	switch name {
-	case "git":
-		gitPath, err := gitexec.ResolveBinaryPath()
-		if err != nil {
-			t.Fatalf("resolve git: %v", err)
-		}
-		commandArgs := append([]string{"-C", dir}, args...)
-		command := exec.Command(gitPath, commandArgs...)
-		command.Env = gitexec.SanitizedEnv()
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
-		}
-		return string(output)
-	default:
-		command := exec.Command(name, args...)
-		command.Dir = dir
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
-		}
-		return string(output)
+		testutil.MustWriteFileWithModes(t, path, content, 0o644, 0o755)
 	}
 }
 
