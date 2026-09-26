@@ -19,10 +19,12 @@ type cachePointer struct {
 }
 
 type cachedPayload struct {
-	Report                              report.Report              `json:"report"`
-	UsageIncompleteReport               bool                       `json:"usageIncompleteReport,omitempty"`
-	UsageIncompleteDependencies         []int                      `json:"usageIncompleteDependencies,omitempty"`
-	SuppressedUnusedImportsByDependency map[int][]report.ImportUse `json:"suppressedUnusedImportsByDependency,omitempty"`
+	PythonManifests                     []report.PythonManifestDocument `json:"pythonManifests,omitempty"`
+	PythonManifestCatalog               bool                            `json:"pythonManifestCatalog,omitempty"`
+	Report                              report.Report                   `json:"report"`
+	UsageIncompleteReport               bool                            `json:"usageIncompleteReport,omitempty"`
+	UsageIncompleteDependencies         []int                           `json:"usageIncompleteDependencies,omitempty"`
+	SuppressedUnusedImportsByDependency map[int][]report.ImportUse      `json:"suppressedUnusedImportsByDependency,omitempty"`
 }
 
 func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool, error) {
@@ -66,6 +68,8 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: invalidationReason})
 		return report.Report{}, false, nil
 	}
+	payload.Report.PythonManifests = payload.PythonManifests
+	payload.Report.PythonManifestCatalog = payload.PythonManifestCatalog
 	payload.Report.UsageIncomplete = payload.Report.UsageIncomplete || payload.UsageIncompleteReport
 	c.metadata.Hits++
 	return payload.Report, true, nil
@@ -180,6 +184,8 @@ func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel s
 func newCachedPayload(data report.Report) cachedPayload {
 	payload := cachedPayload{
 		Report:                data,
+		PythonManifests:       data.PythonManifests,
+		PythonManifestCatalog: data.PythonManifestCatalog,
 		UsageIncompleteReport: data.UsageIncomplete,
 	}
 	for index := range data.Dependencies {

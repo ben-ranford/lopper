@@ -61,6 +61,12 @@ func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir f
 // WalkRepoFilesWithStatus reports whether a file beyond maxFiles stopped the walk.
 // Visitor-requested stops and walks that finish exactly at the limit are not truncations.
 func WalkRepoFilesWithStatus(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) (bool, error) {
+	return WalkRepoFilesWithErrors(ctx, repoPath, maxFiles, skipDir, visit, nil)
+}
+
+// WalkRepoFilesWithErrors permits callers to recover from traversal errors.
+// A nil handler preserves fail-fast traversal; visitor errors always stop the walk.
+func WalkRepoFilesWithErrors(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(string, fs.DirEntry) error, onError func(string, error) error) (bool, error) {
 	if skipDir == nil {
 		skipDir = ShouldSkipCommonDir
 	}
@@ -70,6 +76,7 @@ func WalkRepoFilesWithStatus(ctx context.Context, repoPath string, maxFiles int,
 		maxFiles: maxFiles,
 		skipDir:  skipDir,
 		visit:    visit,
+		onError:  onError,
 	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return walker.handle(ctx, path, entry, walkErr)
@@ -95,16 +102,20 @@ type repoWalker struct {
 	maxFiles  int
 	skipDir   func(string) bool
 	visit     func(path string, entry fs.DirEntry) error
+	onError   func(string, error) error
 	visited   int
 	truncated bool
 }
 
 func (w *repoWalker) handle(ctx context.Context, path string, entry fs.DirEntry, walkErr error) error {
-	if walkErr != nil {
-		return walkErr
-	}
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if walkErr != nil {
+		if w.onError != nil {
+			return w.onError(path, walkErr)
+		}
+		return walkErr
 	}
 	if entry.IsDir() {
 		if filepath.Clean(path) != w.rootPath && w.skipDir(entry.Name()) {

@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -45,14 +46,20 @@ type cargoManifestModel struct {
 
 type cargoLockDependencyIndex map[string][]cargoDependencyDeclaration
 
-func collectCargoIdentityEvidenceFromSnapshot(repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
-	manifests := collectCargoManifestModels(repoPath, snapshot.cargoManifestFiles, warnings)
+func collectCargoIdentityEvidenceFromSnapshot(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
+	manifests := collectCargoManifestModels(ctx, repoPath, snapshot.cargoManifestFiles, warnings)
 	lockPaths := make(map[string]struct{}, len(snapshot.cargoLockFiles))
 	for _, lockPath := range snapshot.cargoLockFiles {
+		if ctx.Err() != nil {
+			return
+		}
 		lockPaths[filepath.Clean(lockPath)] = struct{}{}
 	}
 	directByLock := make(map[string]cargoLockDependencyIndex, len(lockPaths))
 	for _, manifest := range manifests {
+		if ctx.Err() != nil {
+			return
+		}
 		owner := cargoOwningManifest(repoPath, manifest, manifests)
 		if owner == nil {
 			continue
@@ -70,13 +77,19 @@ func collectCargoIdentityEvidenceFromSnapshot(repoPath string, index identityInd
 		}
 	}
 	for _, lockPath := range snapshot.cargoLockFiles {
+		if ctx.Err() != nil {
+			return
+		}
 		collectCargoLockIdentityEvidence(repoPath, lockPath, index, directByLock[filepath.Clean(lockPath)], warnings)
 	}
 }
 
-func collectCargoManifestModels(repoPath string, paths []string, warnings *identityWarningCollector) map[string]*cargoManifestModel {
+func collectCargoManifestModels(ctx context.Context, repoPath string, paths []string, warnings *identityWarningCollector) map[string]*cargoManifestModel {
 	manifests := make(map[string]*cargoManifestModel, len(paths))
 	for _, manifestPath := range paths {
+		if ctx.Err() != nil {
+			return manifests
+		}
 		model := collectCargoManifestModel(repoPath, manifestPath, warnings)
 		if model != nil {
 			manifests[filepath.Clean(manifestPath)] = model

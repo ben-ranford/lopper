@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -90,22 +91,25 @@ type identityTopLevelTermSplitter struct {
 	start  int
 }
 
-func discoverRubyIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	paths := discoverAdapterIdentityManifests(repoPath, warnings, rubylang.ShouldSkipDirectory, func(name string) bool {
+func discoverRubyIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	paths := discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, rubylang.ShouldSkipDirectory, func(name string) bool {
 		return name == rubyIdentityLockName
 	})
 	snapshot.rubyFiles = append(snapshot.rubyFiles, paths...)
 }
 
-func discoverElixirIdentityManifests(repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
-	paths := discoverAdapterIdentityManifests(repoPath, warnings, elixirlang.ShouldSkipDirectory, func(name string) bool {
+func discoverElixirIdentityManifestsWithContext(ctx context.Context, repoPath string, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	paths := discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, elixirlang.ShouldSkipDirectory, func(name string) bool {
 		return name == elixirIdentityManifestName || name == elixirIdentityLockName
 	})
 	snapshot.elixirFiles = append(snapshot.elixirFiles, paths...)
 }
 
-func collectRubyIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectRubyIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return
+		}
 		data, err := safeio.ReadFileUnder(repoPath, path)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
@@ -317,16 +321,22 @@ func uniqueRubyIdentityLockedSpecs(specs []rubyIdentityLockedSpec) []rubyIdentit
 	return result
 }
 
-func collectElixirIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectElixirIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	domains := groupElixirIdentityDomains(paths)
 	for _, directory := range sortedIdentityMapKeys(domains) {
+		if ctx.Err() != nil {
+			return
+		}
 		domain := domains[directory]
 		if domain.lockPath == "" {
 			continue
 		}
 		manifest := readElixirIdentityManifest(repoPath, domain.manifestPath, warnings)
 		if manifest.umbrella {
-			addElixirUmbrellaDeclarations(repoPath, directory, manifest.appsPath, domains, manifest.declared, warnings)
+			addElixirUmbrellaDeclarations(ctx, repoPath, directory, manifest.appsPath, domains, manifest.declared, warnings)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		locked, ok := readElixirIdentityLock(repoPath, domain.lockPath, warnings)
 		if ok {
@@ -354,12 +364,15 @@ func readElixirIdentityManifest(repoPath, path string, warnings *identityWarning
 	return manifest
 }
 
-func addElixirUmbrellaDeclarations(repoPath, directory, appsPath string, domains map[string]elixirIdentityDomain, declared map[string]struct{}, warnings *identityWarningCollector) {
+func addElixirUmbrellaDeclarations(ctx context.Context, repoPath, directory, appsPath string, domains map[string]elixirIdentityDomain, declared map[string]struct{}, warnings *identityWarningCollector) {
 	appsRoot := filepath.Clean(filepath.Join(directory, appsPath))
 	if !shared.IsPathWithin(repoPath, appsRoot) {
 		return
 	}
 	for _, childDirectory := range sortedIdentityMapKeys(domains) {
+		if ctx.Err() != nil {
+			return
+		}
 		child := domains[childDirectory]
 		if child.manifestPath == "" || child.lockPath != "" || !isImmediateIdentityChild(appsRoot, childDirectory) {
 			continue

@@ -28,7 +28,7 @@ func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, erro
 	if err := pipeline.execute(ctx); err != nil {
 		return report.Report{}, err
 	}
-	return pipeline.finalReport()
+	return pipeline.finalReportWithContext(ctx)
 }
 
 func (s *Service) prepareAnalysis(req Request) (string, error) {

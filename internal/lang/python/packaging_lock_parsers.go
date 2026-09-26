@@ -9,6 +9,10 @@ import (
 )
 
 func collectLockFallbacks(repoPath, dir string, files map[string]struct{}) ([]lockFallback, []string, error) {
+	return collectLockFallbacksWithCatalog(repoPath, dir, files, nil)
+}
+
+func collectLockFallbacksWithCatalog(repoPath, dir string, files map[string]struct{}, catalog *packagingCatalog) ([]lockFallback, []string, error) {
 	fallbacks := make([]lockFallback, 0, 3)
 	warnings := make([]string, 0)
 
@@ -23,7 +27,11 @@ func collectLockFallbacks(repoPath, dir string, files map[string]struct{}) ([]lo
 		if !hasFile(files, source.name) {
 			continue
 		}
-		lockDependencies, lockWarnings, err := source.parser(repoPath, filepath.Join(dir, source.name))
+		parser := source.parser
+		if catalog != nil {
+			parser = catalog.parse
+		}
+		lockDependencies, lockWarnings, err := parser(repoPath, filepath.Join(dir, source.name))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -40,6 +48,10 @@ func parsePackageLockDependencies(repoPath, path string) (map[string]struct{}, [
 		return make(map[string]struct{}), warnings, err
 	}
 
+	return parsePackageLockDependenciesDocument(repoPath, path, document, warnings)
+}
+
+func parsePackageLockDependenciesDocument(repoPath, path string, document map[string]any, warnings []string) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	pathLabel := relativePackagingPath(repoPath, path)
 	packages, ok := document["package"]
@@ -95,10 +107,14 @@ func parsePipfileLockDependencies(repoPath, path string) (map[string]struct{}, [
 		return make(map[string]struct{}), []string{fmt.Sprintf("%s: skipped %s parsing after JSON decode error: %v", relativePackagingPath(repoPath, path), pythonPipfileLockName, err)}, nil
 	}
 
+	return parsePipfileLockDependenciesDocument(repoPath, path, document, nil)
+}
+
+func parsePipfileLockDependenciesDocument(repoPath, path string, document map[string]any, warnings []string) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	for _, section := range []string{"default", "develop"} {
 		addDependencyKeys(dependencies, nestedMap(document, section), relativePackagingPath(repoPath, path)+" ["+section+"]")
 	}
 
-	return dependencies, nil, nil
+	return dependencies, warnings, nil
 }
