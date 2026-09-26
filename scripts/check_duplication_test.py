@@ -24,6 +24,7 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.git("init", "-q", "-b", "target")
         self.git("config", "user.name", "Ben Ranford")
         self.git("config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+        self.write("Makefile", "DUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 55\n")
         self.write("original.go", "package fixture\n")
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
@@ -211,7 +212,8 @@ class DuplicationRunnerTest(unittest.TestCase):
 
     def test_occurrence_gate_uses_target_policy_and_rejects_pr_expansion(self):
         empty = {"version": 1, "families": [], "exceptions": []}
-        self.write("baseline.json", json.dumps(empty))
+        baseline_path = ".github/duplication-baseline.json"
+        self.write(baseline_path, json.dumps(empty))
         self.commit()
         self.git("checkout", "-qb", "feature")
         self.write("added.go", "package fixture\n")
@@ -221,11 +223,11 @@ class DuplicationRunnerTest(unittest.TestCase):
         def detector(*args, records=None):
             records.append((("original.go", 1, 2), ("added.go", 1, 2)))
             return set()
-        command = ["--version", "pinned", "--base", "target", "--baseline", "baseline.json"]
+        command = ["--version", "pinned", "--base", "target", "--baseline", baseline_path]
         with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "scan", side_effect=detector), mock.patch.object(runner.policy, "function_index", return_value=[fn, other]), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(runner.main(command), 1)
             proposal = runner.policy.propose_baseline(runner.policy.clone_pairs([(("original.go", 1, 2), ("added.go", 1, 2))], [fn, other]))
-            self.write("baseline.json", json.dumps(proposal))
+            self.write(baseline_path, json.dumps(proposal))
             self.assertEqual(runner.main(command), 2)
 
     def test_initial_baseline_must_match_full_scan_when_target_lacks_policy(self):
@@ -239,9 +241,10 @@ class DuplicationRunnerTest(unittest.TestCase):
 
         pairs = runner.policy.clone_pairs([(("original.go", 1, 2), ("added.go", 1, 2))], [fn, other])
         baseline = runner.policy.propose_baseline(pairs)
-        self.write("baseline.json", json.dumps(baseline))
+        baseline_path = ".github/duplication-baseline.json"
+        self.write(baseline_path, json.dumps(baseline))
         self.commit()
-        command = ["--version", "pinned", "--base", "target", "--baseline", "baseline.json"]
+        command = ["--version", "pinned", "--base", "target", "--baseline", baseline_path]
         patches = (
             mock.patch.object(runner.Path, "cwd", return_value=self.repo),
             mock.patch.object(runner, "scan", side_effect=detector),
@@ -253,8 +256,40 @@ class DuplicationRunnerTest(unittest.TestCase):
         with patches[0], patches[1], patches[2], patches[3], patches[4], contextlib.redirect_stderr(stderr):
             result = runner.main(command)
             self.assertEqual(result, 0, stderr.getvalue())
-            self.write("baseline.json", json.dumps({"version": 1, "families": [], "exceptions": []}))
+            self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
             self.assertEqual(runner.main(command), 2)
+
+    def test_occurrence_settings_must_match_protected_configuration(self):
+        class Settings:
+            baseline = ".github/duplication-baseline.json"
+            version = "pinned"
+            threshold = 55
+
+        runner.validate_occurrence_settings(self.repo, self.base, Settings())
+        cases = (
+            ("baseline", "attacker-baseline.json", "protected baseline path"),
+            ("version", "changed-detector", "version must match"),
+            ("threshold", 10000, "threshold must match"),
+        )
+        for attribute, value, message in cases:
+            with self.subTest(attribute=attribute):
+                changed = Settings()
+                setattr(changed, attribute, value)
+                with self.assertRaisesRegex(runner.AnalysisError, message):
+                    runner.validate_occurrence_settings(self.repo, self.base, changed)
+
+    def test_cli_rejects_pr_selected_baseline_and_weaker_detector(self):
+        cases = (
+            (["--baseline", "attacker-baseline.json"], "protected baseline path"),
+            (["--threshold", "10000", "--baseline", runner.CANONICAL_BASELINE], "threshold must match"),
+            (["--version", "changed-detector", "--baseline", runner.CANONICAL_BASELINE], "version must match"),
+        )
+        for options, message in cases:
+            command = ["--base", "target", "--version", "pinned", *options]
+            stderr = io.StringIO()
+            with self.subTest(options=options), mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stderr(stderr):
+                self.assertEqual(runner.main(command), 2)
+                self.assertIn(message, stderr.getvalue())
 
     def test_policy_paths_cannot_escape_the_repository(self):
         for value in ("../outside.json", str(self.repo.parent / "outside.json")):

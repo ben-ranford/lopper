@@ -19,6 +19,9 @@ class AnalysisError(Exception):
     """The requested comparison did not complete."""
 
 
+CANONICAL_BASELINE = ".github/duplication-baseline.json"
+
+
 def checked(command, repo, *, environment=None):
     result = subprocess.run(command, cwd=repo, env=environment, capture_output=True, text=True)
     if result.returncode:
@@ -174,6 +177,7 @@ def scan(repo, go_command, version, threshold, *, records=None):
 
 
 def occurrence_gate(repo, merge_base, args):
+    validate_occurrence_settings(repo, merge_base, args)
     records = []
     scan(repo, args.go, args.version, args.threshold, records=records)
     functions = policy.function_index(repo, args.go)
@@ -201,6 +205,30 @@ def occurrence_gate(repo, merge_base, args):
         report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
     print(policy.render(report))
     return int(bool(report['stale_exceptions']) or any(finding['status'] == 'violation' for finding in report['findings']))
+
+
+def protected_make_variable(repo, reference, name):
+    makefile = checked(["git", "show", f"{reference}:Makefile"], repo).stdout
+    pattern = re.compile(rf"^[ \t]*{re.escape(name)}[ \t]*(?:\?=|:=|=)[ \t]*([^\s#]+)[ \t]*(?:#.*)?$", re.MULTILINE)
+    values = pattern.findall(makefile)
+    if len(values) != 1:
+        raise AnalysisError(f"Protected Makefile must define {name} exactly once")
+    return values[0]
+
+
+def validate_occurrence_settings(repo, merge_base, args):
+    if args.baseline != CANONICAL_BASELINE:
+        raise AnalysisError(f"Occurrence enforcement must use the protected baseline path {CANONICAL_BASELINE!r}")
+    protected_version = protected_make_variable(repo, merge_base, "DUPL_VERSION")
+    protected_threshold = protected_make_variable(repo, merge_base, "DUPLICATION_TOKEN_THRESHOLD")
+    try:
+        protected_threshold = int(protected_threshold)
+    except ValueError as error:
+        raise AnalysisError("Protected duplication token threshold must be an integer") from error
+    if args.version != protected_version:
+        raise AnalysisError("Detector version must match the protected target Makefile")
+    if args.threshold != protected_threshold:
+        raise AnalysisError("Detector threshold must match the protected target Makefile")
 
 
 def repository_path(repo, value, label):
