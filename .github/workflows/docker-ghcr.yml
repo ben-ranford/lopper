@@ -5,14 +5,28 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  verify-publication-source:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-source-ci.yml
+    with:
+      source_sha: ${{ github.sha }}
+      build_channel: release
+
   build-and-push:
+    needs: verify-publication-source
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8

@@ -16,10 +16,30 @@ on:
 
 jobs:
   verify-source-ci:
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      - name: Checkout trusted workflow revision
+        if: ${{ inputs.build_channel == 'release' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Preserve trusted Sonar verifier
+        if: ${{ inputs.build_channel == 'release' }}
+        run: cp scripts/verify-release-sonar.sh "${RUNNER_TEMP}/verify-release-sonar.sh"
+
+      - name: Verify exact source Sonar analysis
+        if: ${{ inputs.build_channel == 'release' }}
+        env:
+          PATH: /usr/bin:/bin
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: bash "${RUNNER_TEMP}/verify-release-sonar.sh"
+
       - name: Checkout exact release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
