@@ -8,6 +8,18 @@ case "$script" in /*) ;; *) script=$PWD/$script ;; esac
 . "${script%/*}/hook-config-preflight.sh"
 trap cleanup_preflight_git EXIT
 
+file_identity() {
+ # Both stat variants follow links. Reject errors or unexpected output instead
+ # of treating an uninspectable file as distinct from the managed snapshot.
+ identity=$(stat -L -c '%d:%i' "$1" 2>/dev/null) ||
+  identity=$(stat -L -f '%d:%i' "$1" 2>/dev/null) || return 255
+ case "$identity" in
+  ''|*[!0-9:]*|:*|*:|*:*:*) return 255 ;;
+  *:*) printf '%s\n' "$identity" ;;
+  *) return 255 ;;
+ esac
+}
+
 check_reference() {
  candidate=$2
  # Drive-letter/UNC paths can only be classified on a Windows Git host.
@@ -27,9 +39,15 @@ check_reference() {
  resolved=${resolved%x}; resolved=${resolved%?}
  managed=$(cd "$1" && pwd -P && printf x) || return 255
  managed=${managed%x}; managed=${managed%?}
- [ ! "$resolved" -ef "$managed" ] || return 255
+ reference_identity=$(file_identity "$resolved") || return 255
+ managed_identity=$(file_identity "$managed") || return 255
+ [ "$reference_identity" != "$managed_identity" ] || return 255
  # A custom hook directory may still execute the snapshot through a file link.
- [ ! "$resolved/pre-commit" -ef "$managed/pre-commit" ] || return 255
+ if [ -e "$resolved/pre-commit" ] || [ -L "$resolved/pre-commit" ]; then
+  reference_identity=$(file_identity "$resolved/pre-commit") || return 255
+  managed_identity=$(file_identity "$managed/pre-commit") || return 255
+  [ "$reference_identity" != "$managed_identity" ] || return 255
+ fi
 }
 
 hook_working_directory() {
@@ -54,10 +72,23 @@ check_worktree() {
   # backpointer before trusting configuration read from that directory.
   owner=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || return 255
   owner=${owner%x}; owner=${owner%?}
-  [ "$owner" -ef "${managed_dir%/lopper-hooks}" ] || return 255
+  owner_identity=$(file_identity "$owner") || return 255
+  common_identity=$(file_identity "${managed_dir%/lopper-hooks}") || return 255
+  [ "$owner_identity" = "$common_identity" ] || return 255
   status=0
   run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$reference_file" || status=$?
-  case "$status" in 0) ;; 1) return 0 ;; *) return 255 ;; esac
+  case "$status" in
+   0) ;;
+   1)
+    # An unset override still executes hooks from Git's default directory.
+    # Resolve it in this worktree's context before checking file identity.
+    default_hooks=$(run_preflight_git git rev-parse --path-format=absolute --git-path hooks && printf x) || return 255
+    default_hooks=${default_hooks%x}; default_hooks=${default_hooks%?}
+    check_reference "$managed_dir" "$default_hooks"
+    return $?
+    ;;
+   *) return 255 ;;
+  esac
   # Relative hook paths use Git's effective worktree root, which core.worktree
   # can redirect away from the directory recorded in the worktree inventory.
   hook_root=$(hook_working_directory && printf x) || return 255
