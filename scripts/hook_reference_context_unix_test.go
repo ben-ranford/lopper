@@ -45,6 +45,34 @@ func TestHooksCleanupBoundsForeignWorktreeConfig(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallKeepsAlternateCommonDirectoryContext(t *testing.T) {
+	repo := newHookFixture(t)
+	common := filepath.Join(t.TempDir(), "alternate common")
+	if err := os.CopyFS(common, os.DirFS(filepath.Join(repo, ".git"))); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(common, "lopper-hooks")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := hookCommandWithEnv(repo, []string{"GIT_COMMON_DIR=" + common}, "git", "config", "--local", "core.hooksPath", managed); err != nil {
+		t.Fatalf("configure alternate managed hook path: %v\n%s", err, output)
+	}
+	cmd := exec.Command("make", "hooks-uninstall")
+	cmd.Dir = repo
+	cmd.Env = append(withoutGitEnv(), "GIT_COMMON_DIR="+common)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("uninstall from alternate common directory: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); !os.IsNotExist(err) {
+		t.Fatalf("alternate managed snapshot remains after uninstall: %v\n%s", err, output)
+	}
+}
+
 // Exercise Windows spelling normalization on POSIX using a Windows host marker
 // and local stand-ins for the drive/UNC mounts. Native mount behavior belongs to
 // Git's shell; this checks the resolver's separator and alias handling.
