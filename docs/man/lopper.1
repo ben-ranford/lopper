@@ -4,7 +4,7 @@ lopper \- local-first CLI/TUI for dependency surface analysis
 .SH SYNOPSIS
 .nf
 lopper [--version] [tui]
-lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell]
+lopper tui [--repo PATH] [--config PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell]
 lopper analyse --top N [options]
 lopper analyse <dependency> [options]
 lopper dashboard [--repos PATH1,PATH2 | --config PATH]
@@ -23,7 +23,7 @@ This man page is generated from the built-in command usage output.
 Usage and options:
 .nf
   lopper [--version] [tui]
-  lopper tui [--repo PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY]
+  lopper tui [--repo PATH] [--config PATH] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--filter TEXT] [--sort name|waste] [--page-size N] [--snapshot PATH] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY]
   lopper analyse <dependency> [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--disable-feature NAME] [--suggest-only | (--apply-codemod --apply-codemod-confirm [--allow-dirty])]
   lopper analyse --top N [--repo PATH] [--scope-mode repo|package|changed-packages] [--format table|csv|json|sarif|pr-comment|cyclonedx-json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--cache=true|false] [--cache-path PATH] [--cache-readonly] [--runtime-profile node-import|node-require|browser-import|browser-require] [--baseline PATH] [--baseline-store DIR] [--baseline-key KEY] [--save-baseline] [--baseline-label LABEL] [--runtime-trace PATH] [--runtime-test-command CMD] [--advisory-source PATH] [--config PATH] [--include GLOBS] [--exclude GLOBS] [--lockfile-drift-policy off|warn|fail] [--license-deny SPDXS] [--license-fail-on-deny] [--license-provenance-registry] [--notify-on always|breach|regression|improvement] [--notify-slack URL] [--notify-teams URL] [--enable-feature NAME] [--disable-feature NAME] [--fail-on-increase PERCENT]
   lopper dashboard --repos PATH1,PATH2 [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
@@ -84,7 +84,7 @@ Options:
   --apply-codemod            Apply deterministic patch previews for safe remediation suggestions
   --apply-codemod-confirm    Required confirmation flag for --apply-codemod
   --allow-dirty              Allow --apply-codemod to run in a dirty git worktree
-  --config PATH              Config file path (default: repo .lopper.yml/.lopper.yaml/lopper.json)
+  --config PATH              Config file path for analyse, pr-review, and tui (relative to repo; default: .lopper.yml/.lopper.yaml/lopper.json)
   --enable-feature NAME      Feature flag name or code to enable (repeatable, comma-separated)
   --disable-feature NAME     Feature flag name or code to disable (repeatable, comma-separated)
   --output PATH, -o PATH     Write command output to file instead of stdout
