@@ -139,7 +139,7 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 	index, warnings := collectIdentityEvidenceWithContext(ctx, repoPath, languages)
 	if reportData.PythonManifestCatalog {
 		collector := newIdentityWarningCollector(repoPath)
-		collectPythonCatalogEvidence(repoPath, index, reportData.PythonManifests, collector)
+		collectPythonCatalogEvidence(ctx, repoPath, index, reportData.PythonManifests, collector)
 		warnings = append(warnings, collector.list()...)
 	}
 	for i := range reportData.Dependencies {
