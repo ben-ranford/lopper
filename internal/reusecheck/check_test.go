@@ -163,8 +163,11 @@ func TestStatsDeclarationForms(t *testing.T) {
 		{"measured := s.DependencyStats{}", 1},
 		{"var measured = &s.DependencyStats{}", 1},
 		{"measured := &s.DependencyStats{}", 1},
+		{"var measured = new(s.DependencyStats)", 1},
+		{"measured := new(s.DependencyStats)", 1},
 		{"var measured = unknown", 0},
 		{"measured := &unknown", 0},
+		{"measured := new(s.OtherStats)", 0},
 		{"var measured = s.BuildDependencyStats(name,nil,nil), 1", 0},
 		{"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other", 0},
 		{"var measured = s.OtherFactory(name,nil,nil)", 0},
@@ -178,8 +181,17 @@ func TestStatsDeclarationForms(t *testing.T) {
 			t.Fatalf("%s findings=%+v err=%v", tc.declaration, findings, err)
 		}
 	}
-	if dependencyStats(nil, nil) {
+	if dependencyStats(nil, nil, nil) {
 		t.Fatal("missing declaration considered proven")
+	}
+}
+
+func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
+	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("shadowed new findings=%+v err=%v", findings, err)
 	}
 }
 
