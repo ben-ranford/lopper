@@ -35,6 +35,7 @@ DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?=
+DUPLICATION_BASELINE ?= .github/duplication-baseline.json
 SUPPRESSION_BASE ?= origin/main
 BENCH_COUNT ?= 3
 BENCH_TIME ?= 200ms
@@ -114,7 +115,7 @@ feature-flag-check:
 	$(GO_CMD) run ./tools/featureflag validate
 
 dup-check:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) python3 -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)"
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) python3 -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)" --baseline "$(DUPLICATION_BASELINE)"
 
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh

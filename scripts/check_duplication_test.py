@@ -228,6 +228,44 @@ class DuplicationRunnerTest(unittest.TestCase):
             self.write("baseline.json", json.dumps(proposal))
             self.assertEqual(runner.main(command), 2)
 
+    def test_initial_baseline_must_match_full_scan_when_target_lacks_policy(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("added.go", "package fixture\n")
+        fn = {"path": "original.go", "name": "Original", "shape": "a", "start": 1, "end": 2}
+        other = dict(fn, name="Copy", path="added.go")
+        def detector(*args, records=None):
+            records.append((("original.go", 1, 2), ("added.go", 1, 2)))
+            return set()
+
+        pairs = runner.policy.clone_pairs([(("original.go", 1, 2), ("added.go", 1, 2))], [fn, other])
+        baseline = runner.policy.propose_baseline(pairs)
+        self.write("baseline.json", json.dumps(baseline))
+        self.commit()
+        command = ["--version", "pinned", "--base", "target", "--baseline", "baseline.json"]
+        patches = (
+            mock.patch.object(runner.Path, "cwd", return_value=self.repo),
+            mock.patch.object(runner, "scan", side_effect=detector),
+            mock.patch.object(runner.policy, "function_index", return_value=[fn, other]),
+            mock.patch.dict(os.environ, self.environment, clear=True),
+            contextlib.redirect_stdout(io.StringIO()),
+        )
+        stderr = io.StringIO()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], contextlib.redirect_stderr(stderr):
+            result = runner.main(command)
+            self.assertEqual(result, 0, stderr.getvalue())
+            self.write("baseline.json", json.dumps({"version": 1, "families": [], "exceptions": []}))
+            self.assertEqual(runner.main(command), 2)
+
+    def test_policy_paths_cannot_escape_the_repository(self):
+        for value in ("../outside.json", str(self.repo.parent / "outside.json")):
+            with self.subTest(value=value), self.assertRaisesRegex(runner.AnalysisError, "within the repository"):
+                runner.repository_path(self.repo, value, "Baseline")
+        outside = Path(self.temp.name).parent / f"{Path(self.temp.name).name}-outside"
+        link = self.repo / "outside-link"
+        link.symlink_to(outside)
+        with self.assertRaisesRegex(runner.AnalysisError, "within the repository"):
+            runner.repository_path(self.repo, "outside-link/escape.json", "Report")
+
     def test_invalid_threshold_cannot_disable_gate(self):
         for option, value in (("--max", "nan"), ("--max", "inf"), ("--max", "-1"), ("--threshold", "0")):
             with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):

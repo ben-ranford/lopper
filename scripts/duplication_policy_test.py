@@ -48,8 +48,9 @@ class OccurrencePolicyTests(unittest.TestCase):
 
     def test_reviewed_policy_allows_only_reductions(self):
         policy.validate_reduction(self.baseline, policy.propose_baseline({}))
+        expanded = policy.propose_baseline(pairs(self.a, self.b, self.c))
         with self.assertRaisesRegex(policy.PolicyError, 'Baseline expansion'):
-            policy.validate_reduction(self.baseline, policy.propose_baseline(pairs(self.a, self.b, self.c)))
+            policy.validate_reduction(self.baseline, expanded)
         proposed = copy.deepcopy(self.baseline)
         proposed['exceptions'] = [{'finding': 'new'}]
         with self.assertRaisesRegex(policy.PolicyError, 'Exception expansion'):
@@ -74,8 +75,9 @@ class OccurrencePolicyTests(unittest.TestCase):
         self.baseline['exceptions'] = [exception]
         self.assertEqual(policy.evaluate(current, self.baseline, datetime.date(2026, 1, 1))['findings'][0]['status'], 'exception')
         self.assertEqual(policy.evaluate({}, self.baseline)['stale_exceptions'], [key])
+        expired = datetime.date(2031, 1, 1)
         with self.assertRaisesRegex(policy.PolicyError, 'Expired'):
-            policy.evaluate(current, self.baseline, datetime.date(2031, 1, 1))
+            policy.evaluate(current, self.baseline, expired)
         for field in exception:
             invalid = copy.deepcopy(self.baseline)
             invalid['exceptions'][0][field] = ''

@@ -179,22 +179,44 @@ def occurrence_gate(repo, merge_base, args):
     functions = policy.function_index(repo, args.go)
     pairs = policy.clone_pairs(records, functions)
     if args.propose_baseline:
-        Path(args.propose_baseline).write_text(json.dumps(policy.propose_baseline(pairs), indent=2) + "\n")
+        output_path = repository_path(repo, args.propose_baseline, "Baseline proposal")
+        output_path.write_text(json.dumps(policy.propose_baseline(pairs), indent=2) + "\n")
         print("Baseline proposal written; it does not authorize new clones")
     if not args.baseline:
         return 0
-    baseline_path = Path(args.baseline)
-    if baseline_path.is_absolute() or ".." in baseline_path.parts:
-        raise AnalysisError("Baseline must be a repository-relative policy path")
+    baseline_file = repository_path(repo, args.baseline, "Baseline")
+    baseline_path = baseline_file.relative_to(repo.resolve()).as_posix()
+    proposed = json.loads(baseline_file.read_text())
     # The protected target, never the contributor's new policy, grants exceptions.
-    approved = json.loads(checked(["git", "show", f"{merge_base}:{baseline_path.as_posix()}"], repo).stdout)
-    proposed = json.loads((repo / baseline_path).read_text())
-    policy.validate_reduction(approved, proposed)
+    target_entry = checked(["git", "ls-tree", "-z", merge_base, "--", baseline_path], repo).stdout
+    if target_entry:
+        approved = json.loads(checked(["git", "show", f"{merge_base}:{baseline_path}"], repo).stdout)
+        policy.validate_reduction(approved, proposed)
+    else:
+        policy.validate_initial_baseline(pairs, proposed)
+        print("Initial baseline seed exactly matches the reviewed full-scan findings")
     report = policy.evaluate(pairs, proposed)
     if args.report:
-        Path(args.report).write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+        report_path = repository_path(repo, args.report, "Report")
+        report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
     print(policy.render(report))
     return int(bool(report['stale_exceptions']) or any(finding['status'] == 'violation' for finding in report['findings']))
+
+
+def repository_path(repo, value, label):
+    candidate = Path(value)
+    root = repo.resolve()
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise AnalysisError(f"{label} path must stay within the repository")
+    try:
+        resolved = (root / candidate).resolve()
+    except (OSError, RuntimeError) as error:
+        raise AnalysisError(f"{label} path could not be safely resolved") from error
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise AnalysisError(f"{label} path must stay within the repository") from error
+    return resolved
 
 
 def main(argv=None):
