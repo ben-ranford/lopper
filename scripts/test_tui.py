@@ -7,6 +7,7 @@ import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -145,6 +146,20 @@ def smoke(binary):
         terminal.expect("Page: 1/2")
         terminal.expect("Commands:")
         terminal.resize(30, 100)
+        for key, expected in [
+            (b"\x1b[C", "Page: 2/2"), (b"\x1bOC", "Page: 2/2"),
+            (b"\x1b[D", "Page: 1/2"), (b"\x1bOD", "Page: 1/2"),
+        ]:
+            terminal.send(key)
+            terminal.expect(expected)
+            terminal.expect(">")
+        terminal.send(b"\x1b[999~")
+        terminal.send(b"\x1b")
+        time.sleep(0.1)  # Let the decoder finish an incomplete escape sequence.
+        terminal.send(b"pag 2\x1b[D\x1b[De\r")
+        terminal.expect("Page: 2/2")
+        terminal.expect(">")
+
         for command, expected in [
             ("next", "Page: 2/2"), ("next", "Page: 2/2"),
             ("prev", "Page: 1/2"), ("prev", "Page: 1/2"),
@@ -156,8 +171,24 @@ def smoke(binary):
         terminal.command("open alpha")
         terminal.expect("Used exports: 1")
         terminal.expect("Commands:")
+        terminal.resize(30, 20)
+        prompt_start = len(terminal.transcript)
+        terminal.send(b" " * 100 + b"pag 1\x1b[D\x1b[De\r")
+        terminal.expect("Page: 1/1")
+        terminal.expect(">")
+        prompts = re.findall(rb"\r\x1b\[2K([^\x1b]*)\x1b\[(\d+)G", terminal.transcript[prompt_start:])
+        if not prompts or any(len(text) >= 20 or int(column) > 20 for text, column in prompts):
+            raise AssertionError(f"prompt exceeded the narrow terminal: {prompts!r}")
         terminal.command("q")
         terminal.finish()
+    for exit_key in (b"\x03", b"\x04"):
+        with TerminalSession([
+            str(Path(binary).resolve()), "tui", "--repo", str(fixture),
+            "--language", "js-ts", "--page-size", "1",
+        ]) as terminal:
+            terminal.expect(">")
+            terminal.send(exit_key)
+            terminal.finish()
     print("TUI PTY smoke passed: pagination, bounds, filter reset, detail, resize, quit, terminal restoration")
 
 
