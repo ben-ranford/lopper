@@ -144,8 +144,14 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string) bool 
 	if len(values) != 1 {
 		return false
 	}
-	call, ok := values[0].(*ast.CallExpr)
-	return ok && imported(call.Fun, packages, sharedPackage, "BuildDependencyStats")
+	switch value := values[0].(type) {
+	case *ast.CallExpr:
+		return imported(value.Fun, packages, sharedPackage, "BuildDependencyStats")
+	case *ast.CompositeLit:
+		return imported(value.Type, packages, sharedPackage, "DependencyStats")
+	default:
+		return false
+	}
 }
 
 func (f *Finding) String() string {
