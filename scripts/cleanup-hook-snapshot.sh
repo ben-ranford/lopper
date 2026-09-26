@@ -28,6 +28,8 @@ check_reference() {
  managed=$(cd "$1" && pwd -P && printf x) || return 255
  managed=${managed%x}; managed=${managed%?}
  [ ! "$resolved" -ef "$managed" ] || return 255
+ # A custom hook directory may still execute the snapshot through a file link.
+ [ ! "$resolved/pre-commit" -ef "$managed/pre-commit" ] || return 255
 }
 
 check_worktree() {
