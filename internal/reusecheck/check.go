@@ -141,13 +141,7 @@ func dependencyStats(declaration ast.Node, packages map[string]string, info *typ
 }
 
 func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
-	for {
-		parenthesized, ok := expression.(*ast.ParenExpr)
-		if !ok {
-			break
-		}
-		expression = parenthesized.X
-	}
+	expression = unparen(expression)
 	if imported(expression, packages, sharedPackage, "DependencyStats") {
 		return true
 	}
@@ -159,14 +153,7 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	if len(values) != 1 {
 		return false
 	}
-	valueExpression := values[0]
-	for {
-		parenthesized, ok := valueExpression.(*ast.ParenExpr)
-		if !ok {
-			break
-		}
-		valueExpression = parenthesized.X
-	}
+	valueExpression := unparen(values[0])
 	switch value := valueExpression.(type) {
 	case *ast.CallExpr:
 		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
@@ -181,14 +168,7 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	case *ast.CompositeLit:
 		return imported(value.Type, packages, sharedPackage, "DependencyStats")
 	case *ast.UnaryExpr:
-		operand := value.X
-		for {
-			parenthesized, ok := operand.(*ast.ParenExpr)
-			if !ok {
-				break
-			}
-			operand = parenthesized.X
-		}
+		operand := unparen(value.X)
 		literal, ok := operand.(*ast.CompositeLit)
 		return value.Op == token.AND && ok && imported(literal.Type, packages, sharedPackage, "DependencyStats")
 	default:

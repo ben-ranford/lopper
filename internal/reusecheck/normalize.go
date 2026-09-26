@@ -27,14 +27,18 @@ func imports(file *ast.File) map[string]string {
 	return result
 }
 
-func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
+func unparen(expression ast.Expr) ast.Expr {
 	for {
-		parenthesized, ok := expr.(*ast.ParenExpr)
+		parenthesized, ok := expression.(*ast.ParenExpr)
 		if !ok {
-			break
+			return expression
 		}
-		expr = parenthesized.X
+		expression = parenthesized.X
 	}
+}
+
+func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
+	expr = unparen(expr)
 	selector, ok := expr.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != name {
 		return false
