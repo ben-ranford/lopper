@@ -2,6 +2,24 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.9](https://github.com/ben-ranford/lopper/compare/v1.8.8...v1.8.9) (2026-09-26)
+
+
+### Bug Fixes
+
+* **automation:** parse workflow YAML safely ([#1677](https://github.com/ben-ranford/lopper/issues/1677)) ([2c02203](https://github.com/ben-ranford/lopper/commit/2c0220327c07fb1eb594570fbb2de0e4d06a3bd6))
+* **ci:** resolve main SonarCloud findings ([#1728](https://github.com/ben-ranford/lopper/issues/1728)) ([cc64e61](https://github.com/ben-ranford/lopper/commit/cc64e610b973faaafbb0b2ce19e71167326019d7))
+* **deps:** update github.com/charmbracelet/ultraviolet digest to 4e49372 ([#1714](https://github.com/ben-ranford/lopper/issues/1714)) ([752335a](https://github.com/ben-ranford/lopper/commit/752335abe682b8403780fedf53f8da71aff3be5d))
+* **deps:** update module charm.land/bubbletea/v2 to v2.0.10 ([#1729](https://github.com/ben-ranford/lopper/issues/1729)) ([a51e8ff](https://github.com/ben-ranford/lopper/commit/a51e8ffd5fd8316af0511f06a39a1014fcd75546))
+* **hooks:** constrain tool trust across worktrees ([#1686](https://github.com/ben-ranford/lopper/issues/1686)) ([da43e5a](https://github.com/ben-ranford/lopper/commit/da43e5a593ab340186d71177a360ccd194928903))
+* **queue:** update stale branches before identity audit ([#1735](https://github.com/ben-ranford/lopper/issues/1735)) ([dfe361e](https://github.com/ben-ranford/lopper/commit/dfe361e6465d672b53e6b4d631993a5e3c1c8329))
+* **ui:** join terminal input relay during shutdown ([#1691](https://github.com/ben-ranford/lopper/issues/1691)) ([62ef873](https://github.com/ben-ranford/lopper/commit/62ef8732270c11bf8c9f3c322e1fff27603ae4ec))
+
+
+### Code Refactoring
+
+* **report:** reuse shared stats builder ([#1756](https://github.com/ben-ranford/lopper/issues/1756)) ([deabd8a](https://github.com/ben-ranford/lopper/commit/deabd8aa1f83e385ce10818cb58f399a839163a9))
+
 ## [1.8.8](https://github.com/ben-ranford/lopper/compare/v1.8.7...v1.8.8) (2026-09-22)
 
 
