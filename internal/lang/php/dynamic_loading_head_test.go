@@ -315,3 +315,28 @@ func TestPHPDynamicConstructorAfterQuotedHeredocMarkerInInterpolation(t *testing
 		}
 	}
 }
+
+func TestDynamicInterpolationDeepNestedHeredocs(t *testing.T) {
+	for _, leaf := range []string{"0", "class_exists($name)", "// ?>"} {
+		expression := leaf
+		for level := 0; level < 30; level++ {
+			label := "H" + strconv.Itoa(level)
+			expression = "<<<" + label + "\n{$a[" + expression + "]}\n" + label + "\n"
+		}
+		expression = "{$a[" + expression + "]}"
+		next, dynamic, closed := scanDynamicInterpolationAt(expression, 0)
+		wantNext := len(expression)
+		if leaf == "// ?>" {
+			wantNext = strings.Index(expression, "?>")
+		}
+		if next != wantNext || dynamic != (leaf == "class_exists($name)") || closed != (leaf == "// ?>") {
+			t.Fatalf("leaf %q: got (%d, %v, %v), want end %d", leaf, next, dynamic, closed, wantNext)
+		}
+		if leaf != "// ?>" {
+			source := `<?php echo "` + expression + `";`
+			if got := hasDynamicPatterns([]byte(source), "source.php", false); got != dynamic {
+				t.Fatalf("leaf %q: full source dynamic = %v, want %v", leaf, got, dynamic)
+			}
+		}
+	}
+}

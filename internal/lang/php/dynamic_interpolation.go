@@ -18,7 +18,7 @@ func hasPHPDynamicInterpolation(text string) bool {
 
 func advancePHPDynamicInterpolation(text string, offset int, state *phpCodeState) (int, bool) {
 	if *state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
-		if next, dynamic := dynamicHeredocInterpolation(text, offset); next > offset {
+		if next, dynamic, _ := dynamicHeredocInterpolation(text, offset); next > offset {
 			return next, dynamic
 		}
 	}
@@ -30,12 +30,12 @@ func advancePHPDynamicInterpolation(text string, offset int, state *phpCodeState
 	return advancePHPCodeState(text, offset, state), false
 }
 
-func dynamicHeredocInterpolation(text string, offset int) (int, bool) {
+func dynamicHeredocInterpolation(text string, offset int) (int, bool, bool) {
 	lineEnd := nextPHPLineEnd(text, offset)
 	marker := strings.TrimLeft(text[offset+len("<<<"):lineEnd], " \t")
 	label, ok := parseHeredocNowdocLabelAfterMarker(marker)
 	if !ok {
-		return offset, false
+		return offset, false, false
 	}
 	bodyStart := nextPHPLineStart(text, lineEnd)
 	bodyEnd, _, found := findHeredocNowdocTerminatorRange(text, bodyStart, label)
@@ -43,25 +43,30 @@ func dynamicHeredocInterpolation(text string, offset int) (int, bool) {
 		bodyEnd = len(text)
 	}
 	if strings.HasPrefix(marker, "'") {
-		return bodyEnd, false
+		return bodyEnd, false, false
 	}
-	return bodyEnd, hasDynamicHeredocBody(text[bodyStart:bodyEnd])
+	next, dynamic, closed := scanDynamicHeredocBody(text[bodyStart:bodyEnd])
+	return bodyStart + next, dynamic, closed
 }
 
-func hasDynamicHeredocBody(text string) bool {
+// Collect dynamic cues and close tags together so nested heredocs are not
+// recursively scanned twice at each nesting level.
+func scanDynamicHeredocBody(text string) (int, bool, bool) {
+	dynamic := false
 	for offset := 0; offset < len(text); offset++ {
 		if text[offset] == '\\' && offset+1 < len(text) {
 			offset++
 			continue
 		}
-		if next, dynamic, _ := scanDynamicInterpolationAt(text, offset); next > offset {
-			if dynamic {
-				return true
+		if next, found, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+			dynamic = dynamic || found
+			if closed {
+				return next, dynamic, true
 			}
 			offset = next - 1
 		}
 	}
-	return false
+	return len(text), dynamic, false
 }
 
 // Return the end of the examined expression even when it is not dynamic.
@@ -150,14 +155,7 @@ func scanPHPInterpolationHeredoc(text string, offset int) (int, bool, bool) {
 	if !strings.HasPrefix(text[offset:], "<<<") {
 		return offset, false, false
 	}
-	next, dynamic := dynamicHeredocInterpolation(text, offset)
-	if next == offset {
-		return offset, false, false
-	}
-	if closeTag, found := findPHPRegionCloseTagInHeredoc(text, offset, next); found {
-		return closeTag, dynamic, true
-	}
-	return next, dynamic, false
+	return dynamicHeredocInterpolation(text, offset)
 }
 
 func startNestedPHPInterpolation(text string, offset int, depth *int, state *phpCodeState, quotes *[]interpolationQuoteFrame) (int, bool) {
