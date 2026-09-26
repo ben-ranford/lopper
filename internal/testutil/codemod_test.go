@@ -11,6 +11,15 @@ func TestWriteLodashMapFixture(t *testing.T) {
 	repo := t.TempDir()
 	source := "import { map } from \"lodash\";\r\n"
 	path := WriteLodashMapFixture(t, repo, source)
+	// Use the same creation mode so the reference observes the process umask.
+	referencePath := filepath.Join(repo, "reference.js")
+	if err := os.WriteFile(referencePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	referenceInfo, err := os.Stat(referencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if path != filepath.Join(repo, "index.js") {
 		t.Fatalf("source path = %q", path)
 	}
@@ -26,8 +35,8 @@ func TestWriteLodashMapFixture(t *testing.T) {
 		}
 		if runtime.GOOS != "windows" {
 			info, statErr := os.Stat(filepath.Join(repo, name))
-			if statErr != nil || info.Mode().Perm() != 0o644 {
-				t.Fatalf("%s: expected 0644 file, stat error %v", name, statErr)
+			if statErr != nil || info.Mode().Perm() != referenceInfo.Mode().Perm() {
+				t.Fatalf("%s: expected mode %o, stat error %v", name, referenceInfo.Mode().Perm(), statErr)
 			}
 		}
 	}
