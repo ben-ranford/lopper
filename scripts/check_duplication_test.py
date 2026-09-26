@@ -24,7 +24,7 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.git("init", "-q", "-b", "target")
         self.git("config", "user.name", "Ben Ranford")
         self.git("config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
-        self.write("Makefile", "DUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 55\n")
+        self.write("Makefile", "GO ?= go\nDUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 55\n")
         self.write("original.go", "package fixture\n")
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
@@ -300,12 +300,14 @@ class DuplicationRunnerTest(unittest.TestCase):
     def test_occurrence_settings_must_match_protected_configuration(self):
         class Settings:
             baseline = ".github/duplication-baseline.json"
+            go = "go"
             version = "pinned"
             threshold = 55
 
         runner.validate_occurrence_settings(self.repo, self.base, Settings())
         cases = (
             ("baseline", "attacker-baseline.json", "protected baseline path"),
+            ("go", "./go", "Go command must match"),
             ("version", "changed-detector", "version must match"),
             ("threshold", 10000, "threshold must match"),
         )
@@ -319,6 +321,7 @@ class DuplicationRunnerTest(unittest.TestCase):
     def test_cli_rejects_pr_selected_baseline_and_weaker_detector(self):
         cases = (
             (["--baseline", "attacker-baseline.json"], "protected baseline path"),
+            (["--go", "./go", "--baseline", runner.CANONICAL_BASELINE], "Go command must match"),
             (["--threshold", "10000", "--baseline", runner.CANONICAL_BASELINE], "threshold must match"),
             (["--version", "changed-detector", "--baseline", runner.CANONICAL_BASELINE], "version must match"),
         )

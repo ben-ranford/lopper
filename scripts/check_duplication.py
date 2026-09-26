@@ -222,12 +222,15 @@ def protected_make_variable(repo, reference, name):
 def validate_occurrence_settings(repo, merge_base, args):
     if args.baseline != CANONICAL_BASELINE:
         raise AnalysisError(f"Occurrence enforcement must use the protected baseline path {CANONICAL_BASELINE!r}")
+    protected_go = protected_make_variable(repo, merge_base, "GO")
     protected_version = protected_make_variable(repo, merge_base, "DUPL_VERSION")
     protected_threshold = protected_make_variable(repo, merge_base, "DUPLICATION_TOKEN_THRESHOLD")
     try:
         protected_threshold = int(protected_threshold)
     except ValueError as error:
         raise AnalysisError("Protected duplication token threshold must be an integer") from error
+    if args.go != protected_go:
+        raise AnalysisError("Go command must match the protected target Makefile")
     if args.version != protected_version:
         raise AnalysisError("Detector version must match the protected target Makefile")
     if args.threshold != protected_threshold:
