@@ -249,7 +249,7 @@ def main(argv=None):
             print("Duplication gate failed: new-code duplication exceeds the configured maximum", file=sys.stderr)
             return 1
         return 0
-    except (AnalysisError, policy.PolicyError, OSError, UnicodeError, ValueError, subprocess.CalledProcessError) as error:
+    except (AnalysisError, OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Duplication analysis failed: {error}", file=sys.stderr)
         return 2
 
