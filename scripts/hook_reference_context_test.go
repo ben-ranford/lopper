@@ -176,6 +176,23 @@ func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallIgnoresCommandScopedHookPathOverride(t *testing.T) {
+	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
+	runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", managed)
+	env := []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=/unrelated/hooks",
+	}
+	output, err := hookCommandWithEnv(repo, env, "make", "hooks-uninstall")
+	if err != nil {
+		t.Fatalf("uninstall with command-scoped Git config: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); err != nil {
+		t.Fatalf("durable worktree hook reference was ignored: %v", err)
+	}
+}
+
 func TestHooksCleanupRetainsOnInspectionFailure(t *testing.T) {
 	for _, failure := range []string{"missing", "malformed", "replaced"} {
 		t.Run(failure, func(t *testing.T) {

@@ -51,25 +51,38 @@ func TestHooksUninstallKeepsAlternateCommonDirectoryContext(t *testing.T) {
 	if err := os.CopyFS(common, os.DirFS(filepath.Join(repo, ".git"))); err != nil {
 		t.Fatal(err)
 	}
+	gitDir := filepath.Join(repo, ".git")
+	env := []string{"GIT_DIR=" + gitDir, "GIT_COMMON_DIR=" + common}
 	managed := filepath.Join(common, "lopper-hooks")
 	if err := os.MkdirAll(managed, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	hook, err := os.ReadFile(filepath.Join(repo, ".git", "lopper-hooks", "pre-commit"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if output, err := hookCommandWithEnv(repo, []string{"GIT_COMMON_DIR=" + common}, "git", "config", "--local", "core.hooksPath", managed); err != nil {
+	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(t.TempDir(), "alternate linked")
+	if output, err := hookCommandWithEnv(repo, env, "git", "worktree", "add", "-b", "alternate", linked); err != nil {
+		t.Fatalf("create linked worktree in alternate common directory: %v\n%s", err, output)
+	}
+	if output, err := hookCommandWithEnv(repo, env, "git", "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
+		t.Fatalf("enable alternate worktree config: %v\n%s", err, output)
+	}
+	if output, err := hookCommandWithEnv(linked, []string{"GIT_COMMON_DIR=" + common}, "git", "config", "--worktree", "core.hooksPath", managed); err != nil {
 		t.Fatalf("configure alternate managed hook path: %v\n%s", err, output)
 	}
 	cmd := exec.Command("make", "hooks-uninstall")
 	cmd.Dir = repo
-	cmd.Env = append(withoutGitEnv(), "GIT_COMMON_DIR="+common)
+	cmd.Env = append(withoutGitEnv(), env...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("uninstall from alternate common directory: %v\n%s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); !os.IsNotExist(err) {
-		t.Fatalf("alternate managed snapshot remains after uninstall: %v\n%s", err, output)
+	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); err != nil {
+		t.Fatalf("alternate worktree hook reference was ignored: %v\n%s", err, output)
 	}
 }
 
