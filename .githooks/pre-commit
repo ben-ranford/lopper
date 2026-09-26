@@ -134,8 +134,10 @@ unset GIT_DIR GIT_WORK_TREE GIT_PREFIX
 names_file=$("$mktemp_bin") || exit 1
 ci_root=
 ci_worktree=
+snapshot_root=
 cleanup() {
 	/bin/rm -f "$names_file"
+	if [ -n "$snapshot_root" ]; then /bin/rm -rf "$snapshot_root"; fi
 	if [ -n "$ci_worktree" ]; then
 		"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout_root" worktree remove --force "$ci_worktree" || :
 	fi
@@ -146,8 +148,14 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if ! "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --cached --check --no-ext-diff --no-textconv; then
-	echo "[pre-commit] staged whitespace check failed" >&2
+# Freeze the caller's index (including GIT_INDEX_FILE) once. Attributes,
+# formatting, and CI all read this tree; never consult checkout attributes.
+staged_tree=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null write-tree) || exit 1
+snapshot_root=$("$mktemp_bin" -d) || exit 1
+export GIT_INDEX_FILE=$snapshot_root/index
+"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null read-tree "$staged_tree" || exit 1
+if ! "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --attr-source="$staged_tree" diff --cached --check --no-ext-diff --no-textconv; then
+	echo "[pre-commit] staged whitespace check failed (Git 2.41 or newer with --attr-source is required)" >&2
 	exit 1
 fi
 "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$names_file"
@@ -182,7 +190,6 @@ fi
 
 # Give HEAD-based gates the pending index, without advancing the branch or
 # including unstaged edits. commit-tree does not invoke commit hooks.
-staged_tree=$("$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null write-tree) || exit 1
 set -- "$staged_tree"
 if [ "${LOPPER_HOOK_AMEND:-0}" = 1 ]; then
 	# Git does not pass --amend to pre-commit; callers opt in explicitly.
