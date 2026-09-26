@@ -2982,17 +2982,7 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 		if !slices.Contains(manager.ManagerFilePatterns, `/^\.github/workflows/release\.yml$/`) {
 			t.Fatal("VSCE manager must target the release workflow")
 		}
-		for _, pattern := range manager.MatchStrings {
-			re := regexp.MustCompile(pattern)
-			found := re.FindAllStringSubmatch(string(workflow), -1)
-			if len(found) != 1 {
-				t.Fatalf("VSCE pattern %q matched %d pins, want 1", pattern, len(found))
-			}
-			if got := found[0][re.SubexpIndex("currentValue")]; got != version {
-				t.Fatalf("Renovate captured VSCE %q, want locked version %q", got, version)
-			}
-			matches += len(found)
-		}
+		matches += assertRenovateVSCEPatterns(t, manager.MatchStrings, string(workflow), version)
 	}
 	if matches != 4 {
 		t.Fatalf("Renovate tracks %d VSCE workflow pins, want 4", matches)
@@ -3003,6 +2993,23 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 		}
 	}
 	t.Fatal("VSCE npm and workflow updates must share a group and bump the package range")
+}
+
+func assertRenovateVSCEPatterns(t *testing.T, patterns []string, workflow, version string) int {
+	t.Helper()
+	matches := 0
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		found := re.FindAllStringSubmatch(workflow, -1)
+		if len(found) != 1 {
+			t.Fatalf("VSCE pattern %q matched %d pins, want 1", pattern, len(found))
+		}
+		if got := found[0][re.SubexpIndex("currentValue")]; got != version {
+			t.Fatalf("Renovate captured VSCE %q, want locked version %q", got, version)
+		}
+		matches += len(found)
+	}
+	return matches
 }
 
 func TestRenovateTidiesGoModuleUpdates(t *testing.T) {

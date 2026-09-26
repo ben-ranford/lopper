@@ -274,13 +274,13 @@ func TestStaveTerminalViewAndRunBranches(t *testing.T) {
 		defer cancel()
 		var out bytes.Buffer
 		preview := &StavePreview{legacy: shared.summary}
-		if err := preview.runStaveTerminal(ctx, Options{Width: 80}, prepared, bytes.NewBufferString("q"), &out, false); err != nil {
+		if err := preview.runStaveTerminal(ctx, Options{Width: 80}, prepared, staveTerminalTestInput(t, bytes.NewBufferString("q")), &out, false); err != nil {
 			t.Fatalf("run with quit input failed: %v", err)
 		}
 
 		cancelCtx, cancelRun := context.WithCancel(context.Background())
 		cancelRun()
-		if err := preview.runStaveTerminal(cancelCtx, Options{Width: 80}, prepared, strings.NewReader(""), io.Discard, false); err == nil {
+		if err := preview.runStaveTerminal(cancelCtx, Options{Width: 80}, prepared, staveTerminalTestInput(t, strings.NewReader("")), io.Discard, false); err == nil {
 			t.Fatal("cancelled run unexpectedly succeeded")
 		}
 	})
