@@ -99,7 +99,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// Shared by the later waiting steps so every deadline is measured
 		// from this job's own start rather than restarting a fresh budget
 		// per step, which could otherwise let their combined wait exceed
-		// the job's own 20-minute timeout.
+		// the job's own 65-minute timeout.
 		"core.setOutput('job-start-ms'",
 	})
 
@@ -122,18 +122,23 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"!candidate.expired",
 		"core.setOutput('artifact-id'",
 		"core.setOutput('run-id'",
-		// The same head SHA can be shared by more than one open PR (e.g.
-		// one branch opened against both a release branch and main, or --
-		// for forks, where GitHub does not expose a pull_requests
-		// association at all -- the same fork branch/commit reused across
-		// PRs with different bases). Matching runs after the fact by
-		// association or repository is not sufficient to disambiguate every
-		// such case; only an artifact name bound to this PR's own number
-		// (set by "ci.yml" from its own event payload, not forgeable by PR
-		// content) can.
 		"pullNumber = context.payload.pull_request.number",
+		"baseSha = context.payload.pull_request.base.sha",
+		"eventCreatedMs = new Date(context.payload.pull_request.updated_at).getTime()",
 		"artifactName = `pr-report-inputs-${pullNumber}`",
-		"const completed = candidates.filter((run) => run.status === 'completed')",
+		"candidate.number === pullNumber",
+		"candidate.head.sha === headSha",
+		"candidate.base.sha === baseSha",
+		"listPullRequestsAssociatedWithCommit",
+		"expectedAssociation = associatedPulls.some",
+		"if (runPulls.length === 0)",
+		"github.rest.issues.listEventsForTimeline",
+		"!context.payload.changes?.base",
+		"['base_ref_changed', 'automatic_base_change_succeeded'].includes(event.event)",
+		"new Date(event.created_at).getTime() < eventCreatedMs",
+		"runCreatedMs > eventCreatedMs",
+		"runCreatedMs === eventCreatedMs && sameSecondBaseUnchanged",
+		"const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success')",
 		// An empty candidate list must be treated as "still pending", not
 		// "no run will ever appear": this verifier and the "ci" run it
 		// waits on are dispatched by the same event, but nothing guarantees
@@ -141,17 +146,14 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		// failing closed on zero visible candidates would make the required
 		// check nondeterministically fail on ordinary PR events instead of
 		// using its ten-minute polling window.
-		"const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed')",
-		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
-		// at the same head SHA while an earlier, already-completed run
-		// (computed against the base this PR has since moved away from)
-		// still exists there; excluding runs created before this event
-		// (with a skew allowance, since both workflows fire from the same
-		// webhook delivery) stops that stale run's artifact from being
-		// trusted while the fresh one is still in flight.
-		"baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base)",
-		"earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0",
-		".filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs)",
+		"return null",
+		"if (result) {",
+		"if (Date.now() >= deadlineMs)",
+		"const latestCurrentRun = correlatedCandidates",
+		"right.id - left.id",
+		"latestCurrentRunCreatedMs > eventCreatedMs",
+		"github.rest.pulls.get",
+		"delayMs = Math.min(delayMs * 2, 2 * 60 * 1000)",
 	})
 
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")
@@ -204,11 +206,11 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
 		// Measured from the same job-start origin the artifact-resolution
-		// step uses, with buffer before the job's own 20-minute timeout, so
+		// step uses, with buffer before the job's own 65-minute timeout, so
 		// GitHub cannot cancel the job mid-poll and leave the
 		// "suppression-verify" check stuck "in_progress" instead of
 		// reporting failure.
-		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
+		"job_deadline_ms=$(( JOB_START_MS + (60 * 60) * 1000 ))",
 		`now_ms="$(date +%s%3N)"`,
 		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,
 	})

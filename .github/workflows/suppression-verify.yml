@@ -20,7 +20,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 65
     permissions:
       actions: read
       checks: write
@@ -42,7 +42,7 @@ jobs:
             });
             core.setOutput('check-id', String(check.id));
             // Shared with every later waiting step so their deadlines are
-            // measured from the same origin as the job's own 20-minute
+            // measured from the same origin as the job's own 65-minute
             // timeout, instead of each restarting its own fresh budget.
             core.setOutput('job-start-ms', String(Date.now()));
 
@@ -56,45 +56,64 @@ jobs:
           script: |
             const headSha = process.env.EXPECTED_HEAD_SHA;
             const pullNumber = context.payload.pull_request.number;
+            const baseSha = context.payload.pull_request.base.sha;
+            const eventCreatedMs = new Date(context.payload.pull_request.updated_at).getTime();
             const jobStartMs = Number(process.env.JOB_START_MS);
-            // A base-only edit (retargeting this PR) leaves any earlier,
-            // already-completed "ci" run at this same head SHA in place,
-            // still carrying a "pr-report-inputs-<PR>" artifact computed
-            // against the base this PR has since moved away from -- and
-            // that same "edited" event dispatches a fresh "ci" run at this
-            // identical head SHA to replace it. Both this run and that one
-            // are triggered by the exact same webhook event, so the fresh
-            // run is never meaningfully older than this very job; a 5
-            // -minute floor tolerates ordinary Actions dispatch/queueing
-            // skew between the two workflows while still excluding the
-            // stale pre-retarget run. Every other trigger type (a plain
-            // push, label, etc.) leaves the base untouched, so an already
-            // -completed run's artifact from before this event is still
-            // valid and the floor is skipped.
-            const baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base);
-            const earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0;
-            // Named with the producing PR's own number (set by "ci.yml"
-            // from its own pull_request event payload -- GitHub-assigned,
-            // not something PR-controlled code or workflow-file edits can
-            // forge). Matching on this exact name, rather than trying to
-            // infer after the fact which run "belongs" to this PR, is what
-            // actually closes the ambiguity a bare head-SHA match has: the
-            // same head SHA can be shared by more than one open PR (same
-            // branch against two bases; or, for forks, the same fork
-            // branch/commit reused across PRs with different bases, where
-            // GitHub does not otherwise expose which PR a run belongs to).
-            // Only the run that was genuinely dispatched for this exact PR
-            // number can have uploaded an artifact under this exact name.
+            // GitHub creates the ci run before this job reaches its first
+            // step. Its API record links a pull_request run to the exact PR,
+            // head, and base; use that metadata rather than head SHA alone.
+            // The PR event timestamp distinguishes a current failed run
+            // from an older failure for the same head and base.
             const artifactName = `pr-report-inputs-${pullNumber}`;
+            // Suppression verification has a one-hour SLO, independent of
+            // GitHub's longer default CI timeout. Five minutes remain for
+            // validation and publishing the final check conclusion.
             // Shared with the trusted tracking-issue poll below: both waits
             // race against one deadline measured from this job's own start
             // (not a fresh budget per step), with enough buffer before the
-            // job's 20-minute timeout for the remaining download/validate/
+            // job's 65-minute timeout for the remaining download/validate/
             // report steps to still run and update the head check, instead
             // of leaving it stuck "in_progress" when GitHub cancels the job.
-            const deadlineMs = jobStartMs + (18 * 60 + 30) * 1000;
-            const delayMs = 15000;
+            const deadlineMs = jobStartMs + (60 * 60) * 1000;
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            });
+            if (pull.head.sha !== headSha) {
+              throw new Error(`Pull request head ${headSha} was superseded; refusing stale artifacts.`);
+            }
+            const associatedPulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: headSha,
+              per_page: 100,
+            });
+            const expectedBaseRepository = context.payload.pull_request.base.repo?.full_name?.toLowerCase();
+            const expectedHeadRepository = context.payload.pull_request.head.repo?.full_name?.toLowerCase();
+            const expectedAssociation = associatedPulls.some((candidate) =>
+              candidate.number === pullNumber &&
+              candidate.head.sha === headSha &&
+              candidate.base.sha === baseSha &&
+              candidate.base.repo?.full_name?.toLowerCase() === expectedBaseRepository &&
+              candidate.head.repo?.full_name?.toLowerCase() === expectedHeadRepository
+            );
+
+            // Empty run associations have no historical base identity. A
+            // same-second run is usable only if GitHub's trusted timeline
+            // rules out a retarget in that second (including automatic ones).
+            const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const sameSecondBaseUnchanged = !context.payload.changes?.base && timeline.every((event) =>
+              !['base_ref_changed', 'automatic_base_change_succeeded'].includes(event.event) ||
+              new Date(event.created_at).getTime() < eventCreatedMs
+            );
 
             const findArtifact = async () => {
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -107,8 +126,22 @@ jobs:
               });
               const candidates = runs
                 .filter((run) => run.head_sha === headSha)
-                .filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs);
-              const completed = candidates.filter((run) => run.status === 'completed');
+                .filter((run) => {
+                  const runPulls = run.pull_requests || [];
+                  if (runPulls.length === 0) {
+                    const runCreatedMs = new Date(run.created_at).getTime();
+                    return expectedAssociation && (
+                      runCreatedMs > eventCreatedMs ||
+                      (runCreatedMs === eventCreatedMs && sameSecondBaseUnchanged)
+                    );
+                  }
+                  return runPulls.some((candidate) =>
+                    candidate.number === pullNumber &&
+                    candidate.head.sha === headSha &&
+                    candidate.base.sha === baseSha
+                  );
+                });
+              const completed = candidates.filter((run) => run.status === 'completed' && run.conclusion === 'success');
               for (const run of completed) {
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                   owner: context.repo.owner,
@@ -121,32 +154,59 @@ jobs:
                   return { run, artifact };
                 }
               }
-              // A run at this head SHA that has not completed yet might
-              // still be this PR's own "ci" run; only once every candidate
-              // has completed without producing a matching artifact is it
-              // safe to fail closed instead of continuing to poll. An empty
-              // candidate list is treated the same way: this verifier and
-              // the "ci" run it waits on are dispatched by the same event,
-              // but their runs are not guaranteed to become visible through
-              // the API in lockstep, so seeing none yet must not be treated
-              // as proof none will ever appear.
-              const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed');
-              return { run: null, artifact: null, stillPending };
+              // Only a terminal run created for this PR event can fail fast.
+              // A run may be created before this verifier starts, so compare
+              // against the webhook timestamp instead of JOB_START_MS.
+              // Empty run.pull_requests metadata can use the associated-commit
+              // fallback to accept an exact successful artifact, but cannot
+              // identify which PR produced a failure. Keep such failures
+              // ambiguous and let the bounded deadline report them.
+              const correlatedCandidates = candidates.filter((run) =>
+                (run.pull_requests || []).some((candidate) =>
+                  candidate.number === pullNumber &&
+                  candidate.head.sha === headSha &&
+                  candidate.base.sha === baseSha
+                )
+              );
+              const latestCurrentRun = correlatedCandidates
+                .filter((run) => new Date(run.created_at).getTime() >= eventCreatedMs)
+                .sort((left, right) =>
+                  new Date(right.created_at).getTime() - new Date(left.created_at).getTime() || right.id - left.id
+                )[0];
+              const latestCurrentRunCreatedMs = latestCurrentRun ? new Date(latestCurrentRun.created_at).getTime() : 0;
+              // created_at and updated_at are second-resolution timestamps.
+              // Equality is ambiguous; only a producer strictly newer than
+              // the PR event can be treated as this event's terminal result.
+              if (
+                latestCurrentRun &&
+                latestCurrentRunCreatedMs > eventCreatedMs &&
+                latestCurrentRun.status === 'completed' &&
+                latestCurrentRun.conclusion !== 'success'
+              ) {
+                throw new Error(`Current ci workflow run ${latestCurrentRun.id} completed with ${latestCurrentRun.conclusion}; no trusted PR report artifact was produced.`);
+              }
+              return null;
             };
 
             let result;
+            let delayMs = 15000;
             for (;;) {
-              result = await findArtifact();
-              if (result.artifact) {
-                break;
-              }
-              if (!result.stillPending) {
-                throw new Error(`No completed "ci" workflow run at head SHA ${headSha} carries an unexpired "${artifactName}" artifact.`);
-              }
               if (Date.now() >= deadlineMs) {
                 throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
               }
-              await sleep(delayMs);
+              result = await findArtifact();
+              if (Date.now() >= deadlineMs) {
+                throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
+              }
+              if (result) {
+                break;
+              }
+              const remainingMs = deadlineMs - Date.now();
+              if (remainingMs <= 0) {
+                throw new Error(`Timed out waiting for a completed "ci" workflow run at head SHA ${headSha} to carry the "${artifactName}" artifact.`);
+              }
+              await sleep(Math.min(delayMs, remainingMs));
+              delayMs = Math.min(delayMs * 2, 2 * 60 * 1000);
             }
 
             core.setOutput('run-id', String(result.run.id));
@@ -1058,11 +1118,11 @@ jobs:
           # The deadline is measured from this job's own start (the same
           # origin the artifact-resolution step above uses), not a fresh
           # budget restarted here, and leaves buffer before the job's
-          # 20-minute timeout for the final always() step to still run and
+          # 65-minute timeout for the final always() step to still run and
           # update the head check -- otherwise GitHub can cancel the job
           # mid-poll and leave "suppression-verify" stuck "in_progress"
           # instead of reporting failure.
-          job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))
+          job_deadline_ms=$(( JOB_START_MS + (60 * 60) * 1000 ))
           missing=("${fingerprints[@]}")
           while [ "${#missing[@]}" -gt 0 ]; do
             now_ms="$(date +%s%3N)"
