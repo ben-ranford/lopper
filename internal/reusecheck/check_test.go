@@ -180,6 +180,14 @@ func TestStatsDeclarationForms(t *testing.T) {
 	}
 }
 
+func TestPointerStatsParameterMapsReport(t *testing.T) {
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "measured *s.DependencyStats", 1)
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("pointer stats parameter findings=%+v err=%v", findings, err)
+	}
+}
+
 func TestDecorativeCallBoundariesAndDomain(t *testing.T) {
 	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
 	for _, statement := range []string{"_, _ = 1, 2", "_ = 1", "shared.SortedKeys(make(map[string]struct{}))"} {
@@ -197,7 +205,7 @@ func TestDecorativeCallBoundariesAndDomain(t *testing.T) {
 }
 
 func TestDiagnosticAndLegacyScope(t *testing.T) {
-	finding := Finding{Path: "internal/lang/python/reporting.go", Function: "buildDependencyReport", Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Line: 5}
+	finding := Finding{Path: "internal/lang/jvm/reporting.go", Function: "buildDependencyReport", Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Line: 5}
 	source := []byte("reviewed source")
 	old := legacyDigests[finding.Path]
 	legacyDigests[finding.Path] = fmt.Sprintf("%x", sha256.Sum256(source))
