@@ -12,9 +12,29 @@ while [ "$#" -gt 0 ]; do
 		*) break ;;
 	esac
 done
-case "$requested_managed_dir" in '') ;; /*/lopper-hooks) LOPPER_CLEANUP_MANAGED_DIR=$requested_managed_dir; export LOPPER_CLEANUP_MANAGED_DIR ;; *) exit 0 ;; esac
-case "$requested_common_dir" in '') ;; /*) LOPPER_CLEANUP_COMMON_DIR=$requested_common_dir; export LOPPER_CLEANUP_COMMON_DIR ;; *) exit 0 ;; esac
-case "$requested_git_dir" in '') ;; /*) LOPPER_CLEANUP_GIT_DIR=$requested_git_dir; export LOPPER_CLEANUP_GIT_DIR ;; *) exit 0 ;; esac
+windows_shell() {
+	case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; *) return 1 ;; esac
+}
+
+absolute_path() {
+	case "$1" in
+		/*) return 0 ;;
+		[A-Za-z]:/*) windows_shell ;;
+		*) return 1 ;;
+	esac
+}
+
+managed_hooks_path() {
+	case "$1" in
+		/*/lopper-hooks) return 0 ;;
+		[A-Za-z]:/*/lopper-hooks) windows_shell ;;
+		*) return 1 ;;
+	esac
+}
+
+case "$requested_managed_dir" in '') ;; *) managed_hooks_path "$requested_managed_dir" || exit 0; LOPPER_CLEANUP_MANAGED_DIR=$requested_managed_dir; export LOPPER_CLEANUP_MANAGED_DIR ;; esac
+case "$requested_common_dir" in '') ;; *) absolute_path "$requested_common_dir" || exit 0; LOPPER_CLEANUP_COMMON_DIR=$requested_common_dir; export LOPPER_CLEANUP_COMMON_DIR ;; esac
+case "$requested_git_dir" in '') ;; *) absolute_path "$requested_git_dir" || exit 0; LOPPER_CLEANUP_GIT_DIR=$requested_git_dir; export LOPPER_CLEANUP_GIT_DIR ;; esac
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX
 unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 script=$0
@@ -82,11 +102,6 @@ check_worktree() {
  "worktree "*)
   printf x
  root=${worktree_record#worktree }
-	if [ "${LOPPER_CLEANUP_ALT_INVENTORY-}" = 1 ]; then
-		root_identity=$(file_identity "$root") || return 255
-		target_identity=$(file_identity "${managed_dir%/lopper-hooks}") || return 255
-		[ "$root_identity" != "$target_identity" ] || return 0
-	fi
   cd "$root" || return 255
   # A stale inventory entry may now name an unrelated repository. Verify its
   # backpointer before trusting configuration read from that directory.
@@ -140,7 +155,8 @@ fi
 if [ -n "${1-}" ]; then exit 0; fi
 
 if [ -n "$requested_managed_dir" ]; then
-	case "$requested_managed_dir" in /*/lopper-hooks) managed_dir=$requested_managed_dir ;; *) exit 0 ;; esac
+	managed_hooks_path "$requested_managed_dir" || exit 0
+	managed_dir=$requested_managed_dir
 else
 	common_dir=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || exit 0
 	common_dir=${common_dir%x}

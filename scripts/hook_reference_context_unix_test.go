@@ -86,6 +86,37 @@ func TestHooksUninstallKeepsAlternateCommonDirectoryContext(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallInspectsAlternateBareRepository(t *testing.T) {
+	repo := newHookFixture(t)
+	bare := filepath.Join(t.TempDir(), "alternate.git")
+	runCommand(t, repo, "git", "init", "--bare", bare)
+	managed := filepath.Join(bare, "lopper-hooks")
+	if err := os.Mkdir(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(t.TempDir(), "custom-hooks")
+	if err := os.Mkdir(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(managed, "pre-commit"), filepath.Join(custom, "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	runCommand(t, repo, "git", "--git-dir", bare, "config", "core.hooksPath", custom)
+	cmd := exec.Command("make", "hooks-uninstall")
+	cmd.Dir = repo
+	cmd.Env = append(withoutGitEnv(), "GIT_DIR="+bare, "GIT_COMMON_DIR="+bare)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("uninstall from alternate bare repository: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); err != nil {
+		t.Fatalf("alternate bare repository hook reference was ignored: %v\n%s", err, output)
+	}
+}
+
 // Exercise Windows spelling normalization on POSIX using a Windows host marker
 // and local stand-ins for the drive/UNC mounts. Native mount behavior belongs to
 // Git's shell; this checks the resolver's separator and alias handling.
@@ -125,6 +156,31 @@ func TestHooksCleanupWindowsPathNormalization(t *testing.T) {
 			output, err := cmd.CombinedOutput()
 			if (err != nil) != tc.retained {
 				t.Fatalf("path %q retained=%v: %v\n%s", tc.path, tc.retained, err, output)
+			}
+		})
+	}
+}
+
+func TestHooksCleanupAcceptsWindowsAbsoluteGitPaths(t *testing.T) {
+	repo := newHookFixture(t)
+	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
+	bin := t.TempDir()
+	writeFileMode(t, filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'MINGW64_NT\\n'\n", 0o755)
+	missing := filepath.Join(t.TempDir(), "missing-hooks")
+	for _, args := range [][]string{
+		{"--managed-dir", "C:/repo/.git/lopper-hooks"},
+		{"--common-dir", "C:/repo/.git"},
+		{"--git-dir", "C:/repo/.git"},
+	} {
+		t.Run(strings.Join(args, "="), func(t *testing.T) {
+			commandArgs := append([]string(nil), args...)
+			commandArgs = append(commandArgs, "reference", managed, missing)
+			cmd := exec.Command("sh", append([]string{"scripts/cleanup-hook-snapshot.sh"}, commandArgs...)...)
+			cmd.Dir = repo
+			cmd.Env = append(withoutGitEnv(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("Windows absolute cleanup input was rejected before reference inspection:\n%s", output)
 			}
 		})
 	}
