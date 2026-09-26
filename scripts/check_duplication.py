@@ -177,7 +177,7 @@ def scan(repo, go_command, version, threshold, *, records=None):
 
 
 def occurrence_gate(repo, merge_base, args):
-    if args.baseline:
+    if args.baseline is not None:
         validate_occurrence_settings(repo, merge_base, args)
     records = []
     scan(repo, args.go, args.version, args.threshold, records=records)
@@ -187,10 +187,12 @@ def occurrence_gate(repo, merge_base, args):
         output_path = repository_path(repo, args.propose_baseline, "Baseline proposal")
         output_path.write_text(json.dumps(policy.propose_baseline(pairs), indent=2) + "\n")
         print("Baseline proposal written; it does not authorize new clones")
-    if not args.baseline:
+    if args.baseline is None:
         return 0
-    baseline_file = repository_path(repo, args.baseline, "Baseline")
-    baseline_path = baseline_file.relative_to(repo.resolve()).as_posix()
+    baseline_path = CANONICAL_BASELINE
+    baseline_file = repo / baseline_path
+    if baseline_file.is_symlink():
+        raise AnalysisError("Baseline policy file must not be a symlink")
     proposed = json.loads(baseline_file.read_text())
     # The protected target, never the contributor's new policy, grants exceptions.
     target_entry = checked(["git", "ls-tree", "-z", merge_base, "--", baseline_path], repo).stdout
@@ -264,7 +266,7 @@ def main(argv=None):
             raise AnalysisError("Threshold must be positive and maximum percentage must be finite within 0..100")
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
         base, merge_base = comparison_base(repo, args.base, os.environ)
-        if args.baseline or args.propose_baseline:
+        if args.baseline is not None or args.propose_baseline:
             return occurrence_gate(repo, merge_base, args)
         added = added_lines(repo, merge_base)
         if not added:

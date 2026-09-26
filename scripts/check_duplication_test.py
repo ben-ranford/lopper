@@ -259,6 +259,27 @@ class DuplicationRunnerTest(unittest.TestCase):
             self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
             self.assertEqual(runner.main(command), 2)
 
+    def test_initial_baseline_symlink_cannot_replace_protected_policy(self):
+        baseline_path = runner.CANONICAL_BASELINE
+        self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
+        self.commit()
+        self.git("checkout", "-qb", "feature")
+        attacker_path = "attacker-baseline.json"
+        self.write(attacker_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
+        (self.repo / baseline_path).unlink()
+        (self.repo / baseline_path).symlink_to(attacker_path)
+        command = ["--version", "pinned", "--base", "target", "--baseline", baseline_path]
+        stderr = io.StringIO()
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(runner, "scan", return_value=set()), mock.patch.object(runner.policy, "function_index", return_value=[]), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stderr(stderr):
+            self.assertEqual(runner.main(command), 2)
+        self.assertIn("must not be a symlink", stderr.getvalue())
+
+    def test_explicitly_empty_baseline_is_rejected(self):
+        stderr = io.StringIO()
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.dict(os.environ, self.environment, clear=True), contextlib.redirect_stderr(stderr):
+            self.assertEqual(runner.main(["--version", "pinned", "--base", "target", "--baseline", ""]), 2)
+        self.assertIn("protected baseline path", stderr.getvalue())
+
     def test_proposal_only_does_not_require_active_baseline(self):
         self.git("checkout", "-qb", "feature")
         self.write("added.go", "package fixture\n")
