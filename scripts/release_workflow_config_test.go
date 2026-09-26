@@ -2834,35 +2834,49 @@ func validateRenovateUpdateTypeReviewSettings(config map[string]json.RawMessage)
 		if !exists {
 			continue
 		}
-		if strings.TrimSpace(string(raw)) == "null" {
-			return fmt.Errorf("renovate %s review settings must be an object", updateType)
+		if err := validateRenovateUpdateTypeBlock(updateType, raw); err != nil {
+			return err
 		}
-		var rawSettings map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &rawSettings); err != nil {
-			return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+	}
+	return nil
+}
+
+func validateRenovateUpdateTypeBlock(updateType string, raw json.RawMessage) error {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return fmt.Errorf("renovate %s review settings must be an object", updateType)
+	}
+	var rawSettings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawSettings); err != nil {
+		return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+	}
+	for _, key := range []string{"enabled", "automerge"} {
+		if err := validateRenovateBooleanSetting(updateType, key, rawSettings[key]); err != nil {
+			return err
 		}
-		for _, key := range []string{"enabled", "automerge"} {
-			if value, exists := rawSettings[key]; exists && strings.TrimSpace(string(value)) == "null" {
-				return fmt.Errorf("renovate %s %s must be a boolean", updateType, key)
-			}
-		}
-		var settings struct {
-			Enabled   *bool           `json:"enabled"`
-			Automerge *bool           `json:"automerge"`
-			Extends   json.RawMessage `json:"extends"`
-		}
-		if err := json.Unmarshal(raw, &settings); err != nil {
-			return fmt.Errorf("renovate %s review settings: %w", updateType, err)
-		}
-		if len(settings.Extends) > 0 {
-			return fmt.Errorf("renovate %s updates must not import review-setting presets with extends", updateType)
-		}
-		if settings.Enabled != nil && !*settings.Enabled {
-			return fmt.Errorf("renovate %s updates must not disable dependency update PR creation", updateType)
-		}
-		if settings.Automerge != nil && *settings.Automerge {
-			return fmt.Errorf("renovate %s updates must not enable unattended automerge", updateType)
-		}
+	}
+	var settings struct {
+		Enabled   *bool           `json:"enabled"`
+		Automerge *bool           `json:"automerge"`
+		Extends   json.RawMessage `json:"extends"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("renovate %s review settings: %w", updateType, err)
+	}
+	if len(settings.Extends) > 0 {
+		return fmt.Errorf("renovate %s updates must not import review-setting presets with extends", updateType)
+	}
+	if settings.Enabled != nil && !*settings.Enabled {
+		return fmt.Errorf("renovate %s updates must not disable dependency update PR creation", updateType)
+	}
+	if settings.Automerge != nil && *settings.Automerge {
+		return fmt.Errorf("renovate %s updates must not enable unattended automerge", updateType)
+	}
+	return nil
+}
+
+func validateRenovateBooleanSetting(updateType, key string, raw json.RawMessage) error {
+	if len(raw) > 0 && strings.TrimSpace(string(raw)) == "null" {
+		return fmt.Errorf("renovate %s %s must be a boolean", updateType, key)
 	}
 	return nil
 }
