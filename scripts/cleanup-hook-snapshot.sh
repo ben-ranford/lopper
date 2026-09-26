@@ -1,6 +1,14 @@
 #!/bin/sh
 # Remove only an unreferenced managed snapshot. Any failed inspection retains it.
 set -eu
+requested_managed_dir=${LOPPER_CLEANUP_MANAGED_DIR-}
+if [ "${1-}" = --managed-dir ]; then
+	[ "$#" -eq 2 ] || exit 2
+	requested_managed_dir=$2
+	LOPPER_CLEANUP_MANAGED_DIR=$requested_managed_dir
+	export LOPPER_CLEANUP_MANAGED_DIR
+	shift 2
+fi
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX
 script=$0
 case "$script" in /*) ;; *) script=$PWD/$script ;; esac
@@ -73,8 +81,9 @@ check_worktree() {
   owner=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || return 255
   owner=${owner%x}; owner=${owner%?}
   owner_identity=$(file_identity "$owner") || return 255
-  common_identity=$(file_identity "${managed_dir%/lopper-hooks}") || return 255
-  [ "$owner_identity" = "$common_identity" ] || return 255
+	source_identity=$(file_identity "$LOPPER_CLEANUP_SOURCE_COMMON_DIR") || return 255
+	target_identity=$(file_identity "${managed_dir%/lopper-hooks}") || return 255
+	[ "$owner_identity" = "$source_identity" ] || [ "$owner_identity" = "$target_identity" ] || return 255
   status=0
   run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$reference_file" || status=$?
   case "$status" in
@@ -112,11 +121,19 @@ if [ "${1-}" = worktree ]; then
 fi
 if [ -n "${1-}" ]; then exit 0; fi
 
-common_dir=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || exit 0
-common_dir=${common_dir%x}
-common_dir=${common_dir%?}
-managed_dir=$common_dir/lopper-hooks
+if [ -n "$requested_managed_dir" ]; then
+	case "$requested_managed_dir" in /*/lopper-hooks) managed_dir=$requested_managed_dir ;; *) exit 0 ;; esac
+else
+	common_dir=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || exit 0
+	common_dir=${common_dir%x}
+	common_dir=${common_dir%?}
+	managed_dir=$common_dir/lopper-hooks
+fi
 [ -d "$managed_dir" ] && [ ! -L "$managed_dir" ] || exit 0
+source_common_dir=$(run_preflight_git git rev-parse --path-format=absolute --git-common-dir && printf x) || exit 0
+source_common_dir=${source_common_dir%x}; source_common_dir=${source_common_dir%?}
+LOPPER_CLEANUP_SOURCE_COMMON_DIR=$source_common_dir
+export LOPPER_CLEANUP_SOURCE_COMMON_DIR
 inventory=$(mktemp) || exit 0
 references=$(mktemp) || { rm -f "$inventory"; exit 0; }
 cleanup() { cleanup_preflight_git; rm -f "$inventory" "$references"; }
