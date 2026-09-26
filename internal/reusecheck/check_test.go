@@ -279,20 +279,25 @@ func TestSamePackageDecorativeHelperCalls(t *testing.T) {
 				call := prefix + tc.helper + "(" + arguments + ")"
 				source := strings.Replace(collectionContracts, tc.signature, tc.signature+"\n"+call, 1)
 				for _, path := range []string{tc.path, strings.Replace(tc.path, "/copy.go", "/nested/copy.go", 1)} {
-					findings, err := Analyze(path, []byte(source))
-					if err != nil {
-						t.Fatal(err)
-					}
-					found := false
-					for _, finding := range findings {
-						found = found || finding.Function == tc.function
-					}
-					if found != (path == tc.path) {
-						t.Fatalf("path=%s call=%s findings=%+v", path, call, findings)
-					}
+					assertFunctionFinding(t, path, source, tc.function, path == tc.path)
 				}
 			}
 		})
+	}
+}
+
+func assertFunctionFinding(t *testing.T, path, source, function string, want bool) {
+	t.Helper()
+	findings, err := Analyze(path, []byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, finding := range findings {
+		found = found || finding.Function == function
+	}
+	if found != want {
+		t.Fatalf("path=%s function=%s findings=%+v", path, function, findings)
 	}
 }
 
