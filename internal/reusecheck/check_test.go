@@ -159,6 +159,8 @@ func TestStatsDeclarationForms(t *testing.T) {
 	}{
 		{"var measured s.DependencyStats", 1},
 		{"var measured = s.BuildDependencyStats(name,nil,nil)", 1},
+		{"var measured = s.DependencyStats{}", 1},
+		{"measured := s.DependencyStats{}", 1},
 		{"var measured = unknown", 0},
 		{"var measured = s.BuildDependencyStats(name,nil,nil), 1", 0},
 		{"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other", 0},
@@ -271,18 +273,32 @@ func TestSamePackageDecorativeHelperCalls(t *testing.T) {
 		{"union", "func union(values ...map[string]struct{}) []string {", "SortedDependencyUnion", "internal/lang/shared/copy.go"},
 	} {
 		t.Run(tc.helper, func(t *testing.T) {
-			for _, prefix := range []string{"", "_ = "} {
-				arguments := "values"
-				if tc.function == "union" {
-					arguments += "..."
-				}
-				call := prefix + tc.helper + "(" + arguments + ")"
-				source := strings.Replace(collectionContracts, tc.signature, tc.signature+"\n"+call, 1)
-				for _, path := range []string{tc.path, strings.Replace(tc.path, "/copy.go", "/nested/copy.go", 1)} {
-					assertFunctionFinding(t, path, source, tc.function, path == tc.path)
-				}
-			}
+			assertDecorativeHelperCalls(t, tc.function, tc.signature, tc.helper, tc.path)
 		})
+	}
+}
+
+func assertDecorativeHelperCalls(t *testing.T, function, signature, helper, filePath string) {
+	t.Helper()
+	for _, prefix := range []string{"", "_ = "} {
+		call := prefix + helper + "(" + decorativeHelperArguments(function) + ")"
+		source := strings.Replace(collectionContracts, signature, signature+"\n"+call, 1)
+		assertDecorativeHelperPaths(t, filePath, source, function)
+	}
+}
+
+func decorativeHelperArguments(function string) string {
+	if function == "union" {
+		return "values..."
+	}
+	return "values"
+}
+
+func assertDecorativeHelperPaths(t *testing.T, filePath, source, function string) {
+	t.Helper()
+	paths := []string{filePath, strings.Replace(filePath, "/copy.go", "/nested/copy.go", 1)}
+	for _, path := range paths {
+		assertFunctionFinding(t, path, source, function, path == filePath)
 	}
 }
 
