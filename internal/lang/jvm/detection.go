@@ -23,7 +23,9 @@ var (
 )
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (detection language.Detection, err error) {
-	_ = ctx
+	if err := shared.WalkContextErr(ctx, nil); err != nil {
+		return language.Detection{}, err
+	}
 	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection = language.Detection{}
@@ -45,7 +47,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (de
 
 	budget := defaultJVMDetectionBudget()
 	walker := newJVMDetectionWalker(repoPath, roots, &detection, budget)
-	err = walker.walkPinned(root)
+	err = walker.walkPinned(ctx, root)
 	if err != nil && !shared.IsPureSentinelError(err, fs.SkipAll, errJVMDetectionTraversalLimit) {
 		return language.Detection{}, err
 	}
@@ -203,7 +205,7 @@ func openJVMDetectionDirectory(root jvmDetectionRoot, path string) (jvmDetection
 	return root.Open(path)
 }
 
-func (w *jvmDetectionWalker) walk() (returnErr error) {
+func (w *jvmDetectionWalker) walk(ctx context.Context) (returnErr error) {
 	root, err := w.openRoot(w.repoPath)
 	if err != nil {
 		return err
@@ -212,18 +214,24 @@ func (w *jvmDetectionWalker) walk() (returnErr error) {
 		returnErr = errors.Join(returnErr, root.Close())
 	}()
 
-	return w.walkPinned(root)
+	return w.walkPinned(ctx, root)
 }
 
-func (w *jvmDetectionWalker) walkPinned(root jvmDetectionRoot) error {
+func (w *jvmDetectionWalker) walkPinned(ctx context.Context, root jvmDetectionRoot) error {
+	if err := shared.WalkContextErr(ctx, nil); err != nil {
+		return err
+	}
 	info, err := root.Lstat(".")
 	if err != nil {
 		return err
 	}
-	return w.walkEntry(root, w.repoPath, fs.FileInfoToDirEntry(info))
+	return w.walkEntry(ctx, root, w.repoPath, fs.FileInfoToDirEntry(info))
 }
 
-func (w *jvmDetectionWalker) walkEntry(root jvmDetectionRoot, path string, entry fs.DirEntry) error {
+func (w *jvmDetectionWalker) walkEntry(ctx context.Context, root jvmDetectionRoot, path string, entry fs.DirEntry) error {
+	if err := shared.WalkContextErr(ctx, nil); err != nil {
+		return err
+	}
 	err := walkJVMDetectionEntry(w.repoPath, path, entry, w.roots, w.detection, w.budget)
 	if errors.Is(err, filepath.SkipDir) {
 		return nil
@@ -234,15 +242,18 @@ func (w *jvmDetectionWalker) walkEntry(root jvmDetectionRoot, path string, entry
 	if !entry.IsDir() {
 		return nil
 	}
-	return w.walkDirectory(root, path, ".")
+	return w.walkDirectory(ctx, root, path, ".")
 }
 
-func (w *jvmDetectionWalker) walkDirectory(root jvmDetectionRoot, path, relativePath string) error {
-	entries, err := w.readDirectory(root, path)
+func (w *jvmDetectionWalker) walkDirectory(ctx context.Context, root jvmDetectionRoot, path, relativePath string) error {
+	entries, err := w.readDirectory(ctx, root, path)
 	if err != nil {
 		return err
 	}
 	for _, child := range entries {
+		if err := shared.WalkContextErr(ctx, nil); err != nil {
+			return err
+		}
 		if !w.budget.dequeueTraversalEntry() {
 			return fs.ErrInvalid
 		}
@@ -263,7 +274,7 @@ func (w *jvmDetectionWalker) walkDirectory(root jvmDetectionRoot, path, relative
 		if err != nil {
 			return err
 		}
-		walkErr := w.walkDirectory(childRoot, childPath, childRelativePath)
+		walkErr := w.walkDirectory(ctx, childRoot, childPath, childRelativePath)
 		if err := errors.Join(walkErr, childRoot.Close()); err != nil {
 			return err
 		}
@@ -271,13 +282,13 @@ func (w *jvmDetectionWalker) walkDirectory(root jvmDetectionRoot, path, relative
 	return nil
 }
 
-func (w *jvmDetectionWalker) readDirectory(root jvmDetectionRoot, path string) ([]fs.DirEntry, error) {
+func (w *jvmDetectionWalker) readDirectory(ctx context.Context, root jvmDetectionRoot, path string) ([]fs.DirEntry, error) {
 	directory, err := w.openDirectory(root, ".")
 	if err != nil {
 		return nil, err
 	}
 
-	entries, readErr := w.readDirectoryEntries(path, directory)
+	entries, readErr := w.readDirectoryEntries(ctx, path, directory)
 	closeErr := directory.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return nil, err
@@ -315,9 +326,12 @@ func openJVMDetectionChildRoot(root jvmDetectionRoot, name, path string) (jvmDet
 	return child, nil
 }
 
-func (w *jvmDetectionWalker) readDirectoryEntries(path string, directory jvmDetectionDirectory) ([]fs.DirEntry, error) {
+func (w *jvmDetectionWalker) readDirectoryEntries(ctx context.Context, path string, directory jvmDetectionDirectory) ([]fs.DirEntry, error) {
 	var entries []fs.DirEntry
 	for {
+		if err := shared.WalkContextErr(ctx, nil); err != nil {
+			return nil, err
+		}
 		readSize := w.budget.traversalReadSize()
 		if readSize == 0 {
 			return entries, w.probeDirectoryLimit(path, directory)

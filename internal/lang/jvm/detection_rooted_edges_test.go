@@ -208,7 +208,7 @@ func TestJVMDetectionWalkerRejectsDirectoryReplacementBetweenEnumerationAndOpen(
 	root := newReplacingJVMDetectionRoot(t, repo, originalDir)
 
 	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
-	err := walker.walkPinned(root)
+	err := walker.walkPinned(context.Background(), root)
 	if err == nil || !strings.Contains(err.Error(), "path changed while opening: src") {
 		t.Fatalf("expected pinned directory replacement error, got %v", err)
 	}
@@ -402,18 +402,18 @@ func TestJVMDetectionWalkerWalkEntryPreservesSkipErrorAndFileBehavior(t *testing
 
 	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
 	skippedEntry := fs.FileInfoToDirEntry(&jvmDetectionNamedFileInfo{FileInfo: dirInfo, name: "target"})
-	if err := walker.walkEntry(&jvmDetectionChildTestRoot{}, filepath.Join(repo, "target"), skippedEntry); err != nil {
+	if err := walker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filepath.Join(repo, "target"), skippedEntry); err != nil {
 		t.Fatalf("expected skipped directory to avoid opening, got %v", err)
 	}
 
 	fileEntry := fs.FileInfoToDirEntry(fileInfo)
-	if err := walker.walkEntry(&jvmDetectionChildTestRoot{}, filePath, fileEntry); err != nil {
+	if err := walker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filePath, fileEntry); err != nil {
 		t.Fatalf("expected ordinary file entry to complete without directory open, got %v", err)
 	}
 
 	exhaustedBudget := &jvmDetectionBudget{maxTraversalEntries: 1, traversalEntriesSeen: 1}
 	exhaustedWalker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, exhaustedBudget)
-	if err := exhaustedWalker.walkEntry(&jvmDetectionChildTestRoot{}, filePath, fileEntry); !errors.Is(err, errJVMDetectionTraversalLimit) {
+	if err := exhaustedWalker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filePath, fileEntry); !errors.Is(err, errJVMDetectionTraversalLimit) {
 		t.Fatalf("expected traversal-limit error to propagate, got %v", err)
 	}
 }
@@ -441,7 +441,7 @@ func TestJVMDetectionWalkerUsesLinearPinnedRootOperationsForDeepWideTree(t *test
 	budget := defaultJVMDetectionBudget()
 	detection := &language.Detection{}
 	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, detection, budget)
-	if err := walker.walkPinned(&osJVMDetectionRoot{root: countingRoot}); err != nil {
+	if err := walker.walkPinned(context.Background(), &osJVMDetectionRoot{root: countingRoot}); err != nil {
 		t.Fatalf("walk deep and wide detection tree: %v", err)
 	}
 
@@ -468,7 +468,7 @@ func TestJVMDetectionWalkerUsesLinearPinnedRootOperationsForDeepWideTree(t *test
 func TestJVMDetectionHelpersPropagatePinnedErrors(t *testing.T) {
 	lstatErr := errors.New("root lstat failed")
 	walker := newJVMDetectionWalker(t.TempDir(), map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
-	if err := walker.walkPinned(&jvmDetectionTestRootWithError{err: lstatErr}); !errors.Is(err, lstatErr) {
+	if err := walker.walkPinned(context.Background(), &jvmDetectionTestRootWithError{err: lstatErr}); !errors.Is(err, lstatErr) {
 		t.Fatalf("expected pinned lstat error, got %v", err)
 	}
 
@@ -490,7 +490,7 @@ func TestJVMDetectionWalkerReadDirectoryJoinsCloseError(t *testing.T) {
 		}, nil
 	}
 
-	_, err := walker.readDirectory(&jvmDetectionTestRootWithError{}, repo)
+	_, err := walker.readDirectory(context.Background(), &jvmDetectionTestRootWithError{}, repo)
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("expected close error from rooted directory read, got %v", err)
 	}

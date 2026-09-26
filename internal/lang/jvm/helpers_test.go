@@ -723,7 +723,7 @@ func testJVMOversizedDirectoryFailsClosed(t *testing.T) {
 		return directory, nil
 	}
 
-	err = walker.walk()
+	err = walker.walk(context.Background())
 	assertJVMOversizedDirectoryOutcome(t, jvmOversizedDirectoryOutcome{
 		repo:        repo,
 		err:         err,
@@ -808,7 +808,7 @@ func testJVMExactTraversalBudgetCompletes(t *testing.T) {
 
 	budget := &jvmDetectionBudget{maxTraversalEntries: 3, maxConfinedCandidates: 2}
 	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, budget)
-	if err := walker.walk(); err != nil {
+	if err := walker.walk(context.Background()); err != nil {
 		t.Fatalf("expected complete tree at exact traversal budget to succeed, got %v", err)
 	}
 	if budget.traversalEntriesSeen != 3 || budget.traversalEntriesQueued != 0 {
@@ -833,7 +833,7 @@ func testJVMDetectionRootOpenError(t *testing.T) {
 	walker.openRoot = func(string) (jvmDetectionRoot, error) {
 		return nil, openErr
 	}
-	if err := walker.walk(); !errors.Is(err, openErr) {
+	if err := walker.walk(context.Background()); !errors.Is(err, openErr) {
 		t.Fatalf("expected root open error, got %v", err)
 	}
 }
@@ -848,7 +848,7 @@ func testJVMDetectionDirectoryOpenError(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return nil, openErr
 	}
-	if err := walker.walk(); !errors.Is(err, openErr) {
+	if err := walker.walk(context.Background()); !errors.Is(err, openErr) {
 		t.Fatalf("expected directory open error, got %v", err)
 	}
 }
@@ -865,7 +865,7 @@ func testJVMDetectionDirectoryReadAndCloseErrors(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return directory, nil
 	}
-	err := walker.walk()
+	err := walker.walk(context.Background())
 	if !errors.Is(err, readErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("expected joined read and close errors, got %v", err)
 	}
@@ -884,7 +884,7 @@ func testJVMDetectionDirectoryNoProgress(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return directory, nil
 	}
-	if err := walker.walk(); !errors.Is(err, io.ErrNoProgress) {
+	if err := walker.walk(context.Background()); !errors.Is(err, io.ErrNoProgress) {
 		t.Fatalf("expected no-progress error, got %v", err)
 	}
 	if directory.closeCalls != 1 {
@@ -914,7 +914,7 @@ func testJVMDetectionDirectoryOversizedBatch(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return directory, nil
 	}
-	if err := walker.walk(); !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, io.EOF) || !errors.Is(err, readErr) {
+	if err := walker.walk(context.Background()); !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, io.EOF) || !errors.Is(err, readErr) {
 		t.Fatalf("expected joined oversized-batch traversal-limit, EOF, and read error, got %v", err)
 	}
 	if directory.closeCalls != 1 {
@@ -934,7 +934,7 @@ func testJVMDetectionLimitProbeReadError(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return directory, nil
 	}
-	if err := walker.walk(); !errors.Is(err, readErr) {
+	if err := walker.walk(context.Background()); !errors.Is(err, readErr) {
 		t.Fatalf("expected limit probe read error, got %v", err)
 	}
 	if directory.closeCalls != 1 {
@@ -966,7 +966,7 @@ func testJVMDetectionLimitProbeEntryAndReadError(t *testing.T) {
 		return directory, nil
 	}
 
-	err = walker.walk()
+	err = walker.walk(context.Background())
 	if !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, readErr) {
 		t.Fatalf("expected joined probe traversal-limit and read error, got %v", err)
 	}
@@ -986,7 +986,7 @@ func testJVMDetectionLimitProbeNoProgress(t *testing.T) {
 	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
 		return directory, nil
 	}
-	if err := walker.walk(); !errors.Is(err, io.ErrNoProgress) {
+	if err := walker.walk(context.Background()); !errors.Is(err, io.ErrNoProgress) {
 		t.Fatalf("expected limit probe no-progress error, got %v", err)
 	}
 	if directory.closeCalls != 1 {
@@ -1191,7 +1191,7 @@ func testJVMConfinedCandidateBudgetStopsOrdinaryFileFlood(t *testing.T) {
 	roots := map[string]struct{}{}
 	detect := &language.Detection{}
 	walker := newJVMDetectionWalker(repo, roots, detect, budget)
-	if err := walker.walk(); !errors.Is(err, fs.SkipAll) {
+	if err := walker.walk(context.Background()); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected confined candidate budget flood to stop the walker, got %v", err)
 	}
 	if budget.traversalEntriesSeen != 4 || budget.traversalEntriesQueued != 1 {

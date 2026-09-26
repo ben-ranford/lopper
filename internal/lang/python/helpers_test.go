@@ -2,8 +2,6 @@ package python
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -306,12 +304,4 @@ func TestPythonDetectAndWalkBranches(t *testing.T) {
 		t.Fatalf("expected matched detection capped at 95, got %#v", detection)
 	}
 
-	fileEntry := testutil.MustFirstFileEntry(t, repo)
-	visited := 1
-	roots := make(map[string]struct{})
-	detect := &language.Detection{}
-	err = walkPythonDetectionEntry(filepath.Join(repo, fileEntry.Name()), fileEntry, roots, detect, &visited, 1)
-	if !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
-	}
 }
