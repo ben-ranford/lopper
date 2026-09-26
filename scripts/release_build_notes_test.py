@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -66,6 +68,23 @@ class ReleaseBuildNotesTest(unittest.TestCase):
     def generate(self) -> str:
         release_build_notes.generate(self.repo, "v1.0.0")
         return (self.repo / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def test_cli_rejects_invalid_tags_before_starting_subprocess(self) -> None:
+        invalid_tags = (
+            "", "--help", "v1.0.0; touch unsafe", "v1.0.0$(id)",
+            "v1.0.0\n", "v1.0.0:go.mod", "v1.0.0..HEAD", "v1.0.0^",
+            "v1.0.0-rc.1", "v1000000000.0.0", " v1.0.0", "v1.0.0/other",
+        )
+        for tag in invalid_tags:
+            with self.subTest(tag=tag), mock.patch("subprocess.Popen") as popen:
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    status = release_build_notes.main([
+                        "--repo", str(self.repo), f"--previous-tag={tag}",
+                    ])
+                self.assertEqual(status, 1)
+                self.assertIn("stable", stderr.getvalue())
+                popen.assert_not_called()
 
     def test_commit_ignores_inherited_git_index(self) -> None:
         with tempfile.TemporaryDirectory() as marker_temp:
