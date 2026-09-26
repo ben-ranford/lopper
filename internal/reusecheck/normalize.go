@@ -28,6 +28,13 @@ func imports(file *ast.File) map[string]string {
 }
 
 func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
+	for {
+		parenthesized, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = parenthesized.X
+	}
 	selector, ok := expr.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != name {
 		return false
