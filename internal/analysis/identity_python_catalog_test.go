@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPythonAdapterCatalogEnrichesWithoutReopeningManifests(t *testing.T) {
@@ -140,7 +142,7 @@ func TestPythonCatalogPreservesIdentityEvidenceAndFailures(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			repo := t.TempDir()
 			warnings := newIdentityWarningCollector(repo)
-			collectPythonCatalogEvidence(repo, make(identityIndex), []report.PythonManifestDocument{{Path: "requirements.txt", Failure: "failed", FailureKind: kind, FailureStage: "read"}}, warnings)
+			collectPythonCatalogEvidence(context.Background(), repo, make(identityIndex), []report.PythonManifestDocument{{Path: "requirements.txt", Failure: "failed", FailureKind: kind, FailureStage: "read"}}, warnings)
 			if len(warnings.list()) != 1 {
 				t.Fatalf("warnings: %v", warnings.list())
 			}
@@ -257,3 +259,44 @@ func TestIdentityDiscoveryContinuesAfterUnreadableDirectory(t *testing.T) {
 		t.Fatalf("expected path-specific discovery warning: %v", messages)
 	}
 }
+
+func TestPythonCatalogCancellationStopsDeferredReads(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.3\n")
+	documents := []report.PythonManifestDocument{
+		{Path: "requirements.txt", Deferred: true},
+		{Path: "missing/requirements.txt", Deferred: true},
+	}
+	for _, cancelAfter := range []int{0, 1} {
+		t.Run(fmt.Sprint(cancelAfter), func(t *testing.T) {
+			ctx := &catalogCancelContext{remaining: cancelAfter}
+			index := make(identityIndex)
+			warnings := newIdentityWarningCollector(repo)
+			collectPythonCatalogEvidence(ctx, repo, index, documents, warnings)
+			if (len(index) != 0) != (cancelAfter == 1) {
+				t.Fatalf("unexpected evidence after cancellation: %v", index)
+			}
+			if messages := warnings.list(); len(messages) != 0 {
+				t.Fatalf("read missing deferred file after cancellation: %v", messages)
+			}
+		})
+	}
+}
+
+type catalogCancelContext struct {
+	remaining int
+}
+
+func (c *catalogCancelContext) Err() error {
+	if c.remaining == 0 {
+		return context.Canceled
+	}
+	c.remaining--
+	return nil
+}
+
+func (c *catalogCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *catalogCancelContext) Done() <-chan struct{} { return nil }
+
+func (c *catalogCancelContext) Value(any) any { return nil }

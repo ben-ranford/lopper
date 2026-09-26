@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"errors"
 	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -10,9 +11,12 @@ import (
 	"strings"
 )
 
-func collectPythonCatalogEvidence(repo string, index identityIndex, documents []report.PythonManifestDocument, warnings *identityWarningCollector) {
+func collectPythonCatalogEvidence(ctx context.Context, repo string, index identityIndex, documents []report.PythonManifestDocument, warnings *identityWarningCollector) {
 	for _, manifestPhase := range []bool{false, true} {
 		for _, document := range documents {
+			if ctx.Err() != nil {
+				return
+			}
 			name := filepath.Base(document.Path)
 			isManifest := name == pythonProjectFileName || name == pythonPipfileName
 			if isManifest == manifestPhase {
