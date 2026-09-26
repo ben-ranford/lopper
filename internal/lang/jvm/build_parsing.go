@@ -244,8 +244,9 @@ func parsePomDependencyContent(relativePath, content string) ([]dependencyDescri
 	}
 
 	propertyMap := buildPomPropertyMap(project)
-	directDescriptors, directWarnings := parsePomDependencyList(project.Dependencies, propertyMap, pomDependencyDirect, relativePath)
-	managedDescriptors, managedWarnings := parsePomDependencyList(project.DependencyManagement.Dependencies, propertyMap, pomDependencyManaged, relativePath)
+	budget := newPomExpansionBudget()
+	directDescriptors, directWarnings := parsePomDependencyList(project.Dependencies, propertyMap, pomDependencyDirect, relativePath, budget)
+	managedDescriptors, managedWarnings := parsePomDependencyList(project.DependencyManagement.Dependencies, propertyMap, pomDependencyManaged, relativePath, budget)
 
 	descriptors := make([]dependencyDescriptor, 0, len(directDescriptors)+len(managedDescriptors))
 	descriptors = append(descriptors, directDescriptors...)
@@ -258,11 +259,11 @@ func parsePomDependencyContent(relativePath, content string) ([]dependencyDescri
 	return dedupeAndSortDescriptors(descriptors), shared.DedupeWarnings(warnings)
 }
 
-func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string) ([]dependencyDescriptor, []string) {
+func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string, budget *pomExpansionBudget) ([]dependencyDescriptor, []string) {
 	descriptors := make([]dependencyDescriptor, 0, len(dependencies))
 	warnings := make([]string, 0)
 	for _, dependency := range dependencies {
-		descriptor, warning := parsePomDependency(dependency, propertyMap, kind, relativePath)
+		descriptor, warning := parsePomDependencyWithBudget(dependency, propertyMap, kind, relativePath, budget)
 		if descriptor.Group != "" && descriptor.Artifact != "" {
 			descriptors = append(descriptors, descriptor)
 		}
@@ -274,8 +275,12 @@ func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[s
 }
 
 func parsePomDependency(dependency pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string) (dependencyDescriptor, string) {
-	group, unresolvedGroup := resolvePomPropertyValue(dependency.GroupID, propertyMap)
-	artifact, unresolvedArtifact := resolvePomPropertyValue(dependency.ArtifactID, propertyMap)
+	return parsePomDependencyWithBudget(dependency, propertyMap, kind, relativePath, newPomExpansionBudget())
+}
+
+func parsePomDependencyWithBudget(dependency pomDependencyModel, propertyMap map[string]string, kind pomDependencyKind, relativePath string, budget *pomExpansionBudget) (dependencyDescriptor, string) {
+	group, unresolvedGroup := budget.resolve(dependency.GroupID, propertyMap)
+	artifact, unresolvedArtifact := budget.resolve(dependency.ArtifactID, propertyMap)
 	if unresolvedGroup || unresolvedArtifact || group == "" || artifact == "" {
 		return dependencyDescriptor{}, ""
 	}
@@ -289,7 +294,7 @@ func parsePomDependency(dependency pomDependencyModel, propertyMap map[string]st
 		return descriptor, ""
 	}
 
-	version, unresolvedVersion := resolvePomPropertyValue(dependency.Version, propertyMap)
+	version, unresolvedVersion := budget.resolve(dependency.Version, propertyMap)
 	if !isPomImportedBOM(dependency) {
 		if version == "" || unresolvedVersion {
 			return descriptor, fmt.Sprintf("unable to resolve managed Maven version for %s:%s in %s", group, artifact, relativePath)
@@ -355,19 +360,55 @@ func setPomPropertyValue(properties map[string]string, key, value string) {
 	properties[key] = value
 }
 
+const (
+	maxPomPropertyValueBytes = 64 * 1024
+	maxPomPropertyTokens     = 1024
+	maxPomExpansionBytes     = 8 * 1024 * 1024
+	maxPomExpansionTokens    = 128 * 1024
+)
+
+type pomExpansionBudget struct {
+	bytesRemaining  int
+	tokensRemaining int
+}
+
+func newPomExpansionBudget() *pomExpansionBudget {
+	return &pomExpansionBudget{maxPomExpansionBytes, maxPomExpansionTokens}
+}
+
 func resolvePomPropertyValue(value string, properties map[string]string) (string, bool) {
+	return newPomExpansionBudget().resolve(value, properties)
+}
+
+func (b *pomExpansionBudget) resolve(value string, properties map[string]string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", false
 	}
 	unresolved := false
+	tokensRemaining := maxPomPropertyTokens
 	for iteration := 0; iteration < 8; iteration++ {
-		updated, replaced, missing := replacePomPropertyTokens(value, properties)
+		if b.bytesRemaining < maxPomPropertyValueBytes || b.tokensRemaining < maxPomPropertyTokens {
+			return "", true
+		}
+		updated, replaced, missing, tokensUsed := replacePomPropertyTokens(value, properties, tokensRemaining)
+		// Charge failed attempts too: a rejected pass may have built a full value.
+		chargedBytes := len(updated)
+		if updated == "" && missing {
+			chargedBytes = maxPomPropertyValueBytes
+			tokensUsed = maxPomPropertyTokens
+		}
+		b.bytesRemaining -= chargedBytes
+		b.tokensRemaining -= tokensUsed
 		unresolved = unresolved || missing
+		if updated == "" && missing {
+			return "", true
+		}
+		value = updated
+		tokensRemaining -= tokensUsed
 		if !replaced {
 			break
 		}
-		value = updated
 	}
 	if pomPropertyTokenPattern.MatchString(value) {
 		unresolved = true
@@ -375,25 +416,150 @@ func resolvePomPropertyValue(value string, properties map[string]string) (string
 	return strings.TrimSpace(value), unresolved
 }
 
-func replacePomPropertyTokens(value string, properties map[string]string) (string, bool, bool) {
-	matches := pomPropertyTokenPattern.FindAllStringSubmatch(value, -1)
-	if len(matches) == 0 {
-		return value, false, false
+func replacePomPropertyTokens(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
+	if len(value) > maxPomPropertyValueBytes {
+		return "", false, true, 0
 	}
+	return replacePomPropertyTokensWithinBounds(value, properties, tokensRemaining)
+}
 
-	updated := value
-	replaced := false
-	unresolved := false
-	for _, match := range matches {
-		token, replacement, ok := pomPropertyReplacement(match, properties)
-		if !ok {
-			unresolved = unresolved || len(match) == 2
+func replacePomPropertyTokensWithinBounds(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
+	var tokens [maxPomPropertyTokens]string
+	matches := tokens[:0]
+	for search := 0; search < len(value); {
+		start, end, next, found := nextPomPropertyToken(value, search)
+		if !found {
+			break
+		}
+		search = next
+		if end-start == 3 {
 			continue
 		}
-		updated = strings.ReplaceAll(updated, token, replacement)
-		replaced = true
+		if len(matches) == maxPomPropertyTokens {
+			return "", false, true, 0
+		}
+		matches = append(matches, value[start:end])
 	}
-	return updated, replaced, unresolved
+	stages := make([]pomTokenStage, len(matches))
+	for index, token := range matches {
+		stages[index] = pomTokenStage{token: token, index: index}
+	}
+	sort.Slice(stages, func(left, right int) bool {
+		if stages[left].token == stages[right].token {
+			return stages[left].index < stages[right].index
+		}
+		return stages[left].token < stages[right].token
+	})
+	positions := make(map[string]pomStageRange, len(stages))
+	for index, stage := range stages {
+		position := positions[stage.token]
+		if position.count == 0 {
+			position.start = index
+		}
+		position.count++
+		positions[stage.token] = position
+	}
+	expansion := pomPropertyExpansion{properties: properties, order: matches, stages: stages, positions: positions, tokensRemaining: tokensRemaining}
+	if !expansion.appendValue(value, 0) {
+		return "", false, true, 0
+	}
+	return expansion.updated.String(), expansion.tokensUsed != 0, expansion.unresolved, expansion.tokensUsed
+}
+
+func nextPomPropertyToken(value string, search int) (int, int, int, bool) {
+	open := strings.Index(value[search:], "${")
+	if open < 0 {
+		return 0, 0, 0, false
+	}
+	start := search + open
+	keyStart := start + 2
+	closingBrace := strings.IndexByte(value[keyStart:], '}')
+	if closingBrace < 0 {
+		return 0, 0, 0, false
+	}
+	end := keyStart + closingBrace + 1
+	return start, end, end, true
+}
+
+// Each original token schedules one global replacement. Introduced tokens can
+// participate only in later scheduled replacements, preserving Maven's ordered
+// passes without rebuilding the whole value for every token.
+type pomPropertyExpansion struct {
+	properties      map[string]string
+	order           []string
+	stages          []pomTokenStage
+	positions       map[string]pomStageRange
+	updated         strings.Builder
+	tokensRemaining int
+	tokensUsed      int
+	unresolved      bool
+}
+
+type pomTokenStage struct {
+	token string
+	index int
+}
+
+type pomStageRange struct {
+	start int
+	count int
+}
+
+func (e *pomPropertyExpansion) appendLiteral(value string) bool {
+	if len(value) > maxPomPropertyValueBytes-e.updated.Len() {
+		return false
+	}
+	e.updated.WriteString(value)
+	return true
+}
+
+func (e *pomPropertyExpansion) appendValue(value string, first int) bool {
+	for search := 0; search < len(value); {
+		start, end, next, found := nextPomPropertyToken(value, search)
+		if !found {
+			return e.appendLiteral(value[search:])
+		}
+		if !e.appendLiteral(value[search:start]) {
+			return false
+		}
+		token := value[start:end]
+		stage := e.nextStage(token, first)
+		if !e.appendToken(token, stage) {
+			return false
+		}
+		search = next
+	}
+	return true
+}
+
+func (e *pomPropertyExpansion) nextStage(token string, first int) int {
+	position, ok := e.positions[token]
+	if !ok {
+		return len(e.order)
+	}
+	start := position.start
+	end := start + position.count
+	index := sort.Search(position.count, func(offset int) bool { return e.stages[start+offset].index >= first })
+	if start+index == end {
+		return len(e.order)
+	}
+	return e.stages[start+index].index
+}
+
+func (e *pomPropertyExpansion) appendToken(token string, stage int) bool {
+	if stage == len(e.order) {
+		return e.appendLiteral(token)
+	}
+	replacement, ok := pomPropertyValue(token[2:len(token)-1], e.properties)
+	if !ok {
+		e.unresolved = true
+		return e.appendLiteral(token)
+	}
+	if e.tokensUsed == e.tokensRemaining || len(replacement) > maxPomPropertyValueBytes {
+		return false
+	}
+	e.tokensUsed++
+	return e.appendValue(replacement, stage+1)
 }
 
 func pomPropertyReplacement(match []string, properties map[string]string) (string, string, bool) {
@@ -402,16 +568,25 @@ func pomPropertyReplacement(match []string, properties map[string]string) (strin
 	}
 
 	key := strings.TrimSpace(match[1])
-	replacement, ok := properties[key]
+	replacement, ok := pomPropertyValue(key, properties)
 	if !ok {
 		return match[0], "", false
+	}
+	return match[0], replacement, true
+}
+
+func pomPropertyValue(key string, properties map[string]string) (string, bool) {
+	key = strings.TrimSpace(key)
+	replacement, ok := properties[key]
+	if !ok {
+		return "", false
 	}
 
 	replacement = strings.TrimSpace(replacement)
 	if replacement == "" {
-		return match[0], "", false
+		return "", false
 	}
-	return match[0], replacement, true
+	return replacement, true
 }
 
 func parseGradleDependencies(repoPath string) []dependencyDescriptor {
