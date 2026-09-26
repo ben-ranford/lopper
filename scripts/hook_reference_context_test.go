@@ -125,6 +125,25 @@ func assertHookSnapshotRetention(t *testing.T, managed string, tc hookReferenceC
 	}
 }
 
+func TestHooksUninstallResolvesConfiguredWorktreeRoot(t *testing.T) {
+	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
+	effectiveRoot := t.TempDir()
+	const hookPath = "custom hooks"
+	if err := os.Mkdir(filepath.Join(linked, hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(managed, filepath.Join(effectiveRoot, hookPath)); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("hook directory links unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", hookPath)
+	runCommand(t, linked, "git", "config", "--worktree", "core.worktree", effectiveRoot)
+	runCommand(t, repo, "make", "hooks-uninstall")
+	assertHookSnapshotRetention(t, managed, hookReferenceCase{alias: true})
+}
+
 func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
 	for _, tc := range []struct {
 		name string
