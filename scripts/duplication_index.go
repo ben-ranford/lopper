@@ -97,6 +97,9 @@ func functionShape(fn *ast.FuncDecl) string {
 	// Values and identifier spellings deliberately do not establish equivalence.
 	// Nil markers preserve tree boundaries while positions/comments are omitted.
 	var shape strings.Builder
+	if fn.Recv != nil {
+		writeNodeShape(&shape, fn.Recv)
+	}
 	writeNodeShape(&shape, fn.Type)
 	writeNodeShape(&shape, fn.Body)
 	digest := sha256.Sum256([]byte(shape.String()))

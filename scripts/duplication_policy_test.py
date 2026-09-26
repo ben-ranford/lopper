@@ -108,6 +108,26 @@ class OccurrencePolicyTests(unittest.TestCase):
         self.assertEqual(len(current), 1)
         self.assertEqual(policy.evaluate(current, policy.propose_baseline({}))['findings'][0]['status'], 'violation')
 
+    def test_receiver_change_is_a_new_occurrence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'receiver.go'
+            value_method = 'package calibration\ntype Item struct{}\nfunc (item Item) Value() int { return 1 }\n'
+            source.write_text(value_method)
+            command = ['go', 'run', str(Path(__file__).with_name('duplication_index.go'))]
+            arguments = {'input': json.dumps([str(source)]), 'capture_output': True, 'text': True, 'check': True}
+            original = json.loads(subprocess.run(command, **arguments).stdout)[0]
+            historical = function('Historical')
+            baseline = policy.propose_baseline(pairs(original, historical))
+
+            source.write_text(value_method.replace('(item Item)', '(item *Item)'))
+            updated = json.loads(subprocess.run(command, **arguments).stdout)[0]
+            self.assertEqual(original['name'], 'Item.Value')
+            self.assertEqual(updated['name'], original['name'])
+            self.assertNotEqual(updated['shape'], original['shape'])
+            self.assertNotEqual(policy.identity(updated), policy.identity(original))
+            report = policy.evaluate(pairs(updated, historical), baseline)
+            self.assertEqual(report['findings'][0]['status'], 'violation')
+
     def test_go_ast_identity_calibration(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'calibration.go'

@@ -24,8 +24,8 @@
     },
     {
       "members": [
-        "internal/app/analyse_postprocess.go::App.saveBaselineIfNeeded@12da5c168b46265a7b234a97fd4e34414c32b3348a8a8c1d812e7400cb8bd727",
-        "internal/app/dashboard.go::App.saveDashboardBaselineIfNeeded@12da5c168b46265a7b234a97fd4e34414c32b3348a8a8c1d812e7400cb8bd727"
+        "internal/app/analyse_postprocess.go::App.saveBaselineIfNeeded@eb4980f42fa57398f4b7aefdc05971edaa98ab9c9a2fb6700af95dc85835b328",
+        "internal/app/dashboard.go::App.saveDashboardBaselineIfNeeded@eb4980f42fa57398f4b7aefdc05971edaa98ab9c9a2fb6700af95dc85835b328"
       ],
       "canonical_helper": null
     },
@@ -166,8 +166,8 @@
     },
     {
       "members": [
-        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck@c3a4cc7693c5ef5a1d3ad18a1898293a4c06490952f5408e9f767d67e14bd37c",
-        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPublishCheck@c3a4cc7693c5ef5a1d3ad18a1898293a4c06490952f5408e9f767d67e14bd37c"
+        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck@06e3f30cac54dc037f37c20d3caf75c92d6c2e4999b9832a1ebb42397ba516e4",
+        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPublishCheck@06e3f30cac54dc037f37c20d3caf75c92d6c2e4999b9832a1ebb42397ba516e4"
       ],
       "canonical_helper": null
     },
@@ -181,7 +181,7 @@
     {
       "members": [
         "internal/ui/stave_model.go::hashStaveSummaryModel@7b32e2e4a61a7a80d19bba040ba627bbeb57a051b29a5edefb728f4ecb27e682",
-        "internal/ui/stave_model.go::staveSummaryModel.MarshalJSON@0894d9bcb67034a8368b35fc3d488ac6e58d86bf3b1b539f414e2280b2eac39e"
+        "internal/ui/stave_model.go::staveSummaryModel.MarshalJSON@4bb8ed26de0786a393a73f8bb74bc40a279118ab3d2f96fec022f0a6c18e8c69"
       ],
       "canonical_helper": null
     }
