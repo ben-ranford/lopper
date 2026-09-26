@@ -51,17 +51,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	stats := shared.BuildDependencyStats(dependency, dartFileUsages(scan), normalizeDependencyID)
 	meta, declared := scan.DeclaredDependencies[dependency]
 
-	dep := report.DependencyReport{
-		Language:             "dart",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "dart", stats)
 
 	warnings := make([]string, 0, 1)
 	if !stats.HasImports {

@@ -72,10 +72,16 @@ type staveTerminalSnapshot struct {
 // staveTerminalModel is exported only through its constructor for tests in
 // this package; callers should use runStaveTerminal.
 type staveTerminalModel struct {
-	bridge *staveTerminal
+	bridge     *staveTerminal
+	startInput func()
 }
 
-func (m *staveTerminalModel) Init() tea.Cmd { return nil }
+func (m *staveTerminalModel) Init() tea.Cmd {
+	if m.startInput != nil {
+		m.startInput()
+	}
+	return nil
+}
 
 func (m *staveTerminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	b := m.bridge
@@ -83,6 +89,9 @@ func (m *staveTerminalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	switch msg := msg.(type) {
+	case staveTerminalInputError:
+		b.fail(msg.err)
+		return m, tea.Quit
 	case tea.QuitMsg, tea.InterruptMsg:
 		b.cancelInflight()
 		b.shutdown()
@@ -584,7 +593,12 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 		return staveTerminalSnapshot{model: current.Model, tree: current.Tree, caps: current.Capabilities, theme: s.Theme}, nil
 	}
 	m := &staveTerminalModel{bridge: &staveTerminal{ctx: runCtx, prepared: prepared, sendEvent: sendEvent, snapshot: snapshot, width: opts.Width, height: 24, alt: alt}}
-	program := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output), tea.WithoutSignalHandler())
+	terminalInput, err := newStaveTerminalInput(input)
+	if err != nil {
+		return err
+	}
+	program := tea.NewProgram(m, tea.WithInput(terminalInput.terminal()), tea.WithOutput(output), tea.WithoutSignalHandler())
+	m.startInput = func() { terminalInput.start(program) }
 	programFinished := make(chan struct{})
 	go func() {
 		select {
@@ -596,9 +610,10 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 		case <-programFinished:
 		}
 	}()
-	_, err := program.Run()
+	_, err = program.Run()
 	close(programFinished)
-	return finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err)
+	inputErr := terminalInput.close()
+	return errors.Join(finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err), inputErr)
 }
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {
