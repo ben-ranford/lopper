@@ -44,21 +44,7 @@ func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types
 		if !ok {
 			return true
 		}
-		replacement := ""
-		object := info.ObjectOf(ident)
-		variable, local := object.(*types.Var)
-		switch {
-		case local && !variable.IsField():
-			replacement = names[object]
-			if replacement == "" {
-				replacement = "local" + strconv.Itoa(len(names))
-				names[object] = replacement
-			}
-		case isLocalObject(object) && ident != fn.Name:
-			replacement = "bound_" + ident.Name
-		case packages[ident.Name] != "":
-			replacement = "package_" + strings.NewReplacer("/", "_", ".", "_").Replace(packages[ident.Name])
-		}
+		replacement := canonicalName(ident, fn.Name, packages, info, names)
 		if replacement != "" {
 			original[ident] = ident.Name
 			ident.Name = replacement
@@ -93,13 +79,32 @@ func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types
 	return result.String()
 }
 
+func canonicalName(ident, functionName *ast.Ident, packages map[string]string, info *types.Info, names map[types.Object]string) string {
+	object := info.ObjectOf(ident)
+	if variable, local := object.(*types.Var); local && !variable.IsField() {
+		if names[object] == "" {
+			names[object] = "local" + strconv.Itoa(len(names))
+		}
+		return names[object]
+	}
+	if isLocalObject(object) && ident != functionName {
+		return "bound_" + ident.Name
+	}
+	if path := packages[ident.Name]; path != "" {
+		return "package_" + strings.NewReplacer("/", "_", ".", "_").Replace(path)
+	}
+	return ""
+}
+
 // bindings asks go/types for lexical def/use ownership. The isolated function may
 // reference unavailable package declarations; no type error is interpreted as
 // proof of a contract. Import ownership and concrete field provenance are checked
 // separately, while unresolved syntax cannot match a template.
 func bindings(file *ast.File, fset *token.FileSet) *types.Info {
 	info := &types.Info{Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
-	config := types.Config{Error: func(error) {}}
+	config := types.Config{Error: func(error) {
+		// Continue collecting lexical bindings when isolated source cannot type-check.
+	}}
 	if _, err := config.Check("bindings", fset, []*ast.File{file}, info); err != nil {
 		// Keep lexical bindings even when imports are unavailable.
 		return info

@@ -32,8 +32,7 @@ func ReadExceptions(reader io.Reader) ([]Exception, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("exception file must contain a JSON array")
 	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, fmt.Errorf("exception file must contain one JSON array")
 	}
 	var exceptions []Exception
@@ -69,7 +68,7 @@ func validException(item Exception) bool {
 	digest, err := hex.DecodeString(item.SHA256)
 	return fs.ValidPath(item.Path) && strings.HasSuffix(item.Path, ".go") && !strings.Contains(item.Path, `\`) &&
 		strings.TrimSpace(item.Function) != "" && knownRule(item.Rule) && strings.TrimSpace(item.Reason) != "" &&
-		exceptionIssue.MatchString(item.Issue) && err == nil && len(digest) == sha256.Size
+		exceptionIssue.MatchString(item.Issue) && err == nil && len(digest) == sha256.Size && hex.EncodeToString(digest) == item.SHA256
 }
 
 func knownRule(rule string) bool {

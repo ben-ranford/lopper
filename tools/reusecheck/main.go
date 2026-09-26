@@ -65,42 +65,7 @@ func scanRoot(root rootFS, exceptionsPath string, legacy bool, stdout, stderr io
 		}
 		return 2
 	}
-	violations := 0
-	err = fs.WalkDir(root.FileSystem(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if path != "." && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor" || entry.Name() == "node_modules" || entry.Name() == "testdata") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		data, err := root.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		findings, err := reusecheck.Analyze(filepath.ToSlash(path), data)
-		if err != nil {
-			return err
-		}
-		for _, finding := range findings {
-			if reusecheck.Approved(finding, data, exceptions) {
-				continue
-			}
-			finding.Advisory = finding.Advisory || legacy && reusecheck.LegacyAdvisory(finding, data)
-			if _, err := fmt.Fprintln(stdout, finding.String()); err != nil {
-				return err
-			}
-			if !finding.Advisory {
-				violations++
-			}
-		}
-		return nil
-	})
+	violations, err := scanSources(root, exceptions, legacy, stdout)
 	if err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
 			return 2
@@ -111,6 +76,57 @@ func scanRoot(root rootFS, exceptionsPath string, legacy bool, stdout, stderr io
 		return 1
 	}
 	return 0
+}
+
+func scanSources(root rootFS, exceptions []reusecheck.Exception, legacy bool, stdout io.Writer) (int, error) {
+	violations := 0
+	err := fs.WalkDir(root.FileSystem(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if skipDirectory(path, entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		count, err := scanFile(root, path, exceptions, legacy, stdout)
+		violations += count
+		return err
+	})
+	return violations, err
+}
+
+func skipDirectory(path, name string) bool {
+	return path != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "testdata")
+}
+
+func scanFile(root rootFS, path string, exceptions []reusecheck.Exception, legacy bool, stdout io.Writer) (int, error) {
+	data, err := root.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	findings, err := reusecheck.Analyze(filepath.ToSlash(path), data)
+	if err != nil {
+		return 0, err
+	}
+	violations := 0
+	for _, finding := range findings {
+		if reusecheck.Approved(finding, data, exceptions) {
+			continue
+		}
+		finding.Advisory = finding.Advisory || legacy && reusecheck.LegacyAdvisory(finding, data)
+		if _, err := fmt.Fprintln(stdout, finding.String()); err != nil {
+			return violations, err
+		}
+		if !finding.Advisory {
+			violations++
+		}
+	}
+	return violations, nil
 }
 
 func finishRoot(result int, closeErr error, stderr io.Writer) int {
