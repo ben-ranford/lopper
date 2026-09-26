@@ -50,17 +50,17 @@ func Analyze(path string, source []byte) ([]Finding, error) {
 	return findings, nil
 }
 
-func withoutDecorativeCalls(statements []ast.Stmt, packages map[string]string) []ast.Stmt {
+func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[string]string) []ast.Stmt {
 	result := make([]ast.Stmt, 0, len(statements))
 	for _, statement := range statements {
-		if !decorativeCall(statement, packages) {
+		if !decorativeCall(path, statement, packages) {
 			result = append(result, statement)
 		}
 	}
 	return result
 }
 
-func decorativeCall(statement ast.Stmt, packages map[string]string) bool {
+func decorativeCall(path string, statement ast.Stmt, packages map[string]string) bool {
 	var expr ast.Expr
 	switch item := statement.(type) {
 	case *ast.ExprStmt:
@@ -82,7 +82,7 @@ func decorativeCall(statement ast.Stmt, packages map[string]string) bool {
 		return false
 	}
 	owned := imported(call.Fun, packages, module+"report", "SortedUniqueTrimmedStrings") || imported(call.Fun, packages, sharedPackage, "SortedKeys") || imported(call.Fun, packages, sharedPackage, "SortedDependencyUnion")
-	if !owned {
+	if !owned && !samePackageHelper(path, call.Fun) {
 		return false
 	}
 	for _, arg := range call.Args {
@@ -91,6 +91,19 @@ func decorativeCall(statement ast.Stmt, packages map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func samePackageHelper(path string, expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	if !ok || (ident.Obj != nil && ident.Obj.Kind != ast.Fun) {
+		return false
+	}
+	for _, owner := range collectionOwners {
+		if ident.Name == owner.function && filepath.Dir(filepath.ToSlash(path)) == filepath.Dir(owner.owner) {
+			return true
+		}
+	}
+	return false
 }
 
 func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *types.Info, declarations map[types.Object]ast.Node) bool {
@@ -218,7 +231,7 @@ func contractFingerprints(source string) (map[string]contract, error) {
 func functionFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
 	var findings []Finding
 	statements := fn.Body.List
-	fn.Body.List = withoutDecorativeCalls(statements, packages)
+	fn.Body.List = withoutDecorativeCalls(path, statements, packages)
 	matched, found := fingerprints[canonicalFunction(fn, packages, info)]
 	fn.Body.List = statements
 	if matched.rule == "sorted-set-keys" && !strings.HasPrefix(filepath.ToSlash(path), "internal/lang/") {

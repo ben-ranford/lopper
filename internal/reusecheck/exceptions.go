@@ -32,7 +32,7 @@ func ReadExceptions(reader io.Reader) ([]Exception, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("exception file must contain a JSON array")
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
+	if decoder.Decode(new(any)) != io.EOF {
 		return nil, fmt.Errorf("exception file must contain one JSON array")
 	}
 	var exceptions []Exception
