@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,7 +316,7 @@ func TestElixirIdentityRejectsMalformedLockAndManifestSeparators(t *testing.T) {
 func TestRubyIdentityCollectorAndParserFailureBranches(t *testing.T) {
 	repoPath := t.TempDir()
 	warnings := newIdentityWarningCollector(repoPath)
-	collectRubyIdentityEvidenceFromPaths(repoPath, identityIndex{}, []string{filepath.Join(repoPath, rubyIdentityLockName)}, warnings)
+	collectRubyIdentityEvidenceFromPaths(context.Background(), repoPath, identityIndex{}, []string{filepath.Join(repoPath, rubyIdentityLockName)}, warnings)
 	assertWarningsExact(t, repoPath, warnings.list(), []string{
 		"identity manifest read failed for Gemfile.lock: not found",
 	})
@@ -510,7 +511,7 @@ func TestIdentityTermParserBoundaryHelpers(t *testing.T) {
 		t.Fatalf("expected an empty lock map to end cleanly, got %d, %t, %t", position, done, valid)
 	}
 	declared := map[string]struct{}{}
-	addElixirUmbrellaDeclarations("/repo", "/repo", "../outside", nil, declared, nil)
+	addElixirUmbrellaDeclarations(context.Background(), "/repo", "/repo", "../outside", nil, declared, nil)
 	if len(declared) != 0 {
 		t.Fatalf("expected an escaping umbrella path to be ignored, got %#v", declared)
 	}

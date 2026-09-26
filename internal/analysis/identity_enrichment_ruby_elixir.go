@@ -105,8 +105,11 @@ func discoverElixirIdentityManifestsWithContext(ctx context.Context, repoPath st
 	snapshot.elixirFiles = append(snapshot.elixirFiles, paths...)
 }
 
-func collectRubyIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectRubyIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return
+		}
 		data, err := safeio.ReadFileUnder(repoPath, path)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
@@ -318,16 +321,22 @@ func uniqueRubyIdentityLockedSpecs(specs []rubyIdentityLockedSpec) []rubyIdentit
 	return result
 }
 
-func collectElixirIdentityEvidenceFromPaths(repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
+func collectElixirIdentityEvidenceFromPaths(ctx context.Context, repoPath string, index identityIndex, paths []string, warnings *identityWarningCollector) {
 	domains := groupElixirIdentityDomains(paths)
 	for _, directory := range sortedIdentityMapKeys(domains) {
+		if ctx.Err() != nil {
+			return
+		}
 		domain := domains[directory]
 		if domain.lockPath == "" {
 			continue
 		}
 		manifest := readElixirIdentityManifest(repoPath, domain.manifestPath, warnings)
 		if manifest.umbrella {
-			addElixirUmbrellaDeclarations(repoPath, directory, manifest.appsPath, domains, manifest.declared, warnings)
+			addElixirUmbrellaDeclarations(ctx, repoPath, directory, manifest.appsPath, domains, manifest.declared, warnings)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		locked, ok := readElixirIdentityLock(repoPath, domain.lockPath, warnings)
 		if ok {
@@ -355,12 +364,15 @@ func readElixirIdentityManifest(repoPath, path string, warnings *identityWarning
 	return manifest
 }
 
-func addElixirUmbrellaDeclarations(repoPath, directory, appsPath string, domains map[string]elixirIdentityDomain, declared map[string]struct{}, warnings *identityWarningCollector) {
+func addElixirUmbrellaDeclarations(ctx context.Context, repoPath, directory, appsPath string, domains map[string]elixirIdentityDomain, declared map[string]struct{}, warnings *identityWarningCollector) {
 	appsRoot := filepath.Clean(filepath.Join(directory, appsPath))
 	if !shared.IsPathWithin(repoPath, appsRoot) {
 		return
 	}
 	for _, childDirectory := range sortedIdentityMapKeys(domains) {
+		if ctx.Err() != nil {
+			return
+		}
 		child := domains[childDirectory]
 		if child.manifestPath == "" || child.lockPath != "" || !isImmediateIdentityChild(appsRoot, childDirectory) {
 			continue
