@@ -92,3 +92,38 @@ func TestPomPropertyExpansionStopsRecursiveAmplification(t *testing.T) {
 		t.Fatalf("expected bounded unresolved recursive expansion, got %d bytes, unresolved=%v", len(value), unresolved)
 	}
 }
+
+func TestPomPropertyExpansionPreservesOrderedPass(t *testing.T) {
+	properties := map[string]string{"j": "x"}
+	var input strings.Builder
+	for key := byte('a'); key <= 'j'; key++ {
+		input.WriteString("${" + string(key) + "}")
+		if key < 'j' {
+			properties[string(key)] = "${" + string(key+1) + "}"
+		}
+	}
+	got, replaced, missing, used := replacePomPropertyTokens(input.String(), properties, 1024)
+	if got != strings.Repeat("x", 10) || !replaced || missing || used != 55 {
+		t.Fatalf("ordered pass: got %q, replaced=%v, missing=%v, used=%d", got, replaced, missing, used)
+	}
+}
+
+func TestPomPropertyExpansionSharesPOMBudget(t *testing.T) {
+	var content strings.Builder
+	content.WriteString("<project><properties><large>" + strings.Repeat("x", 64*1024) + "</large></properties><dependencies>")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&content, "<dependency><groupId>${large}</groupId><artifactId>a%d</artifactId></dependency>", i)
+	}
+	content.WriteString("</dependencies><dependencyManagement><dependencies><dependency><groupId>${large}</groupId><artifactId>managed</artifactId></dependency></dependencies></dependencyManagement></project>")
+	descriptors, _ := parsePomDependencyContent("pom.xml", content.String())
+	bytes := 0
+	for _, descriptor := range descriptors {
+		bytes += len(descriptor.Group) + len(descriptor.Artifact)
+		if descriptor.Artifact == "managed" {
+			t.Fatal("managed list reset the POM budget")
+		}
+	}
+	if len(descriptors) == 0 || len(descriptors) >= 300 || bytes > maxPomExpansionBytes {
+		t.Fatalf("unbounded aggregate result: %d descriptors, %d bytes", len(descriptors), bytes)
+	}
+}
