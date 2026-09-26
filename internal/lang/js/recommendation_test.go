@@ -39,7 +39,7 @@ func TestBuildRecommendationsBranchesAndOrdering(t *testing.T) {
 			t.Fatalf("expected recommendation %q, got %#v", want, codes)
 		}
 	}
-	if recommendationPriorityRank(recs[0].Priority) > recommendationPriorityRank(recs[len(recs)-1].Priority) {
+	if !slices.Equal(codes, []string{"avoid-wildcard-default-imports", "prefer-subpath-imports", "consider-replacement"}) {
 		t.Fatalf("expected recommendations sorted by priority, got %#v", recs)
 	}
 }
@@ -76,8 +76,5 @@ func TestRecommendationHelperFunctions(t *testing.T) {
 	})
 	if !root || !subpath || !wildcard {
 		t.Fatalf("expected root/subpath/wildcard flags to be true, got root=%v subpath=%v wildcard=%v", root, subpath, wildcard)
-	}
-	if recommendationPriorityRank("high") != 0 || recommendationPriorityRank("medium") != 1 || recommendationPriorityRank("other") != 2 {
-		t.Fatalf("unexpected recommendation priority rank mapping")
 	}
 }

@@ -33,16 +33,7 @@ func TestSortRecommendations(t *testing.T) {
 		{Code: "b-second", Priority: "high"},
 	}
 
-	SortRecommendations(recommendations, func(priority string) int {
-		switch priority {
-		case "high":
-			return 0
-		case "medium":
-			return 1
-		default:
-			return 2
-		}
-	})
+	SortRecommendations(recommendations, report.RecommendationPriorityRank)
 
 	got := []string{
 		recommendations[0].Code,
@@ -90,5 +81,22 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 	testutil.MustWriteFile(t, invalidPath, "name: [\n")
 	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
 		t.Fatalf("expected parse error for invalid yaml, got %v", err)
+	}
+}
+
+func TestSortRecommendationsCanonicalPriorities(t *testing.T) {
+	recommendations := []report.Recommendation{
+		{Code: "f", Priority: "other"}, {Code: "b", Priority: " HIGH "},
+		{Code: "d", Priority: "Low"}, {Code: "e", Priority: ""},
+		{Code: "c", Priority: " medium "}, {Code: "a", Priority: "high"},
+	}
+	SortRecommendations(recommendations, report.RecommendationPriorityRank)
+	for i, code := range []string{"a", "b", "c", "d", "e", "f"} {
+		if recommendations[i].Code != code {
+			t.Fatalf("recommendation %d = %q, want %q", i, recommendations[i].Code, code)
+		}
+	}
+	if recommendations[1].Priority != " HIGH " {
+		t.Fatalf("sorting must not rewrite priority values: %#v", recommendations)
 	}
 }

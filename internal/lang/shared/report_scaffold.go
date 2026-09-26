@@ -18,14 +18,3 @@ func ResolveRemovalCandidateWeights(value *report.RemovalCandidateWeights) repor
 	}
 	return report.NormalizeRemovalCandidateWeights(*value)
 }
-
-func RecommendationPriorityRank(priority string) int {
-	switch priority {
-	case "high":
-		return 0
-	case "medium":
-		return 1
-	default:
-		return 2
-	}
-}

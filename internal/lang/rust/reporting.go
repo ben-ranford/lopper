@@ -89,7 +89,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 		})
 	}
 	shared.SortRiskCues(dep.RiskCues)
-	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
+	shared.SortRecommendations(dep.Recommendations, report.RecommendationPriorityRank)
 	return dep
 }
 
@@ -123,8 +123,4 @@ func summarizeUnresolved(unresolved map[string]int) []string {
 		warnings = append(warnings, fmt.Sprintf("could not resolve Rust crate alias %q from Cargo manifests", item.dep))
 	}
 	return warnings
-}
-
-func recommendationPriorityRank(priority string) int {
-	return shared.RecommendationPriorityRank(priority)
 }

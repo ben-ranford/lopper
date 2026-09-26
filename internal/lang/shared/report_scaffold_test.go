@@ -79,18 +79,6 @@ func TestResolveSharedReportHelpers(t *testing.T) {
 	}
 }
 
-func TestRecommendationPriorityRank(t *testing.T) {
-	if got := RecommendationPriorityRank("high"); got != 0 {
-		t.Fatalf("high rank = %d, want 0", got)
-	}
-	if got := RecommendationPriorityRank("medium"); got != 1 {
-		t.Fatalf("medium rank = %d, want 1", got)
-	}
-	if got := RecommendationPriorityRank("low"); got != 2 {
-		t.Fatalf("default rank = %d, want 2", got)
-	}
-}
-
 func TestSortRiskCues(t *testing.T) {
 	cues := []report.RiskCue{
 		{Code: "z-last"},
