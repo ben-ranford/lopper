@@ -287,25 +287,19 @@ func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
 	})
 }
 
-// TestCIWorkflowDoesNotGateMergeOnItsOwnPRControlledSuppressionVerification
-// guards against reintroducing the exact bypass a Codex finding described on
-// PR #1540: ci.yml's "verify-checks" job runs on `pull_request`, so GitHub executes
-// it from the pull request's own (potentially tampered) copy of this file. A
-// suppression-verification step gating the merge from inside this job could
-// therefore be deleted by the very pull request it is meant to gate. That
-// verification now lives in the pull_request_target-triggered
-// suppression-verify.yml (see suppression_verify_workflow_test.go) instead,
-// which always resolves from the base branch.
-func TestCIWorkflowDoesNotGateMergeOnItsOwnPRControlledSuppressionVerification(t *testing.T) {
+// Consolidation deliberately puts the read-only gate in PR-editable ci.yml.
+// This no longer prevents a malicious PR from deleting its own validator;
+// issue creation remains isolated in the trusted tracking workflow.
+func TestCIWorkflowIsolatesSuppressionValidationFromCheckedOutCode(t *testing.T) {
 	t.Parallel()
-
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-
 	assertWorkflowStepAbsent(t, workflow.Jobs, "verify-checks", "Verify inline suppression tracking issues were published")
-
 	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
 	assertWorkflowStepOrder(t, verify, "Run CI target", "Prove regression tests for fix PRs")
+	aggregate := workflowJobByName(t, workflow.Jobs, "verify")
+	assertWorkflowJobOmitsCheckout(t, aggregate, "suppression validation")
+	assertWorkflowStepOrder(t, aggregate, "Require every verification job", "Verify inline suppression tracking issues were published")
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
@@ -987,7 +981,7 @@ func shellQuote(path string) string {
 }
 
 // extractSuspectScanVarsAndLoop pulls the suspect-pattern variable setup and
-// the per-file suspect scan loop body out of the real "verify-checks" gate's run
+// the per-file suspect scan loop body out of the real "verify" gate's run
 // script, for tests that execute that body directly against a synthetic
 // file_json fixture.
 func extractSuspectScanVarsAndLoop(t *testing.T, gate workflowStepConfig) (varsBlock string, loopBody string) {
