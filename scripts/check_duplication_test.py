@@ -544,6 +544,14 @@ esac
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("Cannot compare requested base", result.stderr)
 
+    def test_index_uses_protected_code_when_contributor_replaces_indexer(self):
+        self.write("scripts/duplication_index.go", 'package main; import "fmt"; func main() { fmt.Print("[]") }\n')
+        self.write("original.go", "package fixture\nfunc Seen() {}\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            functions = runner.policy.function_index(self.repo, "go", [(("original.go", 1, 2), ("original.go", 1, 2))])
+        self.assertEqual([fn['name'] for fn in functions], ['Seen'])
+
     def test_new_and_staged_detector_endpoints_are_indexed(self):
         source = Path(runner.__file__).resolve().parent
         self.write("scripts/duplication_index.go", (source / "duplication_index.go").read_text())

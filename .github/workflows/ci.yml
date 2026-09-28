@@ -83,6 +83,46 @@ jobs:
           fi
           shellcheck --version
 
+      # This gate must precede every contributor-controlled recipe: sanitizing a
+      # later shell cannot stop LD_PRELOAD before that shell starts.
+      - name: Run protected duplication gate
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          DUPLICATION_EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${DUPLICATION_EVENT_BASE:?immutable PR base is required}"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          revision="$(git rev-parse --verify HEAD)"
+          git merge-base --is-ancestor "$base" "$revision"
+          policy="$(mktemp -d "${RUNNER_TEMP}/lopper-duplication-policy.XXXXXX")"
+          git clone --no-local --no-checkout -- "$PWD" "$policy"
+          git -C "$policy" -c core.hooksPath=/dev/null checkout --detach "$base"
+          LOPPER_DUPLICATION_GO="$(command -v go)"
+          LOPPER_DUPLICATION_GIT="$(command -v git)"
+          export LOPPER_DUPLICATION_GO LOPPER_DUPLICATION_GIT
+          export LOPPER_DUPLICATION_REVISION="$revision"
+          export GOTOOLCHAIN=local
+          # Read only protected assignments, never evaluate the PR Makefile.
+          python3 -E -S -B - "$policy" "$base" <<'PYTHON'
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          policy = Path(sys.argv[1])
+          source = (policy / 'Makefile').read_text()
+          def setting(name):
+              values = re.findall(r'^' + name + r'\s*\?=\s*([^\s#]+)\s*$', source, re.MULTILINE)
+              if len(values) != 1:
+                  raise ValueError('Missing or ambiguous protected setting: ' + name)
+              return values[0]
+          command = [sys.executable, '-E', '-S', '-B', str(policy / 'scripts/check_duplication.py'),
+                     '--base', sys.argv[2], '--go', setting('GO'), '--version', setting('DUPL_VERSION'),
+                     '--threshold', setting('DUPLICATION_TOKEN_THRESHOLD'), '--max', setting('DUPLICATION_MAX')]
+          if (policy / '.github/duplication-baseline.json').exists():
+              command += ['--baseline', '.github/duplication-baseline.json']
+          subprocess.run(command, check=True)
+          PYTHON
+
       # Capture executables before any PR-controlled Make recipe can add PATH wrappers.
       - name: Capture duplication executables
         id: duplication_executables

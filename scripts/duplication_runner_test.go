@@ -127,3 +127,59 @@ func TestDuplicationCIIgnoresMakeFlagsAndPathWrapper(t *testing.T) {
 		})
 	}
 }
+
+func TestDuplicationProtectedGateRejectsContributorNoOps(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	step := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run protected duplication gate")
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "scripts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"Makefile":                     "GO ?= go\nDUPL_VERSION ?= trusted\nDUPLICATION_TOKEN_THRESHOLD ?= 55\nDUPLICATION_MAX ?= 3\n",
+		"scripts/check_duplication.py": "from pathlib import Path\nimport sys\nassert Path('contributor.txt').read_text() == 'scan this revision'\nprint('protected-gate-rejected-clone', flush=True)\nsys.exit(23)\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGitCommand(t, repo, "init")
+	runGitCommand(t, repo, "config", "user.name", "Ben Ranford")
+	runGitCommand(t, repo, "config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+	runGitCommand(t, repo, "add", ".")
+	runGitCommand(t, repo, "commit", "-m", "protected policy")
+	base := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
+	for name, content := range map[string]string{
+		"Makefile":                     "ci-checks dup-check:\n\t@true\n",
+		"scripts/check_duplication.py": "raise SystemExit(0)\n",
+		"contributor.txt":              "scan this revision",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGitCommand(t, repo, "add", ".")
+	runGitCommand(t, repo, "commit", "-m", "contributor bypass")
+	command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
+	command.Dir = repo
+	command.Env = overlayShellEnv(withoutGitEnv(), map[string]string{
+		"DUPLICATION_EVENT_BASE": base, "RUNNER_TEMP": t.TempDir(),
+	})
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "protected-gate-rejected-clone") {
+		t.Fatalf("contributor no-op bypassed protected code: %v\n%s", err, output)
+	}
+}
+
+func TestDuplicationGatePrecedesLoaderInjection(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
+	// A tools-install recipe can persist LD_PRELOAD in GITHUB_ENV. No shell
+	// sanitization in a subsequent step can prevent its own loader injection.
+	assertWorkflowStepOrder(t, verify, "Setup Go", "Run protected duplication gate", "Resolve gosec version", "Install Go tooling")
+}

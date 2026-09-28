@@ -64,10 +64,10 @@ def function_index(repo, go, records):
     paths = sorted({path for record in records for path, _, _ in record
                     if path.endswith('.go') and not path.endswith('_test.go')})
     # Build flags and persisted settings can replace indexer source via overlays.
-    environment = dict(os.environ, GOFLAGS="", GOENV="off")
+    environment = dict(os.environ, GOFLAGS="", GOENV="off", GO111MODULE="off")
     environment.pop("GOROOT", None)
     environment.pop("GOCACHEPROG", None)
-    result = subprocess.run([executable, "run", "./scripts/duplication_index.go"], input=json.dumps(paths), cwd=repo,
+    result = subprocess.run([executable, "run", str(Path(__file__).resolve().with_name("duplication_index.go"))], input=json.dumps(paths), cwd=repo,
                             env=environment, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 

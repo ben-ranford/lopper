@@ -25,3 +25,13 @@ The pinned dupl threshold remains 55 structural nodes, not a percentage or a pro
 The enabled gate reads approved policy from the target merge-base. The one-time initial seed is accepted only if it exactly covers the full scan and contains no exceptions; the seed is checked in for human review and is never regenerated automatically. After the baseline exists on the target, a PR may reduce family membership but cannot authorize new members, new exceptions, or new canonical helper claims. Expansions use the separate reviewed workflow from #1612. The baseline schema is version 1: families contain explicit `members` and a nullable `canonical_helper`; proposals use one two-member family per actual pair, allowing shared occurrences without authorizing transitive pairs; exceptions contain an exact finding SHA-256, `rationale`, `owner`, `review`, and ISO-date `expires`. Directory patterns, incomplete metadata, duplicate findings, expired exceptions, and stale exceptions fail. A canonical helper must be a family member, and its approval applies only to the exact pairs in that family. Policy files should receive the same protected review as gate configuration.
 
 `make dup-check` runs the occurrence gate against `.github/duplication-baseline.json`; it does not auto-refresh that file. This PR does not yet make the resulting status required by the live repository ruleset. #1612 must review the policy-change path, configure and verify the protected status, and demonstrate on the exact protected revision that a known new clone is blocked while valid and approved-exception cases pass. Keep #1610 and #1611 open until #1612 records that enforcement evidence.
+
+The PR workflow runs a protected-base copy of the checker before executing any
+contributor-controlled Make recipe. Scanner settings come from that same protected
+Makefile; the PR checkout supplies only the source revision and proposed policy.
+Function indexing also uses the protected indexer, not a Go program supplied by
+the contributor. Running before tooling prevents a tooling recipe from injecting
+loader variables into the gate's process environment. During initial rollout, a
+base without the occurrence baseline uses its existing protected checker; the
+occurrence ratchet becomes authoritative after the reviewed baseline and checker
+are present on the target.
