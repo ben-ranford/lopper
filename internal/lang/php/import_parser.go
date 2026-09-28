@@ -1322,15 +1322,18 @@ func isHeredocNowdocTerminatorKeywordOperator(rest string) bool {
 }
 
 func nextPHPLineEnd(text string, start int) int {
-	if next := strings.IndexByte(text[start:], '\n'); next >= 0 {
+	if next := strings.IndexAny(text[start:], "\r\n"); next >= 0 {
 		return start + next
 	}
 	return len(text)
 }
 
 func nextPHPLineStart(text string, lineEnd int) int {
+	if lineEnd < len(text) && text[lineEnd] == '\r' {
+		lineEnd++
+	}
 	if lineEnd < len(text) && text[lineEnd] == '\n' {
-		return lineEnd + 1
+		lineEnd++
 	}
 	return lineEnd
 }

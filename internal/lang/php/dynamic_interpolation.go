@@ -46,7 +46,7 @@ func dynamicHeredocInterpolation(text string, offset int) (int, bool, bool) {
 func scanDynamicHeredocBody(text string, offset int, label string, nowdoc bool) (int, bool, bool) {
 	dynamic := false
 	for offset < len(text) {
-		if offset == 0 || text[offset-1] == '\n' {
+		if offset == 0 || isLineBreak(text[offset-1]) {
 			lineEnd := nextPHPLineEnd(text, offset)
 			if isHeredocNowdocTerminatorLine(text[offset:lineEnd], label) {
 				return offset, dynamic, false

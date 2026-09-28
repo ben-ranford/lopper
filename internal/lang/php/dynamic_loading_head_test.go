@@ -410,3 +410,24 @@ func TestSameLabelNestedHeredocPreservesRegion(t *testing.T) {
 		t.Fatal("constructor after nested same-label heredoc missed")
 	}
 }
+
+func TestDynamicHeredocLineEndings(t *testing.T) {
+	for _, newline := range []string{"\r", "\r\n", "\n"} {
+		for _, marker := range []string{"DOC", "'DOC'"} {
+			for _, body := range []string{"class_exists($name)", "new $type", "{$a[class_exists($name)]}"} {
+				for _, tail := range []string{"", "new $type;"} {
+					source := "<?php echo <<<" + marker + newline + body + newline + "DOC;" + newline + tail
+					want := tail != "" || marker == "DOC" && strings.HasPrefix(body, "{$")
+					if got := hasDynamicPatterns([]byte(source), "source.php", false); got != want {
+						t.Errorf("source %q: got %v, want %v", source, got, want)
+					}
+				}
+			}
+		}
+		source := strings.ReplaceAll("<?php echo <<<DOC\n{$a[<<<DOC\ninner\nDOC\n]}\nliteral ?>\nDOC;\nnew $type; ?>", "\n", newline)
+		end, _ := findPHPRegionEnd(source, len("<?php"))
+		if end != strings.LastIndex(source, "?>") {
+			t.Errorf("newline %q: nested region ended at %d", newline, end)
+		}
+	}
+}
