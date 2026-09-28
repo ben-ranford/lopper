@@ -198,6 +198,18 @@ class DuplicationRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(runner.AnalysisError, "binary Go diff"):
                 runner.added_lines(self.repo, base)
 
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_changed_source_uses_go_line_boundaries(self):
+        self.write("alias.go", "package fixture\n// first\u2028second\nvar Old = 1\n")
+        self.write("original.go", "package fixture\n// first\u2028second\nvar New = 2\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {("alias.go", 3)})
+
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
         self.write("unrelated.go", "package unrelated\n")

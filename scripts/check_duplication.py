@@ -98,12 +98,17 @@ def added_lines(repo, merge_base):
         if status == "T":
             before = source_at_revision(repo, merge_base, path)
             after = source_at_revision(repo, "HEAD", path)
-            diff = "\n".join(difflib.unified_diff(before.splitlines(), after.splitlines(), n=0, lineterm=""))
+            diff = "\n".join(difflib.unified_diff(source_lines(before), source_lines(after), n=0, lineterm=""))
             added.update(changed_hunk_lines(diff, path))
             continue
         diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-l0", "--unified=0", merge_base, "HEAD", "--", *pathspecs], repo).stdout
         added.update(changed_hunk_lines(diff, path))
     return added
+
+
+def source_lines(source):
+    # Go line positions advance only on LF, including within comments.
+    return source.removesuffix("\n").split("\n") if source else []
 
 
 def source_at_revision(repo, revision, path):
