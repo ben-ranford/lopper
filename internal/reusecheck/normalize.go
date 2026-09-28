@@ -154,12 +154,7 @@ func canonicalWithoutDecorativeCalls(path string, fn *ast.FuncDecl, packages map
 }
 
 func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	expression := unparen(statement.X)
-	if ident, ok := expression.(*ast.Ident); ok {
-		expression = resolvedCollectionType(info.ObjectOf(ident), info, declarations)
-	} else {
-		expression = allocatedCollectionType(expression, info)
-	}
+	expression := resolvedCollectionType(statement.X, info, declarations)
 	var element ast.Expr
 	binding := statement.Value
 	switch collection := unparen(expression).(type) {
@@ -187,52 +182,71 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 	return element
 }
 
-func resolvedCollectionType(object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
 	seen := make(map[types.Object]bool)
-	for object != nil && !seen[object] {
-		seen[object] = true
-		declaration := declarations[object]
-		alias, ok := unparen(aliasInitializer(declaration)).(*ast.Ident)
-		if !ok {
-			return declaredCollectionType(declaration, info)
+	var operations []token.Token
+	for {
+		switch item := unparen(expression).(type) {
+		case *ast.Ident:
+			object := info.ObjectOf(item)
+			if object == nil || seen[object] {
+				return nil
+			}
+			seen[object] = true
+			declaration := declarations[object]
+			if initializer := aliasInitializer(declaration); initializer != nil {
+				expression = initializer
+				continue
+			}
+			return collectionIndirection(declaredCollectionType(declaration), operations)
+		case *ast.UnaryExpr:
+			if item.Op != token.AND {
+				return nil
+			}
+			operations = append(operations, token.AND)
+			expression = item.X
+		case *ast.StarExpr:
+			operations = append(operations, token.MUL)
+			expression = item.X
+		default:
+			return collectionIndirection(allocatedCollectionType(expression, info), operations)
 		}
-		object = info.ObjectOf(alias)
 	}
-	return nil
 }
 
-func declaredCollectionType(declaration ast.Node, info *types.Info) ast.Expr {
-	var values []ast.Expr
+func collectionIndirection(expression ast.Expr, operations []token.Token) ast.Expr {
+	if expression == nil {
+		return nil
+	}
+	for index := len(operations) - 1; index >= 0; index-- {
+		if operations[index] == token.AND {
+			expression = &ast.StarExpr{X: expression}
+			continue
+		}
+		pointer, ok := unparen(expression).(*ast.StarExpr)
+		if !ok {
+			return nil
+		}
+		expression = pointer.X
+	}
+	return expression
+}
+
+func declaredCollectionType(declaration ast.Node) ast.Expr {
 	switch item := declaration.(type) {
 	case *ast.Field:
 		return item.Type
 	case *ast.ValueSpec:
-		if item.Type != nil {
-			return item.Type
-		}
-		if len(item.Names) == 1 {
-			values = item.Values
-		}
-	case *ast.AssignStmt:
-		if len(item.Lhs) == 1 {
-			values = item.Rhs
-		}
+		return item.Type
+	default:
+		return nil
 	}
-	if len(values) == 1 {
-		return allocatedCollectionType(values[0], info)
-	}
-	return nil
 }
 
 func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	switch item := unparen(expression).(type) {
 	case *ast.CompositeLit:
 		return item.Type
-	case *ast.UnaryExpr:
-		literal, ok := unparen(item.X).(*ast.CompositeLit)
-		if item.Op == token.AND && ok {
-			return &ast.StarExpr{X: literal.Type}
-		}
 	case *ast.CallExpr:
 		return allocatedCallType(item, info)
 	}
