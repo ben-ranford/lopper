@@ -1095,37 +1095,11 @@ func skipPHPRegionConstruct(text string, offset int, state *phpCodeState) (int, 
 		}
 	}
 	if *state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
-		if next, ok := skipHeredocNowdocBody(text, offset); ok {
-			if closeTag, found := findPHPRegionCloseTagInHeredoc(text, offset, next); found {
-				return closeTag, true
-			}
-			return next, false
+		if next, _, closed := dynamicHeredocInterpolation(text, offset); next > offset {
+			return next, closed
 		}
 	}
 	return offset, false
-}
-
-func findPHPRegionCloseTagInHeredoc(text string, markerOffset, bodyEnd int) (int, bool) {
-	lineEnd := nextPHPLineEnd(text, markerOffset)
-	marker := strings.TrimLeft(text[markerOffset+len("<<<"):lineEnd], " \t")
-	if _, ok := parseHeredocNowdocLabelAfterMarker(marker); !ok || strings.HasPrefix(marker, "'") {
-		return 0, false
-	}
-	for offset := nextPHPLineStart(text, lineEnd); offset < bodyEnd; {
-		if text[offset] == '\\' && offset+1 < bodyEnd {
-			offset += 2
-			continue
-		}
-		if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
-			if closed {
-				return next, true
-			}
-			offset = next
-			continue
-		}
-		offset++
-	}
-	return 0, false
 }
 
 func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
@@ -1135,33 +1109,15 @@ func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
 	return state == phpStateCode || state == phpStateLineComment
 }
 
-func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
-	lineEnd := nextPHPLineEnd(text, markerOffset)
-	label, ok := parseHeredocNowdocLabelAfterMarker(text[markerOffset+len("<<<") : lineEnd])
-	if !ok {
-		return 0, false
-	}
-	bodyStart := nextPHPLineStart(text, lineEnd)
-	terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
-	if !ok {
-		return len(text), true
-	}
-	return terminatorStart, true
-}
-
 func maskPHPHeredocNowdocBodies(text string) string {
 	var masked []byte
 	for offset := 0; offset < len(text); {
-		markerOffset, label, found := findPHPHeredocNowdocOpener(text, offset)
+		markerOffset, _, found := findPHPHeredocNowdocOpener(text, offset)
 		if !found {
 			break
 		}
 		bodyStart := nextPHPLineStart(text, nextPHPLineEnd(text, markerOffset))
-		terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
-		if !ok {
-			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
-			return string(masked)
-		}
+		terminatorStart, _, _ := dynamicHeredocInterpolation(text, markerOffset)
 		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, terminatorStart)
 		offset = terminatorStart
 	}

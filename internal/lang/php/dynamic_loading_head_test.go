@@ -361,3 +361,52 @@ func TestDynamicConstructorAfterNestedInterpolationComment(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepHeredocTerminatorTraversal(t *testing.T) {
+	expression := nestedHeredocExpression(10000)
+	next, dynamic, closed := scanDynamicInterpolationAt(expression, 0)
+	if next != len(expression) || dynamic || closed {
+		t.Fatalf("scan = (%d, %v, %v), want end %d", next, dynamic, closed, len(expression))
+	}
+	if hasDynamicPatterns([]byte(`<?php echo "`+expression+`";`), "source.php", false) {
+		t.Fatal("inert nesting reported as dynamic")
+	}
+}
+
+func nestedHeredocExpression(depth int) string {
+	var text strings.Builder
+	text.WriteString("{$a[")
+	for level := depth - 1; level >= 0; level-- {
+		text.WriteString("<<<H" + strconv.Itoa(level) + "\n{$a[")
+	}
+	text.WriteString("0")
+	for level := 0; level < depth; level++ {
+		text.WriteString("]}\nH" + strconv.Itoa(level) + "\n")
+	}
+	text.WriteString("]}")
+	return text.String()
+}
+
+func BenchmarkNestedHeredocTerminators(b *testing.B) {
+	for _, depth := range []int{2500, 5000, 10000} {
+		b.Run(strconv.Itoa(depth), func(b *testing.B) {
+			expression := nestedHeredocExpression(depth)
+			b.SetBytes(int64(len(expression)))
+			b.ResetTimer()
+			for b.Loop() {
+				scanDynamicInterpolationAt(expression, 0)
+			}
+		})
+	}
+}
+
+func TestSameLabelNestedHeredocPreservesRegion(t *testing.T) {
+	source := "<?php echo <<<DOC\n{$a[<<<DOC\ninner\nDOC\n]}\nliteral ?>\nDOC;\nnew $type; ?>"
+	end, _ := findPHPRegionEnd(source, len("<?php"))
+	if end != strings.LastIndex(source, "?>") {
+		t.Fatalf("region ended at %d, want %d", end, strings.LastIndex(source, "?>"))
+	}
+	if !hasDynamicPatterns([]byte(source), "source.php", false) {
+		t.Fatal("constructor after nested same-label heredoc missed")
+	}
+}

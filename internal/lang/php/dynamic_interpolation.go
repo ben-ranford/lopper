@@ -38,35 +38,42 @@ func dynamicHeredocInterpolation(text string, offset int) (int, bool, bool) {
 		return offset, false, false
 	}
 	bodyStart := nextPHPLineStart(text, lineEnd)
-	bodyEnd, _, found := findHeredocNowdocTerminatorRange(text, bodyStart, label)
-	if !found {
-		bodyEnd = len(text)
-	}
-	if strings.HasPrefix(marker, "'") {
-		return bodyEnd, false, false
-	}
-	next, dynamic, closed := scanDynamicHeredocBody(text[bodyStart:bodyEnd])
-	return bodyStart + next, dynamic, closed
+	return scanDynamicHeredocBody(text, bodyStart, label, strings.HasPrefix(marker, "'"))
 }
 
-// Collect dynamic cues and close tags together so nested heredocs are not
-// recursively scanned twice at each nesting level.
-func scanDynamicHeredocBody(text string) (int, bool, bool) {
+// Consume the body monotonically. Nested interpolation consumes its own heredocs
+// before this document considers another terminator, including identical labels.
+func scanDynamicHeredocBody(text string, offset int, label string, nowdoc bool) (int, bool, bool) {
 	dynamic := false
-	for offset := 0; offset < len(text); offset++ {
-		if text[offset] == '\\' && offset+1 < len(text) {
-			offset++
-			continue
-		}
-		if next, found, closed := scanDynamicInterpolationAt(text, offset); next > offset {
-			dynamic = dynamic || found
-			if closed {
-				return next, dynamic, true
+	for offset < len(text) {
+		if offset == 0 || text[offset-1] == '\n' {
+			lineEnd := nextPHPLineEnd(text, offset)
+			if isHeredocNowdocTerminatorLine(text[offset:lineEnd], label) {
+				return offset, dynamic, false
 			}
-			offset = next - 1
+			if nowdoc {
+				offset = nextPHPLineStart(text, lineEnd)
+				continue
+			}
 		}
+		next, found, closed := advanceDynamicHeredocBody(text, offset)
+		dynamic = dynamic || found
+		if closed {
+			return next, dynamic, true
+		}
+		offset = next
 	}
 	return len(text), dynamic, false
+}
+
+func advanceDynamicHeredocBody(text string, offset int) (int, bool, bool) {
+	if text[offset] == '\\' && offset+1 < len(text) {
+		return offset + 2, false, false
+	}
+	if next, dynamic, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+		return next, dynamic, closed
+	}
+	return offset + 1, false, false
 }
 
 // Return the end of the examined expression even when it is not dynamic.
