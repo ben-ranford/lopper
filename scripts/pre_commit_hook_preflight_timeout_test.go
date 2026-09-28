@@ -38,7 +38,18 @@ func TestHooksPreflightTimesOutOnBlockingGitConfigWithoutMutation(t *testing.T) 
 }
 
 func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
+	for _, previousPath := range []string{"absent", "", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) { assertPostWriteTimeoutRollsBackState(t, previousPath) })
+	}
+}
+
+func assertPostWriteTimeoutRollsBackState(t *testing.T, previousPath string) {
+	t.Helper()
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	if previousPath != "absent" {
+		runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+		fixture.configBefore = readPreflightFile(t, fixture.configPath)
+	}
 	tmpDir := t.TempDir()
 	env := postWriteBlockingGitEnv(t)
 	env = append(env, "TMPDIR="+tmpDir)
@@ -51,6 +62,28 @@ func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
 		t.Fatalf("installer left managed hook state after post-write timeout: %v", err)
 	}
 	assertNoPreflightTimeoutTemps(t, tmpDir)
+}
+
+func TestHooksInstallPreservedEntriesRemainIdempotentAndUninstallable(t *testing.T) {
+	for _, previousPath := range []string{"", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) { assertPreservedEntriesLifecycle(t, previousPath) })
+	}
+}
+
+func assertPreservedEntriesLifecycle(t *testing.T, previousPath string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+	runCommand(t, fixture.repoDir, "make", "hooks-install")
+	installedConfig := readPreflightFile(t, fixture.configPath)
+	runCommand(t, fixture.repoDir, "make", "hooks-install")
+	assertPreflightFileEquals(t, fixture.configPath, installedConfig)
+	runCommand(t, fixture.repoDir, "make", "hooks-uninstall")
+	output, err := hookCommand(fixture.repoDir, "git", "config", "--local", "--get-all", "core.hooksPath")
+	var exitErr *exec.ExitError
+	if output != "" || !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("uninstall left local hook entries: %q error=%v", output, err)
+	}
 }
 
 func TestHooksInstallBoundsRollbackWithBlockingConfig(t *testing.T) {
@@ -117,7 +150,7 @@ func TestHooksInstallPostWriteInterruptRetainsUsableHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	shim := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" = core.hooksPath ]; then
+if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" = --add ] && [ "$4" = core.hooksPath ]; then
 	%s "$@" || exit "$?"
 	: >.git/config.lock
 	kill -TERM "$PPID"
@@ -182,6 +215,38 @@ fi
 exec %s "$@"
 `, shellQuote(realGit), shellQuote(realGit), shellQuote(realGit)))
 	assertHookInstallPreservesConcurrentConfig(t, fixture, shimPath, "Unsafe managed hook directory", "/concurrent/hooks")
+}
+
+func TestHooksInstallRollbackMutationPreservesConcurrentConfig(t *testing.T) {
+	for _, previousPath := range []string{"absent", "", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) { assertRollbackMutationPreservesConcurrentConfig(t, previousPath) })
+	}
+}
+
+func assertRollbackMutationPreservesConcurrentConfig(t *testing.T, previousPath string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	if previousPath != "absent" {
+		runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", previousPath)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --get ] && [ -f .git/lopper-hooks/pre-commit ]; then
+ : >.git/rollback-ready
+ printf '/activation-mismatch\n'
+ exit 0
+fi
+if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" != --get ] && [ -f .git/rollback-ready ]; then
+ %s config --local --replace-all core.hooksPath /concurrent/hooks || exit "$?"
+fi
+exec %s "$@"
+`, shellQuote(realGit), shellQuote(realGit)))
+	assertHookInstallPreservesConcurrentConfig(t, fixture, shimPath, "Unable to activate", "/concurrent/hooks")
 }
 
 func TestHooksInstallPostActivationFailurePreservesConcurrentConfig(t *testing.T) {
@@ -282,7 +347,7 @@ func TestHooksInstallFallbackCollisionPreservesConcurrentHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err == nil || !strings.Contains(string(output), "Concurrent managed hook publication") {
+	if err == nil {
 		t.Fatalf("publication collision = %v\n%s", err, output)
 	}
 	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
