@@ -143,9 +143,16 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 		warnings = append(warnings, collector.list()...)
 	}
 	for i := range reportData.Dependencies {
+		if ctx.Err() != nil {
+			return
+		}
 		dep := &reportData.Dependencies[i]
-		evidence := identityEvidenceForDependency(index, *dep)
-		dep.Identity = buildDependencyIdentity(*dep, evidence)
+		evidence := identityEvidenceForDependencyWithContext(ctx, index, *dep)
+		identity := buildDependencyIdentityWithContext(ctx, *dep, evidence)
+		if ctx.Err() != nil {
+			return
+		}
+		dep.Identity = identity
 	}
 	reportData.Warnings = sortedUnique(append(reportData.Warnings, warnings...))
 }
@@ -403,9 +410,15 @@ func sortIdentityManifestSnapshot(snapshot *identityManifestSnapshot) {
 	sort.Strings(snapshot.elixirFiles)
 }
 
-func buildDependencyIdentity(dep report.DependencyReport, evidence []identityEvidence) *report.DependencyIdentity {
+func buildDependencyIdentityWithContext(ctx context.Context, dep report.DependencyReport, evidence []identityEvidence) *report.DependencyIdentity {
+	if ctx.Err() != nil {
+		return nil
+	}
 	state := newDependencyIdentityState(dep, len(evidence))
 	for _, item := range evidence {
+		if ctx.Err() != nil {
+			return nil
+		}
 		state.apply(item)
 	}
 	state.resolveCoordinates()
@@ -587,14 +600,14 @@ func canonicalIdentityEcosystem(languageID, ecosystem string) string {
 	return report.CanonicalPackageEcosystem(ecosystemForLanguage(languageID))
 }
 
-func identityEvidenceForDependency(index identityIndex, dep report.DependencyReport) []identityEvidence {
+func identityEvidenceForDependencyWithContext(ctx context.Context, index identityIndex, dep report.DependencyReport) []identityEvidence {
 	if key, ok := qualifiedIdentityLookupKey(dep); ok {
 		if evidence := index[key]; len(evidence) != 0 {
 			return evidence
 		}
 	}
 	evidence := index[identityKey(dep.Language, dep.Name)]
-	if !isQualifiedIdentityRequired(dep.Language, evidence) {
+	if !isQualifiedIdentityRequiredWithContext(ctx, dep.Language, evidence) {
 		return evidence
 	}
 	return nil
@@ -635,12 +648,19 @@ func parseQualifiedMavenName(value string) (string, string, bool) {
 }
 
 func isQualifiedIdentityRequired(languageID string, evidence []identityEvidence) bool {
+	return isQualifiedIdentityRequiredWithContext(context.Background(), languageID, evidence)
+}
+
+func isQualifiedIdentityRequiredWithContext(ctx context.Context, languageID string, evidence []identityEvidence) bool {
 	languageID = strings.ToLower(strings.TrimSpace(languageID))
 	if (languageID != "jvm" && languageID != kotlinAndroidLanguageName) || len(evidence) < 2 {
 		return false
 	}
 	namespaces := map[string]struct{}{}
 	for _, item := range evidence {
+		if ctx.Err() != nil {
+			return true
+		}
 		namespace := normalizeIdentityName(item.Namespace)
 		if namespace == "" {
 			continue
