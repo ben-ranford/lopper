@@ -83,11 +83,30 @@ jobs:
           fi
           shellcheck --version
 
+      # Capture executables before any PR-controlled Make recipe can add PATH wrappers.
+      - name: Capture duplication executables
+        id: duplication_executables
+        run: |
+          revision="$(git rev-parse --verify HEAD)"
+          tooling="$(mktemp -d "${RUNNER_TEMP}/lopper-tooling.XXXXXX")"
+          git clone --no-local --no-checkout -- "$PWD" "$tooling"
+          git -C "$tooling" -c core.hooksPath=/dev/null checkout --detach "$revision"
+          {
+            printf 'revision=%s\n' "$revision"
+            printf 'tooling=%s\n' "$tooling"
+            printf 'go=%s\n' "$(command -v go)"
+            printf 'python=%s\n' "$(command -v python3)"
+            printf 'git=%s\n' "$(command -v git)"
+            printf 'make=%s\n' "$(command -v make)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Resolve gosec version
         id: gosec_version
+        working-directory: ${{ steps.duplication_executables.outputs.tooling }}
         run: echo "value=$(make --silent print-gosec-version)" >> "$GITHUB_OUTPUT"
 
       - name: Install Go tooling
+        working-directory: ${{ steps.duplication_executables.outputs.tooling }}
         env:
           GOSEC_VERSION: ${{ steps.gosec_version.outputs.value }}
         run: |
@@ -188,9 +207,15 @@ jobs:
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
+        shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LOPPER_CI_MAKE: ${{ steps.duplication_executables.outputs.make }}
           GH_EVENT_NAME: ${{ github.event_name }}
           SUPPRESSION_TRACKING_OUTPUT: .artifacts/inline-suppressions.json
+          LOPPER_DUPLICATION_GO: ${{ steps.duplication_executables.outputs.go }}
+          LOPPER_DUPLICATION_GIT: ${{ steps.duplication_executables.outputs.git }}
+          LOPPER_DUPLICATION_REVISION: ${{ steps.duplication_executables.outputs.revision }}
+          DUPLICATION_PYTHON: ${{ steps.duplication_executables.outputs.python }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
@@ -198,9 +223,9 @@ jobs:
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci-checks
+            PATH="$(go env GOPATH)/bin:$PATH" "${LOPPER_CI_MAKE}" ci-checks
           else
-            make ci-checks
+            "${LOPPER_CI_MAKE}" ci-checks
           fi
 
       - name: Prove regression tests for fix PRs

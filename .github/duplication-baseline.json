@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "families": [
+    {
+      "members": [
+        "internal/analysis/identity_enrichment_cargo_version.go::cargoVersionGreaterThanPartial@84d124586e999560e0f4f4c5eb1a83277e312c6cdbd6911e5ac28256fdde4fd0",
+        "internal/analysis/identity_enrichment_cargo_version.go::cargoVersionLessThanPartial@84d124586e999560e0f4f4c5eb1a83277e312c6cdbd6911e5ac28256fdde4fd0"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/analysis/merge.go::mergeRuntimeSymbolUsage@581fe662bba2b94c710619388a35896883c66f8d3fa6fbb30c86325292178f4b",
+        "internal/runtime/trace_annotate.go::runtimeSymbols@cf6714667ec8f461e49e8bdaf98a061e962361899e375fb66bb1ed60b4efe06e"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/analysis/merge.go::sortSymbolRefs@b6de91bd40d359e8e1b32a470a97d44721b51f1bdc4325c170a3b0562e1d261d",
+        "internal/report/baseline_diff.go::sortDeniedLicenseDeltas@ea5b62410ecc4458b84df759f978ed386516787cd4441852d3bf562c3c2e479e"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/app/analyse_postprocess.go::App.saveBaselineIfNeeded@eb4980f42fa57398f4b7aefdc05971edaa98ab9c9a2fb6700af95dc85835b328",
+        "internal/app/dashboard.go::App.saveDashboardBaselineIfNeeded@eb4980f42fa57398f4b7aefdc05971edaa98ab9c9a2fb6700af95dc85835b328"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/app/codemod_apply.go::uniqueSortedStrings@855005945638ab8a28b5e05125a69317cdf52662a7d552263db1693eaceb9d1b",
+        "internal/report/vulnerability.go::sortedUniqueStrings@855005945638ab8a28b5e05125a69317cdf52662a7d552263db1693eaceb9d1b"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/app/pr_review.go::compactPRReviewEvidence@4f12e29d3c785e7768a4389b6e7df97b9fcdd60f9876719f6f17f7bcbc00b0a2",
+        "internal/dashboard/remediation.go::compactEvidence@4f12e29d3c785e7768a4389b6e7df97b9fcdd60f9876719f6f17f7bcbc00b0a2"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/cli/parse_analyse_overrides.go::prependUniquePolicySource@114fa3792f6ad0beb78ba195db5289eba1ddbce17b6dee891c147955705c9886",
+        "internal/mcp/tools.go::prependPolicySource@114fa3792f6ad0beb78ba195db5289eba1ddbce17b6dee891c147955705c9886"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/dart/reporting.go::addOverrideSignals@1825ffbc80b2f878453ff9241376e2ec9408ef5568163f1d4c6ada6796a0f8ec",
+        "internal/lang/dart/reporting.go::addPluginSignals@1825ffbc80b2f878453ff9241376e2ec9408ef5568163f1d4c6ada6796a0f8ec"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/dart/reporting.go::dartFileUsages@7fc63433f3b6bc1b7ea3ef5a2648d0e3c548a3d0814f4209d438c615280360c7",
+        "internal/lang/kotlinandroid/reporting.go::kotlinAndroidFileUsages@7fc63433f3b6bc1b7ea3ef5a2648d0e3c548a3d0814f4209d438c615280360c7"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/dotnet/discovery.go::readSourceFile@65604ea01d38392477fb4a016327005fa68488c292093147f626c7a4e4e2447e",
+        "internal/lang/python/adapter.go::readPythonFile@65604ea01d38392477fb4a016327005fa68488c292093147f626c7a4e4e2447e"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/golang/module_metadata.go::uniqueStrings@99e2d5d9d32bfae0f1b683932ad21d05eedeb0144b3ecfe2863b0b317fb40d96",
+        "internal/lang/rust/helpers.go::dedupeStrings@99e2d5d9d32bfae0f1b683932ad21d05eedeb0144b3ecfe2863b0b317fb40d96",
+        "internal/lang/rust/helpers.go::dedupeWarnings@99e2d5d9d32bfae0f1b683932ad21d05eedeb0144b3ecfe2863b0b317fb40d96"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/golang/reporting.go::goFileUsages@8ea7d76359f8d4c6cc896df11d16715000931ad239569c892b5e8019bfe6eae9",
+        "internal/lang/php/scan.go::phpFileUsages@8ea7d76359f8d4c6cc896df11d16715000931ad239569c892b5e8019bfe6eae9",
+        "internal/lang/python/adapter.go::pythonFileUsages@8ea7d76359f8d4c6cc896df11d16715000931ad239569c892b5e8019bfe6eae9"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/js/license.go::normalizeSPDXToken@eba54ccf90a3046c008ab17e8c399e15eae7b902fa895b3672fb162a6f275bef",
+        "internal/thresholds/thresholds.go::normalizeSPDXID@eba54ccf90a3046c008ab17e8c399e15eae7b902fa895b3672fb162a6f275bef"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/js/reporting.go::flattenImportUses@493416a405c9a092ccdad4e8a974db9ab225165149195d3b2871317b47f4b1c6",
+        "internal/lang/shared/dependency_usage_stats.go::flattenImports@493416a405c9a092ccdad4e8a974db9ab225165149195d3b2871317b47f4b1c6"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/jvm/build_parsing.go::collectBuildDescriptors@369842f6aaef2b47e0bf2671ff4bdf2067328d38cf812e7546f39588ac9ef1b7",
+        "internal/lang/jvm/build_parsing.go::collectBuildDescriptorsWithinRoot@98eea0907f7fe803afd764e5ae3bffe115141bf47ef8bbf3a713f281223a1464"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/jvm/detection.go::openJVMDetectionChildRoot@9e36599103dc28c5d4ad75ce8bd17af0b1a7f510f70ac7c5f9873609fe9bb4c9",
+        "internal/lang/shared/rooted_walk.go::openPinnedChildRoot@9ace0ff1fbac1e8a63d6234a510a4c50e55a5f306cedca6a69badad5b322f02a"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/powershell/reporting.go::buildTopPowerShellDependencies@dda514e61f314514d82a4b6f4945b7c35833a3bdb6e418f099cefaa5b8240b53",
+        "internal/lang/ruby/reporting.go::buildTopRubyDependencies@dda514e61f314514d82a4b6f4945b7c35833a3bdb6e418f099cefaa5b8240b53"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/lang/shared/error_classification.go::IsPureSentinelError@4d0e5259e449cfe75af7438966d24fe04b13d1f830abae1bbd9418fcdb7fc175",
+        "internal/safeio/path.go::isPureSentinelError@4d0e5259e449cfe75af7438966d24fe04b13d1f830abae1bbd9418fcdb7fc175"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/mcp/mutations.go::shapeBaselineSavePayload@ae3b5564eea1fdaee1a9e6ef3bc39c1868c18f1369d43a706f4b121889ec5dc1",
+        "internal/mcp/mutations.go::shapeDashboardBaselineSavePayload@ae3b5564eea1fdaee1a9e6ef3bc39c1868c18f1369d43a706f4b121889ec5dc1"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/report/baseline_diff.go::newlyDeniedLicenses@49535bc94e5607dad8a22400a7344e04933eff65467bcd8ba1cce7154939b20f",
+        "internal/report/baseline_diff.go::newlyReachableVulnerabilities@49535bc94e5607dad8a22400a7344e04933eff65467bcd8ba1cce7154939b20f"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/report/baseline_diff.go::sortReachableVulnerabilityDeltas@742f97977548e8433c72c9c88cf297b5705cf8f121e799ce1d5f3b368aa13275",
+        "internal/report/format_table_sections.go::topVulnerabilityDeltas@b272b6ce14ef942b8e6ee5ac8a8cc0811055ec73d37c338d697b1cca9ed41e71"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/safeio/filesystem.go::openRootExistingAncestorNoFollowWith@95c3ca1e52100221b9c249615ea000dc90d312fb0fae3e794278652faa81103b",
+        "internal/safeio/filesystem.go::openRootNoFollowWith@c133d4b1c97fc365c19b76ad59eb4b884d8a313372df05b97e598b5f5c2facb0"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/safeio/rename_no_replace_darwin.go::renameNoReplaceBetweenRoots@b255ab4505bde6278b90d8961886414c6d1396b9c653b1043be805e1b938cb65",
+        "internal/safeio/rename_no_replace_linux.go::renameNoReplaceBetweenRoots@b255ab4505bde6278b90d8961886414c6d1396b9c653b1043be805e1b938cb65"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck@06e3f30cac54dc037f37c20d3caf75c92d6c2e4999b9832a1ebb42397ba516e4",
+        "internal/safeio/write.go::WriteRoot.WriteFileCreatingParentsAfterParentReadyWithPublishCheck@06e3f30cac54dc037f37c20d3caf75c92d6c2e4999b9832a1ebb42397ba516e4"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/ui/detail.go::printCodemodSkips@57cadad753db2fed3a8a13a14f02a72deb2096659f1e8353d5fe986b42c6e1d7",
+        "internal/ui/detail.go::printCodemodSuggestions@57cadad753db2fed3a8a13a14f02a72deb2096659f1e8353d5fe986b42c6e1d7"
+      ],
+      "canonical_helper": null
+    },
+    {
+      "members": [
+        "internal/ui/stave_model.go::hashStaveSummaryModel@7b32e2e4a61a7a80d19bba040ba627bbeb57a051b29a5edefb728f4ecb27e682",
+        "internal/ui/stave_model.go::staveSummaryModel.MarshalJSON@4bb8ed26de0786a393a73f8bb74bc40a279118ab3d2f96fec022f0a6c18e8c69"
+      ],
+      "canonical_helper": null
+    }
+  ],
+  "exceptions": []
+}
