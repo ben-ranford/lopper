@@ -156,6 +156,9 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	valueExpression := unparen(values[0])
 	switch value := valueExpression.(type) {
 	case *ast.CallExpr:
+		if len(value.Args) == 1 && dependencyStatsType(value.Fun, packages) {
+			return true
+		}
 		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
 			return true
 		}
@@ -172,6 +175,9 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 func dependencyStatsPointer(expression ast.Expr, packages map[string]string, info *types.Info) bool {
 	switch value := unparen(expression).(type) {
 	case *ast.CallExpr:
+		if pointer, ok := unparen(value.Fun).(*ast.StarExpr); ok {
+			return len(value.Args) == 1 && imported(pointer.X, packages, sharedPackage, "DependencyStats")
+		}
 		builtin, ok := unparen(value.Fun).(*ast.Ident)
 		if !ok || info == nil {
 			return false

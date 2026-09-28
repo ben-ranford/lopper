@@ -220,8 +220,16 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 			return nil
 		}
 		builtin, ok := info.ObjectOf(ident).(*types.Builtin)
-		if ok && builtin.Name() == "make" {
+		if !ok {
+			return nil
+		}
+		switch builtin.Name() {
+		case "make":
 			return item.Args[0]
+		case "new":
+			if len(item.Args) == 1 {
+				return &ast.StarExpr{X: item.Args[0]}
+			}
 		}
 	}
 	return nil
