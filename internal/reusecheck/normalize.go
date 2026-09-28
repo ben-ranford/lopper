@@ -273,7 +273,24 @@ func decorativeCondition(expression ast.Expr) bool {
 	case *ast.UnaryExpr:
 		return item.Op == token.NOT && decorativeCondition(item.X)
 	case *ast.BinaryExpr:
+		if item.Op >= token.EQL && item.Op <= token.GEQ {
+			return literalExpression(item.X) && literalExpression(item.Y)
+		}
 		return (item.Op == token.LAND || item.Op == token.LOR) && decorativeCondition(item.X) && decorativeCondition(item.Y)
+	default:
+		return false
+	}
+}
+
+// Literal arithmetic cannot execute calls, access memory or mutate state.
+func literalExpression(expression ast.Expr) bool {
+	switch item := unparen(expression).(type) {
+	case *ast.BasicLit:
+		return true
+	case *ast.UnaryExpr:
+		return (item.Op == token.ADD || item.Op == token.SUB || item.Op == token.XOR) && literalExpression(item.X)
+	case *ast.BinaryExpr:
+		return item.Op >= token.ADD && item.Op <= token.AND_NOT && literalExpression(item.X) && literalExpression(item.Y)
 	default:
 		return false
 	}

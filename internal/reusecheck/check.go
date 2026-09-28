@@ -280,11 +280,11 @@ func reportLiteralFields(literal *ast.CompositeLit) map[string]ast.Expr {
 }
 
 func mappedStatsObject(expression ast.Expr, field string, packages map[string]string, info *types.Info, declarations map[types.Object]ast.Node) types.Object {
-	selector, ok := expression.(*ast.SelectorExpr)
+	selector, ok := unparen(expression).(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != field {
 		return nil
 	}
-	receiver, ok := selector.X.(*ast.Ident)
+	receiver, ok := unparen(selector.X).(*ast.Ident)
 	if !ok {
 		return nil
 	}

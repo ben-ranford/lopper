@@ -191,6 +191,16 @@ func TestStatsDeclarationForms(t *testing.T) {
 	}
 }
 
+func TestParenthesizedReportFieldReceivers(t *testing.T) {
+	for _, receiver := range []string{"(measured)", "((measured))"} {
+		source := strings.ReplaceAll(mappingFixture, "measured.", receiver+".")
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != 1 || findings[0].Advisory {
+			t.Fatalf("receiver %s: findings=%+v err=%v", receiver, findings, err)
+		}
+	}
+}
+
 func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
 	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
 	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)
@@ -266,7 +276,6 @@ func TestDeliberateFieldOverrideIsAdvisory(t *testing.T) {
 func TestConservativeSyntaxBoundaries(t *testing.T) {
 	for _, source := range []string{
 		"package fixture; func unrelated() {}",
-		strings.Replace(mappingFixture, "measured.UsedCount", "(measured).UsedCount", 1),
 		strings.Replace(mappingFixture, "UsedExportsCount:measured.UsedCount,", "", 1),
 	} {
 		findings, err := Analyze("fixture.go", []byte(source))
@@ -433,6 +442,12 @@ func TestConditionalDecorativeCalls(t *testing.T) {
 		want      bool
 	}{
 		{"if enabled { _ = shared.SortedKeys(values) }", true},
+		{"if 1 == 1 { _ = shared.SortedKeys(values) }", true},
+		{"if (1 + 2) >= -3 { _ = shared.SortedKeys(values) }", true},
+		{"if \"a\" != \"b\" { _ = shared.SortedKeys(values) }", true},
+		{"if probe() == 1 { _ = shared.SortedKeys(values) }", false},
+		{"if values[0] == 1 { _ = shared.SortedKeys(values) }", false},
+		{"if *enabled == 1 { _ = shared.SortedKeys(values) }", false},
 		{"if !enabled { _ = shared.SortedKeys(values) }", true},
 		{"if enabled && (other || enabled) { _ = shared.SortedKeys(values) }", true},
 		{"if enabled { _ = shared.SortedKeys(values) } else {}", true},
