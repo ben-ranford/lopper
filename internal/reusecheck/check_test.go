@@ -188,6 +188,15 @@ func TestStatsDeclarationForms(t *testing.T) {
 		{"measured := *new(s.DependencyStats)", 1},
 		{"measured := s.DependencyStats(localStats)", 1},
 		{"measured := raw.(s.DependencyStats)", 1},
+		{"measured, extra := s.DependencyStats{}, 0; _ = extra", 1},
+		{"extra, measured := 0, &s.DependencyStats{}; _ = extra", 1},
+		{"var extra, measured = 0, s.DependencyStats{}; _ = extra", 1},
+		{"measured, extra := 0, s.DependencyStats{}; _ = extra", 0},
+		{"var measured, extra = 0, s.DependencyStats{}; _ = extra", 0},
+		{"measured, ok := raw.(s.DependencyStats); _ = ok", 1},
+		{"var measured, ok = raw.(*s.DependencyStats); _ = ok", 1},
+		{"value, measured := raw.(s.DependencyStats); _ = value", 0},
+		{"measured, extra := unknown(); _ = extra", 0},
 		{"var measured = raw.(*s.DependencyStats)", 1},
 		{"measured := *(raw.(*s.DependencyStats))", 1},
 		{"type Stats = s.DependencyStats; measured := raw.(Stats)", 1},
@@ -205,9 +214,9 @@ func TestStatsDeclarationForms(t *testing.T) {
 		{"measured := &unknown", 0},
 		{"measured := new(s.OtherStats)", 0},
 		{"var measured = s.BuildDependencyStats(name,nil,nil), 1", 0},
-		{"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other", 0},
+		{"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other", 1},
 		{"var measured = s.OtherFactory(name,nil,nil)", 0},
-		{"measured, other := s.BuildDependencyStats(name,nil,nil), 1; _ = other", 0},
+		{"measured, other := s.BuildDependencyStats(name,nil,nil), 1; _ = other", 1},
 		{"measured := unknown", 0},
 	} {
 		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
@@ -260,7 +269,7 @@ func TestStatsLocalAliasProvenance(t *testing.T) {
 		{"var first OtherStats; measured := first", 0},
 		{"var measured = measured", 0},
 		{"measured := unknown", 0},
-		{"measured, other := original, original; _ = other", 0},
+		{"measured, other := original, original; _ = other", 1},
 	} {
 		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "original s.DependencyStats", 1)
 		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.declarations+"; _ = s.BuildDependencyReportFromStats", 1)

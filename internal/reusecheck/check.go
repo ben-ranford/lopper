@@ -223,9 +223,9 @@ func LegacyAdvisory(f Finding, source []byte) bool {
 func localDeclarations(fn *ast.FuncDecl, info *types.Info) map[types.Object]ast.Node {
 	result := make(map[types.Object]ast.Node)
 	ast.Inspect(fn, func(node ast.Node) bool {
-		for _, name := range declarationNames(node) {
+		for index, name := range declarationNames(node) {
 			if object := info.Defs[name]; object != nil {
-				result[object] = node
+				result[object] = bindingDeclaration(node, index)
 			}
 		}
 		return true
