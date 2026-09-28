@@ -214,25 +214,35 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	switch item := unparen(expression).(type) {
 	case *ast.CompositeLit:
 		return item.Type
+	case *ast.UnaryExpr:
+		literal, ok := unparen(item.X).(*ast.CompositeLit)
+		if item.Op == token.AND && ok {
+			return &ast.StarExpr{X: literal.Type}
+		}
 	case *ast.CallExpr:
-		if len(item.Args) == 1 && collectionConversionType(item.Fun) {
-			return item.Fun
-		}
-		ident, ok := unparen(item.Fun).(*ast.Ident)
-		if !ok || len(item.Args) == 0 {
-			return nil
-		}
-		builtin, ok := info.ObjectOf(ident).(*types.Builtin)
-		if !ok {
-			return nil
-		}
-		switch builtin.Name() {
-		case "make":
-			return item.Args[0]
-		case "new":
-			if len(item.Args) == 1 {
-				return &ast.StarExpr{X: item.Args[0]}
-			}
+		return allocatedCallType(item, info)
+	}
+	return nil
+}
+
+func allocatedCallType(item *ast.CallExpr, info *types.Info) ast.Expr {
+	if len(item.Args) == 1 && collectionConversionType(item.Fun) {
+		return item.Fun
+	}
+	ident, ok := unparen(item.Fun).(*ast.Ident)
+	if !ok || len(item.Args) == 0 {
+		return nil
+	}
+	builtin, ok := info.ObjectOf(ident).(*types.Builtin)
+	if !ok {
+		return nil
+	}
+	switch builtin.Name() {
+	case "make":
+		return item.Args[0]
+	case "new":
+		if len(item.Args) == 1 {
+			return &ast.StarExpr{X: item.Args[0]}
 		}
 	}
 	return nil
