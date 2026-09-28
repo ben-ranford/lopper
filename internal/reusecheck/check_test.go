@@ -978,3 +978,34 @@ func TestIteratorRangeStatsProvenance(t *testing.T) {
 		}
 	}
 }
+
+func TestIteratorClosureRangeStatsProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		signature, binding string
+		want               int
+	}{
+		{"func(yield func(s.DependencyStats) bool)", "measured", 1},
+		{"func(yield func(string, *s.DependencyStats) bool)", "_, measured", 1},
+		{"func(yield func(OtherStats) bool)", "measured", 0},
+		{"func(yield func(s.DependencyStats) bool)", "_, measured", 0},
+		{"func(yield func(s.DependencyStats) int)", "measured", 0},
+		{"func(yield func(s.DependencyStats, int, string) bool)", "measured", 0},
+	} {
+		closure := tc.signature + " {}"
+		for _, form := range []struct{ setup, iterator string }{
+			{"", closure},
+			{"values := " + closure + ";", "values"},
+			{"var values = " + closure + ";", "values"},
+			{"original := " + closure + "; values := (original);", "values"},
+		} {
+			t.Run(tc.signature+tc.binding+form.setup, func(t *testing.T) {
+				source := strings.Replace(mappingFixture, "measured s.DependencyStats", "", 1)
+				source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", form.setup+"for "+tc.binding+" := range "+form.iterator+" { _ = s.BuildDependencyReportFromStats", 1) + "; return r.DependencyReport{} }"
+				findings, err := Analyze("fixture.go", []byte(source))
+				if err != nil || len(findings) != tc.want {
+					t.Fatalf("findings=%+v err=%v, want %d", findings, err, tc.want)
+				}
+			})
+		}
+	}
+}

@@ -265,6 +265,8 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	switch item := unparen(expression).(type) {
 	case *ast.CompositeLit:
 		return item.Type
+	case *ast.FuncLit:
+		return item.Type
 	case *ast.CallExpr:
 		return allocatedCallType(item, info)
 	}
