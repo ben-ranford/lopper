@@ -420,6 +420,10 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 	if len(value) > maxPomPropertyValueBytes {
 		return "", false, true, 0
 	}
+	// Keep literal coordinates out of the allocation-heavy expansion path.
+	if _, _, _, found := nextPomPropertyToken(value, 0); !found {
+		return value, false, false, 0
+	}
 	return replacePomPropertyTokensWithinBounds(value, properties, tokensRemaining)
 }
 

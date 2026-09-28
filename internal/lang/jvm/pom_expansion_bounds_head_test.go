@@ -127,3 +127,35 @@ func TestPomPropertyExpansionSharesPOMBudget(t *testing.T) {
 		t.Fatalf("unbounded aggregate result: %d descriptors, %d bytes", len(descriptors), bytes)
 	}
 }
+
+func TestPomPropertyExpansionTokenFreeValuesDoNotAllocate(t *testing.T) {
+	for _, input := range []string{"org.example", "1.2.3", "${unfinished", strings.Repeat("x", maxPomPropertyValueBytes)} {
+		allocations := testing.AllocsPerRun(100, func() {
+			got, replaced, missing, used := replacePomPropertyTokens(input, nil, 0)
+			if got != input || replaced || missing || used != 0 {
+				t.Fatal("token-free value changed or consumed token budget")
+			}
+		})
+		if allocations != 0 {
+			t.Errorf("token-free value (%d bytes) allocated %.0f objects; want zero", len(input), allocations)
+		}
+	}
+}
+
+func BenchmarkPomPropertyExpansion(b *testing.B) {
+	properties := map[string]string{"version": "1.2.3"}
+	for _, tc := range []struct{ name, input, want string }{
+		{"literal", "1.2.3", "1.2.3"},
+		{"token", "${version}", "1.2.3"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				got, unresolved := resolvePomPropertyValue(tc.input, properties)
+				if got != tc.want || unresolved {
+					b.Fatal("unexpected expansion result")
+				}
+			}
+		})
+	}
+}
