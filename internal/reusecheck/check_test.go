@@ -236,6 +236,29 @@ func TestExplicitPointerReportFieldReceivers(t *testing.T) {
 	}
 }
 
+func TestStatsLocalAliasProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		declarations string
+		want         int
+	}{
+		{"measured := original", 1},
+		{"var measured = (original)", 1},
+		{"first := original; measured := first", 1},
+		{"var first *s.DependencyStats; measured := first", 1},
+		{"var first OtherStats; measured := first", 0},
+		{"var measured = measured", 0},
+		{"measured := unknown", 0},
+		{"measured, other := original, original; _ = other", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "original s.DependencyStats", 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.declarations+"; _ = s.BuildDependencyReportFromStats", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.declarations, findings, err)
+		}
+	}
+}
+
 func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
 	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
 	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)

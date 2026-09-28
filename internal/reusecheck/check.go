@@ -320,14 +320,44 @@ func mappedStatsObject(expression ast.Expr, field string, packages map[string]st
 		return nil
 	}
 	object := info.ObjectOf(receiver)
-	declaration := declarations[object]
-	if ranged, ok := declaration.(*ast.RangeStmt); ok {
-		declaration = &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
-	}
+	declaration := resolvedStatsDeclaration(object, info, declarations)
 	if object == nil || !dependencyStats(declaration, packages, info) {
 		return nil
 	}
 	return object
+}
+
+// Follow lexical aliases without treating an unresolved or cyclic initializer as
+// proof. Keep the mapping receiver object separate from its type provenance.
+func resolvedStatsDeclaration(object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Node {
+	seen := make(map[types.Object]bool)
+	for object != nil && !seen[object] {
+		seen[object] = true
+		declaration := declarations[object]
+		if ranged, ok := declaration.(*ast.RangeStmt); ok {
+			return &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
+		}
+		alias, ok := unparen(statsAliasInitializer(declaration)).(*ast.Ident)
+		if !ok {
+			return declaration
+		}
+		object = info.ObjectOf(alias)
+	}
+	return nil
+}
+
+func statsAliasInitializer(declaration ast.Node) ast.Expr {
+	switch item := declaration.(type) {
+	case *ast.ValueSpec:
+		if item.Type == nil && len(item.Names) == 1 && len(item.Values) == 1 {
+			return item.Values[0]
+		}
+	case *ast.AssignStmt:
+		if len(item.Lhs) == 1 && len(item.Rhs) == 1 {
+			return item.Rhs[0]
+		}
+	}
+	return nil
 }
 
 // Partial mappings retain domain overrides and ambiguous provenance as advice.
