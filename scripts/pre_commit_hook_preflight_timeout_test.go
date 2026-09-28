@@ -161,6 +161,38 @@ func TestHooksInstallRollbackPreservesEmptyLocalPath(t *testing.T) {
 	}
 }
 
+func TestHooksInstallEarlyFailurePreservesConcurrentConfig(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	if err := os.Symlink(t.TempDir(), filepath.Dir(fixture.managedHook)); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" = --get ] && [ "$4" = core.hooksPath ]; then
+	%s "$@" || exit "$?"
+	%s config --local core.hooksPath /concurrent/hooks
+	exit 0
+fi
+exec %s "$@"
+`, shellQuote(realGit), shellQuote(realGit), shellQuote(realGit)))
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Unsafe managed hook directory") {
+		t.Fatalf("early directory failure = %v\n%s", err, output)
+	}
+	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != "/concurrent/hooks" {
+		t.Fatalf("concurrent hooksPath overwritten: %q", got)
+	}
+}
+
 func TestHooksInstallActivationFailureRemovesNewManagedHook(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	if err := os.WriteFile(fixture.configPath+".lock", nil, 0o600); err != nil {
