@@ -486,6 +486,7 @@ hooks-install:
 			:|"$$managed_dir":|"$$managed_dir":"$$managed_dir"|.githooks:.githooks) ;; \
 			*) echo "Refusing to replace existing core.hooksPath: $$effective_path" >&2; exit 1 ;; \
 		esac; \
+		if [ "$$local_path" != "$$managed_dir" ]; then read_config git config --local --fixed-value --get-all core.hooksPath "$$managed_dir"; [ "$$value_present" -eq 0 ] || { echo "Refusing shadowed managed core.hooksPath" >&2; exit 1; }; fi; \
 		install_started=1; \
 		if [ ! -e "$$managed_dir" ]; then created_dir=1; mkdir -p "$$managed_dir"; fi; \
 		[ -d "$$managed_dir" ] && [ ! -L "$$managed_dir" ] || { echo "Unsafe managed hook directory: $$managed_dir" >&2; exit 1; }; \

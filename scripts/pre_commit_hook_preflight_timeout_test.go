@@ -64,6 +64,28 @@ func assertPostWriteTimeoutRollsBackState(t *testing.T, previousPath string) {
 	assertNoPreflightTimeoutTemps(t, tmpDir)
 }
 
+func TestHooksInstallRejectsShadowedManagedEntries(t *testing.T) {
+	for _, previousPath := range []string{"", ".githooks"} {
+		t.Run("previous-path="+previousPath, func(t *testing.T) { assertShadowedManagedEntryRejected(t, previousPath) })
+	}
+}
+
+func assertShadowedManagedEntryRejected(t *testing.T, previousPath string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "--add", "core.hooksPath", filepath.Dir(fixture.managedHook))
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "--add", "core.hooksPath", previousPath)
+	before := readPreflightFile(t, fixture.configPath)
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install")
+	if err == nil || !strings.Contains(string(output), "Refusing shadowed managed core.hooksPath") {
+		t.Fatalf("shadowed managed entry = %v\n%s", err, output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, before)
+	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer mutated hook state before refusal: %v", err)
+	}
+}
+
 func TestHooksInstallPreservedEntriesRemainIdempotentAndUninstallable(t *testing.T) {
 	for _, previousPath := range []string{"", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) { assertPreservedEntriesLifecycle(t, previousPath) })
