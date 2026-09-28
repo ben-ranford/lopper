@@ -337,7 +337,7 @@ func resolvedStatsDeclaration(object types.Object, info *types.Info, declaration
 		if ranged, ok := declaration.(*ast.RangeStmt); ok {
 			return &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
 		}
-		alias, ok := unparen(statsAliasInitializer(declaration)).(*ast.Ident)
+		alias, ok := statsAliasOperand(aliasInitializer(declaration)).(*ast.Ident)
 		if !ok {
 			return declaration
 		}
@@ -346,7 +346,24 @@ func resolvedStatsDeclaration(object types.Object, info *types.Info, declaration
 	return nil
 }
 
-func statsAliasInitializer(declaration ast.Node) ast.Expr {
+func statsAliasOperand(expression ast.Expr) ast.Expr {
+	for {
+		expression = unparen(expression)
+		switch item := expression.(type) {
+		case *ast.StarExpr:
+			expression = item.X
+		case *ast.UnaryExpr:
+			if item.Op != token.AND {
+				return expression
+			}
+			expression = item.X
+		default:
+			return expression
+		}
+	}
+}
+
+func aliasInitializer(declaration ast.Node) ast.Expr {
 	switch item := declaration.(type) {
 	case *ast.ValueSpec:
 		if item.Type == nil && len(item.Names) == 1 && len(item.Values) == 1 {

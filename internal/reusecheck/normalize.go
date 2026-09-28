@@ -156,7 +156,7 @@ func canonicalWithoutDecorativeCalls(path string, fn *ast.FuncDecl, packages map
 func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
 	expression := unparen(statement.X)
 	if ident, ok := expression.(*ast.Ident); ok {
-		expression = declaredCollectionType(declarations[info.ObjectOf(ident)], info)
+		expression = resolvedCollectionType(info.ObjectOf(ident), info, declarations)
 	} else {
 		expression = allocatedCollectionType(expression, info)
 	}
@@ -185,6 +185,20 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 		return nil
 	}
 	return element
+}
+
+func resolvedCollectionType(object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	seen := make(map[types.Object]bool)
+	for object != nil && !seen[object] {
+		seen[object] = true
+		declaration := declarations[object]
+		alias, ok := unparen(aliasInitializer(declaration)).(*ast.Ident)
+		if !ok {
+			return declaredCollectionType(declaration, info)
+		}
+		object = info.ObjectOf(alias)
+	}
+	return nil
 }
 
 func declaredCollectionType(declaration ast.Node, info *types.Info) ast.Expr {

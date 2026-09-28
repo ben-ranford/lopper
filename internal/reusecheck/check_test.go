@@ -244,6 +244,11 @@ func TestStatsLocalAliasProvenance(t *testing.T) {
 		{"measured := original", 1},
 		{"var measured = (original)", 1},
 		{"first := original; measured := first", 1},
+		{"pointer := new(s.DependencyStats); measured := *pointer", 1},
+		{"value := s.DependencyStats{}; measured := &value", 1},
+		{"pointer := &(original); measured := *((pointer))", 1},
+		{"var measured = *(&measured)", 0},
+		{"var other OtherStats; measured := &other", 0},
 		{"var first *s.DependencyStats; measured := first", 1},
 		{"var first OtherStats; measured := first", 0},
 		{"var measured = measured", 0},
@@ -442,6 +447,11 @@ func TestRangeStatsMapping(t *testing.T) {
 		want                   int
 	}{
 		{"values []s.DependencyStats", "", "for _, measured := range values {", 1},
+		{"original []s.DependencyStats", "values := original;", "for _, measured := range values {", 1},
+		{"original map[string]s.DependencyStats", "var first = original; values := (first);", "for _, measured := range values {", 1},
+		{"original *[2]s.DependencyStats", "values := original;", "for _, measured := range values {", 1},
+		{"unused string", "var values = values;", "for _, measured := range values {", 0},
+		{"original []OtherStats", "values := original;", "for _, measured := range values {", 0},
 		{"values []*s.DependencyStats", "", "for _, measured := range values {", 1},
 		{"values [2]s.DependencyStats", "", "for _, measured := range values {", 1},
 		{"values *[2]s.DependencyStats", "", "for _, measured := range values {", 1},
