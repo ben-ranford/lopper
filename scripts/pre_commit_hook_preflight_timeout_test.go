@@ -193,6 +193,48 @@ exec %s "$@"
 	}
 }
 
+func TestHooksInstallFailedCopyPreservesConcurrentHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "cp")
+	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+if [ "$1" = .githooks/pre-commit ]; then
+	PATH=%s make hooks-install || exit "$?"
+	exit 1
+fi
+exec /bin/cp "$@"
+`, shellQuote(os.Getenv("PATH"))))
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Installed full-CI pre-commit hook") {
+		t.Fatalf("overlapping installation = %v\n%s", err, output)
+	}
+	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != filepath.Dir(fixture.managedHook) {
+		t.Fatalf("successful concurrent installer hooksPath = %q", got)
+	}
+	runCommand(t, fixture.repoDir, fixture.managedHook)
+}
+
+func TestHooksInstallInterruptAfterLinkCleansOwnedHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "ln")
+	writeFile(t, shimPath, "#!/bin/sh\n/bin/ln \"$@\" || exit \"$?\"\nkill -TERM \"$PPID\"\n")
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil {
+		t.Fatalf("installer succeeded after link interruption: %s", output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+		t.Fatalf("installer left owned hook state after interruption: %v", err)
+	}
+}
+
 func TestHooksInstallActivationFailureRemovesNewManagedHook(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	if err := os.WriteFile(fixture.configPath+".lock", nil, 0o600); err != nil {
