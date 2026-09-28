@@ -233,26 +233,29 @@ func collectPubIdentityEvidenceFromPaths(ctx context.Context, repoPath string, i
 		if ctx.Err() != nil {
 			return
 		}
-		files := filesByDirectory[directory]
-		declared := make(map[string]struct{})
-		pins := make([]identityManifestPin, 0)
-		for _, path := range files.manifestPaths {
-			if ctx.Err() != nil {
-				return
-			}
-			manifestPins := readPubIdentityDeclarations(repoPath, path, declared, warnings)
-			pins = append(pins, manifestPins...)
-		}
+		collectPubDirectoryIdentityEvidence(ctx, repoPath, index, filesByDirectory[directory], warnings)
+	}
+}
+
+func collectPubDirectoryIdentityEvidence(ctx context.Context, repoPath string, index identityIndex, files pubIdentityFiles, warnings *identityWarningCollector) {
+	declared := make(map[string]struct{})
+	pins := make([]identityManifestPin, 0)
+	for _, path := range files.manifestPaths {
 		if ctx.Err() != nil {
 			return
 		}
-		resolved, nonHosted := collectPubLockIdentityEvidence(repoPath, files.lockPath, declared, index, warnings)
-		for _, pin := range pins {
-			_, isResolved := resolved[pin.name]
-			_, isNonHosted := nonHosted[pin.name]
-			if !isResolved && !isNonHosted {
-				addPubIdentityEvidence(index, pin.name, pin.version, identityStatusDeclared, pin.source)
-			}
+		manifestPins := readPubIdentityDeclarations(repoPath, path, declared, warnings)
+		pins = append(pins, manifestPins...)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	resolved, nonHosted := collectPubLockIdentityEvidence(repoPath, files.lockPath, declared, index, warnings)
+	for _, pin := range pins {
+		_, isResolved := resolved[pin.name]
+		_, isNonHosted := nonHosted[pin.name]
+		if !isResolved && !isNonHosted {
+			addPubIdentityEvidence(index, pin.name, pin.version, identityStatusDeclared, pin.source)
 		}
 	}
 }

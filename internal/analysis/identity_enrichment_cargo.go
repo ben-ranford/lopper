@@ -60,27 +60,31 @@ func collectCargoIdentityEvidenceFromSnapshot(ctx context.Context, repoPath stri
 		if ctx.Err() != nil {
 			return
 		}
-		owner := cargoOwningManifest(repoPath, manifest, manifests)
-		if owner == nil {
-			continue
-		}
-		lockPath := filepath.Join(filepath.Dir(owner.path), cargoLockFileName)
-		if _, ok := lockPaths[lockPath]; !ok {
-			continue
-		}
-		if directByLock[lockPath] == nil {
-			directByLock[lockPath] = cargoLockDependencyIndex{}
-		}
-		for _, dependency := range resolveCargoManifestDependencies(manifest, owner) {
-			key := normalizeCargoIdentityLookupName(dependency.packageName)
-			directByLock[lockPath][key] = append(directByLock[lockPath][key], dependency)
-		}
+		indexCargoManifestLockDependencies(repoPath, manifest, manifests, lockPaths, directByLock)
 	}
 	for _, lockPath := range snapshot.cargoLockFiles {
 		if ctx.Err() != nil {
 			return
 		}
 		collectCargoLockIdentityEvidence(repoPath, lockPath, index, directByLock[filepath.Clean(lockPath)], warnings)
+	}
+}
+
+func indexCargoManifestLockDependencies(repoPath string, manifest *cargoManifestModel, manifests map[string]*cargoManifestModel, lockPaths map[string]struct{}, directByLock map[string]cargoLockDependencyIndex) {
+	owner := cargoOwningManifest(repoPath, manifest, manifests)
+	if owner == nil {
+		return
+	}
+	lockPath := filepath.Join(filepath.Dir(owner.path), cargoLockFileName)
+	if _, ok := lockPaths[lockPath]; !ok {
+		return
+	}
+	if directByLock[lockPath] == nil {
+		directByLock[lockPath] = cargoLockDependencyIndex{}
+	}
+	for _, dependency := range resolveCargoManifestDependencies(manifest, owner) {
+		key := normalizeCargoIdentityLookupName(dependency.packageName)
+		directByLock[lockPath][key] = append(directByLock[lockPath][key], dependency)
 	}
 }
 

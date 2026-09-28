@@ -215,32 +215,37 @@ func TestPythonCatalogCachesNonFiniteTOMLMetadata(t *testing.T) {
 		{"Pipfile", "[packages]\nrequests='==2.32.3'\n"},
 	} {
 		t.Run(manifest.name, func(t *testing.T) {
-			repo := t.TempDir()
-			metadata := "value=nan\n[tool.custom]\nvalues=[nan,+inf,-inf,1.5]\nnested={limit=+inf}\n[[tool.custom.entries]]\nvalue=-inf\n"
-			testutil.MustWriteFile(t, filepath.Join(repo, manifest.name), metadata+manifest.dependencies)
-			testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
-			request := Request{RepoPath: repo, Language: "python", TopN: 10, Features: mustResolveDependencyIdentityPreviewFeatureSet(t), Cache: &CacheOptions{Enabled: true, Path: t.TempDir()}}
-			service := NewService()
-			first, err := service.Analyse(context.Background(), request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if first.Cache == nil || first.Cache.Writes != 1 {
-				t.Fatalf("expected cache write: cache=%+v warnings=%v", first.Cache, first.Warnings)
-			}
-			second, err := service.Analyse(context.Background(), request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if second.Cache == nil || second.Cache.Hits != 1 {
-				t.Fatalf("expected cache hit: %+v", second.Cache)
-			}
-			before := findIdentityDependency(t, first, "python", "requests").Identity
-			after := findIdentityDependency(t, second, "python", "requests").Identity
-			if before.Version != "2.32.3" || after.Version != before.Version || after.Source != before.Source {
-				t.Fatalf("cache changed dependency identity: before=%+v after=%+v", before, after)
-			}
+			assertPythonCatalogCachesNonFiniteTOML(t, manifest.name, manifest.dependencies)
 		})
+	}
+}
+
+func assertPythonCatalogCachesNonFiniteTOML(t *testing.T, name, dependencies string) {
+	t.Helper()
+	repo := t.TempDir()
+	metadata := "value=nan\n[tool.custom]\nvalues=[nan,+inf,-inf,1.5]\nnested={limit=+inf}\n[[tool.custom.entries]]\nvalue=-inf\n"
+	testutil.MustWriteFile(t, filepath.Join(repo, name), metadata+dependencies)
+	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
+	request := Request{RepoPath: repo, Language: "python", TopN: 10, Features: mustResolveDependencyIdentityPreviewFeatureSet(t), Cache: &CacheOptions{Enabled: true, Path: t.TempDir()}}
+	service := NewService()
+	first, err := service.Analyse(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Cache == nil || first.Cache.Writes != 1 {
+		t.Fatalf("expected cache write: cache=%+v warnings=%v", first.Cache, first.Warnings)
+	}
+	second, err := service.Analyse(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 {
+		t.Fatalf("expected cache hit: %+v", second.Cache)
+	}
+	before := findIdentityDependency(t, first, "python", "requests").Identity
+	after := findIdentityDependency(t, second, "python", "requests").Identity
+	if before.Version != "2.32.3" || after.Version != before.Version || after.Source != before.Source {
+		t.Fatalf("cache changed dependency identity: before=%+v after=%+v", before, after)
 	}
 }
 
