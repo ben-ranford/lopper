@@ -193,6 +193,84 @@ exec %s "$@"
 	}
 }
 
+func TestHooksInstallPostActivationFailurePreservesConcurrentConfig(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ] && [ -f .git/lopper-hooks/pre-commit ]; then
+ %s config --local core.hooksPath /concurrent/hooks
+fi
+exec %s "$@"
+`, shellQuote(realGit), shellQuote(realGit)))
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Unable to activate") {
+		t.Fatalf("post-activation failure = %v\n%s", err, output)
+	}
+	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != "/concurrent/hooks" {
+		t.Fatalf("concurrent hooksPath overwritten: %q", got)
+	}
+}
+
+func TestHooksInstallWithoutHardLinks(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", withoutHardLinksEnv(t)...)
+	if err != nil {
+		t.Fatalf("install without hard links = %v\n%s", err, output)
+	}
+	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != filepath.Dir(fixture.managedHook) {
+		t.Fatalf("installed hooksPath = %q", got)
+	}
+	runCommand(t, fixture.repoDir, fixture.managedHook)
+}
+
+func withoutHardLinksEnv(t *testing.T) []string {
+	t.Helper()
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "ln")
+	writeFile(t, shimPath, "#!/bin/sh\nexit 1\n")
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+}
+
+func TestHooksInstallFallbackActivationFailureRetainsHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	writeFile(t, fixture.configPath+".lock", "")
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", withoutHardLinksEnv(t)...)
+	if err == nil {
+		t.Fatalf("activation unexpectedly succeeded: %s", output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	// A renamed copy has no retained inode proof: conservatively keep the usable
+	// hook rather than risk deleting a concurrent publisher's file during rollback.
+	runCommand(t, fixture.repoDir, fixture.managedHook)
+}
+
+func TestHooksInstallFallbackCollisionPreservesConcurrentHook(t *testing.T) {
+	fixture := newPreflightTimeoutFixture(t, "hooks-install")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "ln")
+	writeFile(t, shimPath, "#!/bin/sh\nprintf '#!/bin/sh\\n# concurrent hook\\nexit 0\\n' >\"$2\"\nchmod 755 \"$2\"\nexit 1\n")
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), "Concurrent managed hook publication") {
+		t.Fatalf("publication collision = %v\n%s", err, output)
+	}
+	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
+	assertPreflightFileEquals(t, fixture.managedHook, []byte("#!/bin/sh\n# concurrent hook\nexit 0\n"))
+}
+
 func TestHooksInstallFailedCopyPreservesConcurrentHook(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	shimDir := t.TempDir()
