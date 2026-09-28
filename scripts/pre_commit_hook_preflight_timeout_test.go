@@ -181,19 +181,19 @@ if [ "$1" = config ] && [ "$2" = --local ] && [ "$3" = --get ] && [ "$4" = core.
 fi
 exec %s "$@"
 `, shellQuote(realGit), shellQuote(realGit), shellQuote(realGit)))
-	if err := os.Chmod(shimPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err == nil || !strings.Contains(string(output), "Unsafe managed hook directory") {
-		t.Fatalf("early directory failure = %v\n%s", err, output)
-	}
-	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != "/concurrent/hooks" {
-		t.Fatalf("concurrent hooksPath overwritten: %q", got)
-	}
+	assertHookInstallPreservesConcurrentConfig(t, fixture, shimPath, "Unsafe managed hook directory", "/concurrent/hooks")
 }
 
 func TestHooksInstallPostActivationFailurePreservesConcurrentConfig(t *testing.T) {
+	assertHookPostActivationConcurrentChange(t, "core.hooksPath /concurrent/hooks", "/concurrent/hooks")
+}
+
+func TestHooksInstallRollbackPreservesConcurrentUnset(t *testing.T) {
+	assertHookPostActivationConcurrentChange(t, "--unset core.hooksPath", "")
+}
+
+func assertHookPostActivationConcurrentChange(t *testing.T, changeArgs, expectedPath string) {
+	t.Helper()
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	realGit, err := exec.LookPath("git")
 	if err != nil {
@@ -203,19 +203,37 @@ func TestHooksInstallPostActivationFailurePreservesConcurrentConfig(t *testing.T
 	shimPath := filepath.Join(shimDir, "git")
 	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
 if [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = core.hooksPath ] && [ -f .git/lopper-hooks/pre-commit ]; then
- %s config --local core.hooksPath /concurrent/hooks
+ %s config --local %s
 fi
 exec %s "$@"
-`, shellQuote(realGit), shellQuote(realGit)))
+`, shellQuote(realGit), changeArgs, shellQuote(realGit)))
+	assertHookInstallPreservesConcurrentConfig(t, fixture, shimPath, "Unable to activate", expectedPath)
+	if expectedPath == "" {
+		if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
+			t.Fatalf("installer left inactive owned hook state: %v", err)
+		}
+	}
+}
+
+func assertHookInstallPreservesConcurrentConfig(t *testing.T, fixture preflightTimeoutFixture, shimPath, failure, expectedPath string) {
+	t.Helper()
 	if err := os.Chmod(shimPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err == nil || !strings.Contains(string(output), "Unable to activate") {
-		t.Fatalf("post-activation failure = %v\n%s", err, output)
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+filepath.Dir(shimPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil || !strings.Contains(string(output), failure) {
+		t.Fatalf("expected %s: error=%v\n%s", failure, err, output)
 	}
-	if got := testutil.GitOutput(t, fixture.repoDir, "config", "--local", "--get", "core.hooksPath"); got != "/concurrent/hooks" {
-		t.Fatalf("concurrent hooksPath overwritten: %q", got)
+	actual, err := hookCommand(fixture.repoDir, "git", "config", "--local", "--get", "core.hooksPath")
+	if expectedPath == "" {
+		var exitErr *exec.ExitError
+		if actual != "" || !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("expected absent local hooksPath: %q, error=%v", actual, err)
+		}
+		return
+	}
+	if err != nil || strings.TrimSpace(actual) != expectedPath {
+		t.Fatalf("concurrent hooksPath overwritten: %q, error=%v", actual, err)
 	}
 }
 
