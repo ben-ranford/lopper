@@ -5,6 +5,44 @@ preflight_watchdog_pid=
 preflight_state_dir=
 preflight_output_file=
 
+preflight_process_tree() {
+	# -ef also works with Git Bash ps, which lacks POSIX output selection.
+	ps -ef | awk -v root="$1" '
+		NR == 1 {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "PID") pid_column = i
+				if ($i == "PPID") parent_column = i
+			}
+			next
+		}
+		pid_column && parent_column {
+			# Git Bash may prefix a process row with a status flag.
+			offset = ($pid_column ~ /^[0-9]+$/) ? 0 : 1
+			pid = $(pid_column + offset)
+			parent = $(parent_column + offset)
+			if (pid ~ /^[0-9]+$/ && parent ~ /^[0-9]+$/) children[parent] = children[parent] " " pid
+		}
+		function visit(pid, descendants, count, i) {
+			count = split(children[pid], descendants, " ")
+			for (i = 1; i <= count; i++) if (descendants[i] != "") visit(descendants[i])
+			print pid
+		}
+		END { visit(root) }
+	'
+}
+
+terminate_preflight_reader() (
+	# Keep the original descendants even if TERM makes their parent exit.
+	reader_pids=$(preflight_process_tree "$1")
+	# shellcheck disable=SC2086 # The tree contains only numeric process IDs.
+	kill -TERM $reader_pids 2>/dev/null || :
+	sleep 1
+	# Include any descendants created during the bounded grace period.
+	reader_pids="$reader_pids $(preflight_process_tree "$1")"
+	# shellcheck disable=SC2086
+	kill -KILL $reader_pids 2>/dev/null || :
+)
+
 cleanup_preflight_git() {
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
@@ -36,7 +74,7 @@ run_preflight_git() {
 		trap '
 			trap - EXIT HUP INT TERM
 			if [ -n "$git_pid" ]; then
-				kill -TERM "$git_pid" 2>/dev/null || :
+				terminate_preflight_reader "$git_pid"
 				wait "$git_pid" 2>/dev/null || :
 			fi
 			if [ -n "$hold_pid" ]; then
