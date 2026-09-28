@@ -167,6 +167,10 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 		element = collection.Elt
 	case *ast.MapType:
 		element = collection.Value
+		if key, ok := statement.Key.(*ast.Ident); ok && info.ObjectOf(key) == object {
+			element = collection.Key
+			binding = statement.Key
+		}
 	case *ast.ChanType:
 		element = collection.Value
 		binding = statement.Key
