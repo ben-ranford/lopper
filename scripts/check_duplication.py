@@ -2,6 +2,7 @@
 """Compare added Go lines with checked output from the pinned dupl detector."""
 
 import argparse
+import difflib
 import math
 import os
 from pathlib import Path
@@ -16,8 +17,8 @@ class AnalysisError(Exception):
     """The requested comparison did not complete."""
 
 
-def checked(command, repo, *, environment=None):
-    result = subprocess.run(command, cwd=repo, env=environment, capture_output=True, text=True)
+def checked(command, repo, *, environment=None, input_text=None):
+    result = subprocess.run(command, cwd=repo, env=environment, input=input_text, capture_output=True, text=True)
     if result.returncode:
         raise AnalysisError(f"{command[0]} failed ({result.returncode}): {result.stderr.strip()}")
     return result
@@ -94,9 +95,29 @@ def added_lines(repo, merge_base):
             index += 1
             pathspecs = [f":(literal){raw}"]
         path = supported_path(raw, repo)
+        if status == "T":
+            before = source_at_revision(repo, merge_base, path)
+            after = source_at_revision(repo, "HEAD", path)
+            diff = "\n".join(difflib.unified_diff(before.splitlines(), after.splitlines(), n=0, lineterm=""))
+            added.update(changed_hunk_lines(diff, path))
+            continue
         diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-l0", "--unified=0", merge_base, "HEAD", "--", *pathspecs], repo).stdout
         added.update(changed_hunk_lines(diff, path))
     return added
+
+
+def source_at_revision(repo, revision, path):
+    # Git resolves links within the requested tree, so the old source is not
+    # accidentally read from the current checkout or from outside the repository.
+    output = checked(["git", "cat-file", "--batch", "--follow-symlinks"], repo,
+                     input_text=f"{revision}:{path}\n").stdout
+    header, separator, source = output.partition("\n")
+    if not separator or not re.fullmatch(r"[0-9a-f]{40,64} blob \d+", header) or not source.endswith("\n"):
+        raise AnalysisError(f"Cannot resolve Go source at {revision}:{path}")
+    source = source[:-1]  # cat-file terminates each blob with a framing newline.
+    if "\0" in source:
+        raise AnalysisError(f"Cannot analyze binary Go diff: {path!r}")
+    return source
 
 
 def changed_hunk_lines(diff, path):
