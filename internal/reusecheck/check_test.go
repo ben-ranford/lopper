@@ -944,3 +944,37 @@ func TestTypeSwitchStatsProvenance(t *testing.T) {
 		}
 	}
 }
+
+type iteratorRangeCase struct{ signature, binding string }
+
+func TestIteratorRangeStatsProvenance(t *testing.T) {
+	for want, cases := range map[int][]iteratorRangeCase{
+		1: {
+			{"func(func(s.DependencyStats) bool)", "measured"},
+			{"func(yield func(value *s.DependencyStats) bool)", "measured"},
+			{"func(func(string, s.DependencyStats) bool)", "_, measured"},
+			{"func(func(s.DependencyStats, int) bool)", "measured, _"},
+			{"func(func(first, second s.DependencyStats) bool)", "_, measured"},
+		},
+		0: {
+			{"func(func(OtherStats) bool)", "measured"},
+			{"func(func() bool)", "measured"},
+			{"func(func(s.DependencyStats) bool)", "_, measured"},
+			{"func(func(s.DependencyStats) int)", "measured"},
+			{"func(func(s.DependencyStats) bool) int", "measured"},
+			{"func(func(s.DependencyStats, int, string) bool)", "measured"},
+			{"func()", "measured"},
+			{"func(int)", "measured"},
+			{"func(func(s.DependencyStats))", "measured"},
+		},
+	} {
+		for _, tc := range cases {
+			source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values "+tc.signature, 1)
+			source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "for "+tc.binding+" := range values { _ = s.BuildDependencyReportFromStats", 1) + "; return r.DependencyReport{} }"
+			findings, err := Analyze("fixture.go", []byte(source))
+			if err != nil || len(findings) != want {
+				t.Fatalf("%s: findings=%+v err=%v", tc.signature, findings, err)
+			}
+		}
+	}
+}

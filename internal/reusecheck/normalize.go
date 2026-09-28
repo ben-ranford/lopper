@@ -189,6 +189,8 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 	var element ast.Expr
 	binding := statement.Value
 	switch collection := unaliasedType(expression).(type) {
+	case *ast.FuncType:
+		return iteratorRangeValue(collection, statement, object, info)
 	case *ast.ArrayType:
 		element = collection.Elt
 	case *ast.StarExpr:
