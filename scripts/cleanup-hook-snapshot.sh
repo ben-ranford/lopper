@@ -38,7 +38,7 @@ case "$requested_git_dir" in '') ;; *) absolute_path "$requested_git_dir" || exi
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX
 unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 # Inspect durable configuration, not temporary replacements selected by callers.
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM
 script=$0
 case "$script" in /*) ;; *) script=$PWD/$script ;; esac
 # shellcheck source=scripts/hook-config-preflight.sh

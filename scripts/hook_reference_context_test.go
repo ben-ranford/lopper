@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -283,4 +284,31 @@ func TestHooksUninstallRetainsDefaultHookFileLink(t *testing.T) {
 	if _, err := os.Stat(defaultHook); err != nil {
 		t.Fatalf("default hook no longer resolves: %v", err)
 	}
+}
+
+func TestHooksCleanupIgnoresNoSystemConfigSelector(t *testing.T) {
+	repo := newHookFixture(t)
+	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
+	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
+	systemConfig := filepath.Join(t.TempDir(), "system.cfg")
+	runCommand(t, repo, "git", "config", "--file", systemConfig, "core.hooksPath", managed)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	// Model installed system configuration without modifying the host's Git config.
+	writeFileMode(t, filepath.Join(bin, "git"), "#!/bin/sh\nGIT_CONFIG_SYSTEM=\"$TEST_SYSTEM_CONFIG\" exec \"$TEST_REAL_GIT\" \"$@\"\n", 0o755)
+	home := t.TempDir()
+	env := []string{
+		"HOME=" + home, "XDG_CONFIG_HOME=" + home,
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"TEST_SYSTEM_CONFIG=" + systemConfig, "TEST_REAL_GIT=" + realGit,
+		"GIT_CONFIG_NOSYSTEM=1",
+	}
+	output, err := hookCommandWithEnv(repo, env, "sh", "scripts/cleanup-hook-snapshot.sh")
+	if err != nil {
+		t.Fatalf("cleanup with system Git config disabled: %v\n%s", err, output)
+	}
+	assertHookSnapshotRetention(t, managed, hookReferenceCase{alias: true})
 }
