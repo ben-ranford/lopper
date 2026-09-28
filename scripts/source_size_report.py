@@ -85,7 +85,7 @@ def counts(files):
 
 def clone_context(finding, contents):
     """Label enclosing declarations heuristically; never prescribe extraction."""
-    locations = re.findall(r'(?:^|duplicate of )(.+?):(\d+)-(\d+)', finding)
+    locations = re.findall(r'(?:^|\n|duplicate of )(.+?):(\d+)-(\d+)', finding)
     contexts = []
     for name, start, _ in locations:
         preceding = contents[name].decode('utf-8', 'replace').splitlines()[:int(start)]
@@ -95,6 +95,16 @@ def clone_context(finding, contents):
         kind = 'behavioral_case' if function.startswith(('Test', 'Benchmark', 'Fuzz', 'Example')) else 'helper_candidate'
         contexts.append({'path': name, 'function': function, 'kind': kind if function else 'unclassified'})
     return {'finding': finding, 'contexts': contexts}
+
+
+def clone_groups(output):
+    """Keep each blank-line-delimited dupl plumbing group intact and stable."""
+    groups = []
+    for group in re.split(r'\n[ \t]*\n+', output.strip()):
+        locations = tuple(sorted(line.strip() for line in group.splitlines() if line.strip()))
+        if locations:
+            groups.append(locations)
+    return sorted(groups)
 
 
 def test_clones(files, dupl_version, threshold):
@@ -123,7 +133,8 @@ def test_clones(files, dupl_version, threshold):
         if result.stderr.strip():
             raise RuntimeError('test clone analysis emitted diagnostics: ' + result.stderr.strip())
         contents = {name: data for name, _, data in files}
-        return [clone_context(line, contents) for line in sorted(result.stdout.replace(directory + '/', '').splitlines())]
+        output = result.stdout.replace(directory + '/', '')
+        return [clone_context('\n'.join(group), contents) for group in clone_groups(output)]
 
 
 def build_report(base, head, dupl_version, threshold):

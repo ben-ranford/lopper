@@ -53,6 +53,26 @@ class SourceSizeReportTest(unittest.TestCase):
         })
         self.assertEqual([item['kind'] for item in result['contexts']], ['helper_candidate', 'behavioral_case'])
 
+    def test_clone_plumbing_preserves_groups_and_sorts_deterministically(self):
+        files = [(name, b'100644', f'package example\nfunc Test{name[:-8]}(t *testing.T) {{}}\n'.encode())
+                 for name in ('a_test.go', 'b_test.go', 'c_test.go', 'd_test.go')]
+        def run(command, **kwargs):
+            if command[0] == 'go':
+                return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+            root = str(__import__('pathlib').Path(command[0]).parent.parent)
+            output = (
+                f'{root}/b_test.go:5-6\n{root}/a_test.go:3-4\n\n'
+                f'{root}/d_test.go:7-8\n{root}/c_test.go:1-2\n\n\n'
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+
+        with patch.object(report.subprocess, 'run', side_effect=run):
+            groups = report.test_clones(files, 'v1.0.0', 55)
+
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([[context['path'] for context in group['contexts']] for group in groups],
+                         [['a_test.go', 'b_test.go'], ['c_test.go', 'd_test.go']])
+
     def test_clone_diagnostics_fail_even_with_zero_exit(self):
         files = [('a_test.go', b'100644', b'package example\nfunc broken(')]
         success = subprocess.CompletedProcess([], 0, stdout='', stderr='')
