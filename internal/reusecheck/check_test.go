@@ -264,6 +264,36 @@ func TestStatsLocalAliasProvenance(t *testing.T) {
 	}
 }
 
+func TestStatsTypeAliasProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		declaration, typ string
+		want             int
+	}{
+		{"type localStats = s.DependencyStats", "localStats", 1},
+		{"type localStats = s.DependencyStats", "*localStats", 1},
+		{"type localStats = *s.DependencyStats", "localStats", 1},
+		{"type first = s.DependencyStats; type localStats = first", "localStats", 1},
+		{"type localStats s.DependencyStats", "localStats", 0},
+		{"type localStats = localStats", "localStats", 0},
+		{"type first = localStats; type localStats = first", "localStats", 0},
+	} {
+		source := strings.Replace(mappingFixture, "func build", tc.declaration+"; func build", 1)
+		source = strings.Replace(source, "measured s.DependencyStats", "measured "+tc.typ, 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.declaration, findings, err)
+		}
+	}
+	for _, initializer := range []string{"localStats{}", "new(localStats)", "localStats(original)"} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "original s.DependencyStats", 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "type localStats = s.DependencyStats; measured := "+initializer+"; _ = s.BuildDependencyReportFromStats", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != 1 {
+			t.Fatalf("%s: findings=%+v err=%v", initializer, findings, err)
+		}
+	}
+}
+
 func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
 	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
 	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)

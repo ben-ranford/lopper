@@ -38,8 +38,29 @@ func unparen(expression ast.Expr) ast.Expr {
 	}
 }
 
+// Follow only lexical type aliases (=), never distinct defined types.
+func unaliasedType(expression ast.Expr) ast.Expr {
+	seen := make(map[*ast.TypeSpec]bool)
+	for {
+		expression = unparen(expression)
+		ident, ok := expression.(*ast.Ident)
+		if !ok || ident.Obj == nil {
+			return expression
+		}
+		alias, ok := ident.Obj.Decl.(*ast.TypeSpec)
+		if !ok || !alias.Assign.IsValid() {
+			return expression
+		}
+		if seen[alias] {
+			return nil
+		}
+		seen[alias] = true
+		expression = alias.Type
+	}
+}
+
 func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
-	expr = unparen(expr)
+	expr = unaliasedType(expr)
 	selector, ok := expr.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != name {
 		return false

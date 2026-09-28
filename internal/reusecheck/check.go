@@ -141,7 +141,7 @@ func dependencyStats(declaration ast.Node, packages map[string]string, info *typ
 }
 
 func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
-	expression = unparen(expression)
+	expression = unaliasedType(expression)
 	if imported(expression, packages, sharedPackage, "DependencyStats") {
 		return true
 	}
@@ -175,7 +175,7 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 func dependencyStatsPointer(expression ast.Expr, packages map[string]string, info *types.Info) bool {
 	switch value := unparen(expression).(type) {
 	case *ast.CallExpr:
-		if pointer, ok := unparen(value.Fun).(*ast.StarExpr); ok {
+		if pointer, ok := unaliasedType(value.Fun).(*ast.StarExpr); ok {
 			return len(value.Args) == 1 && imported(pointer.X, packages, sharedPackage, "DependencyStats")
 		}
 		builtin, ok := unparen(value.Fun).(*ast.Ident)
