@@ -500,7 +500,7 @@ hooks-install:
 			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
 			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; if ! ln "$$tmp_hook" "$$managed_hook" 2>/dev/null; then mv -n "$$tmp_hook" "$$managed_hook"; [ ! -e "$$tmp_hook" ] || { echo "Concurrent managed hook publication; leaving existing hook untouched" >&2; exit 1; }; fi; created_hook=1; \
 		fi; \
-		if [ "$$local_path_present" -eq 0 ] || [ "$$local_path" != "$$managed_dir" ]; then activation_may_be_written=1; if ! git config --local --add core.hooksPath "$$managed_dir"; then activation_may_be_written=0; exit 1; fi; fi; \
+		if [ "$$local_path_present" -eq 0 ] || [ "$$local_path" != "$$managed_dir" ]; then activation_may_be_written=1; activation_status=0; run_preflight_git git config --local --add core.hooksPath "$$managed_dir" || activation_status=$$?; if [ "$$activation_status" -ne 0 ]; then [ "$$activation_status" -eq 124 ] || activation_may_be_written=0; exit "$$activation_status"; fi; fi; \
 		read_config git config --get core.hooksPath; \
 		if [ "$$value" != "$$managed_dir" ]; then \
 			echo "Unable to activate managed core.hooksPath" >&2; exit 1; \
@@ -523,7 +523,7 @@ hooks-uninstall:
 		managed_dir="$$common_dir/lopper-hooks"; \
 		config_error="$$(mktemp)"; \
 		read_preflight_git git config --local --get core.hooksPath 2>"$$config_error" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; }; configured_path="$$preflight_git_output"; \
-		case "$$configured_path" in "$$managed_dir"|.githooks) for managed_value in "$$managed_dir" .githooks ""; do git config --local --fixed-value --unset-all core.hooksPath "$$managed_value" || { status=$$?; [ "$$status" -eq 5 ] || exit "$$status"; }; done ;; esac; \
+		case "$$configured_path" in "$$managed_dir"|.githooks) for managed_value in "$$managed_dir" .githooks ""; do run_preflight_git git config --local --fixed-value --unset-all core.hooksPath "$$managed_value" || { status=$$?; [ "$$status" -eq 5 ] || exit "$$status"; }; done ;; esac; \
 		echo "Removed managed core.hooksPath hook configuration"
 
 vscode-extension-install:

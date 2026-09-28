@@ -37,6 +37,51 @@ func TestHooksPreflightTimesOutOnBlockingGitConfigWithoutMutation(t *testing.T) 
 	}
 }
 
+func TestHooksUninstallTimesOutOnBlockingMutation(t *testing.T) {
+	assertHookMutationTimeout(t, "hooks-uninstall")
+}
+
+func TestHooksInstallTimesOutOnBlockingActivation(t *testing.T) {
+	assertHookMutationTimeout(t, "hooks-install")
+}
+
+func assertHookMutationTimeout(t *testing.T, target string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, target)
+	runCommand(t, fixture.repoDir, "git", "config", "--local", "core.hooksPath", ".githooks")
+	fixture.configBefore = readPreflightFile(t, fixture.configPath)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+case "$*" in
+ "config --local --add core.hooksPath "*|"config --local --fixed-value --unset-all core.hooksPath "*)
+  mv .git/config .git/config.before-mutation || exit "$?"
+  mkfifo .git/config || exit "$?" ;;
+esac
+exec %s "$@"
+`, shellQuote(realGit)))
+	if err := os.Chmod(shimPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmpDir := t.TempDir()
+	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, target, "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+tmpDir)
+	if err == nil || !strings.Contains(string(output), "Timed out while reading Git preflight configuration") {
+		t.Fatalf("%s mutation timeout = %v\n%s", target, err, output)
+	}
+	assertCommonConfigFIFO(t, fixture.configPath, false)
+	assertPreflightFileEquals(t, fixture.configPath+".before-mutation", fixture.configBefore)
+	if target == "hooks-uninstall" {
+		assertPreflightHookUnchanged(t, fixture, target)
+	} else {
+		assertPreflightFileEquals(t, fixture.managedHook, readPreflightFile(t, filepath.Join(fixture.repoDir, ".githooks", "pre-commit")))
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
+}
+
 func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
 	for _, previousPath := range []string{"absent", "", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) { assertPostWriteTimeoutRollsBackState(t, previousPath) })
