@@ -603,7 +603,11 @@ func prepareIncludedFIFO(scope string) func(*testing.T, string) []string {
 
 func runMakeWithPreflightTimeout(t *testing.T, repoDir, target string, env ...string) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// A blocked post-write read and its rollback each consume one watchdog window.
+	// Leave a separate scheduling allowance for parallel test and CI contention.
+	const watchdogInterval = 10 * time.Second
+	const schedulingMargin = 40 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 2*watchdogInterval+schedulingMargin)
 	defer cancel()
 	command := exec.CommandContext(ctx, "make", target)
 	command.Dir = repoDir
