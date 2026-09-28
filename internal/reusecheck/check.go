@@ -114,13 +114,13 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 	if fields["Name"] == nil || fields["Language"] == nil {
 		return false
 	}
-	var stats types.Object
+	var stats string
 	for field, source := range reportFields {
-		object := mappedStatsObject(fields[field], source, packages, info, declarations)
-		if object == nil || (stats != nil && stats != object) {
+		receiver := mappedStatsReceiver(fields[field], source, packages, info, declarations)
+		if receiver == "" || (stats != "" && stats != receiver) {
 			return false
 		}
-		stats = object
+		stats = receiver
 	}
 	return true
 }
@@ -316,25 +316,87 @@ func reportLiteralFields(literal *ast.CompositeLit) map[string]ast.Expr {
 	return fields
 }
 
-func mappedStatsObject(expression ast.Expr, field string, packages map[string]string, info *types.Info, declarations map[types.Object]ast.Node) types.Object {
+func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]string, info *types.Info, declarations map[types.Object]ast.Node) string {
 	selector, ok := unparen(expression).(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != field {
-		return nil
+		return ""
 	}
-	receiverExpression := unparen(selector.X)
-	if pointer, ok := receiverExpression.(*ast.StarExpr); ok {
-		receiverExpression = unparen(pointer.X)
+	receiver := selector.X
+	key := stableStatsReceiver(receiver, info)
+	if key == "" {
+		return ""
 	}
-	receiver, ok := receiverExpression.(*ast.Ident)
-	if !ok {
-		return nil
+	typ := collectionValueType(receiver, false, info, declarations)
+	if typ == nil {
+		typ = resolvedCollectionType(receiver, info, declarations)
 	}
-	object := info.ObjectOf(receiver)
-	declaration := resolvedStatsDeclaration(object, info, declarations)
-	if object == nil || !dependencyStats(declaration, packages, info) {
-		return nil
+	if typ == nil {
+		typ = assertedStatsReceiverType(receiver, info, declarations)
 	}
-	return object
+	if typ != nil {
+		if dependencyStatsType(typ, packages) {
+			return key
+		}
+		return ""
+	}
+	ident, ok := unparen(receiver).(*ast.Ident)
+	if ok && dependencyStats(resolvedStatsDeclaration(info.ObjectOf(ident), info, declarations), packages, info) {
+		return key
+	}
+	return ""
+}
+
+// Preserve assertion provenance while applying each explicit pointer operation.
+func assertedStatsReceiverType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	seen := make(map[types.Object]bool)
+	var operations []collectionOperation
+	for {
+		switch item := unparen(expression).(type) {
+		case *ast.Ident:
+			resolved, follow := resolveCollectionIdentifier(item, info, declarations, seen)
+			if !follow {
+				return nil
+			}
+			expression = resolved
+		case *ast.StarExpr:
+			operations = append(operations, collectionDereference)
+			expression = item.X
+		case *ast.UnaryExpr:
+			if item.Op != token.AND {
+				return nil
+			}
+			operations = append(operations, collectionAddress)
+			expression = item.X
+		case *ast.TypeAssertExpr:
+			return collectionIndirection(item.Type, operations)
+		default:
+			return nil
+		}
+	}
+}
+
+// A repeated receiver must resolve to the same lexical objects and contain no
+// calls or receives: evaluating it once must preserve the copied field values.
+func stableStatsReceiver(expression ast.Expr, info *types.Info) string {
+	switch value := unparen(expression).(type) {
+	case *ast.Ident:
+		if object := info.ObjectOf(value); object != nil {
+			return fmt.Sprintf("%p", object)
+		}
+	case *ast.BasicLit:
+		return value.Kind.String() + ":" + value.Value
+	case *ast.StarExpr:
+		if operand := stableStatsReceiver(value.X, info); operand != "" {
+			return "*(" + operand + ")"
+		}
+	case *ast.IndexExpr:
+		collection := stableStatsReceiver(value.X, info)
+		index := stableStatsReceiver(value.Index, info)
+		if collection != "" && index != "" {
+			return collection + "[" + index + "]"
+		}
+	}
+	return ""
 }
 
 // Follow lexical aliases without treating an unresolved or cyclic initializer as
@@ -406,7 +468,7 @@ func partialReportMapping(literal *ast.CompositeLit, packages map[string]string,
 		if fields[field] == nil {
 			return false
 		}
-		if mappedStatsObject(fields[field], source, packages, info, declarations) != nil {
+		if mappedStatsReceiver(fields[field], source, packages, info, declarations) != "" {
 			matches++
 		}
 	}
