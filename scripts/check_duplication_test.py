@@ -110,7 +110,7 @@ class DuplicationRunnerTest(unittest.TestCase):
         (self.repo / "alias.go").symlink_to("original.go")
         self.commit()
         with mock.patch.dict(os.environ, self.environment, clear=True):
-            self.assertEqual(runner.added_lines(self.repo, base), {("alias.go", 1)})
+            self.assertEqual(runner.added_lines(self.repo, base), set())
         findings = (
             "alias.go:1-1: duplicate of original.go:1-1\n"
             "original.go:1-1: duplicate of alias.go:1-1\n"
@@ -138,7 +138,65 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.write("typed.go", "package fixture\nvar Added = 1\n")
         self.commit()
         with mock.patch.dict(os.environ, self.environment, clear=True):
-            self.assertEqual(runner.added_lines(self.repo, base), {("typed.go", 1), ("typed.go", 2)})
+            self.assertEqual(runner.added_lines(self.repo, base), {("typed.go", 2)})
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_changed_symlink_counts_source_changes_below_first_line(self):
+        self.write("alias.go", "package fixture\nvar Old = 1\n")
+        self.write("original.go", "package fixture\nvar New = 2\nvar More = 3\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {
+                ("alias.go", 2), ("alias.go", 3),
+            })
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_change_reads_symlink_target_at_comparison_base(self):
+        self.write("original.go", "package fixture\nvar Old = 1\n")
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        self.write("alias.go", "package fixture\nvar New = 2\n")
+        self.write("original.go", "package fixture\nvar New = 2\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {
+                ("alias.go", 2), ("original.go", 2),
+            })
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_change_fails_closed_for_unresolved_old_source(self):
+        for target in ("missing.go", "alias.go", "../outside.go"):
+            with self.subTest(target=target):
+                alias = self.repo / "alias.go"
+                if alias.exists():
+                    alias.unlink()
+                alias.symlink_to(target)
+                self.commit()
+                base = self.git("rev-parse", "HEAD").strip()
+                alias.unlink()
+                self.write("alias.go", "package fixture\n")
+                self.commit()
+                with mock.patch.dict(os.environ, self.environment, clear=True):
+                    with self.assertRaisesRegex(runner.AnalysisError, "Cannot resolve Go source"):
+                        runner.added_lines(self.repo, base)
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_change_rejects_binary_source(self):
+        self.write("alias.go", "package fixture\n\0")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            with self.assertRaisesRegex(runner.AnalysisError, "binary Go diff"):
+                runner.added_lines(self.repo, base)
 
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
