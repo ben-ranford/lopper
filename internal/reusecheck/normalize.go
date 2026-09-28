@@ -165,6 +165,11 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 	switch collection := unparen(expression).(type) {
 	case *ast.ArrayType:
 		element = collection.Elt
+	case *ast.StarExpr:
+		array, ok := unparen(collection.X).(*ast.ArrayType)
+		if ok && array.Len != nil {
+			element = array.Elt
+		}
 	case *ast.MapType:
 		element = collection.Value
 		if key, ok := statement.Key.(*ast.Ident); ok && info.ObjectOf(key) == object {

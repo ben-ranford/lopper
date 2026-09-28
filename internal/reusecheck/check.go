@@ -159,17 +159,27 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
 			return true
 		}
+		return dependencyStatsPointer(value, packages, info)
+	case *ast.CompositeLit:
+		return imported(value.Type, packages, sharedPackage, "DependencyStats")
+	case *ast.StarExpr:
+		return dependencyStatsPointer(value.X, packages, info)
+	default:
+		return dependencyStatsPointer(valueExpression, packages, info)
+	}
+}
+
+func dependencyStatsPointer(expression ast.Expr, packages map[string]string, info *types.Info) bool {
+	switch value := unparen(expression).(type) {
+	case *ast.CallExpr:
 		builtin, ok := unparen(value.Fun).(*ast.Ident)
 		if !ok || info == nil {
 			return false
 		}
 		object, resolvesToBuiltin := info.ObjectOf(builtin).(*types.Builtin)
 		return resolvesToBuiltin && object.Name() == "new" && len(value.Args) == 1 && imported(value.Args[0], packages, sharedPackage, "DependencyStats")
-	case *ast.CompositeLit:
-		return imported(value.Type, packages, sharedPackage, "DependencyStats")
 	case *ast.UnaryExpr:
-		operand := unparen(value.X)
-		literal, ok := operand.(*ast.CompositeLit)
+		literal, ok := unparen(value.X).(*ast.CompositeLit)
 		return value.Op == token.AND && ok && imported(literal.Type, packages, sharedPackage, "DependencyStats")
 	default:
 		return false
