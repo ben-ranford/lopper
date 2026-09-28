@@ -215,52 +215,37 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 
 func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
 	seen := make(map[types.Object]bool)
-	var operations []token.Token
+	var operations []collectionOperation
 	for {
 		switch item := unparen(expression).(type) {
 		case *ast.Ident:
-			object := info.ObjectOf(item)
-			if object == nil || seen[object] {
-				return nil
+			resolved, follow := resolveCollectionIdentifier(item, info, declarations, seen)
+			if !follow {
+				return collectionIndirection(resolved, operations)
 			}
-			seen[object] = true
-			declaration := declarations[object]
-			if initializer := aliasInitializer(declaration); initializer != nil {
-				expression = initializer
-				continue
+			expression = resolved
+		case *ast.SliceExpr:
+			operations = append(operations, collectionSlice)
+			expression = item.X
+		case *ast.CallExpr:
+			if !builtinAppend(item, info) {
+				return collectionIndirection(allocatedCallType(item, info), operations)
 			}
-			return collectionIndirection(declaredCollectionType(declaration), operations)
+			operations = append(operations, collectionAppend)
+			expression = item.Args[0]
 		case *ast.UnaryExpr:
 			if item.Op != token.AND {
 				return nil
 			}
-			operations = append(operations, token.AND)
+			operations = append(operations, collectionAddress)
 			expression = item.X
 		case *ast.StarExpr:
-			operations = append(operations, token.MUL)
+			operations = append(operations, collectionDereference)
 			expression = item.X
 		default:
 			return collectionIndirection(allocatedCollectionType(expression, info), operations)
 		}
 	}
-}
-
-func collectionIndirection(expression ast.Expr, operations []token.Token) ast.Expr {
-	if expression == nil {
-		return nil
-	}
-	for index := len(operations) - 1; index >= 0; index-- {
-		if operations[index] == token.AND {
-			expression = &ast.StarExpr{X: expression}
-			continue
-		}
-		pointer, ok := unaliasedType(expression).(*ast.StarExpr)
-		if !ok {
-			return nil
-		}
-		expression = pointer.X
-	}
-	return expression
 }
 
 func declaredCollectionType(declaration ast.Node) ast.Expr {

@@ -882,3 +882,45 @@ func TestDotImportedContracts(t *testing.T) {
 	shadowedCollections := strings.Replace(collections, "func exact", "func Strings([]string) {}; func exact", 1)
 	assertFunctionFinding(t, "internal/analysis/copy.go", shadowedCollections, "exact", false)
 }
+
+type transformedCollectionCase struct{ parameter, setup, expression string }
+
+func TestTransformedCollectionProvenance(t *testing.T) {
+	for want, cases := range map[int][]transformedCollectionCase{
+		1: {
+			{"values []s.DependencyStats", "", "values[:]"},
+			{"values [2]s.DependencyStats", "", "values[0:1:2]"},
+			{"values *[2]s.DependencyStats", "", "values[:]"},
+			{"values []s.DependencyStats", "", "append(values, s.DependencyStats{})"},
+			{"original []s.DependencyStats", "values := append([]s.DependencyStats(nil), original...);", "values"},
+			{"original []s.DependencyStats", "values := original[:];", "values"},
+		},
+		0: {
+			{"values []s.DependencyStats", "append := func([]s.DependencyStats) []OtherStats { return nil };", "append(values)"},
+			{"values [2]s.DependencyStats", "", "append(values)"},
+			{"values string", "", "values[:]"},
+			{"values []OtherStats", "", "values[:]"},
+			{"values *[]s.DependencyStats", "", "values[:]"},
+			{"unused string", "var values = append(values, s.DependencyStats{});", "values"},
+		},
+	} {
+		for _, tc := range cases {
+			assertTransformedCollection(t, tc, want)
+		}
+	}
+}
+
+func assertTransformedCollection(t *testing.T, tc transformedCollectionCase, want int) {
+	t.Helper()
+	for _, body := range []string{"measured := " + tc.expression + "[0];", "for _, measured := range " + tc.expression + " {"} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.setup+body+" _ = s.BuildDependencyReportFromStats", 1)
+		if strings.HasPrefix(body, "for ") {
+			source += "; return r.DependencyReport{} }"
+		}
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != want {
+			t.Fatalf("%s %s: findings=%+v err=%v", tc.parameter, body, findings, err)
+		}
+	}
+}

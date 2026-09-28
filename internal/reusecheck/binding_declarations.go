@@ -97,10 +97,10 @@ func collectionValueType(expression ast.Expr, commaOK bool, info *types.Info, de
 			return receivedValueType(value, info, declarations)
 		}
 		if value.Op == token.AND {
-			return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []token.Token{token.AND})
+			return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []collectionOperation{collectionAddress})
 		}
 	case *ast.StarExpr:
-		return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []token.Token{token.MUL})
+		return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []collectionOperation{collectionDereference})
 	}
 	return nil
 }
