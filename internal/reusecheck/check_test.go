@@ -673,3 +673,94 @@ func TestElidedLiteralTypeInferencePreservesAST(t *testing.T) {
 		}
 	}
 }
+
+func TestAliasedCollectionSignatures(t *testing.T) {
+	for _, tc := range []struct {
+		declaration, signature string
+		want                   bool
+	}{
+		{"type Strings = []string", "Strings", true},
+		{"type Element = string; type Strings = []Element", "Strings", true},
+		{"type Strings = []string; type Chain = Strings", "Chain", true},
+		{"type Strings []string", "Strings", false},
+		{"type Strings = []Strings", "Strings", false},
+		{"type Strings = Strings", "Strings", false},
+	} {
+		source := strings.Replace(collectionContracts, "func exact(values []string) []string", tc.declaration+"; func exact(values "+tc.signature+") "+tc.signature, 1)
+		assertFunctionFinding(t, "internal/analysis/copy.go", source, "exact", tc.want)
+	}
+}
+
+func TestAliasedRangeCollections(t *testing.T) {
+	for _, tc := range []struct {
+		declaration, typ, loop string
+		want                   int
+	}{
+		{"type Stats = []s.DependencyStats", "Stats", "for _, measured := range values {", 1},
+		{"type Stats = [2]s.DependencyStats", "*Stats", "for _, measured := range values {", 1},
+		{"type Stats = map[s.DependencyStats]bool", "Stats", "for measured := range values {", 1},
+		{"type Stats = chan s.DependencyStats", "Stats", "for measured := range values {", 1},
+		{"type Stats []s.DependencyStats", "Stats", "for _, measured := range values {", 0},
+		{"type Stats = Stats", "Stats", "for _, measured := range values {", 0},
+	} {
+		source := strings.Replace(mappingFixture, "func build", tc.declaration+"; func build", 1)
+		source = strings.Replace(source, "measured s.DependencyStats", "values "+tc.typ, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.loop+" _ = s.BuildDependencyReportFromStats", 1) + "; return r.DependencyReport{} }"
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.declaration, findings, err)
+		}
+	}
+}
+
+func TestAliasedElidedReports(t *testing.T) {
+	literal := strings.Split(strings.Split(mappingFixture, "return r.DependencyReport")[1], "\n}")[0]
+	for _, tc := range []struct {
+		declaration, container string
+		want                   int
+	}{
+		{"type Reports = []r.DependencyReport", "Reports{%s}", 1},
+		{"type Reports = map[string]r.DependencyReport", "Reports{\"key\":%s}", 1},
+		{"type Report = *r.DependencyReport; type Reports = []Report", "Reports{%s}", 1},
+		{"type Reports []r.DependencyReport", "Reports{%s}", 0},
+		{"type Reports = Reports", "Reports{%s}", 0},
+	} {
+		source := strings.Replace(mappingFixture, "func build", tc.declaration+"; func build", 1)
+		source = strings.Replace(source, "return r.DependencyReport"+literal, "_ = "+fmt.Sprintf(tc.container, literal)+"; return r.DependencyReport{}", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.declaration, findings, err)
+		}
+	}
+}
+
+func TestSignatureAliasExpansionRestoresFields(t *testing.T) {
+	for _, typ := range []string{"[]string", "map[string][]string", "*[]string", "chan []string", "...[]string"} {
+		declaration := "type Values = " + typ
+		signature := "Values"
+		if strings.HasPrefix(typ, "...") {
+			declaration = "type Values = []string"
+			signature = "...Values"
+		}
+		source := "package p; " + declaration + "; func f(value " + signature + ") {}"
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "fixture.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := file.Decls[1].(*ast.FuncDecl)
+		original := fn.Type.Params.List[0].Type
+		fingerprint := canonicalFunction(fn, imports(file), bindings(file, fset))
+		if fn.Type.Params.List[0].Type != original {
+			t.Fatal("signature type was not restored")
+		}
+		directSet := token.NewFileSet()
+		direct, err := parser.ParseFile(directSet, "direct.go", "package p; func f(value "+typ+") {}", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fingerprint != canonicalFunction(direct.Decls[0].(*ast.FuncDecl), imports(direct), bindings(direct, directSet)) {
+			t.Fatalf("alias fingerprint differs for %s", typ)
+		}
+	}
+}

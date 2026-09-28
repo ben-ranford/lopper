@@ -41,14 +41,14 @@ func inheritedLiteralType(literal *ast.CompositeLit, parents []ast.Node, types m
 		return nil
 	}
 	element := collectionLiteralElement(types[parent], key)
-	if pointer, ok := unparen(element).(*ast.StarExpr); ok {
+	if pointer, ok := unaliasedType(element).(*ast.StarExpr); ok {
 		return pointer.X
 	}
 	return element
 }
 
 func collectionLiteralElement(expression ast.Expr, key bool) ast.Expr {
-	switch collection := unparen(expression).(type) {
+	switch collection := unaliasedType(expression).(type) {
 	case *ast.ArrayType:
 		return collection.Elt
 	case *ast.MapType:

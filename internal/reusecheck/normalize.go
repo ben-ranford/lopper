@@ -70,6 +70,8 @@ func imported(expr ast.Expr, packages map[string]string, path, name string) bool
 }
 
 func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types.Info) string {
+	restoreAliases := expandSignatureAliases(fn.Type)
+	defer restoreAliases()
 	restore := stripExpressionParentheses(fn)
 	defer restore()
 	names := make(map[types.Object]string)
@@ -178,11 +180,11 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 	expression := resolvedCollectionType(statement.X, info, declarations)
 	var element ast.Expr
 	binding := statement.Value
-	switch collection := unparen(expression).(type) {
+	switch collection := unaliasedType(expression).(type) {
 	case *ast.ArrayType:
 		element = collection.Elt
 	case *ast.StarExpr:
-		array, ok := unparen(collection.X).(*ast.ArrayType)
+		array, ok := unaliasedType(collection.X).(*ast.ArrayType)
 		if ok && array.Len != nil {
 			element = array.Elt
 		}
@@ -244,7 +246,7 @@ func collectionIndirection(expression ast.Expr, operations []token.Token) ast.Ex
 			expression = &ast.StarExpr{X: expression}
 			continue
 		}
-		pointer, ok := unparen(expression).(*ast.StarExpr)
+		pointer, ok := unaliasedType(expression).(*ast.StarExpr)
 		if !ok {
 			return nil
 		}
@@ -418,7 +420,7 @@ func expressionFields(node ast.Node) []reflect.Value {
 }
 
 func collectionConversionType(expression ast.Expr) bool {
-	switch unparen(expression).(type) {
+	switch unaliasedType(expression).(type) {
 	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StarExpr:
 		return true
 	default:
