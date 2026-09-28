@@ -2,6 +2,7 @@ package reusecheck
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 )
 
@@ -12,12 +13,12 @@ func bindingDeclaration(node ast.Node, index int) ast.Node {
 		copied := *item
 		copied.Names = item.Names[index : index+1]
 		copied.Values = bindingValues(item.Values, len(item.Names), index)
-		return &copied
+		return preserveCommaOK(&copied, len(item.Names), len(item.Values))
 	case *ast.AssignStmt:
 		copied := *item
 		copied.Lhs = item.Lhs[index : index+1]
 		copied.Rhs = bindingValues(item.Rhs, len(item.Lhs), index)
-		return &copied
+		return preserveCommaOK(&copied, len(item.Lhs), len(item.Rhs))
 	default:
 		return node
 	}
@@ -29,19 +30,60 @@ func bindingValues(values []ast.Expr, count, index int) []ast.Expr {
 	}
 	// A comma-ok expression provides its value only to the first binding.
 	if count == 2 && len(values) == 1 && index == 0 {
-		switch unparen(values[0]).(type) {
+		switch expression := unparen(values[0]).(type) {
 		case *ast.TypeAssertExpr, *ast.IndexExpr:
 			return values
+		case *ast.UnaryExpr:
+			if expression.Op == token.ARROW {
+				return values
+			}
 		}
 	}
 	return nil
 }
 
-func mapValueDeclaration(indexed *ast.IndexExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Node {
-	collection := resolvedCollectionType(indexed.X, info, declarations)
-	mapping, ok := unaliasedType(collection).(*ast.MapType)
-	if !ok {
+// Retain tuple context after selecting one binding; slices have no comma-ok form.
+type commaOKBinding struct{ ast.Node }
+
+func preserveCommaOK(node ast.Node, count, values int) ast.Node {
+	if count == 2 && values == 1 {
+		return &commaOKBinding{node}
+	}
+	return node
+}
+
+func unwrapBinding(node ast.Node) (ast.Node, bool) {
+	if binding, ok := node.(*commaOKBinding); ok {
+		return binding.Node, true
+	}
+	return node, false
+}
+
+func indexedValueType(indexed *ast.IndexExpr, commaOK bool, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	collection := unaliasedType(resolvedCollectionType(indexed.X, info, declarations))
+	if mapping, ok := collection.(*ast.MapType); ok {
+		return mapping.Value
+	}
+	if commaOK {
 		return nil
 	}
-	return &ast.Field{Type: mapping.Value}
+	if pointer, ok := collection.(*ast.StarExpr); ok {
+		array, valid := unaliasedType(pointer.X).(*ast.ArrayType)
+		if !valid || array.Len == nil {
+			return nil
+		}
+		collection = array
+	}
+	if array, ok := collection.(*ast.ArrayType); ok {
+		return array.Elt
+	}
+	return nil
+}
+
+func receivedValueType(receive *ast.UnaryExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	channel, ok := unaliasedType(resolvedCollectionType(receive.X, info, declarations)).(*ast.ChanType)
+	if !ok || channel.Dir == ast.SEND {
+		return nil
+	}
+	return channel.Value
 }

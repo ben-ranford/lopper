@@ -338,13 +338,16 @@ func resolvedStatsDeclaration(object types.Object, info *types.Info, declaration
 	seen := make(map[types.Object]bool)
 	for object != nil && !seen[object] {
 		seen[object] = true
-		declaration := declarations[object]
+		declaration, commaOK := unwrapBinding(declarations[object])
 		if ranged, ok := declaration.(*ast.RangeStmt); ok {
 			return &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
 		}
 		initializer := aliasInitializer(declaration)
 		if indexed, ok := unparen(initializer).(*ast.IndexExpr); ok {
-			return mapValueDeclaration(indexed, info, declarations)
+			return &ast.Field{Type: indexedValueType(indexed, commaOK, info, declarations)}
+		}
+		if receive, ok := unparen(initializer).(*ast.UnaryExpr); ok && receive.Op == token.ARROW {
+			return &ast.Field{Type: receivedValueType(receive, info, declarations)}
 		}
 		alias, ok := statsAliasOperand(initializer).(*ast.Ident)
 		if !ok {
@@ -373,6 +376,7 @@ func statsAliasOperand(expression ast.Expr) ast.Expr {
 }
 
 func aliasInitializer(declaration ast.Node) ast.Expr {
+	declaration, _ = unwrapBinding(declaration)
 	switch item := declaration.(type) {
 	case *ast.ValueSpec:
 		if item.Type == nil && len(item.Names) == 1 && len(item.Values) == 1 {

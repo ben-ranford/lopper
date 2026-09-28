@@ -810,3 +810,34 @@ func TestMapLookupStatsProvenance(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectionValueStatsProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		typ, declaration string
+		want             int
+	}{
+		{"[]s.DependencyStats", "measured := values[0]", 1},
+		{"[2]*s.DependencyStats", "var measured = values[0]", 1},
+		{"*[2]s.DependencyStats", "measured := values[0]", 1},
+		{"[]s.DependencyStats", "measured, ok := values[0]; _ = ok", 0},
+		{"<-chan s.DependencyStats", "measured := <-values", 1},
+		{"chan *s.DependencyStats", "var measured, ok = <-values; _ = ok", 1},
+		{"chan s.DependencyStats", "value, measured := <-values; _ = value", 0},
+		{"chan s.DependencyStats", "copied := values; measured, ok := <-copied; _ = ok", 1},
+		{"[]OtherStats", "measured := values[0]", 0},
+		{"chan OtherStats", "measured := <-values", 0},
+		{"string", "measured := values[0]", 0},
+		{"*[]s.DependencyStats", "measured := values[0]", 0},
+		{"*string", "measured := values[0]", 0},
+		{"chan<- s.DependencyStats", "measured := <-values", 0},
+		{"chan s.DependencyStats", "measured, ok := -values; _ = ok", 0},
+		{"[]s.DependencyStats", "measured := <-values", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values "+tc.typ, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.declaration+"; _ = s.BuildDependencyReportFromStats", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s %s: findings=%+v err=%v", tc.typ, tc.declaration, findings, err)
+		}
+	}
+}
