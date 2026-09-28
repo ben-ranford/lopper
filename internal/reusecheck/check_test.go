@@ -924,3 +924,23 @@ func assertTransformedCollection(t *testing.T, tc transformedCollectionCase, wan
 		}
 	}
 }
+
+func TestTypeSwitchStatsProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		clause string
+		want   int
+	}{
+		{"case s.DependencyStats:", 1},
+		{"case *s.DependencyStats:", 1},
+		{"case OtherStats:", 0},
+		{"case s.DependencyStats, OtherStats:", 0},
+		{"default:", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "raw any", 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "switch measured := raw.(type) { "+tc.clause+" _ = s.BuildDependencyReportFromStats", 1) + "; return r.DependencyReport{} }"
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s findings=%+v err=%v", tc.clause, findings, err)
+		}
+	}
+}

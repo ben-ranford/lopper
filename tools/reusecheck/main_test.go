@@ -47,15 +47,6 @@ type walkErrorFS struct{}
 
 func (*walkErrorFS) Open(string) (fs.File, error) { return nil, errors.New("walk unavailable") }
 
-type fakeExceptionRoot struct {
-	data     []byte
-	readErr  error
-	closeErr error
-}
-
-func (r *fakeExceptionRoot) ReadFile(string) ([]byte, error) { return r.data, r.readErr }
-func (r *fakeExceptionRoot) Close() error                    { return r.closeErr }
-
 func TestRunRejectsCopyAndParseFailure(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "internal", "lang", "fixture", "copy.go")
@@ -195,15 +186,58 @@ func TestScanRootReportsWalkReadAndCloseFailures(t *testing.T) {
 	}
 }
 
-func TestReadExceptionsFromRootClosesAndPrioritizesReadErrors(t *testing.T) {
-	valid := []byte("[]")
-	if exceptions, err := readExceptionsFromRoot(&fakeExceptionRoot{data: valid}, "exceptions.json"); err != nil || len(exceptions) != 0 {
+func TestLoadExceptionsUsesSelectedRoot(t *testing.T) {
+	root := &fakeRoot{fileSystem: fstest.MapFS{"exceptions.json": {Data: []byte("[]")}}}
+	if exceptions, err := loadExceptions(root, "exceptions.json"); err != nil || len(exceptions) != 0 {
 		t.Fatalf("exceptions=%v err=%v", exceptions, err)
 	}
-	if _, err := readExceptionsFromRoot(&fakeExceptionRoot{readErr: errors.New("read unavailable"), closeErr: errors.New("close unavailable")}, "exceptions.json"); err == nil || !strings.Contains(err.Error(), "read unavailable") {
+	root.readErr = errors.New("read unavailable")
+	if _, err := loadExceptions(root, "exceptions.json"); err == nil || !strings.Contains(err.Error(), "read unavailable") {
 		t.Fatalf("read error=%v", err)
 	}
-	if _, err := readExceptionsFromRoot(&fakeExceptionRoot{data: valid, closeErr: errors.New("close unavailable")}, "exceptions.json"); err == nil || !strings.Contains(err.Error(), "close unavailable") {
-		t.Fatalf("close error=%v", err)
+}
+
+func TestExceptionsStayInsideSelectedRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "exceptions.json")
+	testutil.MustWriteFile(t, outside, "[]")
+	var output bytes.Buffer
+	if code := run([]string{"-root", root, "-exceptions", outside}, &output, &output); code != 2 {
+		t.Fatalf("external exception code=%d output=%s", code, &output)
+	}
+}
+
+func TestRootPathResolutionErrors(t *testing.T) {
+	relativeRoot, err := os.OpenRoot(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := relativeRoot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	handle := &rootHandle{root: relativeRoot}
+	if _, err := handle.ReadFile(filepath.Join(t.TempDir(), "exceptions.json")); err == nil {
+		t.Fatal("mixed relative root and absolute path accepted")
+	}
+	removed := t.TempDir()
+	t.Chdir(removed)
+	if err := os.Remove(removed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSourceRoot("."); err == nil {
+		t.Fatal("missing working directory accepted")
+	}
+}
+
+func TestRelativeExceptionsResolveInsideSelectedRoot(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, "exceptions.json"), "[]")
+	var output bytes.Buffer
+	for _, path := range []string{"exceptions.json", filepath.Join(root, "exceptions.json")} {
+		if code := run([]string{"-root", root, "-exceptions", path}, &output, &output); code != 0 {
+			t.Fatalf("%s code=%d output=%s", path, code, &output)
+		}
 	}
 }

@@ -228,6 +228,11 @@ func localDeclarations(fn *ast.FuncDecl, info *types.Info) map[types.Object]ast.
 				result[object] = bindingDeclaration(node, index)
 			}
 		}
+		if clause, ok := node.(*ast.CaseClause); ok && len(clause.List) == 1 {
+			if object := info.Implicits[clause]; object != nil {
+				result[object] = &ast.Field{Type: clause.List[0]}
+			}
+		}
 		return true
 	})
 	return result

@@ -146,7 +146,7 @@ func canonicalName(ident, functionName *ast.Ident, packages map[string]string, i
 // proof of a contract. Import ownership and concrete field provenance are checked
 // separately, while unresolved syntax cannot match a template.
 func bindings(file *ast.File, fset *token.FileSet) *types.Info {
-	info := &types.Info{Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
+	info := &types.Info{Implicits: make(map[ast.Node]types.Object), Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
 	config := types.Config{Error: func(error) {
 		// Continue collecting lexical bindings when isolated source cannot type-check.
 	}}

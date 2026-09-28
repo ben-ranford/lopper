@@ -32,7 +32,7 @@ func run(args []string, stdout, stderr io.Writer) (result int) {
 		}
 		return 2
 	}
-	sourceRoot, err := os.OpenRoot(*root)
+	sourceRoot, err := openSourceRoot(*root)
 	if err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
 			return 2
@@ -52,13 +52,22 @@ type rootHandle struct {
 	root *os.Root
 }
 
-func (r *rootHandle) ReadFile(path string) ([]byte, error) { return r.root.ReadFile(path) }
-func (r *rootHandle) FileSystem() fs.FS                    { return r.root.FS() }
-func (r *rootHandle) Close() error                         { return r.root.Close() }
+func (r *rootHandle) ReadFile(path string) ([]byte, error) {
+	if filepath.IsAbs(path) {
+		relative, err := filepath.Rel(r.root.Name(), path)
+		if err != nil {
+			return nil, err
+		}
+		path = relative
+	}
+	return r.root.ReadFile(path)
+}
+func (r *rootHandle) FileSystem() fs.FS { return r.root.FS() }
+func (r *rootHandle) Close() error      { return r.root.Close() }
 
 func scanRoot(root rootFS, exceptionsPath string, legacy bool, stdout, stderr io.Writer) (result int) {
 	defer func() { result = finishRoot(result, root.Close(), stderr) }()
-	exceptions, err := loadExceptions(exceptionsPath)
+	exceptions, err := loadExceptions(root, exceptionsPath)
 	if err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
 			return 2
@@ -139,30 +148,21 @@ func finishRoot(result int, closeErr error, stderr io.Writer) int {
 	return 2
 }
 
-func loadExceptions(path string) ([]reusecheck.Exception, error) {
+func openSourceRoot(path string) (*os.Root, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(absolute)
+}
+
+func loadExceptions(root rootFS, path string) ([]reusecheck.Exception, error) {
 	if path == "" {
 		return nil, nil
 	}
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	return readExceptionsFromRoot(root, filepath.Base(path))
-}
-
-type exceptionRoot interface {
-	ReadFile(string) ([]byte, error)
-	Close() error
-}
-
-func readExceptionsFromRoot(root exceptionRoot, path string) ([]reusecheck.Exception, error) {
 	data, err := root.ReadFile(path)
-	closeErr := root.Close()
 	if err != nil {
 		return nil, err
-	}
-	if closeErr != nil {
-		return nil, closeErr
 	}
 	return reusecheck.ReadExceptions(bytes.NewReader(data))
 }
