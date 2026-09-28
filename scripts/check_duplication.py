@@ -59,9 +59,13 @@ def supported_path(raw, repo):
     portable = raw.replace("\\", "/")
     if ":" in portable and not (os.name == "nt" and re.match(r"^[A-Za-z]:/", portable)):
         raise AnalysisError(f"Unsupported detector path: {raw!r}")
-    path = (repo / portable).resolve()
+    root = repo.resolve()
+    path = root / portable
     try:
-        relative = path.relative_to(repo.resolve())
+        relative = path.relative_to(root)
+        # Validate the target boundary without collapsing a symlink alias into
+        # its target: Git and dupl identify findings by the lexical file path.
+        path.resolve().relative_to(root)
     except ValueError as error:
         raise AnalysisError(f"Detector path escapes repository: {raw!r}") from error
     if ".." in Path(portable).parts or not path.is_file() or path.suffix != ".go":
@@ -70,7 +74,7 @@ def supported_path(raw, repo):
 
 
 def added_lines(repo, merge_base):
-    output = checked(["git", "diff", "--find-renames", "--name-status", "-z", "--diff-filter=ACMRT", merge_base, "HEAD", "--", "*.go", ":(exclude)**/goleak_test.go"], repo).stdout
+    output = checked(["git", "diff", "--find-renames", "-l0", "--name-status", "-z", "--diff-filter=ACMRT", merge_base, "HEAD", "--", "*.go", ":(exclude)**/goleak_test.go"], repo).stdout
     if output and not output.endswith("\0"):
         raise AnalysisError("Truncated changed-file list from Git")
     added = set()
@@ -90,7 +94,7 @@ def added_lines(repo, merge_base):
             index += 1
             pathspecs = [f":(literal){raw}"]
         path = supported_path(raw, repo)
-        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=0", merge_base, "HEAD", "--", *pathspecs], repo).stdout
+        diff = checked(["git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "-l0", "--unified=0", merge_base, "HEAD", "--", *pathspecs], repo).stdout
         added.update(changed_hunk_lines(diff, path))
     return added
 
