@@ -75,3 +75,28 @@ func TestFallbackDependencyEmptyModule(t *testing.T) {
 		t.Fatalf("expected empty module fallback to stay empty, got %q", got)
 	}
 }
+
+func TestTopReportsFromDependencySetsContract(t *testing.T) {
+	scan := &struct{ warning string }{warning: "scan warning"}
+	var visited []string
+	builder := func(name string, gotScan *struct{ warning string }) (report.DependencyReport, []string) {
+		if gotScan != scan {
+			t.Fatal("builder received a different scan")
+		}
+		visited = append(visited, name)
+		return report.DependencyReport{Name: name, TotalExportsCount: 1}, []string{gotScan.warning}
+	}
+	weights := report.DefaultRemovalCandidateWeights()
+	got, warnings := BuildTopReportsFromDependencySets(1, scan, builder, weights,
+		map[string]struct{}{"b": {}, "a": {}}, map[string]struct{}{"b": {}})
+	if !slices.Equal(visited, []string{"a", "b"}) || len(got) != 1 || got[0].Name != "a" {
+		t.Fatalf("union/ranking mismatch: visited=%v reports=%v", visited, got)
+	}
+	if !slices.Equal(warnings, []string{"scan warning", "scan warning"}) {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	empty, emptyWarnings := BuildTopReportsFromDependencySets(0, scan, builder, weights)
+	if len(empty) != 0 || !slices.Equal(emptyWarnings, []string{"no dependency data available for top-N ranking"}) {
+		t.Fatalf("empty reports=%v warnings=%v", empty, emptyWarnings)
+	}
+}

@@ -13,6 +13,12 @@ order; case and Unicode spelling are preserved.
 | `shared.SortedKeys` (`lang/shared/dependency_usage.go`) | A single language-domain string set | Exact map keys | Nil for nil/empty map | Allocates output |
 | `kotlinandroid.sortedUniqueTrimmedStringsNonNil` (`gradle_lookup_index.go`) | Gradle lookup ambiguity candidates | Trim and discard blanks | Always non-nil, including nil input | Allocates output |
 
+`shared.BuildTopReportsFromDependencySets` composes the exact union with
+`BuildTopReports` for Ruby and PowerShell. It passes the same typed scan to
+each report builder, visits each distinct key in sorted order, preserves all
+builder warnings, and forwards the requested ranking weights and top-N limit.
+Empty sets retain the existing no-dependency warning.
+
 The Kotlin lookup variant deliberately retains its non-nil empty-slice contract.
 It cannot be substituted with report normalization without changing that behavior.
 License deny-list normalization, insertion-order dedupe helpers and recommendation

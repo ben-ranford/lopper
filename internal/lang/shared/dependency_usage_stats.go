@@ -165,6 +165,14 @@ func ListDependencies(files []FileUsage, normalize func(string) string) []string
 	return items
 }
 
+// BuildTopReportsFromDependencySets ranks the exact union of dependency sets,
+// passing the same scan to each adapter report builder.
+func BuildTopReportsFromDependencySets[S any](topN int, scan S, buildReport func(string, S) (report.DependencyReport, []string), weights report.RemovalCandidateWeights, sets ...map[string]struct{}) ([]report.DependencyReport, []string) {
+	return BuildTopReports(topN, SortedDependencyUnion(sets...), func(dependency string) (report.DependencyReport, []string) {
+		return buildReport(dependency, scan)
+	}, weights)
+}
+
 func BuildTopReports(topN int, dependencies []string, buildReport func(string) (report.DependencyReport, []string), weights ...report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	warnings := make([]string, 0)
