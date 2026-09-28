@@ -159,7 +159,7 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 		if imported(value.Fun, packages, sharedPackage, "BuildDependencyStats") {
 			return true
 		}
-		builtin, ok := value.Fun.(*ast.Ident)
+		builtin, ok := unparen(value.Fun).(*ast.Ident)
 		if !ok || info == nil {
 			return false
 		}

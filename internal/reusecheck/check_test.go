@@ -169,6 +169,7 @@ func TestStatsDeclarationForms(t *testing.T) {
 		{"var measured = new(s.DependencyStats)", 1},
 		{"measured := new(s.DependencyStats)", 1},
 		{"measured := new((s.DependencyStats))", 1},
+		{"measured := (new)(s.DependencyStats)", 1},
 		{"var measured = unknown", 0},
 		{"measured := &unknown", 0},
 		{"measured := new(s.OtherStats)", 0},
@@ -450,5 +451,48 @@ func TestConditionalDecorativeCalls(t *testing.T) {
 		if found != tc.want {
 			t.Errorf("%s: match %v, want %v", tc.statement, found, tc.want)
 		}
+	}
+}
+
+func TestCollectionFingerprintParentheses(t *testing.T) {
+	for _, replacement := range [][2]string{
+		{"sort.Strings(items)", "sort.Strings((items))"},
+		{"if len(values) == 0", "if (len((values)) == (0))"},
+		{"range values", "range (values)"},
+		{"return items", "return ((items))"},
+		{"items = append(items, value)", "items = append((items), (value))"},
+	} {
+		source := strings.ReplaceAll(collectionContracts, replacement[0], replacement[1])
+		findings, err := Analyze("internal/lang/fixture.go", []byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, finding := range findings {
+			found = found || finding.Rule == "sorted-set-keys"
+		}
+		if !found {
+			t.Errorf("parentheses waived keys contract: %s", replacement[1])
+		}
+	}
+}
+
+func TestCanonicalParenthesesPreservePrecedenceAndAST(t *testing.T) {
+	fingerprints := make([]string, 0, 2)
+	for _, expression := range []string{"(a+b)*c", "a+b*c"} {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "fixture.go", "package p;func f(a,b,c int) int { return "+expression+" }", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := file.Decls[0].(*ast.FuncDecl)
+		original := fn.Body.List[0].(*ast.ReturnStmt).Results[0].(*ast.BinaryExpr).X
+		fingerprints = append(fingerprints, canonicalFunction(fn, nil, bindings(file, fset)))
+		if fn.Body.List[0].(*ast.ReturnStmt).Results[0].(*ast.BinaryExpr).X != original {
+			t.Fatal("canonicalization changed the source AST")
+		}
+	}
+	if fingerprints[0] == fingerprints[1] {
+		t.Fatal("canonicalization changed operator precedence")
 	}
 }

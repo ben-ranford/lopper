@@ -7,6 +7,7 @@ import (
 	"go/scanner"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,8 @@ func imported(expr ast.Expr, packages map[string]string, path, name string) bool
 }
 
 func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types.Info) string {
+	restore := stripExpressionParentheses(fn)
+	defer restore()
 	names := make(map[types.Object]string)
 	original := make(map[*ast.Ident]string)
 	ast.Inspect(fn, func(node ast.Node) bool {
@@ -270,4 +273,50 @@ func decorativeCondition(expression ast.Expr) bool {
 	default:
 		return false
 	}
+}
+
+// Rewrite expression slots only; retain all identifier nodes for lexical binding.
+// The formatter adds back grouping required by operator precedence. Restore every
+// slot afterwards because report provenance uses the original parsed tree.
+func stripExpressionParentheses(node ast.Node) func() {
+	var restore []func()
+	ast.Inspect(node, func(node ast.Node) bool {
+		if node == nil {
+			return false
+		}
+		for _, field := range expressionFields(node) {
+			restore = appendParenthesisRestore(restore, field)
+		}
+		return true
+	})
+	return func() {
+		for index := len(restore) - 1; index >= 0; index-- {
+			restore[index]()
+		}
+	}
+}
+
+func appendParenthesisRestore(restore []func(), field reflect.Value) []func() {
+	expression, ok := field.Interface().(*ast.ParenExpr)
+	if !ok {
+		return restore
+	}
+	field.Set(reflect.ValueOf(unparen(expression)))
+	return append(restore, func() { field.Set(reflect.ValueOf(expression)) })
+}
+
+func expressionFields(node ast.Node) []reflect.Value {
+	var expressions []reflect.Value
+	fields := reflect.ValueOf(node).Elem()
+	for index := 0; index < fields.NumField(); index++ {
+		field := fields.Field(index)
+		if field.Type() == reflect.TypeFor[ast.Expr]() {
+			expressions = append(expressions, field)
+		} else if field.Type() == reflect.TypeFor[[]ast.Expr]() {
+			for index := 0; index < field.Len(); index++ {
+				expressions = append(expressions, field.Index(index))
+			}
+		}
+	}
+	return expressions
 }
