@@ -57,12 +57,12 @@ def isolated_checkout(repo, revision):
         yield checkout
 
 
-def function_index(repo, go):
+def function_index(repo, go, records):
     executable = shutil.which(go)
     if not executable or os.path.basename(executable).lower() not in ('go', 'go.exe'):
         raise PolicyError('Go command must name a Go executable, without embedded arguments')
-    result = subprocess.run([git_executable(), "ls-tree", "-r", "--name-only", "-z", "HEAD"], cwd=repo, env=git_environment(os.environ), capture_output=True, check=True)
-    paths = [path.decode() for path in result.stdout.split(b"\0") if path.endswith(b".go") and not path.endswith(b"_test.go")]
+    paths = sorted({path for record in records for path, _, _ in record
+                    if path.endswith('.go') and not path.endswith('_test.go')})
     # Build flags and persisted settings can replace indexer source via overlays.
     environment = dict(os.environ, GOFLAGS="", GOENV="off")
     environment.pop("GOROOT", None)
@@ -96,11 +96,12 @@ def clone_pairs(records, functions):
 def baseline_pairs(policy):
     validate_policy_schema(policy)
     pairs = set()
-    members = set()
     for family in policy['families']:
-        current = validate_family(family, members)
-        members.update(current)
-        pairs.update(tuple(sorted(pair)) for pair in itertools.combinations(current, 2))
+        current = validate_family(family)
+        family_pairs = {tuple(sorted(pair)) for pair in itertools.combinations(current, 2)}
+        if pairs.intersection(family_pairs):
+            raise PolicyError('Duplicate baseline pair')
+        pairs.update(family_pairs)
     return pairs
 
 
@@ -111,14 +112,14 @@ def validate_policy_schema(policy):
         raise PolicyError('Families and exceptions must be lists')
 
 
-def validate_family(family, members):
+def validate_family(family):
     required = {'members', 'canonical_helper'}
     if not isinstance(family, dict) or set(family) != required or not isinstance(family['members'], list) or len(family['members']) < 2:
         raise PolicyError('A family needs members and canonical_helper')
     current = family['members']
     if not all(isinstance(member, str) and '::' in member and '@' in member for member in current):
         raise PolicyError('Invalid occurrence identity')
-    if len(set(current)) != len(current) or members.intersection(current):
+    if len(set(current)) != len(current):
         raise PolicyError('Duplicate baseline occurrence')
     if family['canonical_helper'] is not None and family['canonical_helper'] not in current:
         raise PolicyError('Canonical helper must identify a family member')
@@ -179,10 +180,9 @@ def finding_status(pair, key, allowed, exceptions, used):
 
 
 def canonical_helper(pair, families):
-    for family in families:
-        if set(pair).intersection(family['members']) and family['canonical_helper']:
-            return family['canonical_helper']
-    return None
+    helpers = {family['canonical_helper'] for family in families
+               if set(pair).issubset(family['members'])}
+    return next(iter(helpers)) if len(helpers) == 1 else None
 
 
 def connected_groups(edges):
@@ -201,7 +201,7 @@ def connected_groups(edges):
 
 def propose_baseline(pairs):
     return {'version': 1, 'families': [{'members': sorted(group), 'canonical_helper': None}
-                                     for group in connected_groups(pairs)], 'exceptions': []}
+                                     for group in sorted(pairs)], 'exceptions': []}
 
 
 def validate_reduction(approved, proposed):
@@ -211,9 +211,10 @@ def validate_reduction(approved, proposed):
         raise PolicyError('Baseline expansion requires the separately reviewed policy workflow (#1612)')
     if any(exception not in approved['exceptions'] for exception in proposed['exceptions']):
         raise PolicyError('Exception expansion requires the separately reviewed policy workflow (#1612)')
-    approved_helpers = {family['canonical_helper'] for family in approved['families']}
-    if any(family['canonical_helper'] and family['canonical_helper'] not in approved_helpers for family in proposed['families']):
-        raise PolicyError('Canonical helper changes require policy review')
+    for pair in proposed_pairs:
+        helper = canonical_helper(pair, proposed['families'])
+        if helper is not None and helper != canonical_helper(pair, approved['families']):
+            raise PolicyError('Canonical helper changes require policy review')
 
 
 def validate_initial_baseline(pairs, proposed):

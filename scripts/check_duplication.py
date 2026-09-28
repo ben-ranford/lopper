@@ -246,7 +246,7 @@ def occurrence_gate_checkout(repo, merge_base, args):
         raise AnalysisError("Trusted Go executable must be an absolute path")
     records = []
     scan(repo, go, args.version, args.threshold, records=records)
-    functions = policy.function_index(repo, go)
+    functions = policy.function_index(repo, go, records)
     pairs = policy.clone_pairs(records, functions)
     if args.propose_baseline:
         output_path = repository_path(repo, args.propose_baseline, "Baseline proposal")

@@ -31,6 +31,47 @@ class OccurrencePolicyTests(unittest.TestCase):
         self.assertEqual([entry['status'] for entry in report['findings']].count('violation'), 2)
         self.assertEqual(policy.evaluate(current, self.baseline), report)  # unrelated nonmatches never enter the denominator
 
+    def test_overlapping_pairs_do_not_authorize_transitive_clones(self):
+        current = {**pairs(self.a, self.b), **pairs(self.b, self.c)}
+        proposal = policy.propose_baseline(current)
+        self.assertEqual(len(proposal['families']), 2)
+        self.assertTrue(all(len(family['members']) == 2 for family in proposal['families']))
+        self.assertEqual(policy.baseline_pairs(proposal), set(current))
+        policy.validate_initial_baseline(current, proposal)
+        report = policy.evaluate(pairs(self.a, self.c), proposal)
+        self.assertEqual(report['findings'][0]['status'], 'violation')
+        duplicate = copy.deepcopy(proposal)
+        duplicate['families'].append(copy.deepcopy(duplicate['families'][0]))
+        with self.assertRaisesRegex(policy.PolicyError, 'Duplicate baseline pair'):
+            policy.baseline_pairs(duplicate)
+
+    def test_helper_approval_cannot_move_between_pairs(self):
+        approved = policy.propose_baseline({**pairs(self.a, self.b), **pairs(self.b, self.c)})
+        ab = set(next(iter(pairs(self.a, self.b))))
+        for family in approved['families']:
+            if set(family['members']) == ab:
+                family['canonical_helper'] = policy.identity(self.b)
+        policy.validate_reduction(approved, copy.deepcopy(approved))
+        for family_index in range(2):
+            proposed = copy.deepcopy(approved)
+            family = proposed['families'][family_index]
+            family['canonical_helper'] = policy.identity(self.a) if family['canonical_helper'] else policy.identity(self.b)
+            with self.assertRaisesRegex(policy.PolicyError, 'helper changes'):
+                policy.validate_reduction(approved, proposed)
+        revoked = copy.deepcopy(approved)
+        for family in revoked['families']:
+            family['canonical_helper'] = None
+        policy.validate_reduction(approved, revoked)
+        ac = next(iter(pairs(self.a, self.c)))
+        self.assertIsNone(policy.canonical_helper(ac, approved['families']))
+        bc = next(iter(pairs(self.b, self.c)))
+        self.assertIsNone(policy.canonical_helper(bc, approved['families']))
+        conflicting = [dict(members=sorted(ab), canonical_helper=policy.identity(member))
+                       for member in (self.a, self.b)]
+        self.assertIsNone(policy.canonical_helper(tuple(sorted(ab)), conflicting))
+        reports, _ = policy.finding_reports(pairs(self.a, self.b), conflicting, set(), {})
+        self.assertNotIn('canonical helper:', policy.render(dict(findings=reports, stale_exceptions=[], removed_pairs=[])))
+
     def test_historical_clones_and_line_movement_pass(self):
         moved = dict(self.a, start=100, end=110)
         self.assertEqual(policy.evaluate(pairs(moved, self.b), self.baseline)['findings'][0]['status'], 'historical')

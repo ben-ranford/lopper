@@ -544,6 +544,28 @@ esac
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("Cannot compare requested base", result.stderr)
 
+    def test_new_and_staged_detector_endpoints_are_indexed(self):
+        source = Path(runner.__file__).resolve().parent
+        self.write("scripts/duplication_index.go", (source / "duplication_index.go").read_text())
+        self.write("original.go", "package fixture\nfunc Original() {}\n")
+        self.commit()
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                self.write("new.go", "package fixture\nfunc Clone() {}\n")
+                if staged:
+                    self.git("add", "new.go")
+                locations = []
+                duplicated = runner.parse_findings(
+                    "original.go:2-2: duplicate of new.go:2-2\n"
+                    "new.go:2-2: duplicate of original.go:2-2\n", self.repo, records=locations)
+                self.assertTrue(duplicated)
+                functions = runner.policy.function_index(self.repo, "go", locations)
+                self.assertEqual([fn['path'] for fn in functions], ['new.go', 'original.go'])
+                self.assertEqual({fn['name'] for fn in functions}, {'Original', 'Clone'})
+                current = runner.policy.clone_pairs(locations, functions)
+                self.assertEqual(len(current), 1)
+                self.assertEqual(runner.policy.evaluate(current, runner.policy.propose_baseline({}))['findings'][0]['status'], 'violation')
+
     def test_index_ignores_environment_and_persisted_go_overlays(self):
         source = Path(runner.__file__).resolve().parent
         self.write("scripts/duplication_index.go", (source / "duplication_index.go").read_text())
@@ -562,7 +584,7 @@ esac
             if "GOFLAGS" not in settings:
                 environment.pop("GOFLAGS", None)
             with self.subTest(settings=settings), mock.patch.dict(os.environ, environment, clear=True):
-                functions = runner.policy.function_index(self.repo, str(Path(shutil.which("go")).resolve()))
+                functions = runner.policy.function_index(self.repo, str(Path(shutil.which("go")).resolve()), [(("original.go", 1, 2), ("original.go", 1, 2))])
             self.assertIn("Seen", [function["name"] for function in functions])
 
     @unittest.skipIf(os.name == "nt", "Git wrapper fixture uses POSIX shell scripts")
@@ -579,7 +601,7 @@ esac
                            PATH=str(self.repo / "bin") + os.pathsep + self.environment["PATH"])
         with mock.patch.dict(os.environ, environment, clear=True):
             actual = runner.checked(["git", "rev-parse", "HEAD"], self.repo).stdout.strip()
-            functions = runner.policy.function_index(self.repo, "go")
+            functions = runner.policy.function_index(self.repo, "go", [(("original.go", 1, 2), ("original.go", 1, 2))])
         self.assertEqual(actual, expected)
         self.assertIn("Seen", [function["name"] for function in functions])
 
@@ -604,7 +626,7 @@ esac
             environment = dict(self.environment, **overrides)
             with self.subTest(overrides=overrides), mock.patch.dict(os.environ, environment, clear=True):
                 root = runner.checked(["git", "rev-parse", "--show-toplevel"], self.repo).stdout.strip()
-                functions = runner.policy.function_index(self.repo, "go")
+                functions = runner.policy.function_index(self.repo, "go", [(("original.go", 1, 2), ("original.go", 1, 2))])
                 self.assertEqual(Path(root).resolve(), self.repo)
                 self.assertIn("Seen", [function["name"] for function in functions])
 
@@ -677,7 +699,7 @@ for line in sys.stdin:
                     with mock.patch.object(runner.subprocess, "run", side_effect=install_with_local_build):
                         runner.scan(self.repo, go, "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
                 else:
-                    functions = runner.policy.function_index(self.repo, go)
+                    functions = runner.policy.function_index(self.repo, go, [(("original.go", 1, 2), ("original.go", 1, 2))])
                     self.assertIn("Seen", [function["name"] for function in functions])
                 self.assertFalse((self.repo / "cache-helper-ran").exists())
                 self.assertEqual((self.repo / "scripts/duplication_index.go").read_text(), indexer)
@@ -702,7 +724,7 @@ for line in sys.stdin:
         environment = dict(self.environment, HOME=str(home), XDG_CONFIG_HOME=str(home / "xdg"))
         with mock.patch.dict(os.environ, environment, clear=True), runner.policy.isolated_checkout(self.repo, revision) as checkout:
             self.assertEqual((checkout / "scripts/duplication_index.go").read_text(), original)
-            functions = runner.policy.function_index(checkout, "go")
+            functions = runner.policy.function_index(checkout, "go", [(("original.go", 1, 2), ("original.go", 1, 2))])
             self.assertIn("Seen", [function["name"] for function in functions])
 
     def test_replacement_objects_cannot_promote_head_to_protected_base(self):
@@ -752,7 +774,7 @@ for line in sys.stdin:
         self.commit()
         self.git("read-tree", "--empty")
         with mock.patch.dict(os.environ, self.environment, clear=True):
-            functions = runner.policy.function_index(self.repo, "go")
+            functions = runner.policy.function_index(self.repo, "go", [(("original.go", 1, 2), ("original.go", 1, 2))])
         self.assertIn("Seen", [function["name"] for function in functions])
 
     def test_tool_install_mutations_are_isolated_from_checked_occurrences(self):
@@ -874,7 +896,7 @@ for line in sys.stdin:
         with mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=trusted), mock.patch.object(runner, "scan") as scan, mock.patch.object(runner.policy, "function_index", return_value=[]) as index:
             self.assertEqual(runner.occurrence_gate(self.repo, self.base, Settings()), 0)
             self.assertEqual(scan.call_args.args[1], trusted)
-            index.assert_called_once_with(self.repo, trusted)
+            index.assert_called_once_with(self.repo, trusted, [])
         for invalid in ("", "go", "./go"):
             settings = Settings()
             with self.subTest(invalid=invalid), mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=invalid), mock.patch.object(runner, "scan") as scan:
