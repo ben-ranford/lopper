@@ -428,8 +428,7 @@ func replacePomPropertyTokens(value string, properties map[string]string, tokens
 }
 
 func replacePomPropertyTokensWithinBounds(value string, properties map[string]string, tokensRemaining int) (string, bool, bool, int) {
-	var tokens [maxPomPropertyTokens]string
-	matches := tokens[:0]
+	var matches []string
 	for search := 0; search < len(value); {
 		start, end, next, found := nextPomPropertyToken(value, search)
 		if !found {

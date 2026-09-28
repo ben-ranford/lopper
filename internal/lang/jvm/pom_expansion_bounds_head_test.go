@@ -142,6 +142,32 @@ func TestPomPropertyExpansionTokenFreeValuesDoNotAllocate(t *testing.T) {
 	}
 }
 
+func TestPomPropertyExpansionSmallTokenSetsUseBoundedMemory(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+		properties        map[string]string
+		unresolved        bool
+	}{
+		{name: "missing", input: "${missing}", want: "${missing}", unresolved: true},
+		{name: "resolved", input: "${version}", want: "1.2.3", properties: map[string]string{"version": "1.2.3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := testing.Benchmark(func(b *testing.B) {
+				for b.Loop() {
+					got, _, unresolved, _ := replacePomPropertyTokens(tc.input, tc.properties, maxPomPropertyTokens)
+					if got != tc.want || unresolved != tc.unresolved {
+						b.Fatal("unexpected expansion result")
+					}
+				}
+			})
+			// Leave room for the builder and lookup metadata, but not a maximum-sized token array.
+			if bytes := result.AllocedBytesPerOp(); bytes > 4096 {
+				t.Fatalf("single-token expansion allocated %d bytes; want <= 4096", bytes)
+			}
+		})
+	}
+}
+
 func BenchmarkPomPropertyExpansion(b *testing.B) {
 	properties := map[string]string{"version": "1.2.3"}
 	for _, tc := range []struct{ name, input, want string }{
