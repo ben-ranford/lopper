@@ -2,6 +2,7 @@ package python
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -42,6 +43,21 @@ func TestPackagingCatalogReadsAndDecodesEachManifestOnce(t *testing.T) {
 	}
 	if len(catalog.snapshot()) != 6 {
 		t.Fatalf("catalog size %d", len(catalog.snapshot()))
+	}
+}
+
+func TestPackagingCatalogNormalizesNonFiniteNumbers(t *testing.T) {
+	var document report.PythonManifestDocument
+	data := []byte("[tool]\nvalues=[nan,+inf,-inf,1.5]\n[tool.nested]\nlimit=nan\n")
+	if err := decodePackagingDocument(pythonPyprojectFile, data, &document); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(document.Document)
+	if err != nil {
+		t.Fatalf("TOML catalog is not JSON-safe: %v", err)
+	}
+	if got, want := string(encoded), `{"tool":{"nested":{"limit":null},"values":[null,null,null,1.5]}}`; got != want {
+		t.Fatalf("normalized document = %s, want %s", got, want)
 	}
 }
 

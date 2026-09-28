@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,8 +109,32 @@ func decodePackagingDocument(name string, data []byte, document *report.PythonMa
 	case pythonPipfileLockName:
 		return json.Unmarshal(data, &document.Document)
 	default:
-		return toml.Unmarshal(data, &document.Document)
+		if err := toml.Unmarshal(data, &document.Document); err != nil {
+			return err
+		}
+		normalizePackagingValue(document.Document)
+		return nil
 	}
+}
+
+// Non-finite TOML numbers cannot carry dependency evidence or be encoded in JSON.
+// Normalize them before either inventory or identity consumes the cached document.
+func normalizePackagingValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, item := range value {
+			value[key] = normalizePackagingValue(item)
+		}
+	case []any:
+		for index, item := range value {
+			value[index] = normalizePackagingValue(item)
+		}
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil
+		}
+	}
+	return value
 }
 
 func packagingCatalogFailure(repo, path, stage string, err error) (map[string]struct{}, []string, error) {
