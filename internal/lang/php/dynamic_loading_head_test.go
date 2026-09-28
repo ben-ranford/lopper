@@ -340,3 +340,24 @@ func TestDynamicInterpolationDeepNestedHeredocs(t *testing.T) {
 		}
 	}
 }
+
+func TestDynamicConstructorAfterNestedInterpolationComment(t *testing.T) {
+	for _, quote := range []string{`"`, "`"} {
+		for _, comment := range []string{`/* " */`, "// \"\n", "# \"\n"} {
+			prefix := "<?php echo " + quote + `{$a["x" ` + comment + `]}` + quote + "; "
+			for _, tail := range []struct {
+				code string
+				want bool
+			}{
+				{"new $type;", true},
+				{`echo "new $type;";`, false},
+				{"/* new $type; */", false},
+			} {
+				source := prefix + tail.code
+				if got := hasDynamicPatterns([]byte(source), "source.php", false); got != tail.want {
+					t.Errorf("source %q: dynamic %v, want %v", source, got, tail.want)
+				}
+			}
+		}
+	}
+}

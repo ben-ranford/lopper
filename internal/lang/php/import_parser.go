@@ -1812,6 +1812,7 @@ func hasDynamicPatterns(content []byte, filePath string, allowShortOpenTags bool
 
 func hasDynamicPatternsInPHPRegion(text, filePath string) bool {
 	phpMasked := maskPHPHeredocNowdocBodies(text)
+	phpMasked = maskPHPStringInterpolations(phpMasked)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	return dynamicPattern.Match(sanitized) || hasPHPDynamicInterpolation(text)
 }

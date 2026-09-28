@@ -238,3 +238,25 @@ func interpolationIdentifierEnd(text string, offset int) int {
 	}
 	return offset
 }
+
+// Hide complete PHP interpolation expressions before the generic string masker
+// sees their nested quotes or comments. The dynamic scan still uses the source.
+func maskPHPStringInterpolations(text string) string {
+	var masked []byte
+	state := phpStateCode
+	for offset := 0; offset < len(text); {
+		if state == phpStateDoubleQuote || state == phpStateBacktick {
+			if next, _, _ := scanDynamicInterpolationAt(text, offset); next > offset {
+				masked = ensureMaskedText(text, masked)
+				maskByteRange(masked, offset, next)
+				offset = next
+				continue
+			}
+		}
+		offset = advancePHPCodeState(text, offset, &state)
+	}
+	if len(masked) == 0 {
+		return text
+	}
+	return string(masked)
+}
