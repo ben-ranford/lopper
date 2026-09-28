@@ -53,6 +53,9 @@ func Analyze(path string, source []byte) ([]Finding, error) {
 func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[string]string) []ast.Stmt {
 	result := make([]ast.Stmt, 0, len(statements))
 	for _, statement := range statements {
+		if block, ok := statement.(*ast.BlockStmt); ok && len(block.List) > 0 && len(withoutDecorativeCalls(path, block.List, packages)) == 0 {
+			continue
+		}
 		if !decorativeCall(path, statement, packages) {
 			result = append(result, statement)
 		}
@@ -61,9 +64,6 @@ func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[str
 }
 
 func decorativeCall(path string, statement ast.Stmt, packages map[string]string) bool {
-	if block, ok := statement.(*ast.BlockStmt); ok {
-		return len(block.List) > 0 && len(withoutDecorativeCalls(path, block.List, packages)) == 0
-	}
 	var expr ast.Expr
 	switch item := statement.(type) {
 	case *ast.ExprStmt:
@@ -80,7 +80,7 @@ func decorativeCall(path string, statement ast.Stmt, packages map[string]string)
 	default:
 		return false
 	}
-	call, ok := expr.(*ast.CallExpr)
+	call, ok := unparen(expr).(*ast.CallExpr)
 	if !ok {
 		return false
 	}
@@ -89,7 +89,7 @@ func decorativeCall(path string, statement ast.Stmt, packages map[string]string)
 		return false
 	}
 	for _, arg := range call.Args {
-		if _, ok := arg.(*ast.Ident); !ok {
+		if _, ok := unparen(arg).(*ast.Ident); !ok {
 			return false
 		}
 	}
@@ -97,7 +97,7 @@ func decorativeCall(path string, statement ast.Stmt, packages map[string]string)
 }
 
 func samePackageHelper(path string, expr ast.Expr) bool {
-	ident, ok := expr.(*ast.Ident)
+	ident, ok := unparen(expr).(*ast.Ident)
 	if !ok || (ident.Obj != nil && ident.Obj.Kind != ast.Fun) {
 		return false
 	}
@@ -205,24 +205,7 @@ func LegacyAdvisory(f Finding, source []byte) bool {
 func localDeclarations(fn *ast.FuncDecl, info *types.Info) map[types.Object]ast.Node {
 	result := make(map[types.Object]ast.Node)
 	ast.Inspect(fn, func(node ast.Node) bool {
-		var names []*ast.Ident
-		switch item := node.(type) {
-		case *ast.Field:
-			names = item.Names
-		case *ast.ValueSpec:
-			names = item.Names
-		case *ast.RangeStmt:
-			if ident, ok := item.Value.(*ast.Ident); ok {
-				names = append(names, ident)
-			}
-		case *ast.AssignStmt:
-			for _, expr := range item.Lhs {
-				if ident, ok := expr.(*ast.Ident); ok {
-					names = append(names, ident)
-				}
-			}
-		}
-		for _, name := range names {
+		for _, name := range declarationNames(node) {
 			if object := info.Defs[name]; object != nil {
 				result[object] = node
 			}
@@ -311,7 +294,7 @@ func mappedStatsObject(expression ast.Expr, field string, packages map[string]st
 	object := info.ObjectOf(receiver)
 	declaration := declarations[object]
 	if ranged, ok := declaration.(*ast.RangeStmt); ok {
-		declaration = &ast.Field{Type: rangeValueType(ranged.X, info, declarations)}
+		declaration = &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
 	}
 	if object == nil || !dependencyStats(declaration, packages, info) {
 		return nil

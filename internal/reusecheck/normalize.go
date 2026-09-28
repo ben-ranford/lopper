@@ -150,24 +150,32 @@ func canonicalWithoutDecorativeCalls(path string, fn *ast.FuncDecl, packages map
 	return canonicalFunction(fn, packages, info)
 }
 
-func rangeValueType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	expression = unparen(expression)
+func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	expression := unparen(statement.X)
 	if ident, ok := expression.(*ast.Ident); ok {
-		expression = declaredCollectionType(declarations[info.ObjectOf(ident)])
-	} else if literal, ok := expression.(*ast.CompositeLit); ok {
-		expression = literal.Type
+		expression = declaredCollectionType(declarations[info.ObjectOf(ident)], info)
+	} else {
+		expression = allocatedCollectionType(expression, info)
 	}
+	var element ast.Expr
+	binding := statement.Value
 	switch collection := unparen(expression).(type) {
 	case *ast.ArrayType:
-		return collection.Elt
+		element = collection.Elt
 	case *ast.MapType:
-		return collection.Value
-	default:
+		element = collection.Value
+	case *ast.ChanType:
+		element = collection.Value
+		binding = statement.Key
+	}
+	ident, ok := binding.(*ast.Ident)
+	if !ok || info.ObjectOf(ident) != object {
 		return nil
 	}
+	return element
 }
 
-func declaredCollectionType(declaration ast.Node) ast.Expr {
+func declaredCollectionType(declaration ast.Node, info *types.Info) ast.Expr {
 	var values []ast.Expr
 	switch item := declaration.(type) {
 	case *ast.Field:
@@ -185,9 +193,49 @@ func declaredCollectionType(declaration ast.Node) ast.Expr {
 		}
 	}
 	if len(values) == 1 {
-		if literal, ok := unparen(values[0]).(*ast.CompositeLit); ok {
-			return literal.Type
+		return allocatedCollectionType(values[0], info)
+	}
+	return nil
+}
+
+func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
+	switch item := unparen(expression).(type) {
+	case *ast.CompositeLit:
+		return item.Type
+	case *ast.CallExpr:
+		ident, ok := unparen(item.Fun).(*ast.Ident)
+		if !ok || len(item.Args) == 0 {
+			return nil
+		}
+		builtin, ok := info.ObjectOf(ident).(*types.Builtin)
+		if ok && builtin.Name() == "make" {
+			return item.Args[0]
 		}
 	}
 	return nil
+}
+
+func declarationNames(node ast.Node) []*ast.Ident {
+	switch item := node.(type) {
+	case *ast.Field:
+		return item.Names
+	case *ast.ValueSpec:
+		return item.Names
+	case *ast.RangeStmt:
+		return expressionNames(item.Key, item.Value)
+	case *ast.AssignStmt:
+		return expressionNames(item.Lhs...)
+	default:
+		return nil
+	}
+}
+
+func expressionNames(expressions ...ast.Expr) []*ast.Ident {
+	var names []*ast.Ident
+	for _, expression := range expressions {
+		if ident, ok := expression.(*ast.Ident); ok {
+			names = append(names, ident)
+		}
+	}
+	return names
 }

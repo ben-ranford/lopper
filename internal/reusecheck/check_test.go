@@ -86,7 +86,7 @@ func build(name string, measured s.DependencyStats) r.DependencyReport {
 
 func TestDecorativeCollectionCall(t *testing.T) {
 	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
-	for _, call := range []string{"_ = shared.SortedKeys(values)", "shared.SortedKeys(values)", "{ _ = shared.SortedKeys(values) }", "{ { shared.SortedKeys(values) } }"} {
+	for _, call := range []string{"_ = shared.SortedKeys(values)", "shared.SortedKeys(values)", "{ _ = shared.SortedKeys(values) }", "{ { shared.SortedKeys(values) } }", "_ = (shared.SortedKeys(values))", "_ = ((shared.SortedKeys)((values)))"} {
 		current := strings.Replace(source, "func keys(values map[string]struct{}) []string {", "func keys(values map[string]struct{}) []string { "+call, 1)
 		findings, err := Analyze("internal/lang/fixture.go", []byte(current))
 		if err != nil {
@@ -380,6 +380,12 @@ func TestRangeStatsMapping(t *testing.T) {
 		{"unused string", "var values []s.DependencyStats;", "for _, measured := range values {", 1},
 		{"unused string", "var values = []s.DependencyStats{};", "for _, measured := range values {", 1},
 		{"unused string", "values := []s.DependencyStats{};", "for _, measured := range values {", 1},
+		{"unused string", "values := make([]s.DependencyStats, 2);", "for _, measured := range values {", 1},
+		{"unused string", "var values = make(map[string]s.DependencyStats);", "for _, measured := range values {", 1},
+		{"unused string", "", "for _, measured := range make([]s.DependencyStats, 2) {", 1},
+		{"unused string", "values := make(chan s.DependencyStats);", "for measured := range values {", 1},
+		{"unused string", "make := func([]s.DependencyStats, int) []OtherStats { return nil }; values := make([]s.DependencyStats{}, 2);", "for _, measured := range values {", 0},
+
 		{"unused string", "", "for _, measured := range ([]s.DependencyStats{}) {", 1},
 		{"values []OtherStats", "", "for _, measured := range values {", 0},
 		{"values []s.DependencyStats", "", "for measured := range values {", 0},
