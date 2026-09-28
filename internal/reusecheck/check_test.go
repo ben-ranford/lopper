@@ -168,66 +168,74 @@ func TestUncertainReportProvenanceIsNotBlocking(t *testing.T) {
 }
 
 func TestStatsDeclarationForms(t *testing.T) {
-	for _, tc := range []struct {
-		declaration string
-		want        int
-	}{
-		{"var measured s.DependencyStats", 1},
-		{"var measured (*s.DependencyStats)", 1},
-		{"var measured = s.BuildDependencyStats(name,nil,nil)", 1},
-		{"var measured = s.DependencyStats{}", 1},
-		{"measured := s.DependencyStats{}", 1},
-		{"var measured = &s.DependencyStats{}", 1},
-		{"measured := &s.DependencyStats{}", 1},
-		{"measured := &(s.DependencyStats{})", 1},
-		{"var measured = &((s.DependencyStats{}))", 1},
-		{"var measured = new(s.DependencyStats)", 1},
-		{"measured := new(s.DependencyStats)", 1},
-		{"measured := new((s.DependencyStats))", 1},
-		{"measured := (new)(s.DependencyStats)", 1},
-		{"measured := *new(s.DependencyStats)", 1},
-		{"measured := s.DependencyStats(localStats)", 1},
-		{"measured := raw.(s.DependencyStats)", 1},
-		{"measured, extra := s.DependencyStats{}, 0; _ = extra", 1},
-		{"extra, measured := 0, &s.DependencyStats{}; _ = extra", 1},
-		{"var extra, measured = 0, s.DependencyStats{}; _ = extra", 1},
-		{"measured, extra := 0, s.DependencyStats{}; _ = extra", 0},
-		{"var measured, extra = 0, s.DependencyStats{}; _ = extra", 0},
-		{"measured, ok := raw.(s.DependencyStats); _ = ok", 1},
-		{"var measured, ok = raw.(*s.DependencyStats); _ = ok", 1},
-		{"value, measured := raw.(s.DependencyStats); _ = value", 0},
-		{"measured, extra := unknown(); _ = extra", 0},
-		{"var measured = raw.(*s.DependencyStats)", 1},
-		{"measured := *(raw.(*s.DependencyStats))", 1},
-		{"type Stats = s.DependencyStats; measured := raw.(Stats)", 1},
-		{"measured := raw.(s.OtherStats)", 0},
-		{"measured := raw.(**s.DependencyStats)", 0},
-		{"measured := *(raw.(s.DependencyStats))", 0},
-		{"var measured = (s.DependencyStats)(localStats)", 1},
-		{"measured := (*s.DependencyStats)(localStats)", 1},
-		{"measured := *((*s.DependencyStats)(localStats))", 1},
-		{"measured := s.OtherStats(localStats)", 0},
-		{"var measured = *((new)(s.DependencyStats))", 1},
-		{"measured := *(&s.DependencyStats{})", 1},
-		{"measured := *s.OtherFactory()", 0},
-		{"var measured = unknown", 0},
-		{"measured := &unknown", 0},
-		{"measured := new(s.OtherStats)", 0},
-		{"var measured = s.BuildDependencyStats(name,nil,nil), 1", 0},
-		{"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other", 1},
-		{"var measured = s.OtherFactory(name,nil,nil)", 0},
-		{"measured, other := s.BuildDependencyStats(name,nil,nil), 1; _ = other", 1},
-		{"measured := unknown", 0},
+	for want, declarations := range map[int][]string{
+		1: {
+			"var measured s.DependencyStats",
+			"var measured (*s.DependencyStats)",
+			"var measured = s.BuildDependencyStats(name,nil,nil)",
+			"var measured = s.DependencyStats{}",
+			"measured := s.DependencyStats{}",
+			"var measured = &s.DependencyStats{}",
+			"measured := &s.DependencyStats{}",
+			"measured := &(s.DependencyStats{})",
+			"var measured = &((s.DependencyStats{}))",
+			"var measured = new(s.DependencyStats)",
+			"measured := new(s.DependencyStats)",
+			"measured := new((s.DependencyStats))",
+			"measured := (new)(s.DependencyStats)",
+			"measured := *new(s.DependencyStats)",
+			"measured := s.DependencyStats(localStats)",
+			"measured := raw.(s.DependencyStats)",
+			"measured, extra := s.DependencyStats{}, 0; _ = extra",
+			"extra, measured := 0, &s.DependencyStats{}; _ = extra",
+			"var extra, measured = 0, s.DependencyStats{}; _ = extra",
+			"measured, ok := raw.(s.DependencyStats); _ = ok",
+			"var measured, ok = raw.(*s.DependencyStats); _ = ok",
+			"var measured = raw.(*s.DependencyStats)",
+			"measured := *(raw.(*s.DependencyStats))",
+			"type Stats = s.DependencyStats; measured := raw.(Stats)",
+			"var measured = (s.DependencyStats)(localStats)",
+			"measured := (*s.DependencyStats)(localStats)",
+			"measured := *((*s.DependencyStats)(localStats))",
+			"var measured = *((new)(s.DependencyStats))",
+			"measured := *(&s.DependencyStats{})",
+			"var measured, other = s.BuildDependencyStats(name,nil,nil), 1; _ = other",
+			"measured, other := s.BuildDependencyStats(name,nil,nil), 1; _ = other",
+		},
+		0: {
+			"measured, extra := 0, s.DependencyStats{}; _ = extra",
+			"var measured, extra = 0, s.DependencyStats{}; _ = extra",
+			"value, measured := raw.(s.DependencyStats); _ = value",
+			"measured, extra := unknown(); _ = extra",
+			"measured := raw.(s.OtherStats)",
+			"measured := raw.(**s.DependencyStats)",
+			"measured := *(raw.(s.DependencyStats))",
+			"measured := s.OtherStats(localStats)",
+			"measured := *s.OtherFactory()",
+			"var measured = unknown",
+			"measured := &unknown",
+			"measured := new(s.OtherStats)",
+			"var measured = s.BuildDependencyStats(name,nil,nil), 1",
+			"var measured = s.OtherFactory(name,nil,nil)",
+			"measured := unknown",
+		},
 	} {
-		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
-		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.declaration+"\n _ = s.BuildDependencyReportFromStats", 1)
-		findings, err := Analyze("fixture.go", []byte(source))
-		if err != nil || len(findings) != tc.want {
-			t.Fatalf("%s findings=%+v err=%v", tc.declaration, findings, err)
+		for _, declaration := range declarations {
+			assertStatsDeclaration(t, declaration, want)
 		}
 	}
 	if dependencyStats(nil, nil, nil) {
 		t.Fatal("missing declaration considered proven")
+	}
+}
+
+func assertStatsDeclaration(t *testing.T, declaration string, want int) {
+	t.Helper()
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
+	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", declaration+"\n _ = s.BuildDependencyReportFromStats", 1)
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != want {
+		t.Fatalf("%s findings=%+v err=%v", declaration, findings, err)
 	}
 }
 
@@ -777,6 +785,28 @@ func TestSignatureAliasExpansionRestoresFields(t *testing.T) {
 		}
 		if fingerprint != canonicalFunction(direct.Decls[0].(*ast.FuncDecl), imports(direct), bindings(direct, directSet)) {
 			t.Fatalf("alias fingerprint differs for %s", typ)
+		}
+	}
+}
+
+func TestMapLookupStatsProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		typ, declaration string
+		want             int
+	}{
+		{"map[string]s.DependencyStats", "measured, ok := values[name]; _ = ok", 1},
+		{"map[string]*s.DependencyStats", "var measured, ok = values[name]; _ = ok", 1},
+		{"map[string]s.DependencyStats", "measured := values[name]", 1},
+		{"map[string]s.DependencyStats", "copied := values; measured, ok := copied[name]; _ = ok", 1},
+		{"map[string]s.DependencyStats", "value, measured := values[name]; _ = value", 0},
+		{"map[string]OtherStats", "measured, ok := values[name]; _ = ok", 0},
+		{"[]s.DependencyStats", "measured, ok := values[0]; _ = ok", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values "+tc.typ, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", tc.declaration+"; _ = s.BuildDependencyReportFromStats", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s %s: findings=%+v err=%v", tc.typ, tc.declaration, findings, err)
 		}
 	}
 }

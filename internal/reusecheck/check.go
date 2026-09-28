@@ -342,7 +342,11 @@ func resolvedStatsDeclaration(object types.Object, info *types.Info, declaration
 		if ranged, ok := declaration.(*ast.RangeStmt); ok {
 			return &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
 		}
-		alias, ok := statsAliasOperand(aliasInitializer(declaration)).(*ast.Ident)
+		initializer := aliasInitializer(declaration)
+		if indexed, ok := unparen(initializer).(*ast.IndexExpr); ok {
+			return mapValueDeclaration(indexed, info, declarations)
+		}
+		alias, ok := statsAliasOperand(initializer).(*ast.Ident)
 		if !ok {
 			return declaration
 		}
