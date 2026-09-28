@@ -201,6 +201,17 @@ func TestParenthesizedReportFieldReceivers(t *testing.T) {
 	}
 }
 
+func TestExplicitPointerReportFieldReceivers(t *testing.T) {
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "measured *s.DependencyStats", 1)
+	for _, receiver := range []string{"(*measured)", "(*((measured)))"} {
+		current := strings.ReplaceAll(source, "measured.", receiver+".")
+		findings, err := Analyze("fixture.go", []byte(current))
+		if err != nil || len(findings) != 1 || findings[0].Advisory {
+			t.Fatalf("receiver %s: findings=%+v err=%v", receiver, findings, err)
+		}
+	}
+}
+
 func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
 	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
 	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)

@@ -284,7 +284,11 @@ func mappedStatsObject(expression ast.Expr, field string, packages map[string]st
 	if !ok || selector.Sel.Name != field {
 		return nil
 	}
-	receiver, ok := unparen(selector.X).(*ast.Ident)
+	receiverExpression := unparen(selector.X)
+	if pointer, ok := receiverExpression.(*ast.StarExpr); ok {
+		receiverExpression = unparen(pointer.X)
+	}
+	receiver, ok := receiverExpression.(*ast.Ident)
 	if !ok {
 		return nil
 	}
