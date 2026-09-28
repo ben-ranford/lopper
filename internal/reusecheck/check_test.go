@@ -419,3 +419,36 @@ func TestDecorativeCallWithinLoop(t *testing.T) {
 	}
 	t.Fatal("nested decorative call waived exact keys contract")
 }
+
+func TestConditionalDecorativeCalls(t *testing.T) {
+	source := strings.Replace(collectionContracts, `import "sort"`, `import "sort"; import shared "github.com/ben-ranford/lopper/internal/lang/shared"`, 1)
+	for _, tc := range []struct {
+		statement string
+		want      bool
+	}{
+		{"if enabled { _ = shared.SortedKeys(values) }", true},
+		{"if !enabled { _ = shared.SortedKeys(values) }", true},
+		{"if enabled && (other || enabled) { _ = shared.SortedKeys(values) }", true},
+		{"if enabled { _ = shared.SortedKeys(values) } else {}", true},
+		{"if enabled { _ = shared.SortedKeys(values) } else if other { shared.SortedKeys(values) }", true},
+		{"if enabled { if other { shared.SortedKeys(values) } }", true},
+		{"if enabled() { _ = shared.SortedKeys(values) }", false},
+		{"if enabled := probe(); enabled { _ = shared.SortedKeys(values) }", false},
+		{"if enabled { _ = shared.SortedKeys(values); probe() }", false},
+		{"if enabled { _ = shared.SortedKeys(values) } else { probe() }", false},
+		{"if enabled[0] { _ = shared.SortedKeys(values) }", false},
+	} {
+		current := strings.Replace(source, "func keys(values map[string]struct{}) []string {", "func keys(values map[string]struct{}) []string { "+tc.statement+";", 1)
+		findings, err := Analyze("internal/lang/fixture.go", []byte(current))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, finding := range findings {
+			found = found || finding.Rule == "sorted-set-keys"
+		}
+		if found != tc.want {
+			t.Errorf("%s: match %v, want %v", tc.statement, found, tc.want)
+		}
+	}
+}

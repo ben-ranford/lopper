@@ -53,10 +53,7 @@ func Analyze(path string, source []byte) ([]Finding, error) {
 func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[string]string) []ast.Stmt {
 	result := make([]ast.Stmt, 0, len(statements))
 	for _, statement := range statements {
-		if block, ok := statement.(*ast.BlockStmt); ok && len(block.List) > 0 && len(withoutDecorativeCalls(path, block.List, packages)) == 0 {
-			continue
-		}
-		if !decorativeCall(path, statement, packages) {
+		if !decorativeShell(path, statement, packages) && !decorativeCall(path, statement, packages) {
 			result = append(result, statement)
 		}
 	}

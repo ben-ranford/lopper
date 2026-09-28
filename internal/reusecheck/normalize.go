@@ -239,3 +239,35 @@ func expressionNames(expressions ...ast.Expr) []*ast.Ident {
 	}
 	return names
 }
+
+// Only discard control flow whose condition cannot call, dereference, index or
+// mutate anything, and whose branches contain no meaningful operations.
+func decorativeShell(path string, statement ast.Stmt, packages map[string]string) bool {
+	switch item := statement.(type) {
+	case *ast.BlockStmt:
+		return len(item.List) > 0 && len(withoutDecorativeCalls(path, item.List, packages)) == 0
+	case *ast.IfStmt:
+		if item.Init != nil || !decorativeCondition(item.Cond) || len(withoutDecorativeCalls(path, item.Body.List, packages)) != 0 {
+			return false
+		}
+		if block, ok := item.Else.(*ast.BlockStmt); ok {
+			return len(withoutDecorativeCalls(path, block.List, packages)) == 0
+		}
+		return item.Else == nil || decorativeShell(path, item.Else, packages)
+	default:
+		return false
+	}
+}
+
+func decorativeCondition(expression ast.Expr) bool {
+	switch item := unparen(expression).(type) {
+	case *ast.Ident:
+		return true
+	case *ast.UnaryExpr:
+		return item.Op == token.NOT && decorativeCondition(item.X)
+	case *ast.BinaryExpr:
+		return (item.Op == token.LAND || item.Op == token.LOR) && decorativeCondition(item.X) && decorativeCondition(item.Y)
+	default:
+		return false
+	}
+}
