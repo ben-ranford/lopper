@@ -82,6 +82,52 @@ class DuplicationRunnerTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.environment, clear=True):
             self.assertEqual(runner.added_lines(self.repo, base), {("renamed.go", 6)})
 
+    def test_renames_ignore_configured_exhaustive_detection_limit(self):
+        originals = {}
+        for index in range(3):
+            originals[index] = "package fixture\n" + "".join(
+                f"var File{index}Value{line} = {line}\n" for line in range(20)
+            )
+            self.write(f"before{index}.go", originals[index])
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        for index, content in originals.items():
+            self.git("mv", f"before{index}.go", f"after{index}.go")
+            self.write(f"after{index}.go", content + f"var Added{index} = 20\n")
+        self.commit()
+        self.git("config", "diff.renameLimit", "1")
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {
+                (f"after{index}.go", 22) for index in originals
+            })
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_regular_file_changed_to_symlink_preserves_lexical_path(self):
+        self.write("alias.go", "package fixture\nvar Old = 1\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {("alias.go", 1)})
+        findings = (
+            "alias.go:1-1: duplicate of original.go:1-1\n"
+            "original.go:1-1: duplicate of alias.go:1-1\n"
+        )
+        self.assertEqual(runner.parse_findings(findings, self.repo), {
+            ("alias.go", 1), ("original.go", 1)
+        })
+
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_symlink_paths_cannot_escape_repository(self):
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "outside.go"
+            target.write_text("package fixture\n")
+            (self.repo / "alias.go").symlink_to(target)
+            with self.assertRaisesRegex(runner.AnalysisError, "escapes repository"):
+                runner.supported_path("alias.go", self.repo)
+
     @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
     def test_type_changed_go_files_are_analyzed(self):
         self.git("checkout", "-qb", "feature")
