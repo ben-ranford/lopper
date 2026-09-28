@@ -37,6 +37,9 @@ func TestSuppressionArtifactWait(t *testing.T) {
 		{"empty-run-association-same-second-old-retarget", "accepted:42:99"},
 		{"empty-run-association-same-second-retarget", "Timed out"},
 		{"empty-run-association-same-second-auto-retarget", "Timed out"},
+		{"empty-run-association-same-second-force-push", "Timed out"},
+		{"empty-run-association-same-second-force-push-replacement", "accepted:42:99"},
+		{"empty-run-association-same-second-old-force-push", "accepted:42:99"},
 		{"empty-run-association-same-second-retarget-payload", "Timed out"},
 		{"stale-empty-run-association", "Timed out"},
 		{"empty-run-association-missing", "Timed out"},
@@ -116,6 +119,11 @@ const github = {
    if (scenario === 'empty-run-association-same-second-auto-retarget') {
     return [{event: 'automatic_base_change_succeeded', created_at: new Date(start).toISOString()}];
    }
+   if (scenario.includes('force-push')) {
+    return [{event: 'base_ref_force_pushed', created_at: new Date(
+     scenario === 'empty-run-association-same-second-old-force-push' ? start - 1000 : start
+    ).toISOString()}];
+   }
    return scenario === 'empty-run-association-same-second-old-retarget' ?
     [{event: 'base_ref_changed', created_at: new Date(start - 1000).toISOString()}] :
     [{event: 'labeled', created_at: new Date(start).toISOString()}];
@@ -132,6 +140,13 @@ const github = {
      throw new Error('untrusted workflow query');
     }
     if (scenario === 'missing-run') return [];
+    if (scenario === 'empty-run-association-same-second-force-push-replacement') {
+     const stale = {id: 41, head_sha: 'expected', created_at: new Date(start).toISOString(),
+      pull_requests: [], status: 'completed', conclusion: 'success'};
+     return polls === 0 ? [stale] : [stale,
+      {id: 42, head_sha: 'expected', created_at: new Date(start + 1000).toISOString(),
+       pull_requests: [], status: 'completed', conclusion: 'success'}];
+    }
     if (scenario === 'stale-empty-run-association') {
      return [{id: 41, head_sha: 'expected', created_at: new Date(start).toISOString(),
       pull_requests: [], updated_at: new Date(now).toISOString(), status: 'completed', conclusion: 'success'}];
@@ -167,6 +182,9 @@ const github = {
      (['empty-run-association-failure', 'same-second-ambiguous-failure'].includes(scenario) ? 'failure' : scenario) : 'success'}];
   }
   if (method !== 'artifacts' || ![41, 42].includes(args.run_id)) throw new Error('wrong artifact query');
+  if (scenario === 'empty-run-association-same-second-force-push-replacement' && args.run_id === 41) {
+   throw new Error('stale pre-force-push artifact must not be queried');
+  }
   return [{id: 99, name: scenario === 'wrong-name' ? 'pr-report-inputs-8' : 'pr-report-inputs-7',
    expired: scenario === 'expired'}];
  }

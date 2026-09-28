@@ -134,7 +134,7 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"if (runPulls.length === 0)",
 		"github.rest.issues.listEventsForTimeline",
 		"!context.payload.changes?.base",
-		"['base_ref_changed', 'automatic_base_change_succeeded'].includes(event.event)",
+		"['base_ref_changed', 'automatic_base_change_succeeded', 'base_ref_force_pushed'].includes(event.event)",
 		"new Date(event.created_at).getTime() < eventCreatedMs",
 		"runCreatedMs > eventCreatedMs",
 		"runCreatedMs === eventCreatedMs && sameSecondBaseUnchanged",
