@@ -841,3 +841,44 @@ func TestCollectionValueStatsProvenance(t *testing.T) {
 		}
 	}
 }
+
+func TestWrappedIndexedStats(t *testing.T) {
+	for _, tc := range []struct {
+		typ, expression string
+		want            int
+	}{
+		{"[]s.DependencyStats", "&values[0]", 1},
+		{"[]*s.DependencyStats", "*values[0]", 1},
+		{"[]s.DependencyStats", "*(&values[0])", 1},
+		{"[]*s.DependencyStats", "&values[0]", 0},
+		{"[]s.DependencyStats", "*values[0]", 0},
+		{"[]s.DependencyStats", "-values[0]", 0},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values "+tc.typ, 1)
+		source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "measured := "+tc.expression+"; _ = s.BuildDependencyReportFromStats", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != tc.want {
+			t.Fatalf("%s: findings=%+v err=%v", tc.expression, findings, err)
+		}
+	}
+}
+
+func TestDotImportedContracts(t *testing.T) {
+	source := strings.ReplaceAll(strings.ReplaceAll(mappingFixture, "import r ", "import . "), "import s ", "import . ")
+	source = strings.ReplaceAll(strings.ReplaceAll(source, "r.", ""), "s.", "")
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("dot mapping: findings=%+v err=%v", findings, err)
+	}
+	shadowed := strings.Replace(source, "func build", "type DependencyStats struct{}; func build", 1)
+	findings, err = Analyze("fixture.go", []byte(shadowed))
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("shadowed dot mapping: findings=%+v err=%v", findings, err)
+	}
+	collections := strings.ReplaceAll(strings.ReplaceAll(collectionContracts, `import "sort"`, `import . "sort"`), `import "strings"`, `import . "strings"`)
+	collections = strings.ReplaceAll(strings.ReplaceAll(collections, "sort.", ""), "strings.", "")
+	assertFunctionFinding(t, "internal/analysis/copy.go", collections, "exact", true)
+	assertFunctionFinding(t, "internal/report/copy.go", collections, "trimmed", true)
+	shadowedCollections := strings.Replace(collections, "func exact", "func Strings([]string) {}; func exact", 1)
+	assertFunctionFinding(t, "internal/analysis/copy.go", shadowedCollections, "exact", false)
+}

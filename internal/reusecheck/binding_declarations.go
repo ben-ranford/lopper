@@ -87,3 +87,20 @@ func receivedValueType(receive *ast.UnaryExpr, info *types.Info, declarations ma
 	}
 	return channel.Value
 }
+
+func collectionValueType(expression ast.Expr, commaOK bool, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	switch value := unparen(expression).(type) {
+	case *ast.IndexExpr:
+		return indexedValueType(value, commaOK, info, declarations)
+	case *ast.UnaryExpr:
+		if value.Op == token.ARROW {
+			return receivedValueType(value, info, declarations)
+		}
+		if value.Op == token.AND {
+			return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []token.Token{token.AND})
+		}
+	case *ast.StarExpr:
+		return collectionIndirection(collectionValueType(value.X, commaOK, info, declarations), []token.Token{token.MUL})
+	}
+	return nil
+}

@@ -343,11 +343,8 @@ func resolvedStatsDeclaration(object types.Object, info *types.Info, declaration
 			return &ast.Field{Type: rangeValueType(ranged, object, info, declarations)}
 		}
 		initializer := aliasInitializer(declaration)
-		if indexed, ok := unparen(initializer).(*ast.IndexExpr); ok {
-			return &ast.Field{Type: indexedValueType(indexed, commaOK, info, declarations)}
-		}
-		if receive, ok := unparen(initializer).(*ast.UnaryExpr); ok && receive.Op == token.ARROW {
-			return &ast.Field{Type: receivedValueType(receive, info, declarations)}
+		if typ := collectionValueType(initializer, commaOK, info, declarations); typ != nil {
+			return &ast.Field{Type: typ}
 		}
 		alias, ok := statsAliasOperand(initializer).(*ast.Ident)
 		if !ok {

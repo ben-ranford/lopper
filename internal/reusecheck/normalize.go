@@ -23,6 +23,9 @@ func imports(file *ast.File) map[string]string {
 		if item.Name != nil {
 			name = item.Name.Name
 		}
+		if name == "." {
+			name += path
+		}
 		result[name] = path
 	}
 	return result
@@ -61,6 +64,9 @@ func unaliasedType(expression ast.Expr) ast.Expr {
 
 func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
 	expr = unaliasedType(expr)
+	if ident, ok := expr.(*ast.Ident); ok {
+		return ident.Name == name && dotImportedPath(ident, packages) == path
+	}
 	selector, ok := expr.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != name {
 		return false
@@ -70,6 +76,8 @@ func imported(expr ast.Expr, packages map[string]string, path, name string) bool
 }
 
 func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types.Info) string {
+	restoreDots := expandDotImports(fn, packages)
+	defer restoreDots()
 	restoreAliases := expandSignatureAliases(fn.Type)
 	defer restoreAliases()
 	restore := stripExpressionParentheses(fn)
