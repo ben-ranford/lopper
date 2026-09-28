@@ -268,9 +268,20 @@ func functionFindings(path string, fn *ast.FuncDecl, packages map[string]string,
 	if filepath.ToSlash(path) == "internal/lang/shared/dependency_usage_stats.go" && fn.Name.Name == "BuildDependencyReportFromStats" {
 		return findings
 	}
+	return append(findings, reportMappingFindings(path, fn, packages, info, fset)...)
+}
+
+func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fset *token.FileSet) []Finding {
+	var findings []Finding
 	declarations := localDeclarations(fn, info)
+	literalTypes := compositeLiteralTypes(fn.Body)
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		literal, ok := node.(*ast.CompositeLit)
+		if ok {
+			resolved := *literal
+			resolved.Type = literalTypes[literal]
+			literal = &resolved
+		}
 		if ok && (reportMapping(literal, packages, info, declarations) || partialReportMapping(literal, packages, info, declarations)) {
 			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Pos()).Line, Function: fn.Name.Name, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, declarations)})
 		}

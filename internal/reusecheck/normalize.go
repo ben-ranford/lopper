@@ -215,6 +215,9 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	case *ast.CompositeLit:
 		return item.Type
 	case *ast.CallExpr:
+		if len(item.Args) == 1 && collectionConversionType(item.Fun) {
+			return item.Fun
+		}
 		ident, ok := unparen(item.Fun).(*ast.Ident)
 		if !ok || len(item.Args) == 0 {
 			return nil
@@ -353,4 +356,13 @@ func expressionFields(node ast.Node) []reflect.Value {
 		}
 	}
 	return expressions
+}
+
+func collectionConversionType(expression ast.Expr) bool {
+	switch unparen(expression).(type) {
+	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StarExpr:
+		return true
+	default:
+		return false
+	}
 }

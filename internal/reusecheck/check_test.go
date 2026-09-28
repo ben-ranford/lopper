@@ -68,6 +68,21 @@ func TestReportMappingContract(t *testing.T) {
 	}
 }
 
+func TestElidedReportLiteralTypes(t *testing.T) {
+	literal := strings.Split(strings.Split(mappingFixture, "return r.DependencyReport")[1], "\n}")[0]
+	for _, container := range []string{
+		"[]r.DependencyReport{%s}", "[1]r.DependencyReport{0:%s}",
+		"[]*r.DependencyReport{%s}", "[][]r.DependencyReport{{%s}}",
+		"map[string]r.DependencyReport{\"key\":%s}", "map[*r.DependencyReport]bool{%s:true}",
+	} {
+		source := strings.Replace(mappingFixture, "return r.DependencyReport"+literal, "_ = "+fmt.Sprintf(container, literal)+"; return r.DependencyReport{}", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != 1 || findings[0].Advisory {
+			t.Fatalf("%s: findings=%+v err=%v", container, findings, err)
+		}
+	}
+}
+
 func TestValidHelperWithPostProcessing(t *testing.T) {
 	source := `package fixture
 import s "github.com/ben-ranford/lopper/internal/lang/shared"
@@ -422,6 +437,12 @@ func TestRangeStatsMapping(t *testing.T) {
 		{"unused string", "values := []s.DependencyStats{};", "for _, measured := range values {", 1},
 		{"unused string", "values := make([]s.DependencyStats, 2);", "for _, measured := range values {", 1},
 		{"unused string", "values := new([2]s.DependencyStats);", "for _, measured := range values {", 1},
+		{"unused string", "", "for _, measured := range []s.DependencyStats(raw) {", 1},
+		{"unused string", "values := [2]s.DependencyStats(raw);", "for _, measured := range values {", 1},
+		{"unused string", "values := (map[string]s.DependencyStats)(raw);", "for _, measured := range values {", 1},
+		{"unused string", "", "for measured := range (chan s.DependencyStats)(raw) {", 1},
+		{"unused string", "", "for _, measured := range (*[2]s.DependencyStats)(raw) {", 1},
+		{"unused string", "", "for _, measured := range []OtherStats(raw) {", 0},
 		{"unused string", "var values = new([2]*s.DependencyStats);", "for _, measured := range values {", 1},
 		{"unused string", "", "for _, measured := range (new)([2]s.DependencyStats) {", 1},
 		{"unused string", "values := new([]s.DependencyStats);", "for _, measured := range values {", 0},
@@ -545,5 +566,31 @@ func TestCanonicalParenthesesPreservePrecedenceAndAST(t *testing.T) {
 	}
 	if fingerprints[0] == fingerprints[1] {
 		t.Fatal("canonicalization changed operator precedence")
+	}
+}
+
+func TestElidedLiteralTypeInferencePreservesAST(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package p; var reports = [][]Report{{{Name: name}}}", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inferred := compositeLiteralTypes(file)
+	elided := 0
+	for literal, typ := range inferred {
+		if literal.Type == nil {
+			elided++
+			if typ == nil {
+				t.Fatal("nested literal lost inherited type")
+			}
+		}
+	}
+	if elided != 2 {
+		t.Fatalf("inference mutated elided source types: count=%d", elided)
+	}
+	unknown := &ast.CompositeLit{}
+	for _, root := range []ast.Node{unknown, &ast.KeyValueExpr{Key: ast.NewIdent("key"), Value: unknown}, &ast.ReturnStmt{Results: []ast.Expr{unknown}}, &ast.CompositeLit{Type: ast.NewIdent("Unknown"), Elts: []ast.Expr{unknown}}} {
+		if compositeLiteralTypes(root)[unknown] != nil {
+			t.Fatal("unknown enclosing type was inferred")
+		}
 	}
 }
