@@ -6,8 +6,9 @@ preflight_state_dir=
 preflight_output_file=
 
 preflight_process_tree() {
+	preflight_tree_root=$1
 	# -ef also works with Git Bash ps, which lacks POSIX output selection.
-	ps -ef | awk -v root="$1" '
+	ps -ef | awk -v root="$preflight_tree_root" '
 		NR == 1 {
 			for (i = 1; i <= NF; i++) {
 				if ($i == "PID") pid_column = i
@@ -29,6 +30,7 @@ preflight_process_tree() {
 		}
 		END { visit(root) }
 	'
+	return
 }
 
 terminate_preflight_reader() (
@@ -41,6 +43,7 @@ terminate_preflight_reader() (
 	reader_pids="$reader_pids $(preflight_process_tree "$1")"
 	# shellcheck disable=SC2086
 	kill -KILL $reader_pids 2>/dev/null || :
+	return 0
 )
 
 cleanup_preflight_git() {
