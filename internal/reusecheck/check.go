@@ -155,6 +155,8 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 	}
 	valueExpression := unparen(values[0])
 	switch value := valueExpression.(type) {
+	case *ast.TypeAssertExpr:
+		return dependencyStatsType(value.Type, packages)
 	case *ast.CallExpr:
 		if len(value.Args) == 1 && dependencyStatsType(value.Fun, packages) {
 			return true
@@ -174,6 +176,9 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 
 func dependencyStatsPointer(expression ast.Expr, packages map[string]string, info *types.Info) bool {
 	switch value := unparen(expression).(type) {
+	case *ast.TypeAssertExpr:
+		pointer, ok := unaliasedType(value.Type).(*ast.StarExpr)
+		return ok && imported(pointer.X, packages, sharedPackage, "DependencyStats")
 	case *ast.CallExpr:
 		if pointer, ok := unaliasedType(value.Fun).(*ast.StarExpr); ok {
 			return len(value.Args) == 1 && imported(pointer.X, packages, sharedPackage, "DependencyStats")
