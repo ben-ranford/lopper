@@ -193,6 +193,39 @@ func TestHooksUninstallIgnoresCommandScopedHookPathOverride(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallIgnoresGlobalConfigFileSelector(t *testing.T) {
+	repo := newHookFixture(t)
+	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
+	home := t.TempDir()
+	runCommand(t, repo, "git", "config", "--file", filepath.Join(home, ".gitconfig"), "core.hooksPath", managed)
+	override := filepath.Join(t.TempDir(), "empty.cfg")
+	writeFile(t, override, "")
+	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GIT_CONFIG_GLOBAL=" + override}
+	output, err := hookCommandWithEnv(repo, env, "make", "hooks-uninstall")
+	if err != nil {
+		t.Fatalf("uninstall with global Git config selector: %v\n%s", err, output)
+	}
+	assertHookSnapshotRetention(t, managed, hookReferenceCase{alias: true})
+	if output, err := hookCommandWithEnv(repo, env, "git", "config", "--local", "--get", "core.hooksPath"); err == nil || output != "" {
+		t.Fatalf("local managed setting was not removed: %v\n%s", err, output)
+	}
+}
+
+func TestHooksCleanupIgnoresSystemConfigFileSelector(t *testing.T) {
+	repo := newHookFixture(t)
+	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
+	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
+	override := filepath.Join(t.TempDir(), "system.cfg")
+	runCommand(t, repo, "git", "config", "--file", override, "core.hooksPath", managed)
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GIT_CONFIG_SYSTEM=" + override}
+	output, err := hookCommandWithEnv(repo, env, "sh", "scripts/cleanup-hook-snapshot.sh")
+	if err != nil {
+		t.Fatalf("cleanup with system Git config selector: %v\n%s", err, output)
+	}
+	assertHookSnapshotRetention(t, managed, hookReferenceCase{})
+}
+
 func TestHooksCleanupRetainsOnInspectionFailure(t *testing.T) {
 	for _, failure := range []string{"missing", "malformed", "replaced"} {
 		t.Run(failure, func(t *testing.T) {
