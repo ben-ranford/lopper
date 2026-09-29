@@ -147,6 +147,7 @@ func canonicalName(ident, functionName *ast.Ident, packages map[string]string, i
 // separately, while unresolved syntax cannot match a template.
 func bindings(file *ast.File, fset *token.FileSet) *types.Info {
 	info := &types.Info{Implicits: make(map[ast.Node]types.Object), Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
+	defer indexEmbeddedFields(file, info)
 	config := types.Config{Error: func(error) {
 		// Continue collecting lexical bindings when isolated source cannot type-check.
 	}}
