@@ -18,7 +18,13 @@ class AnalysisError(Exception):
 
 
 def checked(command, repo, *, environment=None, input_text=None):
-    result = subprocess.run(command, cwd=repo, env=environment, input=input_text, capture_output=True, text=True)
+    # Decode explicitly so subprocess does not translate bare CR into LF and
+    # change Go source positions or manufacture diff hunk boundaries.
+    result = subprocess.run(command, cwd=repo, env=environment,
+                            input=input_text.encode("utf-8") if input_text is not None else None,
+                            capture_output=True)
+    result.stdout = result.stdout.decode("utf-8")
+    result.stderr = result.stderr.decode("utf-8")
     if result.returncode:
         raise AnalysisError(f"{command[0]} failed ({result.returncode}): {result.stderr.strip()}")
     return result
@@ -127,7 +133,7 @@ def source_at_revision(repo, revision, path):
 
 def changed_hunk_lines(diff, path):
     added = set()
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if line.startswith(("Binary files ", "GIT binary patch")):
             raise AnalysisError(f"Cannot analyze binary Go diff: {path!r}")
         if line.startswith("@@"):
@@ -143,7 +149,8 @@ def finding_location(raw, start, end, repo, line_counts):
     path = supported_path(raw, repo)
     start, end = int(start), int(end)
     if path not in line_counts:
-        line_counts[path] = len((repo / path).read_bytes().splitlines())
+        source = (repo / path).read_bytes()
+        line_counts[path] = source.count(b"\n") + bool(source and not source.endswith(b"\n"))
     if start < 1 or end < start or end > line_counts[path]:
         raise AnalysisError(f"Invalid detector line range: {raw}:{start}-{end}")
     return path, start, end
