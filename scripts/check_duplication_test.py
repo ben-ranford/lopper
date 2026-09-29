@@ -210,6 +210,36 @@ class DuplicationRunnerTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.environment, clear=True):
             self.assertEqual(runner.added_lines(self.repo, base), {("alias.go", 3)})
 
+    @unittest.skipIf(os.name == "nt", "symlink fixture requires a Windows developer-mode setup")
+    def test_type_changed_source_preserves_bare_carriage_returns(self):
+        self.write("alias.go", "package fixture\n// first\rsecond\nvar Old = 1\n")
+        self.write("original.go", "package fixture\n// first\rsecond\nvar New = 2\n")
+        self.commit()
+        base = self.git("rev-parse", "HEAD").strip()
+        (self.repo / "alias.go").unlink()
+        (self.repo / "alias.go").symlink_to("original.go")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, base), {("alias.go", 3)})
+
+    def test_hunk_headers_only_start_after_lf(self):
+        for separator in ("\u2028", "\r", "\v", "\f"):
+            for fragment in ("@@ invalid", "@@ -0,0 +40,2 @@"):
+                with self.subTest(separator=separator, fragment=fragment):
+                    diff = f"@@ -1 +1 @@\n-// old\n+// new{separator}{fragment}\n"
+                    self.assertEqual(runner.changed_hunk_lines(diff, "alias.go"), {("alias.go", 1)})
+
+    def test_regular_diff_preserves_carriage_returns_in_comments(self):
+        self.write("original.go", "package fixture\n// comment\r@@ -0,0 +40,2 @@\n")
+        self.commit()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(runner.added_lines(self.repo, self.base), {("original.go", 2)})
+
+    def test_finding_ranges_use_lf_line_counts(self):
+        self.write("original.go", "package fixture\n// comment\rcontinued\n")
+        with self.assertRaisesRegex(runner.AnalysisError, "Invalid detector line range"):
+            runner.finding_location("original.go", 1, 3, self.repo, {})
+
     def test_missing_and_unrelated_bases_fail_with_recovery(self):
         self.git("checkout", "--orphan", "unrelated")
         self.write("unrelated.go", "package unrelated\n")
@@ -283,7 +313,7 @@ class DuplicationRunnerTest(unittest.TestCase):
 
     def test_detector_crash_and_parse_diagnostics_fail(self):
         for status, stderr in ((1, "crashed"), (0, "parse error")):
-            results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], status, "", stderr)]
+            results = [subprocess.CompletedProcess([], 0, b"", b""), subprocess.CompletedProcess([], status, b"", stderr.encode())]
             with self.subTest(status=status), mock.patch.object(runner.subprocess, "run", side_effect=results), self.assertRaises(runner.AnalysisError):
                 runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
 
@@ -304,7 +334,7 @@ class DuplicationRunnerTest(unittest.TestCase):
             runner.changed_hunk_lines("@@ invalid hunk", "file.go")
 
     def test_detector_install_failure_is_not_masked(self):
-        with mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "install failed")), self.assertRaisesRegex(runner.AnalysisError, "install failed"):
+        with mock.patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"install failed")), self.assertRaisesRegex(runner.AnalysisError, "install failed"):
             runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
 
     def test_cli_reports_no_change_success_and_duplicate_failure(self):
