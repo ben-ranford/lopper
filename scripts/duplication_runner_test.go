@@ -131,15 +131,18 @@ func TestDuplicationCIIgnoresMakeFlagsAndPathWrapper(t *testing.T) {
 func TestDuplicationProtectedGateRejectsContributorNoOps(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	step := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run protected duplication gate")
+	readYAMLConfig(t, ".github/workflows/duplication-verify.yml", &workflow)
+	step := workflowStepByName(t, workflow.Jobs, "verify", "Run protected duplication gate")
 	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".github", "workflows"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(repo, "scripts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	files := map[string]string{
 		"Makefile":                     "GO ?= go\nDUPL_VERSION ?= trusted\nDUPLICATION_TOKEN_THRESHOLD ?= 55\nDUPLICATION_MAX ?= 3\n",
-		"scripts/check_duplication.py": "from pathlib import Path\nimport sys\nassert Path('contributor.txt').read_text() == 'scan this revision'\nprint('protected-gate-rejected-clone', flush=True)\nsys.exit(23)\n",
+		"scripts/check_duplication.py": "import os, subprocess, sys\nassert subprocess.check_output(['git', 'show', os.environ['LOPPER_DUPLICATION_REVISION'] + ':contributor.txt'], text=True) == 'scan this revision'\nprint('protected-gate-rejected-clone', flush=True)\nsys.exit(23)\n",
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
@@ -153,9 +156,11 @@ func TestDuplicationProtectedGateRejectsContributorNoOps(t *testing.T) {
 	runGitCommand(t, repo, "commit", "-m", "protected policy")
 	base := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
 	for name, content := range map[string]string{
-		"Makefile":                     "ci-checks dup-check:\n\t@true\n",
-		"scripts/check_duplication.py": "raise SystemExit(0)\n",
-		"contributor.txt":              "scan this revision",
+		"Makefile":                                 "ci-checks dup-check:\n\t@true\n",
+		"scripts/check_duplication.py":             "raise SystemExit(0)\n",
+		"contributor.txt":                          "scan this revision",
+		".github/workflows/ci.yml":                 "jobs: {verify: {steps: [{run: true}]}}",
+		".github/workflows/duplication-verify.yml": "jobs: {verify: {steps: [{run: true}]}}",
 	} {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -163,23 +168,59 @@ func TestDuplicationProtectedGateRejectsContributorNoOps(t *testing.T) {
 	}
 	runGitCommand(t, repo, "add", ".")
 	runGitCommand(t, repo, "commit", "-m", "contributor bypass")
+	head := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
+	runGitCommand(t, repo, "update-ref", "refs/pull/7/head", head)
+	runGitCommand(t, repo, "remote", "add", "origin", repo)
+	runGitCommand(t, repo, "checkout", "--detach", base)
 	command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
 	command.Dir = repo
 	command.Env = overlayShellEnv(withoutGitEnv(), map[string]string{
-		"DUPLICATION_EVENT_BASE": base, "RUNNER_TEMP": t.TempDir(),
+		"DUPLICATION_EVENT_BASE": base, "DUPLICATION_EVENT_HEAD": head, "DUPLICATION_EVENT_NUMBER": "7", "RUNNER_TEMP": t.TempDir(),
 	})
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "protected-gate-rejected-clone") {
 		t.Fatalf("contributor no-op bypassed protected code: %v\n%s", err, output)
 	}
+	for _, event := range []struct{ head, number string }{
+		{base, "7"},      // The PR ref advanced after the event was queued.
+		{head, "7/head"}, // Ref syntax must never come from an unchecked number.
+	} {
+		command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
+		command.Dir = repo
+		command.Env = overlayShellEnv(withoutGitEnv(), map[string]string{
+			"DUPLICATION_EVENT_BASE": base, "DUPLICATION_EVENT_HEAD": event.head,
+			"DUPLICATION_EVENT_NUMBER": event.number, "RUNNER_TEMP": t.TempDir(),
+		})
+		output, err := command.CombinedOutput()
+		if err == nil || strings.Contains(string(output), "protected-gate-rejected-clone") {
+			t.Fatalf("invalid event identity must fail before analysis: %v\n%s", err, output)
+		}
+	}
 }
 
-func TestDuplicationGatePrecedesLoaderInjection(t *testing.T) {
+func TestDuplicationGateUsesBaseOwnedWorkflow(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
-	// A tools-install recipe can persist LD_PRELOAD in GITHUB_ENV. No shell
-	// sanitization in a subsequent step can prevent its own loader injection.
-	assertWorkflowStepOrder(t, verify, "Setup Go", "Run protected duplication gate", "Resolve gosec version", "Install Go tooling")
+	readYAMLConfig(t, ".github/workflows/duplication-verify.yml", &workflow)
+	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	assertWorkflowStepOrder(t, verify, "Publish pending duplication check", "Checkout protected base", "Setup Go", "Run protected duplication gate", "Complete duplication check")
+	checkout := workflowStepByName(t, workflow.Jobs, "verify", "Checkout protected base")
+	if checkout.With["ref"] != "${{ github.event.pull_request.base.sha }}" || checkout.With["persist-credentials"] != "false" {
+		t.Fatal("protected gate must check out only the immutable base without credentials")
+	}
+	content, err := os.ReadFile(repoPath(t, ".github/workflows/duplication-verify.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(content)
+	for _, required := range []string{"  pull_request_target:", "name: 'duplication-verify'", "head_sha: context.payload.pull_request.head.sha", "cache: false"} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("missing trusted enforcement contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{"  pull_request:", "make ", "pull_request.head.ref", "pull_request.head.repo"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("unsafe enforcement contract %q", forbidden)
+		}
+	}
 }

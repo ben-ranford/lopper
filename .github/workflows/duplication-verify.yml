@@ -1,0 +1,106 @@
+name: duplication verify
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: duplication-verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Publish pending duplication check
+        id: pending
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const { data: check } = await github.rest.checks.create({
+              ...context.repo,
+              name: 'duplication-verify',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'in_progress',
+            });
+            core.setOutput('check-id', String(check.id));
+
+      - name: Checkout protected base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Only base-owned tools execute. The fetched head is input to the parser;
+      # no head workflow, Make recipe, module, or source program is executed.
+      - name: Run protected duplication gate
+        env:
+          DUPLICATION_EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          DUPLICATION_EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          DUPLICATION_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          base="${DUPLICATION_EVENT_BASE:?immutable PR base is required}"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          revision="${DUPLICATION_EVENT_HEAD:?immutable PR head is required}"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          number="${DUPLICATION_EVENT_NUMBER:?PR number is required}"
+          [[ "$number" =~ ^[1-9][0-9]*$ ]]
+          # The base repository exposes this ref for fork PRs too. It may have
+          # advanced since the event; never analyze a different head silently.
+          git -c core.hooksPath=/dev/null fetch --no-tags origin "refs/pull/$number/head:refs/remotes/origin/duplication-head"
+          [[ "$(git rev-parse --verify refs/remotes/origin/duplication-head)" == "$revision" ]]
+          policy="$(mktemp -d "${RUNNER_TEMP}/lopper-duplication-policy.XXXXXX")"
+          git clone --no-local --no-checkout -- "$PWD" "$policy"
+          git -C "$policy" -c core.hooksPath=/dev/null checkout --detach "$base"
+          LOPPER_DUPLICATION_GO="$(command -v go)"
+          LOPPER_DUPLICATION_GIT="$(command -v git)"
+          export LOPPER_DUPLICATION_GO LOPPER_DUPLICATION_GIT
+          export LOPPER_DUPLICATION_REVISION="$revision"
+          export GOTOOLCHAIN=local
+          # Read only protected assignments, never evaluate the PR Makefile.
+          python3 -E -S -B - "$policy" "$base" <<'PYTHON'
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          policy = Path(sys.argv[1])
+          source = (policy / 'Makefile').read_text()
+          def setting(name):
+              values = re.findall(r'^' + name + r'\s*\?=\s*([^\s#]+)\s*$', source, re.MULTILINE)
+              if len(values) != 1:
+                  raise ValueError('Missing or ambiguous protected setting: ' + name)
+              return values[0]
+          command = [sys.executable, '-E', '-S', '-B', str(policy / 'scripts/check_duplication.py'),
+                     '--base', sys.argv[2], '--go', setting('GO'), '--version', setting('DUPL_VERSION'),
+                     '--threshold', setting('DUPLICATION_TOKEN_THRESHOLD'), '--max', setting('DUPLICATION_MAX')]
+          command += ['--baseline', '.github/duplication-baseline.json']
+          subprocess.run(command, check=True)
+          PYTHON
+
+      - name: Complete duplication check
+        if: ${{ always() && steps.pending.outputs.check-id != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          CHECK_ID: ${{ steps.pending.outputs.check-id }}
+          GATE_STATUS: ${{ job.status }}
+        with:
+          script: |
+            await github.rest.checks.update({
+              ...context.repo,
+              check_run_id: Number(process.env.CHECK_ID),
+              status: 'completed',
+              conclusion: process.env.GATE_STATUS === 'success' ? 'success' : 'failure',
+            });
