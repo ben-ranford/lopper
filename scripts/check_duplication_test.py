@@ -427,6 +427,47 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.assertIn("Baseline expansion", stderr.getvalue())
         self.assertNotEqual(target_commit, self.base)
 
+    def test_occurrence_gate_scans_synthetic_merge_of_exact_base_and_pr_head(self):
+        baseline_path = runner.CANONICAL_BASELINE
+        self.git("checkout", "-qb", "feature", self.base)
+        self.write("pr.go", "package fixture\nfunc Copy() {}\n")
+        self.commit()
+        head = self.git("rev-parse", "HEAD").strip()
+
+        self.git("checkout", "target")
+        self.write("base.go", "package fixture\nfunc Base() {}\n")
+        self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
+        self.commit()
+        target = self.git("rev-parse", "HEAD").strip()
+        merge_tree = self.git("merge-tree", "--write-tree", target, head).strip()
+        synthetic = self.git("commit-tree", merge_tree, "-p", target, "-p", head, "-m", "prospective merge").strip()
+        self.git("update-ref", "refs/heads/duplication-merge", synthetic)
+
+        pair_records = [(('base.go', 1, 2), ('pr.go', 1, 2))]
+        fn = {"path": "base.go", "name": "Base", "shape": "a", "start": 1, "end": 2}
+        other = dict(fn, name="Copy", path="pr.go")
+
+        def detector(repo, *args, records=None):
+            self.assertTrue((repo / "base.go").is_file(), "target-side additions must be in the scanned tree")
+            self.assertTrue((repo / "pr.go").is_file(), "PR-side additions must be in the scanned tree")
+            records.extend(pair_records)
+            return set()
+
+        command = ["--version", "pinned", "--base", "target", "--baseline", baseline_path]
+        environment = dict(self.environment, LOPPER_DUPLICATION_REVISION=synthetic)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        patches = (
+            mock.patch.object(runner.Path, "cwd", return_value=self.repo),
+            mock.patch.object(runner, "scan", side_effect=detector),
+            mock.patch.object(runner.policy, "function_index", return_value=[fn, other]),
+            mock.patch.dict(os.environ, environment, clear=True),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            self.assertEqual(runner.main(command), 1, stderr.getvalue())
+        self.assertIn("violation", stdout.getvalue())
+
     def test_initial_baseline_must_match_full_scan_when_target_lacks_policy(self):
         self.git("checkout", "-qb", "feature")
         self.write("added.go", "package fixture\n")

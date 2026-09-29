@@ -181,6 +181,11 @@ func TestDuplicationProtectedGateRejectsContributorNoOps(t *testing.T) {
 	if err == nil || !strings.Contains(string(output), "protected-gate-rejected-clone") {
 		t.Fatalf("contributor no-op bypassed protected code: %v\n%s", err, output)
 	}
+
+	assertWorkflowStepRunContainsAll(t, step, "trusted prospective-merge analysis", []string{
+		`merge-tree --write-tree "$base" "$revision"`, `commit-tree "$merge_tree" -p "$base" -p "$revision"`,
+		`update-ref refs/heads/duplication-merge`, `LOPPER_DUPLICATION_REVISION="$analysis_revision"`,
+	})
 	for _, event := range []struct{ head, number string }{
 		{base, "7"},      // The PR ref advanced after the event was queued.
 		{head, "7/head"}, // Ref syntax must never come from an unchecked number.

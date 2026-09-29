@@ -53,7 +53,7 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # Only base-owned tools execute. The fetched head is input to the parser;
+      # Only base-owned tools execute. The prospective merge tree is data-only;
       # no head workflow, Make recipe, module, or source program is executed.
       - name: Run protected duplication gate
         env:
@@ -71,13 +71,20 @@ jobs:
           # advanced since the event; never analyze a different head silently.
           git -c core.hooksPath=/dev/null fetch --no-tags origin "refs/pull/$number/head:refs/remotes/origin/duplication-head"
           [[ "$(git rev-parse --verify refs/remotes/origin/duplication-head)" == "$revision" ]]
+          # Analyze the tree that would actually merge. merge-tree is data-only;
+          # no contributor workflow, Makefile, module, or source code executes.
+          merge_tree="$(git -c core.hooksPath=/dev/null merge-tree --write-tree "$base" "$revision")"
+          [[ "$merge_tree" =~ ^[0-9a-f]{40}$ ]]
+          analysis_revision="$(printf '%s\n' 'Protected duplication analysis merge' | git -c core.hooksPath=/dev/null -c user.name='GitHub Actions' -c user.email='github-actions[bot]@users.noreply.github.com' commit-tree "$merge_tree" -p "$base" -p "$revision")"
+          [[ "$analysis_revision" =~ ^[0-9a-f]{40}$ ]]
+          git -c core.hooksPath=/dev/null update-ref refs/heads/duplication-merge "$analysis_revision"
           policy="$(mktemp -d "${RUNNER_TEMP}/lopper-duplication-policy.XXXXXX")"
           git clone --no-local --no-checkout -- "$PWD" "$policy"
           git -C "$policy" -c core.hooksPath=/dev/null checkout --detach "$base"
           LOPPER_DUPLICATION_GO="$(command -v go)"
           LOPPER_DUPLICATION_GIT="$(command -v git)"
           export LOPPER_DUPLICATION_GO LOPPER_DUPLICATION_GIT
-          export LOPPER_DUPLICATION_REVISION="$revision"
+          export LOPPER_DUPLICATION_REVISION="$analysis_revision"
           export GOTOOLCHAIN=local
           # Read only protected assignments, never evaluate the PR Makefile.
           python3 -E -S -B - "$policy" "$base" <<'PYTHON'
