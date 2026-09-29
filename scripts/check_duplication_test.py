@@ -298,6 +298,14 @@ class DuplicationRunnerTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(runner.parse_findings(self.pair(path), self.repo), {(name, line) for name in ("dir with spaces/a.go", "b.go") for line in (1, 2)})
 
+    def test_detector_records_preserve_unicode_filename_separators(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            with self.subTest(separator=separator):
+                name = f"first{separator}second.go"
+                self.write(name, "package fixture\n")
+                output = f"{name}:1-1: duplicate of original.go:1-1\noriginal.go:1-1: duplicate of {name}:1-1\n"
+                self.assertEqual(runner.parse_findings(output, self.repo), {(name, 1), ("original.go", 1)})
+
     def test_malformed_truncated_and_unsupported_records_fail(self):
         valid = self.pair()
         cases = [

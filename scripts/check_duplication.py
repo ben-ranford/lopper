@@ -169,7 +169,7 @@ def parse_findings(output, repo):
         raise AnalysisError("Truncated detector output (missing final newline)")
     sources, destinations, duplicated = set(), set(), set()
     line_counts = {}
-    for record in output.splitlines():
+    for record in output.split("\n")[:-1]:
         records = record.split(": duplicate of ")
         if len(records) != 2:
             raise AnalysisError(f"Malformed detector record: {record!r}")
