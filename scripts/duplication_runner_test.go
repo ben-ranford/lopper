@@ -203,16 +203,23 @@ func TestDuplicationGateUsesBaseOwnedWorkflow(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/duplication-verify.yml", &workflow)
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
-	assertWorkflowStepOrder(t, verify, "Publish pending duplication check", "Checkout protected base", "Setup Go", "Run protected duplication gate", "Complete duplication check")
-	checkout := workflowStepByName(t, workflow.Jobs, "verify", "Checkout protected base")
-	if checkout.With["ref"] != "${{ github.event.pull_request.base.sha }}" || checkout.With["persist-credentials"] != "false" {
-		t.Fatal("protected gate must check out only the immutable base without credentials")
+	assertWorkflowStepOrder(t, verify, "Publish pending duplication check", "Fetch protected base", "Setup Go", "Run protected duplication gate", "Complete duplication check")
+	fetch := workflowStepByName(t, workflow.Jobs, "verify", "Fetch protected base")
+	if fetch.Uses != "" || fetch.Env["GH_TOKEN"] != "${{ github.token }}" {
+		t.Fatal("protected base must be fetched without a checkout action and with a step-scoped token")
 	}
+	assertWorkflowStepRunContainsAll(t, fetch, "ephemeral protected-base fetch", []string{
+		`git -c core.hooksPath=/dev/null init`, `DUPLICATION_EVENT_BASE`,
+		`http.extraheader=AUTHORIZATION: basic`, `unset authorization GH_TOKEN`,
+	})
 	content, err := os.ReadFile(repoPath(t, ".github/workflows/duplication-verify.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := string(content)
+	if strings.Contains(source, "actions/checkout") {
+		t.Fatal("privileged duplication workflow must not use actions/checkout")
+	}
 	for _, required := range []string{"  pull_request_target:", "name: 'duplication-verify'", "head_sha: context.payload.pull_request.head.sha", "cache: false"} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("missing trusted enforcement contract %q", required)

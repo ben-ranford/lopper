@@ -31,12 +31,21 @@ jobs:
             });
             core.setOutput('check-id', String(check.id));
 
-      - name: Checkout protected base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch protected base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DUPLICATION_EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${DUPLICATION_EVENT_BASE:?immutable PR base is required}"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          git -c core.hooksPath=/dev/null init --quiet "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          authorization="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -C "$GITHUB_WORKSPACE" -c core.hooksPath=/dev/null \
+            -c "http.extraheader=AUTHORIZATION: basic $authorization" \
+            fetch --no-tags --depth=1 origin "$base"
+          unset authorization GH_TOKEN
+          git -C "$GITHUB_WORKSPACE" -c core.hooksPath=/dev/null checkout --detach FETCH_HEAD
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
