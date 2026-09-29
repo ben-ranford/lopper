@@ -69,3 +69,51 @@ func TestAssertedStatsReceivers(t *testing.T) {
 		})
 	}
 }
+
+func TestStructFieldStatsReceivers(t *testing.T) {
+	for _, tc := range []struct {
+		declaration, parameter, receiver string
+		want                             bool
+	}{
+		{"type Holder struct { stats s.DependencyStats }", "h Holder", "h.stats", true},
+		{"type Holder struct { stats *s.DependencyStats }", "h *Holder", "h.stats", true},
+		{"type Stats = s.DependencyStats; type Holder struct { stats Stats }", "h Holder", "h.stats", true},
+		{"type Holder struct { stats s.DependencyStats }; type Outer struct { inner Holder }", "h Outer", "h.inner.stats", true},
+		{"type Holder struct { stats s.DependencyStats }", "h []Holder", "h[0].stats", true},
+		{"type Holder struct { stats s.DependencyStats }; type Outer struct { Holder }", "h Outer", "h.stats", true},
+		{"", "h struct { stats s.DependencyStats }", "h.stats", true},
+		{"", "h s.UnknownHolder", "h.stats", false},
+		{"type Holder struct { stats OtherStats }", "h Holder", "h.stats", false},
+		{"type Stats s.DependencyStats; type Holder struct { stats Stats }", "h Holder", "h.stats", false},
+		{"type Holder struct { stats s.DependencyStats }", "h func() Holder", "h().stats", false},
+	} {
+		t.Run(tc.parameter+tc.receiver+tc.declaration, func(t *testing.T) {
+			source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
+			source = strings.ReplaceAll(source, "measured.", tc.receiver+".")
+			source += "\n" + tc.declaration
+			findings, err := Analyze("fixture.go", []byte(source))
+			if err != nil || (len(findings) == 1 && !findings[0].Advisory) != tc.want || (!tc.want && len(findings) != 0) {
+				t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStructFieldStatsAlias(t *testing.T) {
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "h struct { stats s.DependencyStats }", 1)
+	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "measured := h.stats; _ = s.BuildDependencyReportFromStats", 1)
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != 1 || findings[0].Advisory {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+func TestDifferentStructFieldStatsReceiversRemainAdvisory(t *testing.T) {
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "h struct { first, second s.DependencyStats }", 1)
+	source = strings.ReplaceAll(source, "measured.", "h.first.")
+	source = strings.Replace(source, "h.first.UsedCount", "h.second.UsedCount", 1)
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || len(findings) != 1 || !findings[0].Advisory {
+		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}

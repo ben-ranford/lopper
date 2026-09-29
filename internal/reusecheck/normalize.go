@@ -226,6 +226,8 @@ func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations 
 				return collectionIndirection(resolved, operations)
 			}
 			expression = resolved
+		case *ast.SelectorExpr:
+			return collectionIndirection(declaredSelectorType(item, info), operations)
 		case *ast.SliceExpr:
 			operations = append(operations, collectionSlice)
 			expression = item.X

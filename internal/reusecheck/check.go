@@ -383,6 +383,10 @@ func stableStatsReceiver(expression ast.Expr, info *types.Info) string {
 		if object := info.ObjectOf(value); object != nil {
 			return fmt.Sprintf("%p", object)
 		}
+	case *ast.SelectorExpr:
+		if operand := stableStatsReceiver(value.X, info); operand != "" {
+			return operand + "." + value.Sel.Name
+		}
 	case *ast.BasicLit:
 		return value.Kind.String() + ":" + value.Value
 	case *ast.StarExpr:
