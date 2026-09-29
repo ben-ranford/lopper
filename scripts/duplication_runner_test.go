@@ -210,8 +210,12 @@ func TestDuplicationGateUsesBaseOwnedWorkflow(t *testing.T) {
 	}
 	assertWorkflowStepRunContainsAll(t, fetch, "ephemeral protected-base fetch", []string{
 		`git -c core.hooksPath=/dev/null init`, `DUPLICATION_EVENT_BASE`,
-		`http.extraheader=AUTHORIZATION: basic`, `unset authorization GH_TOKEN`,
+		`http.extraheader=AUTHORIZATION: basic`, `fetch --no-tags origin "$base"`,
+		`unset authorization GH_TOKEN`,
 	})
+	if strings.Contains(fetch.Run, "--depth") {
+		t.Fatal("protected base history must be complete so stale PRs can resolve merge-base")
+	}
 	content, err := os.ReadFile(repoPath(t, ".github/workflows/duplication-verify.yml"))
 	if err != nil {
 		t.Fatal(err)

@@ -43,7 +43,7 @@ jobs:
           authorization="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
           git -C "$GITHUB_WORKSPACE" -c core.hooksPath=/dev/null \
             -c "http.extraheader=AUTHORIZATION: basic $authorization" \
-            fetch --no-tags --depth=1 origin "$base"
+            fetch --no-tags origin "$base"
           unset authorization GH_TOKEN
           git -C "$GITHUB_WORKSPACE" -c core.hooksPath=/dev/null checkout --detach FETCH_HEAD
 
