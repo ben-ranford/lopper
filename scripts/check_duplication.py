@@ -65,7 +65,7 @@ def comparison_base(repo, requested, environment):
         ) from error
     if not re.fullmatch(r"[0-9a-f]{40,64}", merge_base):
         raise AnalysisError("Git returned an invalid merge base")
-    return base, merge_base
+    return base, commit, merge_base
 
 
 def supported_path(raw, repo):
@@ -224,11 +224,11 @@ def scan(repo, go_command, version, threshold, *, records=None):
         return parse_findings(result.stdout, repo, records=records)
 
 
-def occurrence_gate(repo, merge_base, args):
+def occurrence_gate(repo, merge_base, policy_base, args):
     if "LOPPER_DUPLICATION_REVISION" not in os.environ:
-        return occurrence_gate_checkout(repo, merge_base, args)
+        return occurrence_gate_checkout(repo, merge_base, policy_base, args)
     with policy.isolated_checkout(repo, os.environ["LOPPER_DUPLICATION_REVISION"]) as checkout:
-        result = occurrence_gate_checkout(checkout, merge_base, args)
+        result = occurrence_gate_checkout(checkout, merge_base, policy_base, args)
         for value, label in ((args.report, "Report"), (args.propose_baseline, "Baseline proposal")):
             if value:
                 source = repository_path(checkout, value, label)
@@ -237,9 +237,9 @@ def occurrence_gate(repo, merge_base, args):
         return result
 
 
-def occurrence_gate_checkout(repo, merge_base, args):
+def occurrence_gate_checkout(repo, merge_base, policy_base, args):
     if args.baseline is not None:
-        validate_occurrence_settings(repo, merge_base, args)
+        validate_occurrence_settings(repo, policy_base, args)
     # CI captures this before tooling installation can prepend untrusted wrappers.
     go = os.environ.get("LOPPER_DUPLICATION_GO", args.go)
     if "LOPPER_DUPLICATION_GO" in os.environ and not Path(go).is_absolute():
@@ -260,9 +260,9 @@ def occurrence_gate_checkout(repo, merge_base, args):
         raise AnalysisError("Baseline policy file must not be a symlink")
     proposed = json.loads(baseline_file.read_text())
     # The protected target, never the contributor's new policy, grants exceptions.
-    target_entry = checked(["git", "ls-tree", "-z", merge_base, "--", baseline_path], repo).stdout
+    target_entry = checked(["git", "ls-tree", "-z", policy_base, "--", baseline_path], repo).stdout
     if target_entry:
-        approved = json.loads(checked(["git", "show", f"{merge_base}:{baseline_path}"], repo).stdout)
+        approved = json.loads(checked(["git", "show", f"{policy_base}:{baseline_path}"], repo).stdout)
         policy.validate_reduction(approved, proposed)
     else:
         policy.validate_initial_baseline(pairs, proposed)
@@ -284,12 +284,12 @@ def protected_make_variable(repo, reference, name):
     return values[0]
 
 
-def validate_occurrence_settings(repo, merge_base, args):
+def validate_occurrence_settings(repo, target_commit, args):
     if args.baseline != CANONICAL_BASELINE:
         raise AnalysisError(f"Occurrence enforcement must use the protected baseline path {CANONICAL_BASELINE!r}")
-    protected_go = protected_make_variable(repo, merge_base, "GO")
-    protected_version = protected_make_variable(repo, merge_base, "DUPL_VERSION")
-    protected_threshold = protected_make_variable(repo, merge_base, "DUPLICATION_TOKEN_THRESHOLD")
+    protected_go = protected_make_variable(repo, target_commit, "GO")
+    protected_version = protected_make_variable(repo, target_commit, "DUPL_VERSION")
+    protected_threshold = protected_make_variable(repo, target_commit, "DUPLICATION_TOKEN_THRESHOLD")
     try:
         protected_threshold = int(protected_threshold)
     except ValueError as error:
@@ -333,9 +333,9 @@ def main(argv=None):
         if args.threshold < 1 or not math.isfinite(args.max) or not 0 <= args.max <= 100:
             raise AnalysisError("Threshold must be positive and maximum percentage must be finite within 0..100")
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
-        base, merge_base = comparison_base(repo, args.base, os.environ)
+        base, policy_base, merge_base = comparison_base(repo, args.base, os.environ)
         if args.baseline is not None or args.propose_baseline:
-            return occurrence_gate(repo, merge_base, args)
+            return occurrence_gate(repo, merge_base, policy_base, args)
         added = added_lines(repo, merge_base)
         if not added:
             print(f"New-code duplication: no changed Go lines (base: {base}, merge base: {merge_base}); detector not required")

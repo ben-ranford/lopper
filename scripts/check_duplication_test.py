@@ -54,9 +54,10 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.write("second.go", "package fixture\nvar Second = 2\n")
         self.commit()
         with mock.patch.dict(os.environ, self.environment, clear=True):
-            base, merge_base = runner.comparison_base(self.repo, "target", {})
+            base, policy_base, merge_base = runner.comparison_base(self.repo, "target", {})
             changed = runner.added_lines(self.repo, merge_base)
         self.assertEqual(base, "target")
+        self.assertEqual(policy_base, self.base)
         self.assertEqual(merge_base, self.base)
         self.assertEqual(changed, {(name, line) for name in ("first change.go", "second.go") for line in (1, 2)})
 
@@ -289,7 +290,7 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.git("branch", "release/v1.8.9-fix_1")
         for base in ("HEAD", self.base, "release/v1.8.9-fix_1", "refs/heads/release/v1.8.9-fix_1"):
             with self.subTest(base=base), mock.patch.dict(os.environ, self.environment, clear=True):
-                self.assertEqual(runner.comparison_base(self.repo, base, {}), (base, self.base))
+                self.assertEqual(runner.comparison_base(self.repo, base, {}), (base, self.base, self.base))
 
     def test_no_changes_are_distinct_from_no_matches(self):
         with mock.patch.dict(os.environ, self.environment, clear=True):
@@ -389,6 +390,42 @@ class DuplicationRunnerTest(unittest.TestCase):
             proposal = runner.policy.propose_baseline(runner.policy.clone_pairs([(("original.go", 1, 2), ("added.go", 1, 2))], [fn, other]))
             self.write(baseline_path, json.dumps(proposal))
             self.assertEqual(runner.main(command), 2)
+
+    def test_stale_branch_cannot_bootstrap_baseline_after_target_approval(self):
+        baseline_path = runner.CANONICAL_BASELINE
+        self.write(baseline_path, json.dumps({"version": 1, "families": [], "exceptions": []}))
+        self.write("Makefile", "GO ?= go\nDUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 56\n")
+        self.commit()
+        target_commit = self.git("rev-parse", "HEAD").strip()
+
+        # Simulate a PR that forked before the target branch gained its policy.
+        self.git("checkout", "-qb", "feature", self.base)
+        self.write("added.go", "package fixture\n")
+        self.commit()
+        fn = {"path": "original.go", "name": "Original", "shape": "a", "start": 1, "end": 2}
+        other = dict(fn, name="Copy", path="added.go")
+        pair_records = [(('original.go', 1, 2), ('added.go', 1, 2))]
+        proposal = runner.policy.propose_baseline(runner.policy.clone_pairs(pair_records, [fn, other]))
+        self.write(baseline_path, json.dumps(proposal))
+        self.commit()
+
+        def detector(*args, records=None):
+            records.extend(pair_records)
+            return set()
+
+        command = ["--version", "pinned", "--threshold", "56", "--base", "target", "--baseline", baseline_path]
+        stderr = io.StringIO()
+        patches = (
+            mock.patch.object(runner.Path, "cwd", return_value=self.repo),
+            mock.patch.object(runner, "scan", side_effect=detector),
+            mock.patch.object(runner.policy, "function_index", return_value=[fn, other]),
+            mock.patch.dict(os.environ, self.environment, clear=True),
+            contextlib.redirect_stderr(stderr),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            self.assertEqual(runner.main(command), 2)
+        self.assertIn("Baseline expansion", stderr.getvalue())
+        self.assertNotEqual(target_commit, self.base)
 
     def test_initial_baseline_must_match_full_scan_when_target_lacks_policy(self):
         self.git("checkout", "-qb", "feature")
@@ -753,7 +790,7 @@ for line in sys.stdin:
         self.assertEqual(self.git("merge-base", self.base, head).strip(), head)
         environment = dict(self.environment, LOPPER_DUPLICATION_REVISION=head)
         with mock.patch.dict(os.environ, environment, clear=True):
-            _, merge_base = runner.comparison_base(self.repo, "target", environment)
+            _, _, merge_base = runner.comparison_base(self.repo, "target", environment)
         self.assertEqual(merge_base, common_base)
 
     def test_isolated_checkout_preserves_detached_synthetic_merge_from_linked_worktree(self):
@@ -775,6 +812,22 @@ for line in sys.stdin:
                     self.assertEqual(actual, revision)
                     self.assertEqual((checkout / "branch.go").read_text(), "package fixture\nfunc Branch() {}\n")
                     self.assertTrue((checkout / ".git").is_dir())
+
+    def test_isolated_checkout_fetches_head_only_referenced_by_remote_tracking_ref(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("branch.go", "package fixture\nfunc Branch() {}\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD").strip()
+        self.git("update-ref", "refs/remotes/origin/duplication-head", revision)
+        self.git("checkout", "--detach", self.base)
+        self.git("branch", "-D", "feature")
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)", "refs/heads/feature"), "")
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/duplication-head").strip(), revision)
+
+        with mock.patch.dict(os.environ, self.environment, clear=True), runner.policy.isolated_checkout(self.repo, revision) as checkout:
+            actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, env=self.environment, text=True).strip()
+            self.assertEqual(actual, revision)
+            self.assertEqual((checkout / "branch.go").read_text(), "package fixture\nfunc Branch() {}\n")
 
     def test_empty_real_index_cannot_hide_committed_functions(self):
         source = Path(runner.__file__).resolve().parent
@@ -903,14 +956,14 @@ for line in sys.stdin:
 
         trusted = str(self.repo / "trusted/go")
         with mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=trusted), mock.patch.object(runner, "scan") as scan, mock.patch.object(runner.policy, "function_index", return_value=[]) as index:
-            self.assertEqual(runner.occurrence_gate(self.repo, self.base, Settings()), 0)
+            self.assertEqual(runner.occurrence_gate(self.repo, self.base, self.base, Settings()), 0)
             self.assertEqual(scan.call_args.args[1], trusted)
             index.assert_called_once_with(self.repo, trusted, [])
         for invalid in ("", "go", "./go"):
             settings = Settings()
             with self.subTest(invalid=invalid), mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=invalid), mock.patch.object(runner, "scan") as scan:
                 with self.assertRaisesRegex(runner.AnalysisError, "absolute path"):
-                    runner.occurrence_gate(self.repo, self.base, settings)
+                    runner.occurrence_gate(self.repo, self.base, self.base, settings)
                 scan.assert_not_called()
 
     def test_cli_rejects_pr_selected_baseline_and_weaker_detector(self):

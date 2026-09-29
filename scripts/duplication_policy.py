@@ -52,6 +52,11 @@ def isolated_checkout(repo, revision):
         checkout = Path(directory) / "source"
         subprocess.run([git_executable(), "clone", "--no-local", "--no-checkout", "--", str(repo), str(checkout)],
                        env=environment, capture_output=True, check=True)
+        # A protected caller may have fetched the immutable PR head only into a
+        # remote-tracking ref. Local clone copies branch refs, not that ref, so
+        # explicitly fetch the already-validated commit into the isolated repo.
+        subprocess.run([git_executable(), "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", "origin", revision],
+                       cwd=checkout, env=environment, capture_output=True, check=True)
         subprocess.run([git_executable(), "-c", "core.hooksPath=/dev/null", "checkout", "--detach", revision],
                        cwd=checkout, env=environment, capture_output=True, check=True)
         yield checkout
