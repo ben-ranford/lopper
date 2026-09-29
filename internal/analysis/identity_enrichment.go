@@ -122,7 +122,17 @@ func annotateDependencyIdentities(repoPath string, reportData *report.Report) {
 	annotateDependencyIdentitiesWithContext(context.Background(), repoPath, reportData)
 }
 func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath string, reportData *report.Report) {
-	if reportData == nil || len(reportData.Dependencies) == 0 {
+	if reportData == nil {
+		return
+	}
+	defer func() {
+		// Python manifest documents are adapter/cache artifacts. Once identity
+		// enrichment has consumed them, don't retain their decoded contents in
+		// the report returned to callers.
+		reportData.PythonManifests = nil
+		reportData.PythonManifestCatalog = false
+	}()
+	if len(reportData.Dependencies) == 0 {
 		return
 	}
 	languages := identityEvidenceLanguages{

@@ -185,7 +185,7 @@ func TestIdentityEvidenceRequestCancellationStopsDiscovery(t *testing.T) {
 	}
 }
 
-func TestPythonCatalogScopedCacheHitKeepsIdentitySource(t *testing.T) {
+func TestPythonCatalogScopedCacheHitKeepsIdentitySourceAndReleasesCatalog(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "pkg", "pyproject.toml"), "[project]\ndependencies=['requests==2.32.3']\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "pkg", "main.py"), "import requests\nrequests.get('https://example.test')\n")
@@ -201,6 +201,11 @@ func TestPythonCatalogScopedCacheHitKeepsIdentitySource(t *testing.T) {
 	}
 	if second.Cache == nil || second.Cache.Hits != 1 {
 		t.Fatalf("expected cache hit: %+v", second.Cache)
+	}
+	for name, result := range map[string]report.Report{"cache miss": first, "cache hit": second} {
+		if result.PythonManifestCatalog || len(result.PythonManifests) != 0 || cap(result.PythonManifests) != 0 {
+			t.Errorf("%s retained Python catalog after service analysis: catalog=%v manifests=%#v", name, result.PythonManifestCatalog, result.PythonManifests)
+		}
 	}
 	before := findIdentityDependency(t, first, "python", "requests").Identity
 	after := findIdentityDependency(t, second, "python", "requests").Identity
