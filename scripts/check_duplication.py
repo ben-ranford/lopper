@@ -224,11 +224,11 @@ def scan(repo, go_command, version, threshold, *, records=None):
         return parse_findings(result.stdout, repo, records=records)
 
 
-def occurrence_gate(repo, merge_base, policy_base, args):
+def occurrence_gate(repo, policy_base, args):
     if "LOPPER_DUPLICATION_REVISION" not in os.environ:
-        return occurrence_gate_checkout(repo, merge_base, policy_base, args)
+        return occurrence_gate_checkout(repo, policy_base, args)
     with policy.isolated_checkout(repo, os.environ["LOPPER_DUPLICATION_REVISION"]) as checkout:
-        result = occurrence_gate_checkout(checkout, merge_base, policy_base, args)
+        result = occurrence_gate_checkout(checkout, policy_base, args)
         for value, label in ((args.report, "Report"), (args.propose_baseline, "Baseline proposal")):
             if value:
                 source = repository_path(checkout, value, label)
@@ -237,7 +237,7 @@ def occurrence_gate(repo, merge_base, policy_base, args):
         return result
 
 
-def occurrence_gate_checkout(repo, merge_base, policy_base, args):
+def occurrence_gate_checkout(repo, policy_base, args):
     if args.baseline is not None:
         validate_occurrence_settings(repo, policy_base, args)
     # CI captures this before tooling installation can prepend untrusted wrappers.
@@ -335,7 +335,7 @@ def main(argv=None):
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
         base, policy_base, merge_base = comparison_base(repo, args.base, os.environ)
         if args.baseline is not None or args.propose_baseline:
-            return occurrence_gate(repo, merge_base, policy_base, args)
+            return occurrence_gate(repo, policy_base, args)
         added = added_lines(repo, merge_base)
         if not added:
             print(f"New-code duplication: no changed Go lines (base: {base}, merge base: {merge_base}); detector not required")

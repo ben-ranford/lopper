@@ -956,14 +956,14 @@ for line in sys.stdin:
 
         trusted = str(self.repo / "trusted/go")
         with mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=trusted), mock.patch.object(runner, "scan") as scan, mock.patch.object(runner.policy, "function_index", return_value=[]) as index:
-            self.assertEqual(runner.occurrence_gate(self.repo, self.base, self.base, Settings()), 0)
+            self.assertEqual(runner.occurrence_gate(self.repo, self.base, Settings()), 0)
             self.assertEqual(scan.call_args.args[1], trusted)
             index.assert_called_once_with(self.repo, trusted, [])
         for invalid in ("", "go", "./go"):
             settings = Settings()
             with self.subTest(invalid=invalid), mock.patch.dict(os.environ, LOPPER_DUPLICATION_GO=invalid), mock.patch.object(runner, "scan") as scan:
                 with self.assertRaisesRegex(runner.AnalysisError, "absolute path"):
-                    runner.occurrence_gate(self.repo, self.base, self.base, settings)
+                    runner.occurrence_gate(self.repo, self.base, settings)
                 scan.assert_not_called()
 
     def test_cli_rejects_pr_selected_baseline_and_weaker_detector(self):
