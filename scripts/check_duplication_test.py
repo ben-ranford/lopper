@@ -693,7 +693,8 @@ for line in sys.stdin:
         real_run = subprocess.run
         def install_with_local_build(command, **kwargs):
             if command[1:2] == ["install"]:
-                result = real_run([go, "run", "./scripts/duplication_index.go"], input="[]", **kwargs)
+                kwargs["input"] = b"[]"
+                result = real_run([go, "run", "./scripts/duplication_index.go"], **kwargs)
                 detector = Path(kwargs["env"]["GOBIN"]) / "dupl"
                 detector.write_text("#!/bin/sh\nexit 0\n")
                 detector.chmod(0o755)
@@ -856,7 +857,7 @@ for line in sys.stdin:
             if len(command) > 1 and command[1] == "install" and settings.get("GOPROXY") == "https://proxy.golang.org":
                 # The fixture never contacts the network. Authenticated downloads
                 # are deliberately blocked; counterfeit local installs run normally.
-                return subprocess.CompletedProcess(command, 1, "", "trusted download blocked by fixture")
+                return subprocess.CompletedProcess(command, 1, b"", b"trusted download blocked by fixture")
             return real_run(command, **kwargs)
 
         for source_kind in ("proxy", "cache"):
@@ -872,7 +873,7 @@ for line in sys.stdin:
     def test_detector_install_rejects_inherited_module_trust(self):
         overrides = dict(GOPROXY="file:///attacker/proxy", GOSUMDB="off", GONOSUMDB="*",
                          GONOPROXY="*", GOPRIVATE="*", GOINSECURE="*", GOMODCACHE="/attacker/cache")
-        results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "", "")]
+        results = [subprocess.CompletedProcess([], 0, b"", b""), subprocess.CompletedProcess([], 0, b"", b"")]
         with mock.patch.dict(os.environ, overrides), mock.patch.object(runner.subprocess, "run", side_effect=results) as run:
             runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
         environment = run.call_args_list[0].kwargs["env"]
@@ -884,7 +885,7 @@ for line in sys.stdin:
         self.assertFalse(Path(environment["GOMODCACHE"]).exists(), "temporary download cache was retained")
 
     def test_detector_install_ignores_go_environment_overrides(self):
-        results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "", "")]
+        results = [subprocess.CompletedProcess([], 0, b"", b""), subprocess.CompletedProcess([], 0, b"", b"")]
         with mock.patch.dict(os.environ, GOFLAGS="-overlay=attacker.json", GOENV="attacker-env", GOROOT="attacker-root"), mock.patch.object(runner.subprocess, "run", side_effect=results) as run:
             runner.scan(self.repo, "go", "f008fcf5e62793d38bda510ee37aab8b0c68e76c", 55)
         environment = run.call_args_list[0].kwargs["env"]
