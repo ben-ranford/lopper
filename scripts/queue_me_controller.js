@@ -769,7 +769,8 @@ async function runController({
   const labeled = pulls.filter((pull) => hasLabel(pull, queueLabel));
   // Revoke every retained request before any expensive audit, including
   // followers and retargeted PRs that no longer belong in this queue.
-  for (const pull of labeled) await disableAutoMerge(github, owner, repo, pull.number);
+  await labeled.reduce((previous, pull) => previous.then(() =>
+    disableAutoMerge(github, owner, repo, pull.number)), Promise.resolve());
   const queued = sortQueuedPulls(labeled.filter((pull) => pull.base?.ref === defaultBranch));
   if (queued.length === 0) {
     core.notice(`No open ${defaultBranch} pull requests carry the ${queueLabel} label.`);
@@ -784,10 +785,9 @@ async function runController({
   });
 
   if (!trustedPolicySHA || trustedPolicySHA !== branch.commit.sha) {
-    for (const candidate of queued) {
-      await syncStatusComment(github, owner, repo, candidate.number,
-        '## Queue status\n\nQueue paused: trusted policy is not from the current default-branch revision. Auto-merge is disabled; retry from current main.');
-    }
+    await queued.reduce((previous, candidate) => previous.then(() =>
+      syncStatusComment(github, owner, repo, candidate.number,
+        '## Queue status\n\nQueue paused: trusted policy is not from the current default-branch revision. Auto-merge is disabled; retry from current main.')), Promise.resolve());
     return;
   }
 

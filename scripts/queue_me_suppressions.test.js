@@ -1,8 +1,6 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
-const { gzipSync } = require('node:zlib');
 const test = require('node:test');
 const { verifySuppressions, testables } = require('./queue_me_suppressions.js');
 
@@ -10,40 +8,10 @@ const HEAD = 'a'.repeat(40);
 const POLICY = 'b'.repeat(40);
 const TREE = 'c'.repeat(40);
 
-function blobSHA(body) {
-  return crypto.createHash('sha1').update(`blob ${body.length}\0`).update(body).digest('hex');
-}
-
-function tarEntry(path, content = '', type = '0', overrides = {}) {
-  const body = Buffer.from(content);
-  const header = Buffer.alloc(512);
-  header.write(path, 0, 100);
-  header.write('0000644\0', 100);
-  header.write('0000000\0', 108);
-  header.write('0000000\0', 116);
-  header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
-  header.write('00000000000\0', 136);
-  header.fill(32, 148, 156);
-  header.write(type, 156);
-  if (overrides.link) header.write(overrides.link, 157, 100);
-  header.write('ustar\0', 257);
-  header.write('00', 263);
-  const checksum = header.reduce((sum, byte) => sum + byte, 0);
-  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148);
-  return Buffer.concat([header, body, Buffer.alloc((512 - body.length % 512) % 512)]);
-}
-
-function paxRecord(key, value) {
-  const record = ` ${key}=${value}\n`;
-  let length = Buffer.byteLength(record) + 1;
-  while (String(length).length + Buffer.byteLength(record) !== length) {
-    length = String(length).length + Buffer.byteLength(record);
-  }
-  return `${length}${record}`;
-}
-
 function fixture(contents, options = {}) {
-  const files = Object.entries(contents).map(([path, content]) => ({ path, body: Buffer.from(content) }));
+  const files = Object.entries(contents).map(([path, content], index) => ({
+    path, body: Buffer.from(content), sha: (index + 1).toString(16).padStart(40, '0'),
+  }));
   const directories = new Set();
   for (const file of files) {
     const parts = file.path.split('/');
@@ -54,35 +22,41 @@ function fixture(contents, options = {}) {
   }
   const entries = [
     ...[...directories].map((path) => ({ path, mode: '040000', type: 'tree', sha: TREE })),
-    ...files.map(({ path, body }) => ({ path, mode: '100644', type: 'blob', sha: blobSHA(body), size: body.length })),
+    ...files.map(({ path, body, sha }) => ({ path, mode: '100644', type: 'blob', sha, size: body.length })),
   ];
-  const archive = gzipSync(Buffer.concat([
-    tarEntry('pax_global_header', paxRecord('comment', HEAD), 'g'),
-    tarEntry('repo-head/', '', '5'),
-    ...[...directories].map((path) => tarEntry(`repo-head/${path}/`, '', '5')),
-    ...files.map(({ path, body }) => tarEntry(`repo-head/${path}`, body)),
-    Buffer.alloc(1024),
-  ]));
   const calls = [];
-  const github = { rest: {
-    git: {
+  const github = {
+    graphql: async (query, args) => {
+      calls.push(['graphql', { query, ...args }]);
+      if (options.graphqlError) throw options.graphqlError;
+      const repository = { nameWithOwner: 'octo/lopper' };
+      for (const match of query.matchAll(/(b\d+): object\(oid: "([a-f\d]{40})"\)/g)) {
+        const file = files.find((item) => item.sha === match[2]);
+        const binary = file.body.includes(0);
+        const blob = { __typename: 'Blob', oid: file.sha, byteSize: file.body.length, isTruncated: false, isBinary: binary, text: binary ? null : file.body.toString('utf8') };
+        repository[match[1]] = options.blob ? options.blob(blob, file) : blob;
+      }
+      return options.response ? options.response(repository) : { repository };
+    },
+    rest: { git: {
       getCommit: async (args) => { calls.push(['commit', args]); return { data: options.commit ?? { sha: HEAD, tree: { sha: TREE } } }; },
       getTree: async (args) => { calls.push(['tree', args]); return { data: options.tree ?? { sha: TREE, truncated: false, tree: entries } }; },
-    },
-    repos: { downloadTarballArchive: async (args) => {
-      calls.push(['archive', args]);
-      if (options.downloadError) throw options.downloadError;
-      return { data: options.archive ?? archive };
+      getBlob: async (args) => {
+        calls.push(['binary', args]);
+        const file = files.find((item) => item.sha === args.file_sha);
+        const data = { sha: file.sha, size: file.body.length, encoding: 'base64', content: file.body.toString('base64') };
+        return { data: options.binary ? options.binary(data) : data };
+      },
     } },
-  } };
-  return { args: { github, owner: 'octo', repo: 'lopper', headSHA: HEAD, trustedPolicySHA: POLICY }, entries, archive, calls };
+  };
+  return { args: { github, owner: 'octo', repo: 'lopper', headSHA: HEAD, trustedPolicySHA: POLICY }, entries, files, calls };
 }
 
 function scan(path, content) {
   return testables.scanFile({ path, body: Buffer.from(content), mode: '100644' });
 }
 
-test('audits every immutable blob using only three API calls', async () => {
+test('audits every immutable blob using one bounded batch and two tree API calls', async () => {
   const harness = fixture({ 'main.go': 'package main\n', 'renamed/unchanged.go': 'package lib\n' });
   const evidence = await verifySuppressions(harness.args);
   assert.deepEqual(evidence, { headSHA: HEAD, trustedPolicySHA: POLICY, treeSHA: TREE, count: 0, filesScanned: 2, findings: [], apiRequests: 3 });
@@ -90,7 +64,9 @@ test('audits every immutable blob using only three API calls', async () => {
   assert.equal(harness.calls[0][1].commit_sha, HEAD);
   assert.equal(harness.calls[1][1].tree_sha, TREE);
   assert.equal(harness.calls[1][1].recursive, '1');
-  assert.equal(harness.calls[2][1].ref, HEAD);
+  assert.match(harness.calls[2][1].query, /object\(oid: "[a-f\d]{40}"\)/);
+  assert.equal(harness.calls[2][1].owner, 'octo');
+  assert.equal(harness.calls[2][1].repo, 'lopper');
 });
 
 test('unchanged/renamed sources and active executable test fixtures are audited', async () => {
@@ -100,7 +76,7 @@ test('unchanged/renamed sources and active executable test fixtures are audited'
   }
 });
 
-test('last blob is scanned even after many clean files', async () => {
+test('last immutable blob is scanned even after many complete batches', async () => {
   const contents = Object.fromEntries(Array.from({ length: 350 }, (_, index) => [`file${index}.go`, 'package main\n']));
   contents['last.go'] = 'package main\n//nolint:all\n';
   await assert.rejects(verifySuppressions(fixture(contents).args), /last.go:2/);
@@ -157,6 +133,16 @@ test('comment apostrophes and JavaScript regex quotes cannot hide later directiv
   ]) assert.ok(scan('script.js', content).length, content);
 });
 
+test('multiline block directives do not require a decorative star', () => {
+  for (const comment of [
+    '/*\neslint-disable no-undef\n*/',
+    '/*\n eslint-disable no-undef\n*/',
+    '/*\n istanbul ignore next\n*/',
+    '/*\r\n\t c8 ignore next\r\n*/',
+  ]) assert.ok(scan('script.js', `${comment}\nmissing();`).length, comment);
+  assert.equal(scan('fixture.js', 'const fixture = `/*\neslint-disable no-undef\n*/`;').length, 0);
+});
+
 test('marker-bearing executable interpolation is an ambiguity hold', () => {
   assert.throws(() => scan('script.js', 'const value = `${(() => {\n// eslint-disable-next-line no-undef\nreturn missing();\n})()}`;'), /interpolation/);
   assert.equal(scan('fixture.js', 'const value = `${trackedLine("nolint:all")}`;').length, 0);
@@ -176,7 +162,12 @@ test('configuration exclusions and unsupported marker syntax remain actionable h
     ['sonar-project.properties', 'sonar.issue.ignore.multicriteria=e1'],
     ['eslint.config.js', 'module.exports = { ignores: ["src/**"] };'],
     ['.eslintrc.json', '{"rules": {"no-eval": "off"}}'],
+    ['.eslintrc.yml', 'rules:\n  no-eval: off\n'],
+    ['eslint.config.js', 'export default [{ rules: { "no-eval": ["off"] } }];'],
+    ['.eslintrc.json', '{"rules": {"no-eval": [0]}}'],
     ['.golangci.yml', 'linters:\n  exclusions:\n    paths: [src]'],
+    ['.golangci.yml', 'linters:\n  disable:\n    - gosec\n'],
+    ['pyproject.toml', '[tool.ruff.lint]\nignore = ["E501"]\n'],
     ['.shellcheckrc', 'disable=SC2016'],
     ['Makefile', 'GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/main\\.go:G204'],
     ['code.unknown', '# nolint:all'],
@@ -193,7 +184,7 @@ test('candidate policy files are passive data and cannot bless their own scan', 
   await assert.rejects(verifySuppressions(harness.args), /unchanged.go:1/);
 });
 
-test('missing, truncated, malformed, oversized and unsupported trees fail closed before download', async () => {
+test('missing, truncated, malformed, oversized and unsupported trees fail closed before blobs', async () => {
   const invalid = [
     undefined,
     { sha: TREE, truncated: true, tree: [] },
@@ -216,56 +207,64 @@ test('missing parents and duplicate tree paths hold', () => {
   assert.throws(() => testables.validateTree({ sha: TREE, truncated: false, tree: [blob, blob] }, TREE), /duplicate/);
 });
 
-test('wrong commit, missing immutable evidence and archive download errors cannot pass', async () => {
+test('wrong commit, missing immutable evidence and GraphQL errors cannot pass', async () => {
   await assert.rejects(verifySuppressions(fixture({}, { commit: { sha: POLICY, tree: { sha: TREE } } }).args), /exact candidate head/);
   await assert.rejects(verifySuppressions({ ...fixture({}).args, trustedPolicySHA: 'main' }), /trusted policy/);
-  await assert.rejects(verifySuppressions(fixture({}, { downloadError: new Error('download unavailable') }).args), /download unavailable/);
-  await assert.rejects(verifySuppressions(fixture({}, { archive: 'not binary' }).args), /binary data/);
-});
-
-test('missing, tampered and extra archive files cannot pass', async () => {
-  const harness = fixture({ 'a.go': 'package main\n' });
-  for (const entries of [[], [tarEntry('repo/a.go', 'tampered')], [tarEntry('repo/unexpected.go', 'extra')]]) {
-    const archive = gzipSync(Buffer.concat([tarEntry('repo/', '', '5'), ...entries, Buffer.alloc(1024)]));
-    await assert.rejects(verifySuppressions({ ...harness.args, github: fixture({}, { tree: { sha: TREE, truncated: false, tree: harness.entries }, archive }).args.github }), /omits|mismatched|unexpected/);
+  await assert.rejects(verifySuppressions(fixture({ 'a.go': 'x' }, { graphqlError: new Error('API unavailable') }).args), /API unavailable/);
+  for (const response of [() => ({}), () => ({ repository: null }), (repository) => ({ repository, errors: [{}] })]) {
+    await assert.rejects(verifySuppressions(fixture({ 'a.go': 'x' }, { response }).args), /GraphQL errors/);
   }
 });
 
-test('archive traversal, duplicate files, links, sparse entries and invalid endings hold', () => {
-  const harness = fixture({ 'a.go': 'x' });
-  const entries = new Map(harness.entries.map((entry) => [entry.path, entry]));
-  const cases = [
-    [tarEntry('repo/../a.go', 'x')],
-    [tarEntry('/repo/a.go', 'x')],
-    [tarEntry('repo/a.go', 'x'), tarEntry('repo/a.go', 'x')],
-    [tarEntry('repo/a.go', '', '2', { link: '/etc/passwd' })],
-    [tarEntry('repo/a.go', 'x', 'S')],
+test('blob responses must be complete, exact and lossless UTF-8', async () => {
+  const mutations = [
+    () => null,
+    (blob) => ({ ...blob, __typename: 'Tree' }),
+    (blob) => ({ ...blob, oid: POLICY }),
+    (blob) => ({ ...blob, byteSize: 999 }),
+    (blob) => ({ ...blob, isTruncated: true }),
+    (blob) => ({ ...blob, isTruncated: undefined }),
+    (blob) => ({ ...blob, isBinary: null }),
+    (blob) => ({ ...blob, text: null }),
+    (blob) => ({ ...blob, text: '' }),
+    (blob) => ({ ...blob, text: '\ud800' }),
   ];
-  for (const parts of cases) {
-    const archive = gzipSync(Buffer.concat([tarEntry('repo/', '', '5'), ...parts, Buffer.alloc(1024)]));
-    assert.throws(() => testables.readArchive(archive, entries, HEAD), /Suppression audit held/);
+  for (const blob of mutations) {
+    await assert.rejects(verifySuppressions(fixture({ 'a.go': 'abc' }, { blob }).args), /Suppression audit held/);
   }
-  const truncated = gzipSync(tarEntry('repo/a.go', 'x'));
-  assert.throws(() => testables.readArchive(truncated, entries, HEAD), /complete ending/);
 });
 
-test('Git PAX long paths are bound to tree blobs and unsafe/unknown metadata holds', () => {
-  const path = `${'a'.repeat(120)}.go`;
-  const body = Buffer.from('package main');
-  const entries = new Map([[path, { path, type: 'blob', mode: '100644', sha: blobSHA(body), size: body.length }]]);
-  const make = (key, value) => gzipSync(Buffer.concat([
-    tarEntry('repo/', '', '5'), tarEntry('repo/pax', paxRecord(key, value), 'x'), tarEntry('repo/placeholder', body), Buffer.alloc(1024),
-  ]));
-  assert.equal(testables.readArchive(make('path', `repo/${path}`), entries, HEAD).length, 1);
-  assert.throws(() => testables.readArchive(make('path', '../escape.go'), entries, HEAD), /unsafe/);
-  assert.throws(() => testables.readArchive(make('GNU.sparse.size', '42'), entries, HEAD), /unsupported/);
+test('late missing blob fails after successful earlier batches', async () => {
+  const contents = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`file${index}.go`, 'package main']));
+  const harness = fixture(contents, { blob: (blob, file) => file.path === 'file100.go' ? null : blob });
+  await assert.rejects(verifySuppressions(harness.args), /file100.go/);
+  assert.equal(harness.calls.filter(([kind]) => kind === 'graphql').length, 3);
 });
 
-test('archive checksum mismatch and malformed gzip hold', () => {
-  const header = tarEntry('repo/a.go', 'x');
-  header[0] ^= 1;
-  assert.throws(() => testables.readArchive(gzipSync(Buffer.concat([header, Buffer.alloc(1024)])), new Map(), HEAD), /checksum/);
-  assert.throws(() => testables.readArchive(Buffer.from('bad gzip'), new Map(), HEAD), /gzip/);
+test('binary data uses only its immutable REST blob and validates canonical bytes', async () => {
+  const harness = fixture({ 'image.gif': Buffer.from('GIF89a\0'), 'a.go': 'package main' });
+  const evidence = await verifySuppressions(harness.args);
+  assert.equal(evidence.apiRequests, 4);
+  assert.equal(evidence.filesScanned, 2);
+  assert.equal(harness.calls.at(-1)[0], 'binary');
+  assert.equal(harness.calls.at(-1)[1].file_sha, harness.files[0].sha);
+  for (const binary of [
+    (data) => ({ ...data, sha: POLICY }),
+    (data) => ({ ...data, size: 99 }),
+    (data) => ({ ...data, encoding: 'none' }),
+    (data) => ({ ...data, content: data.content + '!' }),
+    (data) => ({ ...data, content: '' }),
+  ]) {
+    await assert.rejects(verifySuppressions(fixture({ 'image.gif': Buffer.from('GIF89a\0') }, { binary }).args), /binary blob/);
+  }
+});
+
+test('bounded batches deduplicate OIDs and respect both response-size and object limits', () => {
+  const shared = { path: 'same.go', type: 'blob', sha: HEAD, size: 1 };
+  assert.equal(testables.blobBatches([shared, { ...shared, path: 'renamed.go' }])[0].length, 1);
+  const entries = Array.from({ length: 101 }, (_, index) => ({ ...shared, sha: String(index), size: 1 }));
+  assert.deepEqual(testables.blobBatches(entries).map((batch) => batch.length), [50, 50, 1]);
+  assert.deepEqual(testables.blobBatches(entries.slice(0, 3).map((entry) => ({ ...entry, size: testables.MAX_BLOB_BYTES }))).map((batch) => batch.length), [2, 1]);
 });
 
 test('binary source and ambiguous source encoding fail closed', () => {

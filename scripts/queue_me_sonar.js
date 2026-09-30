@@ -42,23 +42,15 @@ async function responseJSON(response) {
   const length = response.headers.get('content-length');
   requireEvidence(length === null || (/^\d+$/.test(length) && Number(length) <= MAX_RESPONSE_BYTES),
     'the public API response exceeds its size limit.');
-  requireEvidence(typeof response.body?.getReader === 'function',
+  requireEvidence(typeof response.body?.[Symbol.asyncIterator] === 'function',
     'the public API returned an unreadable response.');
-  const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
-  try {
-    let next = await reader.read();
-    while (!next.done) {
-      requireEvidence(next.value instanceof Uint8Array, 'the public API returned invalid response data.');
-      size += next.value.byteLength;
-      requireEvidence(size <= MAX_RESPONSE_BYTES, 'the public API response exceeds its size limit.');
-      chunks.push(next.value);
-      next = await reader.read();
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+  for await (const chunk of response.body) {
+    requireEvidence(chunk instanceof Uint8Array, 'the public API returned invalid response data.');
+    size += chunk.byteLength;
+    requireEvidence(size <= MAX_RESPONSE_BYTES, 'the public API response exceeds its size limit.');
+    chunks.push(chunk);
   }
   const buffer = Buffer.concat(chunks, size);
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer));

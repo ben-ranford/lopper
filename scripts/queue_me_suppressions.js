@@ -1,7 +1,5 @@
 'use strict';
 
-const crypto = require('node:crypto');
-const { gunzipSync } = require('node:zlib');
 const { TextDecoder } = require('node:util');
 const { testables: tracker } = require('./inline_suppression_tracker.js');
 
@@ -9,15 +7,51 @@ const { testables: tracker } = require('./inline_suppression_tracker.js');
 const MAX_ENTRIES = 10000;
 const MAX_BLOB_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES = 40 * 1024 * 1024;
-const MAX_TAR_BYTES = 64 * 1024 * 1024;
+const MAX_BATCH_BLOBS = 50;
+const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const SHA = /^[a-f0-9]{40}$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 // Ordinary Markdown/legal documents are treated as documentation. Arbitrary
 // text/golden/testdata paths do not establish inert fixture provenance.
 const DOCUMENT_DATA = /(?:\.md|(?:^|\/)LICENSE)$/i;
-const CONFIG_FILE = /(?:^|\/)(?:\.[^/]+rc(?:\.[^/]+)?|[^/]*(?:config|lint|sonar|coverage|golangci|gosec)[^/]*|Makefile|\.env|pyproject\.toml|package\.json)$/i;
-const SUSPECT_MARKER = /\b(?:no(?:lint|sec|sonar|qa)|(?:eslint|oxlint)-disable|ts-(?:ignore|expect-error|nocheck)|shellcheck[ \t]+(?:disable|source)|(?:istanbul|c8|v8)[ \t]+ignore|node:coverage[ \t]+(?:ignore|disable)|coverage[ \t]*:[ \t]*ignore|pragma[ \t]*(?::[ \t]*no[ \t]+(?:cover|branch)|warning[ \t]+disable|(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored)|nullable[ \t]+disable|(?:ruff|flake8)[ \t]*:[ \t]*noqa|(?:pylint|swiftlint|revive)[ \t]*:[ \t]*disable|(?:type|pyright|lint)[ \t]*:[ \t]*(?:file-)?ignore|(?:biome|deno-lint)-ignore|Suppress(?:Warnings|Message)?|noinspection)\b|#\s*\[\s*(?:allow|expect)\s*\(/i;
+const CONFIG_NAMES = new Set(['makefile', '.env', 'pyproject.toml', 'package.json']);
+const CONFIG_WORDS = ['config', 'lint', 'sonar', 'coverage', 'golangci', 'gosec'];
+const EXTRA_MARKER_PATTERNS = [
+  /\bshellcheck[ \t]+(?:disable|source)\b/gi,
+  /\b(?:istanbul|c8|v8)[ \t]+ignore\b/gi,
+  /\bnode:coverage[ \t]+(?:ignore|disable)\b/gi,
+  /\bpragma[ \t]*:[ \t]*no[ \t]+branch\b/gi,
+  /\b(?:pylint|swiftlint|revive)[ \t]*:[ \t]*disable\b/gi,
+  /\b(?:type|pyright|lint)[ \t]*:[ \t]*(?:file-)?ignore\b/gi,
+  /\b(?:ruff|flake8)[ \t]*:[ \t]*noqa\b/gi,
+  /\b(?:biome|deno-lint)-ignore\b/gi,
+  /\b(?:oxlint-disable|ts-nocheck|noinspection)\b/gi,
+];
+const SUSPECT_PATTERNS = [
+  /\bno(?:lint|sec|sonar|qa)\b/i,
+  /\b(?:eslint|oxlint)-disable\b/i,
+  /\bts-(?:ignore|expect-error|nocheck)\b/i,
+  /\bcoverage[ \t]*:[ \t]*ignore\b/i,
+  /\bpragma[ \t]*:[ \t]*no[ \t]+(?:cover|branch)\b/i,
+  /\bpragma[ \t]*warning[ \t]+disable\b/i,
+  /\bpragma[ \t]*(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored\b/i,
+  /\bnullable[ \t]+disable\b/i,
+  /\bSuppress(?:Warnings|Message)?\b/i,
+  /#\s*\[\s*(?:allow|expect)\s*\(/i,
+];
+const LINE_MARKER = ['//', 'nolint'].join('');
+const BLOCK_MARKER = ['/*', 'nolint'].join('');
+
+function hasSuspectMarker(content) {
+  return SUSPECT_PATTERNS.some((pattern) => pattern.test(content)) ||
+    EXTRA_MARKER_PATTERNS.some((pattern) => content.search(pattern) !== -1);
+}
+
+function isConfigFile(path) {
+  const name = path.split('/').at(-1).toLowerCase();
+  return CONFIG_NAMES.has(name) || /^\.[^/]+rc(?:\.[^/]+)?$/.test(name) ||
+    CONFIG_WORDS.some((word) => name.includes(word));
+}
 
 function hold(message) {
   const error = new Error(`Suppression audit held: ${message}`);
@@ -72,152 +106,89 @@ function validateTree(data, treeSHA) {
   return entries;
 }
 
-function tarString(buffer) {
-  const zero = buffer.indexOf(0);
-  const value = zero < 0 ? buffer : buffer.subarray(0, zero);
-  if (zero >= 0 && buffer.subarray(zero).some((byte) => byte !== 0)) hold('malformed tar string');
-  try {
-    return utf8.decode(value);
-  } catch {
-    return hold('tar path is not UTF-8');
-  }
-}
-
-function tarNumber(buffer) {
-  const raw = buffer.toString('ascii').replace(/\0.*$/, '').trim();
-  if (!/^[0-7]+$/.test(raw)) hold('unsupported tar numeric encoding');
-  const value = Number.parseInt(raw, 8);
-  if (!Number.isSafeInteger(value)) hold('oversized tar number');
-  return value;
-}
-
-function readHeader(header) {
-  const checksum = tarNumber(header.subarray(148, 156));
-  const actual = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
-  if (checksum !== actual) hold('tar header checksum mismatch');
-  if (header.subarray(257, 263).toString('ascii') !== 'ustar\0') hold('unsupported tar format');
-  const prefix = tarString(header.subarray(345, 500));
-  const name = tarString(header.subarray(0, 100));
-  return {
-    path: prefix ? `${prefix}/${name}` : name,
-    size: tarNumber(header.subarray(124, 136)),
-    type: header[156] === 0 ? '0' : String.fromCharCode(header[156]),
-    link: tarString(header.subarray(157, 257)),
-  };
-}
-
-function readPax(body, global, headSHA) {
-  if (body.length > 65536) hold('oversized tar metadata');
-  const fields = new Map();
-  let offset = 0;
-  while (offset < body.length) {
-    const space = body.indexOf(32, offset);
-    const lengthText = body.subarray(offset, space).toString('ascii');
-    if (space < offset || !/^[1-9][0-9]*$/.test(lengthText)) hold('malformed tar metadata record');
-    const length = Number(lengthText);
-    if (!Number.isSafeInteger(length) || length <= space - offset + 1 || offset + length > body.length || body[offset + length - 1] !== 10) {
-      hold('truncated tar metadata record');
+function blobBatches(entries) {
+  const unique = new Map(entries.filter((entry) => entry.type === 'blob').map((entry) => [entry.sha, entry]));
+  const batches = [];
+  let batch = [];
+  let bytes = 0;
+  for (const entry of unique.values()) {
+    if (batch.length && (batch.length >= MAX_BATCH_BLOBS || bytes + entry.size > MAX_BATCH_BYTES)) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
     }
-    const record = utf8.decode(body.subarray(space + 1, offset + length - 1));
-    const equals = record.indexOf('=');
-    const key = record.slice(0, equals);
-    const value = record.slice(equals + 1);
-    const allowed = global ? ['comment'] : ['path', 'mtime', 'atime', 'ctime'];
-    if (equals < 1 || !allowed.includes(key) || fields.has(key)) hold('unsupported or duplicate tar metadata');
-    if (key === 'comment' && value !== headSHA) hold('archive commit differs from audited head');
-    if (key !== 'path' && key !== 'comment' && !/^-?[0-9]+(?:\.[0-9]+)?$/.test(value)) hold('invalid tar timestamp');
-    fields.set(key, value);
-    offset += length;
+    batch.push(entry);
+    bytes += entry.size;
   }
-  return fields;
+  if (batch.length) batches.push(batch);
+  return batches;
 }
 
-function archiveBuffer(data) {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (data instanceof Uint8Array) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  return hold('archive response is missing binary data');
+function blobQuery(batch) {
+  const fields = batch.map((entry, index) => `b${index}: object(oid: "${entry.sha}") {
+    __typename ... on Blob { oid byteSize isBinary isTruncated text }
+  }`).join('\n');
+  return `query($owner: String!, $repo: String!) {
+    repository(owner: $owner, name: $repo) { nameWithOwner ${fields} }
+  }`;
 }
 
-function inflateArchive(data) {
-  const compressed = archiveBuffer(data);
-  if (compressed.length > MAX_ARCHIVE_BYTES) hold('compressed archive exceeds audit limit');
-  try {
-    return gunzipSync(compressed, { maxOutputLength: MAX_TAR_BYTES });
-  } catch {
-    return hold('invalid gzip archive or decompressed archive exceeds audit limit');
+function assertBlob(blob, entry) {
+  if (blob?.__typename !== 'Blob' || blob.oid !== entry.sha || blob.byteSize !== entry.size) {
+    hold(`missing or mismatched immutable blob ${entry.path}`);
+  }
+  if (blob.isTruncated !== false || typeof blob.isBinary !== 'boolean') {
+    hold(`truncated or indeterminate blob ${entry.path}`);
   }
 }
 
-function verifyArchiveFile(path, body, entries, seen, files) {
-  const entry = entries.get(path);
-  if (!entry || entry.type !== 'blob' || seen.has(path)) hold(`unexpected or duplicate archive file ${path}`);
-  const digest = crypto.createHash('sha1').update(`blob ${body.length}\0`).update(body).digest('hex');
-  if (entry.size !== body.length || entry.sha !== digest) hold(`incomplete or mismatched immutable blob ${path}`);
-  seen.add(path);
-  files.push({ ...entry, body });
-}
-
-function archiveItem(tar, offset) {
-  const item = readHeader(tar.subarray(offset, offset + 512));
-  const end = offset + 512 + item.size;
-  if (end > tar.length || item.size > MAX_BLOB_BYTES) hold('truncated or oversized archive entry');
-  const next = offset + 512 + Math.ceil(item.size / 512) * 512;
-  return { ...item, body: tar.subarray(offset + 512, end), next };
-}
-
-function acceptMetadata(item, state, headSHA) {
-  if (state.pax || (item.type === 'g' && (state.globalSeen || state.prefix))) hold('misplaced tar metadata');
-  const fields = readPax(item.body, item.type === 'g', headSHA);
-  if (item.type === 'g') state.globalSeen = true;
-  else state.pax = fields;
-}
-
-function acceptArchiveItem(item, state, entries, headSHA) {
-  if (item.link) hold('tar links are unsupported');
-  if (item.type === 'g' || item.type === 'x') {
-    acceptMetadata(item, state, headSHA);
-    return;
+function textBlobBody(blob, entry) {
+  if (typeof blob.text !== 'string') hold(`missing text for immutable blob ${entry.path}`);
+  const body = Buffer.from(blob.text, 'utf8');
+  if (body.length !== entry.size || utf8.decode(body) !== blob.text) {
+    hold(`incomplete or non-lossless UTF-8 blob ${entry.path}`);
   }
-  const archivePath = (state.pax?.get('path') ?? item.path).replace(/\/$/, '');
-  state.pax = undefined;
-  if (!validPath(archivePath)) hold('unsafe archive path');
-  state.prefix ??= archivePath.split('/')[0];
-  if (archivePath !== state.prefix && !archivePath.startsWith(`${state.prefix}/`)) hold('inconsistent archive root');
-  const path = archivePath.slice(state.prefix.length + 1);
-  if (item.type === '5') {
-    if (item.body.length || (path && entries.get(path)?.type !== 'tree')) hold(`unexpected archive directory ${archivePath}`);
-  } else if (item.type === '0' && path) {
-    verifyArchiveFile(path, item.body, entries, state.seen, state.files);
-  } else {
-    hold(`unsupported archive entry type ${item.type}`);
+  return body;
+}
+
+async function binaryBlobBody({ github, owner, repo, entry }) {
+  const { data } = await github.rest.git.getBlob({ owner, repo, file_sha: entry.sha });
+  if (data?.sha !== entry.sha || data.size !== entry.size || data.encoding !== 'base64' || typeof data.content !== 'string') {
+    hold(`missing or mismatched binary blob ${entry.path}`);
   }
+  if (data.content.length > MAX_BLOB_BYTES * 2) hold(`oversized binary blob response ${entry.path}`);
+  const encoded = data.content.replaceAll('\r', '').replaceAll('\n', '');
+  const body = Buffer.from(encoded, 'base64');
+  if (body.length !== entry.size || body.toString('base64') !== encoded) hold(`invalid binary blob encoding ${entry.path}`);
+  return body;
 }
 
-function verifyArchiveEnding(tar, offset, state, entries) {
-  if (tar.length - offset < 1024 || tar.subarray(offset).some((byte) => byte !== 0) || state.pax) hold('malformed tar ending');
-  const blobCount = [...entries.values()].filter((entry) => entry.type === 'blob').length;
-  if (state.files.length !== blobCount) hold('archive omits tracked files');
+async function readBlobBody({ github, owner, repo, entry, blob }) {
+  assertBlob(blob, entry);
+  if (!blob.isBinary) return { body: textBlobBody(blob, entry), apiRequests: 0 };
+  if (blob.text !== null) hold(`inconsistent binary blob ${entry.path}`);
+  const body = await binaryBlobBody({ github, owner, repo, entry });
+  return { body, apiRequests: 1 };
 }
 
-function readArchive(data, entries, headSHA) {
-  const tar = inflateArchive(data);
-  const state = { seen: new Set(), files: [], globalSeen: false };
-  let offset = 0;
-  let count = 0;
-  while (offset + 512 <= tar.length) {
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) {
-      verifyArchiveEnding(tar, offset, state, entries);
-      return state.files;
+async function fetchBlobs({ github, owner, repo, entries }) {
+  const bodies = new Map();
+  let apiRequests = 0;
+  for (const batch of blobBatches([...entries.values()])) {
+    const response = await github.graphql(blobQuery(batch), { owner, repo });
+    apiRequests += 1;
+    if (response?.errors?.length || response?.repository?.nameWithOwner?.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
+      hold('missing repository or GraphQL errors while reading immutable blobs');
     }
-    count += 1;
-    if (count > MAX_ENTRIES * 2 + 2) hold('too many archive entries');
-    const item = archiveItem(tar, offset);
-    offset = item.next;
-    acceptArchiveItem(item, state, entries, headSHA);
+    for (const [index, entry] of batch.entries()) {
+      const blob = response.repository[`b${index}`];
+      const read = await readBlobBody({ github, owner, repo, entry, blob });
+      bodies.set(entry.sha, read.body);
+      apiRequests += read.apiRequests;
+    }
   }
-  return hold('archive is missing its complete ending');
+  const files = [...entries.values()].filter((entry) => entry.type === 'blob').map((entry) => ({ ...entry, body: bodies.get(entry.sha) }));
+  return { files, apiRequests };
 }
 
 function shellFile(path, content) {
@@ -235,7 +206,7 @@ function maskLiteralHeredocs(content) {
       if (line === delimiter) delimiter = undefined;
       return '';
     }
-    const match = /^[ \t]*cat[ \t]+<<[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*$/.exec(line);
+    const match = /^[ \t]*cat[ \t]+<<[ \t]*(['"])([A-Za-z_]\w*)\1[ \t]*$/.exec(line);
     if (match) delimiter = match[2];
     return line;
   });
@@ -244,26 +215,67 @@ function maskLiteralHeredocs(content) {
 }
 
 function normalizeMarkers(content) {
-  return content
-    .replace(/\b(?:shellcheck[ \t]+(?:disable|source)|(?:istanbul|c8|v8)[ \t]+ignore|node:coverage[ \t]+(?:ignore|disable)|pragma[ \t]*:[ \t]*no[ \t]+branch|(?:pylint|swiftlint|revive)[ \t]*:[ \t]*disable|(?:type|pyright|lint)[ \t]*:[ \t]*(?:file-)?ignore|(?:ruff|flake8)[ \t]*:[ \t]*noqa|(?:biome|deno-lint)-ignore|oxlint-disable|ts-nocheck|noinspection)\b/gi, 'nolint')
+  let normalized = content;
+  for (const pattern of EXTRA_MARKER_PATTERNS) normalized = normalized.replace(pattern, 'nolint');
+  normalized = normalized
     .replace(/\b(?:nolint|nosec|noqa|eslint-disable|ts-ignore|ts-expect-error)[\w-]*/gi, 'nolint')
     .replace(/\bnosonar[\w-]*/gi, 'NOSONAR')
-    .replace(/@(?:[A-Za-z]+:)?(?:SuppressWarnings|SuppressMessage|Suppress)\b/g, '//nolint')
-    .replace(/\[(?:System\.Diagnostics\.CodeAnalysis\.)?SuppressMessage\b/g, '/*nolint')
-    .replace(/#[ \t]*(?:pragma[ \t]+(?:warning[ \t]+disable|(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored)|nullable[ \t]+disable)\b/gi, '//nolint')
-    .replace(/#\s*\[\s*(?:allow|expect)\s*\(/g, '/*nolint(')
-    .replace(/^(\s*)\*[ \t]+(?=nolint\b)/gm, '$1/* ');
+    .replace(/@(?:[A-Za-z]+:)?(?:SuppressWarnings|SuppressMessage|Suppress)\b/g, LINE_MARKER)
+    .replace(/\[(?:System\.Diagnostics\.CodeAnalysis\.)?SuppressMessage\b/g, BLOCK_MARKER)
+    .replace(/#[ \t]*pragma[ \t]+warning[ \t]+disable\b/gi, LINE_MARKER)
+    .replace(/#[ \t]*pragma[ \t]+(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored\b/gi, LINE_MARKER)
+    .replace(/#[ \t]*nullable[ \t]+disable\b/gi, LINE_MARKER)
+    .replace(/#\s*\[\s*(?:allow|expect)\s*\(/g, `${BLOCK_MARKER}(`)
+    .replace(/^([ \t]*)\*[ \t]+(?=nolint\b)/gm, '$1/* ');
+  return normalized;
+}
+
+function skipSpace(content, start) {
+  let cursor = start;
+  while (cursor < content.length && /\s/.test(content[cursor])) cursor += 1;
+  return cursor;
+}
+
+function disabledValueAt(content, start) {
+  let cursor = skipSpace(content, start);
+  if (content[cursor] === '[') cursor = skipSpace(content, cursor + 1);
+  const value = ['"off"', "'off'", 'off', '0'].find((candidate) => content.startsWith(candidate, cursor));
+  if (value === undefined) return false;
+  const next = content[cursor + value.length];
+  return next === undefined || /[,\s}\]]/.test(next);
+}
+
+function disabledRuleLine(content) {
+  for (let cursor = 0; cursor < content.length; cursor += 1) {
+    if (content[cursor] === ':' && disabledValueAt(content, cursor + 1)) {
+      return content.slice(0, cursor).split('\n').length - 1;
+    }
+  }
+  return -1;
+}
+
+function configDirective(line) {
+  const key = line.split(/[=:]/, 1)[0].trim().toLowerCase();
+  if (key.startsWith('sonar.') && (key.includes('exclusions') || key.startsWith('sonar.issue.ignore'))) return true;
+  const patterns = [
+    /\bexclude[-_](?:rules|lines|patterns)["']?[ \t]*[=:]/i,
+    /\b(?:skip[-_](?:files|dirs)|disable[-_]error[-_]code)["']?[ \t]*[=:]/i,
+    /\b(?:exclusions|omit|ignores?)["']?[ \t]*[=:]/i,
+    /^[ \t]*disable[ \t]*[=:]/i,
+    /\bGOSEC_EXCLUDE_RULES[ \t]*[?:+]?=[ \t]*\S/i,
+  ];
+  return patterns.some((pattern) => pattern.test(line));
 }
 
 function configFinding(path, content) {
   if (tracker.isSourceFile(path) && !/\.(?:ya?ml)$/i.test(path) && !/(?:eslint|biome|oxlint)[^/]*\.(?:[cm]?js|ts)$/i.test(path)) return undefined;
-  if (!CONFIG_FILE.test(path) && !/\.(?:properties|toml|ini|cfg)$/i.test(path)) return undefined;
+  if (!isConfigFile(path) && !/\.(?:properties|toml|ini|cfg)$/i.test(path)) return undefined;
   const lines = content.split('\n');
-  const pattern = /(?:sonar\.(?:[^=\s]*exclusions|issue\.ignore)[^=\s]*[ \t]*[=:]|\b(?:exclude[-_]rules|exclude[-_]lines|exclude[-_]patterns|skip[-_](?:files|dirs)|disable[-_]error[-_]code|exclusions|omit|ignores)["']?[ \t]*[=:]|^[ \t]*disable[ \t]*=|\bGOSEC_EXCLUDE_RULES[ \t]*[?:+]?=[ \t]*\S)/i;
   const lintConfig = /(?:eslint|biome|oxlint)/i.test(path) || /"eslintConfig"\s*:/.test(content);
-  const disabledRule = /["'][^"'\n]+["'][ \t]*:[ \t]*(?:["']off["']|0)(?:[,\s}\]]|$)/i;
-  const index = lines.findIndex((line) => !/^[ \t]*(?:#|;|\/\/)/.test(line) &&
-    (pattern.test(line) || (lintConfig && disabledRule.test(line))));
+  const directiveLine = lines.findIndex((line) => !/^[ \t]*(?:#|;|\/\/)/.test(line) && configDirective(line));
+  const ruleLine = lintConfig ? disabledRuleLine(content) : -1;
+  const locations = [directiveLine, ruleLine].filter((line) => line >= 0);
+  const index = locations.length ? Math.min(...locations) : -1;
   return index < 0 ? undefined : { file: path, line: index + 1, reason: 'analysis exclusion/disable configuration requires policy review; fixture exclusions are not automatically waived' };
 }
 
@@ -289,13 +301,13 @@ function literalEnd(content, start, path, shell) {
   const end = quoteEnd(content, start, delimiter, multiline, escapes);
   if (end === undefined) return undefined;
   const literal = content.slice(start, end);
-  if (SUSPECT_MARKER.test(literal)) auditLiteralExecution(content, start, literal, path, shell, quote);
+  if (hasSuspectMarker(literal)) auditLiteralExecution(content, start, literal, path, shell, quote);
   return end;
 }
 
 function auditLiteralExecution(content, start, literal, path, shell, quote) {
   const prefix = content.slice(0, start).split('\n').at(-1);
-  const interpreter = /\b(?:(?:ba|k|z)?sh|python[0-9.]*|ruby)[ \t]+-c[ \t]*$|\bnode[ \t]+-[ep][ \t]*$/;
+  const interpreter = /\b(?:(?:ba|k|z)?sh|python[\d.]*|ruby)[ \t]+-c[ \t]*$|\bnode[ \t]+-[ep][ \t]*$/;
   if (shell && interpreter.test(prefix)) hold(`suppression in executable interpreter string in ${path}:${content.slice(0, start).split('\n').length}`);
   if (shell && quote === '"' && /\$\(|`/.test(literal)) hold(`possible suppression in executable string interpolation in ${path}; syntax requires review`);
   if (quote !== '`' || /\.go$/i.test(path) || !literal.includes('${')) return;
@@ -309,7 +321,7 @@ function directiveInComment(comment) {
   // Sonar recognizes its marker anywhere in a comment, including prose.
   if (/\bNOSONAR\b/i.test(comment)) return true;
   const normalized = normalizeMarkers(comment);
-  return /^(?:\/\/|\/\*+|#)[ \t]*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
+  return /^(?:\/\/|\/\*+|#)\s*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
 }
 
 function commentAt(content, cursor, prefixes, shell) {
@@ -318,7 +330,8 @@ function commentAt(content, cursor, prefixes, shell) {
   if (prefix === '#' && shell && cursor > 0 && !/[\s;|&()]/.test(content[cursor - 1])) return undefined;
   const terminator = prefix === '/*' ? '*/' : '\n';
   const index = content.indexOf(terminator, cursor + prefix.length);
-  return index < 0 ? content.length : index + (prefix === '/*' ? 2 : 0);
+  if (index < 0) return content.length;
+  return prefix === '/*' ? index + 2 : index;
 }
 
 // Supplement the inherited diff lexer's quote heuristic with a bounded walk:
@@ -377,7 +390,7 @@ function scanFile(entry) {
   if (DOCUMENT_DATA.test(path) && mode !== '100755' && !shell) return [];
   const config = configFinding(path, content);
   if (config) return [config];
-  if (!SUSPECT_MARKER.test(content)) return [];
+  if (!hasSuspectMarker(content)) return [];
   const source = tracker.isSourceFile(path) || shell;
   if (!source) return [{ file: path, line: 1, reason: 'possible suppression in unsupported syntax requires review' }];
   const prepared = shell ? maskLiteralHeredocs(content) : content;
@@ -396,15 +409,14 @@ async function verifySuppressions({ github, owner, repo, headSHA, trustedPolicyS
   assertSHA(treeSHA, 'candidate tree');
   const tree = await github.rest.git.getTree({ owner, repo, tree_sha: treeSHA, recursive: '1' });
   const entries = validateTree(tree.data, treeSHA);
-  const archive = await github.rest.repos.downloadTarballArchive({ owner, repo, ref: headSHA });
-  const files = readArchive(archive.data, entries, headSHA);
+  const { files, apiRequests } = await fetchBlobs({ github, owner, repo, entries });
   const findings = files.flatMap(scanFile);
   if (findings.length) {
     const detail = findings.slice(0, 8).map((finding) => `${finding.file}:${finding.line}: ${finding.reason}`).join('; ');
     hold(`${findings.length} finding(s) at ${headSHA}: ${detail}`);
   }
-  return { headSHA, trustedPolicySHA, treeSHA, count: 0, filesScanned: files.length, findings: [], apiRequests: 3 };
+  return { headSHA, trustedPolicySHA, treeSHA, count: 0, filesScanned: files.length, findings: [], apiRequests: apiRequests + 2 };
 }
 
 module.exports = { verifySuppressions };
-module.exports.testables = { validateTree, readArchive, scanFile, MAX_BLOB_BYTES, MAX_TOTAL_BYTES, MAX_TAR_BYTES };
+module.exports.testables = { validateTree, fetchBlobs, blobBatches, scanFile, MAX_BLOB_BYTES, MAX_TOTAL_BYTES, MAX_BATCH_BLOBS, MAX_BATCH_BYTES };
