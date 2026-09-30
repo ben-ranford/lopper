@@ -382,17 +382,10 @@ func runtimeSymbols(values map[string]int) []report.RuntimeSymbolUsage {
 		}
 		items = append(items, report.RuntimeSymbolUsage{Symbol: symbol, Module: module, Count: count})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			if items[i].Symbol == items[j].Symbol {
-				return items[i].Module < items[j].Module
-			}
-			return items[i].Symbol < items[j].Symbol
+	return report.TopRuntimeSymbols(items, func(left, right report.RuntimeSymbolUsage) bool {
+		if left.Symbol == right.Symbol {
+			return left.Module < right.Module
 		}
-		return items[i].Count > items[j].Count
+		return left.Symbol < right.Symbol
 	})
-	if len(items) > 5 {
-		items = items[:5]
-	}
-	return items
 }

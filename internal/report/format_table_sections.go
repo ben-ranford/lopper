@@ -379,21 +379,7 @@ func topVulnerabilityDeltas(deltas []VulnerabilityDelta, limit int) []Vulnerabil
 		return make([]VulnerabilityDelta, 0)
 	}
 	copied := append([]VulnerabilityDelta(nil), deltas...)
-	sort.Slice(copied, func(i, j int) bool {
-		if copied[i].PriorityScore != copied[j].PriorityScore {
-			return copied[i].PriorityScore > copied[j].PriorityScore
-		}
-		if priorityRank(copied[i].Priority) != priorityRank(copied[j].Priority) {
-			return priorityRank(copied[i].Priority) > priorityRank(copied[j].Priority)
-		}
-		if copied[i].Language != copied[j].Language {
-			return copied[i].Language < copied[j].Language
-		}
-		if copied[i].Name != copied[j].Name {
-			return copied[i].Name < copied[j].Name
-		}
-		return copied[i].AdvisoryID < copied[j].AdvisoryID
-	})
+	sortReachableVulnerabilityDeltas(copied)
 	if len(copied) < limit {
 		return copied
 	}

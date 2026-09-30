@@ -235,19 +235,12 @@ func mergeRuntimeSymbolUsage(left, right []report.RuntimeSymbolUsage) []report.R
 	for _, item := range merged {
 		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			if items[i].Module == items[j].Module {
-				return items[i].Symbol < items[j].Symbol
-			}
-			return items[i].Module < items[j].Module
+	return report.TopRuntimeSymbols(items, func(left, right report.RuntimeSymbolUsage) bool {
+		if left.Module == right.Module {
+			return left.Symbol < right.Symbol
 		}
-		return items[i].Count > items[j].Count
+		return left.Module < right.Module
 	})
-	if len(items) > 5 {
-		items = items[:5]
-	}
-	return items
 }
 
 func mergeSymbolRefs(left, right []report.SymbolRef) []report.SymbolRef {
@@ -301,12 +294,10 @@ func symbolRefKey(item report.SymbolRef) string {
 }
 
 func sortSymbolRefs(items []report.SymbolRef) {
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
+	report.SortByStringKeys(items,
+		func(item report.SymbolRef) string { return item.Module },
+		func(item report.SymbolRef) string { return item.Name },
+	)
 }
 
 func riskCueKey(item report.RiskCue) string {
