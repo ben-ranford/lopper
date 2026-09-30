@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	xwindows "github.com/charmbracelet/x/windows"
 	"github.com/muesli/cancelreader"
@@ -10,12 +14,13 @@ import (
 )
 
 // Stave shares the invitation's no-flush console event source. Serializing native
-// key records lets Ultraviolet retain its own key/UTF-16 decoding while avoiding
+// key records preserves Ultraviolet's key decoding while avoiding
 // its constructor's destructive input flush during prompt-to-renderer handoff.
 type staveConsoleReader struct {
-	console *preferenceConsoleReader
-	restore func() error
-	pending []byte
+	console    *preferenceConsoleReader
+	restore    func() error
+	pending    []byte
+	surrogates [2]xwindows.KeyEventRecord
 }
 
 func newStaveCancelReader(file *os.File) (cancelreader.CancelReader, error) {
@@ -49,24 +54,26 @@ func (r *staveConsoleReader) Read(data []byte) (int, error) {
 	for len(r.pending) == 0 {
 		record, err := r.console.next()
 		if err != nil {
-			return 0, err
+			if !errors.Is(err, io.EOF) {
+				return 0, err
+			}
+			r.flushSurrogates()
+			if len(r.pending) == 0 {
+				return 0, err
+			}
+			break
 		}
-		r.pending = encodeStaveConsoleEvent(record)
+		r.pending = r.encodeEvent(record)
 	}
 	n := copy(data, r.pending)
 	r.pending = r.pending[n:]
 	return n, nil
 }
 
-func encodeStaveConsoleEvent(record xwindows.InputRecord) []byte {
+func (r *staveConsoleReader) encodeEvent(record xwindows.InputRecord) []byte {
 	switch record.EventType {
 	case xwindows.KEY_EVENT:
-		key := record.KeyEvent()
-		down := 0
-		if key.KeyDown {
-			down = 1
-		}
-		return fmt.Appendf(nil, "\x1b[%d;%d;%d;%d;%d;%d_", key.VirtualKeyCode, key.VirtualScanCode, key.Char, down, key.ControlKeyState, key.RepeatCount)
+		return r.encodeKey(record.KeyEvent())
 	case xwindows.WINDOW_BUFFER_SIZE_EVENT:
 		size := record.WindowBufferSizeEvent().Size
 		return fmt.Appendf(nil, "\x1b[8;%d;%dt", size.Y, size.X)
@@ -78,4 +85,52 @@ func encodeStaveConsoleEvent(record xwindows.InputRecord) []byte {
 	default:
 		return nil
 	}
+}
+
+func (r *staveConsoleReader) encodeKey(key xwindows.KeyEventRecord) []byte {
+	down := staveKeyDirection(key)
+	previous := r.surrogates[down]
+	r.surrogates[down] = xwindows.KeyEventRecord{}
+	var data []byte
+	if previous.Char != 0 {
+		combined := utf16.DecodeRune(previous.Char, key.Char)
+		previous.Char = key.Char
+		if combined != utf8.RuneError && previous == key {
+			key.Char = combined
+			return appendStaveKey(data, key)
+		}
+		previous.Char = utf8.RuneError
+		data = appendStaveKey(data, previous)
+	}
+	if key.Char >= 0xD800 && key.Char <= 0xDBFF {
+		// Ultraviolet only buffers serialized surrogate pairs when VK is zero.
+		// Combine native pairs here too, retaining VK_PACKET and its metadata.
+		r.surrogates[down] = key
+		return data
+	}
+	if utf16.IsSurrogate(key.Char) {
+		key.Char = utf8.RuneError
+	}
+	return appendStaveKey(data, key)
+}
+
+func (r *staveConsoleReader) flushSurrogates() {
+	for direction, key := range r.surrogates {
+		if key.Char != 0 {
+			key.Char = utf8.RuneError
+			r.pending = appendStaveKey(r.pending, key)
+			r.surrogates[direction] = xwindows.KeyEventRecord{}
+		}
+	}
+}
+
+func appendStaveKey(data []byte, key xwindows.KeyEventRecord) []byte {
+	return fmt.Appendf(data, "\x1b[%d;%d;%d;%d;%d;%d_", key.VirtualKeyCode, key.VirtualScanCode, key.Char, staveKeyDirection(key), key.ControlKeyState, key.RepeatCount)
+}
+
+func staveKeyDirection(key xwindows.KeyEventRecord) int {
+	if key.KeyDown {
+		return 1
+	}
+	return 0
 }
