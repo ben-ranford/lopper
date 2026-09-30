@@ -317,7 +317,7 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 		return ""
 	}
 	receiver := selector.X
-	key := stableStatsReceiver(receiver, info)
+	key := stableStatsReceiver(receiver, packages, info)
 	if key == "" {
 		return ""
 	}
@@ -390,36 +390,111 @@ func statsFactoryResultType(call *ast.CallExpr, packages map[string]string) ast.
 
 // A repeated receiver must resolve to the same lexical objects and contain no
 // calls or receives: evaluating it once must preserve the copied field values.
-func stableStatsReceiver(expression ast.Expr, info *types.Info) string {
+func stableStatsReceiver(expression ast.Expr, packages map[string]string, info *types.Info) string {
 	switch value := unparen(expression).(type) {
 	case *ast.Ident:
 		if object := info.ObjectOf(value); object != nil {
 			return fmt.Sprintf("%p", object)
 		}
 	case *ast.SelectorExpr:
-		if operand := stableStatsReceiver(value.X, info); operand != "" {
-			return operand + "." + value.Sel.Name
-		}
+		return wrapReceiverIdentity("", stableStatsReceiver(value.X, packages, info), "."+value.Sel.Name)
 	case *ast.BasicLit:
 		return value.Kind.String() + ":" + value.Value
 	case *ast.StarExpr:
-		if operand := stableStatsReceiver(value.X, info); operand != "" {
-			return "*(" + operand + ")"
-		}
+		return wrapReceiverIdentity("*(", stableStatsReceiver(value.X, packages, info), ")")
 	case *ast.UnaryExpr:
 		if value.Op == token.AND {
-			if operand := stableStatsReceiver(value.X, info); operand != "" {
-				return "&(" + operand + ")"
-			}
+			return wrapReceiverIdentity("&(", stableStatsReceiver(value.X, packages, info), ")")
 		}
 	case *ast.IndexExpr:
-		collection := stableStatsReceiver(value.X, info)
-		index := stableStatsReceiver(value.Index, info)
-		if collection != "" && index != "" {
-			return collection + "[" + index + "]"
-		}
+		return pairedReceiverIdentity("index", stableStatsReceiver(value.X, packages, info), stableStatsReceiver(value.Index, packages, info))
+	case *ast.TypeAssertExpr:
+		return assertedReceiverIdentity(value, packages, info)
 	}
 	return ""
+}
+
+func wrapReceiverIdentity(prefix, operand, suffix string) string {
+	if operand == "" {
+		return ""
+	}
+	return prefix + operand + suffix
+}
+
+func pairedReceiverIdentity(operation, first, second string) string {
+	if first == "" || second == "" {
+		return ""
+	}
+	return operation + "(" + first + "," + second + ")"
+}
+
+func assertedReceiverIdentity(assertion *ast.TypeAssertExpr, packages map[string]string, info *types.Info) string {
+	operand := stableStatsReceiver(assertion.X, packages, info)
+	typ := assertedTypeIdentity(assertion.Type, packages, info, make(map[ast.Expr]bool))
+	return pairedReceiverIdentity("assert", operand, typ)
+}
+
+// Assertion types are part of receiver identity: the same interface operand
+// asserted as two different types cannot be replaced by one helper snapshot.
+// Follow aliases while retaining named types and lexical array-length bindings.
+func assertedTypeIdentity(expression ast.Expr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	expression = unaliasedType(expression)
+	if expression == nil || active[expression] {
+		return ""
+	}
+	active[expression] = true
+	defer delete(active, expression)
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return namedAssertionType(value, info)
+	case *ast.SelectorExpr:
+		return importedAssertionType(value, packages, info)
+	case *ast.StarExpr:
+		return wrapReceiverIdentity("*", assertedTypeIdentity(value.X, packages, info, active), "")
+	case *ast.ArrayType:
+		length := "slice"
+		if value.Len != nil {
+			length = stableStatsReceiver(value.Len, packages, info)
+		}
+		return pairedReceiverIdentity("array", length, assertedTypeIdentity(value.Elt, packages, info, active))
+	case *ast.MapType:
+		return pairedReceiverIdentity("map", assertedTypeIdentity(value.Key, packages, info, active), assertedTypeIdentity(value.Value, packages, info, active))
+	case *ast.IndexExpr:
+		return assertedInstanceIdentity(value.X, []ast.Expr{value.Index}, packages, info, active)
+	case *ast.IndexListExpr:
+		return assertedInstanceIdentity(value.X, value.Indices, packages, info, active)
+	}
+	return ""
+}
+
+func namedAssertionType(name *ast.Ident, info *types.Info) string {
+	object, ok := info.ObjectOf(name).(*types.TypeName)
+	if !ok {
+		return ""
+	}
+	// Alias expansion does not substitute generic arguments. An unresolved
+	// parameter cannot establish that two asserted types are identical.
+	if _, parameter := object.Type().(*types.TypeParam); parameter {
+		return ""
+	}
+	return fmt.Sprintf("type(%p)", object)
+}
+
+func importedAssertionType(selector *ast.SelectorExpr, packages map[string]string, info *types.Info) string {
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	path := packageQualifierPath(qualifier, packages, info)
+	return wrapReceiverIdentity("import(", path, ")."+selector.Sel.Name)
+}
+
+func assertedInstanceIdentity(base ast.Expr, arguments []ast.Expr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	identity := assertedTypeIdentity(base, packages, info, active)
+	for _, argument := range arguments {
+		identity = pairedReceiverIdentity("instance", identity, assertedTypeIdentity(argument, packages, info, active))
+	}
+	return identity
 }
 
 // Follow lexical aliases without treating an unresolved or cyclic initializer as

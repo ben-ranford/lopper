@@ -46,6 +46,8 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 		return value.Type
 	case *ast.TypeAssertExpr:
 		return declaredFunctionType(value.Type)
+	case *ast.CallExpr:
+		return declaredFunctionType(sourceCallResultAt(value, 1, 0, info, declarations, seen))
 	case *ast.IndexExpr:
 		return instantiatedSourceFunctionType(value.X, 1, info, declarations, seen)
 	case *ast.IndexListExpr:
@@ -62,13 +64,29 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 		}
 		return declaredCallableType(declaration)
 	case *ast.SelectorExpr:
-		declaration := sourceCallableDeclaration(info.ObjectOf(value.Sel), info, declarations)
-		if function, ok := declaration.(*ast.FuncDecl); ok {
-			return selectedFunctionType(function, value.X, info)
-		}
-		return declaredFunctionType(declaredSelectorType(value, info))
+		return sourceSelectorFunctionType(value, info, declarations)
 	}
 	return nil
+}
+
+func sourceSelectorFunctionType(selector *ast.SelectorExpr, info *types.Info, declarations map[types.Object]ast.Node) *ast.FuncType {
+	object := info.ObjectOf(selector.Sel)
+	if method, ok := object.(*types.Func); ok {
+		// Instantiated methods still derive ownership from their source signature.
+		object = method.Origin()
+	}
+	declaration := sourceCallableDeclaration(object, info, declarations)
+	if function, ok := declaration.(*ast.FuncDecl); ok {
+		return selectedFunctionType(function, selector.X, info)
+	}
+	if _, method := object.(*types.Func); method {
+		signature := declaredCallableType(declaration)
+		if receiver := methodExpressionType(selector.X, info); signature != nil && receiver != nil {
+			return functionWithReceiver(signature, []*ast.Field{{Type: receiver}})
+		}
+		return signature
+	}
+	return declaredFunctionType(declaredSelectorType(selector, info))
 }
 
 // Type arguments do not change an explicit result type. Keep type-parameter
@@ -131,20 +149,40 @@ func declaredFunctionType(expression ast.Expr) *ast.FuncType {
 }
 
 func selectedFunctionType(function *ast.FuncDecl, operand ast.Expr, info *types.Info) *ast.FuncType {
-	if pointer, ok := unparen(operand).(*ast.StarExpr); ok {
-		operand = pointer.X
-	}
-	name, ok := unparen(operand).(*ast.Ident)
-	if !ok {
+	if function.Recv == nil || methodExpressionType(operand, info) == nil {
 		return function.Type
 	}
-	if _, typeName := info.ObjectOf(name).(*types.TypeName); !typeName || function.Recv == nil {
-		return function.Type
+	return functionWithReceiver(function.Type, function.Recv.List)
+}
+
+func methodExpressionType(expression ast.Expr, info *types.Info) ast.Expr {
+	original := expression
+	for {
+		switch operand := unparen(expression).(type) {
+		case *ast.Ident:
+			if _, typeName := info.ObjectOf(operand).(*types.TypeName); !typeName {
+				return nil
+			}
+			return original
+		case *ast.InterfaceType, *ast.StructType:
+			return original
+		case *ast.StarExpr:
+			expression = operand.X
+		case *ast.IndexExpr:
+			expression = operand.X
+		case *ast.IndexListExpr:
+			expression = operand.X
+		default:
+			return nil
+		}
 	}
+}
+
+func functionWithReceiver(original *ast.FuncType, receiver []*ast.Field) *ast.FuncType {
 	// Method expressions require an explicit receiver argument, unlike values.
-	signature := *function.Type
-	parameters := append([]*ast.Field(nil), function.Recv.List...)
-	parameters = append(parameters, function.Type.Params.List...)
+	signature := *original
+	parameters := append([]*ast.Field(nil), receiver...)
+	parameters = append(parameters, original.Params.List...)
 	signature.Params = &ast.FieldList{List: parameters}
 	return &signature
 }

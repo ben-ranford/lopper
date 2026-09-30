@@ -25,6 +25,12 @@ func TestPackageSourceProvenance(t *testing.T) {
 		{"field", "type Holder struct { Stats s.DependencyStats }", ", holder Holder", "measured := holder.Stats;"},
 		{"embedded", "type Holder struct { s.DependencyStats }", ", holder Holder", "measured := holder.DependencyStats;"},
 		{"function variable", "var stats = func() s.DependencyStats { return s.DependencyStats{} }", "", "measured := stats();"},
+		{"interface method", "type Provider interface { Stats() s.DependencyStats }", ", p Provider", "measured := p.Stats();"},
+		{"generic alias", "type GenericStats[T any] = s.DependencyStats", ", measured GenericStats[int]", ""},
+		{"tuple results", "func stats() (error, s.DependencyStats) { panic(0) }", "", "_, measured := stats();"},
+		{"source collection", "func stats() []s.DependencyStats { panic(0) }", "", "values := stats(); measured := values[0];"},
+		{"collection assertion", "type Stats = s.DependencyStats", ", raw any", "values, ok := raw.([]Stats); _ = ok; measured := values[0];"},
+		{"variadic parameter", "type Stats = s.DependencyStats", ", values ...Stats", "measured := values[0];"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
