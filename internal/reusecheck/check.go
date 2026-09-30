@@ -403,9 +403,12 @@ func stableStatsReceiver(expression ast.Expr, packages map[string]string, info *
 	case *ast.StarExpr:
 		return wrapReceiverIdentity("*(", stableStatsReceiver(value.X, packages, info), ")")
 	case *ast.UnaryExpr:
-		if value.Op == token.AND {
-			return wrapReceiverIdentity("&(", stableStatsReceiver(value.X, packages, info), ")")
+		switch value.Op {
+		case token.AND, token.ADD, token.SUB, token.XOR, token.NOT:
+			return wrapReceiverIdentity(value.Op.String()+"(", stableStatsReceiver(value.X, packages, info), ")")
 		}
+	case *ast.BinaryExpr:
+		return pairedReceiverIdentity("binary:"+value.Op.String(), stableStatsReceiver(value.X, packages, info), stableStatsReceiver(value.Y, packages, info))
 	case *ast.IndexExpr:
 		return pairedReceiverIdentity("index", stableStatsReceiver(value.X, packages, info), stableStatsReceiver(value.Index, packages, info))
 	case *ast.TypeAssertExpr:

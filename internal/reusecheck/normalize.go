@@ -206,7 +206,11 @@ func canonicalWithoutDecorativeCalls(path string, fn *ast.FuncDecl, packages map
 }
 
 func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	expression := resolvedCollectionType(statement.X, info, declarations)
+	return rangeValueTypeSeen(statement, object, info, declarations, make(map[types.Object]bool))
+}
+
+func rangeValueTypeSeen(statement *ast.RangeStmt, object types.Object, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Expr {
+	expression := resolvedCollectionTypeSeen(statement.X, info, declarations, seen)
 	var element ast.Expr
 	binding := statement.Value
 	switch collection := underlyingCollectionType(expression).(type) {
@@ -237,7 +241,10 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 }
 
 func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	seen := make(map[types.Object]bool)
+	return resolvedCollectionTypeSeen(expression, info, declarations, make(map[types.Object]bool))
+}
+
+func resolvedCollectionTypeSeen(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Expr {
 	var operations []collectionOperation
 	for {
 		switch item := unparen(expression).(type) {
@@ -249,6 +256,9 @@ func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations 
 			expression = resolved
 		case *ast.SelectorExpr:
 			return collectionIndirection(declaredSelectorType(item, info), operations)
+		case *ast.IndexExpr:
+			operations = append(operations, collectionIndex)
+			expression = item.X
 		case *ast.SliceExpr:
 			operations = append(operations, collectionSlice)
 			expression = item.X

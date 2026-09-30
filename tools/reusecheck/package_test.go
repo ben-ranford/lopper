@@ -31,6 +31,7 @@ func TestPackageSourceProvenance(t *testing.T) {
 		{"source collection", "func stats() []s.DependencyStats { panic(0) }", "", "values := stats(); measured := values[0];"},
 		{"collection assertion", "type Stats = s.DependencyStats", ", raw any", "values, ok := raw.([]Stats); _ = ok; measured := values[0];"},
 		{"variadic parameter", "type Stats = s.DependencyStats", ", values ...Stats", "measured := values[0];"},
+		{"nested collection", "type Matrix [][]s.DependencyStats", ", values Matrix", "measured := values[0][1];"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()

@@ -80,24 +80,7 @@ func unwrapBinding(node ast.Node) (ast.Node, bool) {
 }
 
 func indexedValueType(indexed *ast.IndexExpr, commaOK bool, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	collection := underlyingCollectionType(resolvedCollectionType(indexed.X, info, declarations))
-	if mapping, ok := collection.(*ast.MapType); ok {
-		return mapping.Value
-	}
-	if commaOK {
-		return nil
-	}
-	if pointer, ok := collection.(*ast.StarExpr); ok {
-		array, valid := underlyingCollectionType(pointer.X).(*ast.ArrayType)
-		if !valid || array.Len == nil {
-			return nil
-		}
-		collection = array
-	}
-	if array, ok := collection.(*ast.ArrayType); ok {
-		return array.Elt
-	}
-	return nil
+	return indexedCollectionType(resolvedCollectionType(indexed.X, info, declarations), commaOK)
 }
 
 func receivedValueType(receive *ast.UnaryExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {

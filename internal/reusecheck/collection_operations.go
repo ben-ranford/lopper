@@ -12,6 +12,7 @@ const (
 	collectionDereference
 	collectionSlice
 	collectionAppend
+	collectionIndex
 )
 
 func collectionIndirection(expression ast.Expr, operations []collectionOperation) ast.Expr {
@@ -39,6 +40,29 @@ func collectionOperationType(expression ast.Expr, operation collectionOperation)
 		if slice, ok := underlyingCollectionType(expression).(*ast.ArrayType); ok && slice.Len == nil {
 			return slice
 		}
+	case collectionIndex:
+		return indexedCollectionType(expression, false)
+	}
+	return nil
+}
+
+func indexedCollectionType(expression ast.Expr, commaOK bool) ast.Expr {
+	collection := underlyingCollectionType(expression)
+	if mapping, ok := collection.(*ast.MapType); ok {
+		return mapping.Value
+	}
+	if commaOK {
+		return nil
+	}
+	if pointer, ok := collection.(*ast.StarExpr); ok {
+		array, valid := underlyingCollectionType(pointer.X).(*ast.ArrayType)
+		if !valid || array.Len == nil {
+			return nil
+		}
+		collection = array
+	}
+	if array, ok := collection.(*ast.ArrayType); ok {
+		return array.Elt
 	}
 	return nil
 }
@@ -72,8 +96,17 @@ func resolveCollectionIdentifier(ident *ast.Ident, info *types.Info, declaration
 		return nil, false
 	}
 	seen[object] = true
-	declaration := sourceBindingDeclaration(sourceCallableDeclaration(object, info, declarations), info, declarations, seen)
+	source := sourceCallableDeclaration(object, info, declarations)
+	_, commaOK := unwrapBinding(source)
+	declaration := sourceBindingDeclaration(source, info, declarations, seen)
+	if ranged, ok := declaration.(*ast.RangeStmt); ok {
+		return rangeValueTypeSeen(ranged, object, info, declarations, seen), false
+	}
 	if initializer := aliasInitializer(declaration); initializer != nil {
+		if indexed, ok := unparen(initializer).(*ast.IndexExpr); ok && commaOK {
+			collection := resolvedCollectionTypeSeen(indexed.X, info, declarations, seen)
+			return indexedCollectionType(collection, true), false
+		}
 		return initializer, true
 	}
 	return declaredCollectionType(declaration), false

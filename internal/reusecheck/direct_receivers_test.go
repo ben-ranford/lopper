@@ -24,12 +24,18 @@ func TestDirectStatsReceivers(t *testing.T) {
 }
 
 func TestDifferentIndexedStatsReceiversRemainAdvisory(t *testing.T) {
-	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values []s.DependencyStats", 1)
-	source = strings.ReplaceAll(source, "measured.", "values[0].")
-	source = strings.Replace(source, "values[0].UsedCount", "values[1].UsedCount", 1)
-	findings, err := Analyze("fixture.go", []byte(source))
-	if err != nil || len(findings) != 1 || !findings[0].Advisory {
-		t.Fatalf("findings=%+v err=%v", findings, err)
+	for _, indices := range [][2]string{
+		{"0", "1"}, {"i + 1", "i - 1"}, {"i + j", "j + i"},
+		{"-i", "+i"}, {"i + 1", "j + 1"}, {"(i + j) * 2", "i + (j * 2)"},
+	} {
+		source := strings.Replace(mappingFixture, "measured s.DependencyStats", "values []s.DependencyStats, i, j int", 1)
+		first, second := "values["+indices[0]+"]", "values["+indices[1]+"]"
+		source = strings.ReplaceAll(source, "measured.", first+".")
+		source = strings.Replace(source, first+".UsedCount", second+".UsedCount", 1)
+		findings, err := Analyze("fixture.go", []byte(source))
+		if err != nil || len(findings) != 1 || !findings[0].Advisory {
+			t.Fatalf("indices=%v findings=%+v err=%v", indices, findings, err)
+		}
 	}
 }
 
