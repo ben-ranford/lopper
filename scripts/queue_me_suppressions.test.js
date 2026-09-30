@@ -142,6 +142,19 @@ test('Go security tags in comments hold while detector literals remain data', ()
   assert.equal(scan('source.go', '//gosec:enable G204').length, 0);
 });
 
+test('prose hash-boundary examples are not promoted into suppression directives', () => {
+  assert.equal(scan('tracker.js', [
+    '// `url: https://example.test/#noqa` (YAML) or the literal character in',
+    '// `echo foo#nolint` (shell). Python and Ruby are also hash-only languages',
+  ].join('\n')).length, 0);
+  assert.equal(scan('workflow.yml', [
+    '# `url: https://example.test/#noqa` (YAML) or the literal',
+    '# character in `echo foo#nolint` (shell); shell list operators',
+  ].join('\n')).length, 0);
+  assert.equal(scan('tracker.js', '// The Go tag #nosec is an example.').length, 0);
+  assert.ok(scan('source.go', '// The Go tag #nosec remains a policy ambiguity.').length);
+});
+
 test('ESLint inline configuration disables only the top-level rule severity', () => {
   for (const rules of [
     'no-eval: "off"',

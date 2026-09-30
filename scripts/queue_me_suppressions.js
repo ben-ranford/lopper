@@ -180,19 +180,21 @@ async function readBlobBody({ github, owner, repo, entry, blob }) {
 async function fetchBlobs({ github, owner, repo, entries }) {
   const bodies = new Map();
   let apiRequests = 0;
-  for (const batch of blobBatches([...entries.values()])) {
+  await blobBatches([...entries.values()]).reduce(async (previousBatch, batch) => {
+    await previousBatch;
     const response = await github.graphql(blobQuery(batch), { owner, repo });
     apiRequests += 1;
     if (response?.errors?.length || response?.repository?.nameWithOwner?.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
       hold('missing repository or GraphQL errors while reading immutable blobs');
     }
-    for (const [index, entry] of batch.entries()) {
+    await batch.reduce(async (previousBlob, entry, index) => {
+      await previousBlob;
       const blob = response.repository[`b${index}`];
       const read = await readBlobBody({ github, owner, repo, entry, blob });
       bodies.set(entry.sha, read.body);
       apiRequests += read.apiRequests;
-    }
-  }
+    }, Promise.resolve());
+  }, Promise.resolve());
   const files = [...entries.values()].filter((entry) => entry.type === 'blob').map((entry) => ({ ...entry, body: bodies.get(entry.sha) }));
   return { files, apiRequests };
 }
@@ -220,8 +222,8 @@ function maskLiteralHeredocs(content) {
   return masked.join('\n');
 }
 
-function normalizeMarkers(content) {
-  let normalized = content;
+function normalizeMarkers(content, path = '') {
+  let normalized = /\.go$/i.test(path) ? content.replace(/#nosec\b/gi, 'NOSONAR') : content;
   for (const pattern of EXTRA_MARKER_PATTERNS) normalized = normalized.replace(pattern, 'nolint');
   normalized = normalized
     .replace(/\b(?:nolint|nosec|noqa|eslint-disable|ts-ignore|ts-expect-error)[\w-]*/gi, 'nolint')
@@ -341,16 +343,18 @@ function auditLiteralExecution(content, start, literal, path, shell, quote) {
 function inlineRuleColons(content) {
   const colons = [];
   let depth = 0;
-  for (let cursor = 0; cursor < content.length; cursor += 1) {
+  let cursor = 0;
+  while (cursor < content.length) {
     const character = content[cursor];
     if (['"', "'"].includes(character)) {
-      cursor = (quoteEnd(content, cursor, character, true, true) ?? content.length) - 1;
+      cursor = quoteEnd(content, cursor, character, true, true) ?? content.length;
       continue;
     }
     if (depth === 0 && content.startsWith('--', cursor)) break;
     if (character === ':' && depth === 0) colons.push(cursor);
     if ('[{'.includes(character)) depth += 1;
     if (']}'.includes(character)) depth -= 1;
+    cursor += 1;
   }
   return colons;
 }
@@ -366,8 +370,7 @@ function directiveInComment(comment) {
   // Sonar recognizes its marker anywhere in a comment, including prose.
   if (/\bNOSONAR\b/i.test(comment) || inlineESLintDisable(comment)) return true;
   const normalized = normalizeMarkers(comment);
-  return /#nolint\b/.test(normalized) ||
-    /^(?:\/\/|\/\*+|#)\s*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
+  return /^(?:\/\/|\/\*+|#)\s*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
 }
 
 function commentAt(content, cursor, prefixes, shell) {
@@ -384,7 +387,7 @@ function commentAt(content, cursor, prefixes, shell) {
 // quotes inside comments cannot start strings, and ordinary JS/Go quotes do
 // not cross physical lines. Only closed literals are accepted as data.
 function supplementalMarkers(content, path, shell) {
-  const normalized = normalizeMarkers(content);
+  const normalized = normalizeMarkers(content, path);
   const prefixes = tracker.commentPrefixesFor(shell ? `${path}.sh` : path);
   const lines = [];
   let cursor = 0;
@@ -440,7 +443,7 @@ function scanFile(entry) {
   const source = tracker.isSourceFile(path) || shell;
   if (!source) return [{ file: path, line: 1, reason: 'possible suppression in unsupported syntax requires review' }];
   const prepared = shell ? maskLiteralHeredocs(content) : content;
-  const normalized = normalizeMarkers(prepared);
+  const normalized = normalizeMarkers(prepared, path);
   const scannerPath = shell ? `${path}.sh` : path;
   const lines = new Set([...tracker.scanFullFileMarkers(normalized, scannerPath), ...supplementalMarkers(prepared, path, shell)]);
   return [...lines].map((line) => ({ file: path, line, reason: 'active or ambiguous analysis suppression (tracking metadata does not waive it)' }));

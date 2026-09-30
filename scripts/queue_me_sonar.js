@@ -156,7 +156,8 @@ function associatedPull(pulls, expected) {
     'the check base commit association does not match.');
 }
 
-async function githubInventory(api, headSHA, field, parameters = {}, page = 1, prior = [], expectedTotal) {
+async function githubInventory(api, headSHA, field, options = {}) {
+  const { parameters = {}, page = 1, prior = [], expectedTotal } = options;
   const endpoint = field === 'check_runs' ? 'check-runs' : 'check-suites';
   const result = await api(`commits/${headSHA}/${endpoint}`, {
     ...parameters, per_page: String(GITHUB_PAGE_SIZE), page: String(page),
@@ -175,7 +176,7 @@ async function githubInventory(api, headSHA, field, parameters = {}, page = 1, p
   if (all.length === total) {
     return all;
   }
-  return githubInventory(api, headSHA, field, parameters, page + 1, all, total);
+  return githubInventory(api, headSHA, field, { parameters, page: page + 1, prior: all, expectedTotal: total });
 }
 
 function normalizedRun(run, expected) {
@@ -276,7 +277,7 @@ async function githubCheck(api, expected, analyzed, forkState) {
   // List every suite, not just the trusted app: the runs endpoint silently limits
   // results to the newest 1000 suites. Our total bound proves it did not do so.
   const runs = await githubInventory(api, expected.headSHA, 'check_runs', {
-    filter: 'all', app_id: String(SONAR_APP_ID),
+    parameters: { filter: 'all', app_id: String(SONAR_APP_ID) },
   });
   const suites = await githubInventory(api, expected.headSHA, 'check_suites');
   const boundExpected = await ensureForkProof(api, expected, runs, suites, forkState);
@@ -330,7 +331,7 @@ async function fixedIssues(api, pullNumber) {
       keys.add(issue.key);
     }
     if (keys.size === total) {
-      return [...keys].sort();
+      return [...keys].sort((left, right) => left.localeCompare(right));
     }
   }
   throw pause('the issue inventory exceeds its pagination limit.');
