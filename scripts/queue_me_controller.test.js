@@ -190,6 +190,7 @@ function makeHarness(options = {}) {
     rest: {
       issues: {
         getLabel: async () => {
+          if (options.labelError) throw options.labelError;
           if (options.labelMissing) {
             const error = new Error('label missing');
             error.status = 404;
@@ -1667,6 +1668,17 @@ test('event reconciliation errors do not skip other retained requests', async (t
       assert.deepEqual(h.calls.merged, []);
     });
   }
+});
+
+test('label lookup failure happens only after retained requests are disarmed', async () => {
+  const h = makeHarness({
+    pulls: [makePull(10), makePull(20)], labelError: new Error('label API unavailable'),
+    initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} } },
+  });
+  await assert.rejects(runController(h.args), /label API unavailable/);
+  assert.deepEqual(h.calls.disabled, [10, 20]);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
 });
 
 test('old evidence cannot bless another head or base', async () => {
