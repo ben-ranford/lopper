@@ -42,8 +42,12 @@ explicit statistics result types. Instantiated generic aliases retain explicit
 alias targets with complete type-argument lists; unresolved type-parameter
 results and alias targets remain unknown.
 All production source files are scanned, including platform-specific files. When
-files declare conflicting package-level names or methods, each file is checked separately
-so an arbitrary build variant cannot supply cross-file provenance.
+files declare conflicting package-level names or methods, common files are checked
+together and accompany each conflicting file in its own analysis scope. Common
+files do not borrow ambiguous variant declarations, and findings are emitted once
+for each source location. Omitted declarations retain unknown name and method
+bindings so they cannot expose a builtin or imported helper by accident. Helper
+ownership follows physical files even when `//line` directives rename positions.
 
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.

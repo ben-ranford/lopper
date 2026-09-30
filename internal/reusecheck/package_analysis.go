@@ -30,7 +30,11 @@ func AnalyzeSources(sources map[string][]byte) ([]Finding, error) {
 	var findings []Finding
 	for _, files := range groups {
 		for _, group := range analysisGroups(files) {
-			findings = append(findings, packageFindings(group, fingerprints, fset)...)
+			fresh, positions, parseErr := parseAnalysisGroup(group, sources, fset)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			findings = append(findings, packageFindings(fresh, fingerprints, positions)...)
 		}
 	}
 	sort.Slice(findings, func(i, j int) bool {
@@ -60,9 +64,28 @@ func parseSourcePackages(sources map[string][]byte, fset *token.FileSet) (map[st
 	return groups, nil
 }
 
+// Binding and import normalization mutate AST links and qualifiers. Reparse
+// every scope from source bytes so shared files never retain a variant's state.
+func parseAnalysisGroup(group analysisGroup, sources map[string][]byte, original *token.FileSet) (analysisGroup, *token.FileSet, error) {
+	fset := token.NewFileSet()
+	fresh := analysisGroup{omitted: group.omitted}
+	for _, file := range group.files {
+		path := original.PositionFor(file.Pos(), false).Filename
+		parsed, err := parser.ParseFile(fset, path, sources[path], 0)
+		if err != nil {
+			return analysisGroup{}, nil, err
+		}
+		fresh.files = append(fresh.files, parsed)
+		if file == group.target {
+			fresh.target = parsed
+		}
+	}
+	return fresh, fset, nil
+}
+
 func fileFindings(file *ast.File, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
 	var findings []Finding
-	path := fset.Position(file.Pos()).Filename
+	path := fset.PositionFor(file.Pos(), false).Filename
 	for _, decl := range file.Decls {
 		for _, initializer := range packageInitializers(decl) {
 			scope := reportMappingScope{root: initializer.expression, name: initializer.name}
@@ -92,12 +115,20 @@ func localCollectionFindings(path string, fn *ast.FuncDecl, packages map[string]
 	return findings
 }
 
-func packageFindings(files []*ast.File, fingerprints map[string]contract, fset *token.FileSet) []Finding {
+func packageFindings(group analysisGroup, fingerprints map[string]contract, fset *token.FileSet) []Finding {
+	files := group.files
+	shadows := analysisShadows(files, group.omitted)
+	if shadows != nil {
+		files = append([]*ast.File{shadows}, files...)
+	}
 	info := packageBindings(files, fset)
+	bindAnalysisShadows(group.files, shadows, info)
 	packages := normalizePackageImports(files, info)
 	var findings []Finding
-	for _, file := range files {
-		findings = append(findings, fileFindings(file, packages, info, fingerprints, fset)...)
+	for _, file := range group.files {
+		if group.target == nil || file == group.target {
+			findings = append(findings, fileFindings(file, packages, info, fingerprints, fset)...)
+		}
 	}
 	return findings
 }
