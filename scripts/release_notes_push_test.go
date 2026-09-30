@@ -44,19 +44,26 @@ exec /bin/bash "$@"
 			command.Env = append(gitexec.SanitizedEnv(), "POISON=must-not-reach-child")
 			command.Stdin = strings.NewReader("preserved stdin\n")
 			output, err := command.CombinedOutput()
-			if exitCode == 0 && err != nil {
-				t.Fatalf("network helper failed: %v\n%s", err, output)
-			}
-			if exitCode != 0 {
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || exitErr.ExitCode() != exitCode {
-					t.Fatalf("network helper error = %v, want exit %d\n%s", err, exitCode, output)
-				}
-			}
+			assertReleaseNotesPushExitCode(t, output, err, exitCode)
 			want := "AUTHORIZATION: basic sentinel-header $literal `unevaluated`\n5\n/dev/null\n\nnever\nnever\npush\norigin\nHEAD:branch with * $literal\npreserved stdin\n"
 			if string(output) != want {
 				t.Fatalf("network helper output = %q, want %q", output, want)
 			}
 		})
+	}
+}
+
+func assertReleaseNotesPushExitCode(t *testing.T, output []byte, err error, wantExitCode int) {
+	t.Helper()
+
+	if wantExitCode == 0 {
+		if err != nil {
+			t.Fatalf("network helper failed: %v\n%s", err, output)
+		}
+		return
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != wantExitCode {
+		t.Fatalf("network helper error = %v, want exit %d\n%s", err, wantExitCode, output)
 	}
 }

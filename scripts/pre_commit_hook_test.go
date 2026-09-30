@@ -458,26 +458,31 @@ func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
 			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 			tempDir := t.TempDir()
 			output, err := hookCommandWithEnv(repoDir, []string{"TMPDIR=" + tempDir}, filepath.Join(hookDir, "pre-commit"))
-			if fixture.failure == "" {
-				if err != nil {
-					t.Fatalf("literal filenames blocked formatted files: %v\n%s", err, output)
-				}
-			} else {
-				if err == nil || strings.Contains(output, "running full make ci") {
-					t.Fatalf("invalid staged formatting permitted CI: %v\n%s", err, output)
-				}
-				for _, file := range files {
-					if !strings.Contains(output, fixture.failure+file) {
-						t.Errorf("missing staged formatting failure for %q:\n%s", file, output)
-					}
-				}
-			}
+			assertHookFormattingOutcome(t, files, fixture.failure, output, err)
 			entries, err := os.ReadDir(tempDir)
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("hook did not clean temporary files: %v, %v", entries, err)
 			}
 			assertHookWorktreeCleaned(t, repoDir)
 		})
+	}
+}
+
+func assertHookFormattingOutcome(t *testing.T, files []string, failure, output string, err error) {
+	t.Helper()
+	if failure == "" {
+		if err != nil {
+			t.Fatalf("literal filenames blocked formatted files: %v\n%s", err, output)
+		}
+		return
+	}
+	if err == nil || strings.Contains(output, "running full make ci") {
+		t.Fatalf("invalid staged formatting permitted CI: %v\n%s", err, output)
+	}
+	for _, file := range files {
+		if !strings.Contains(output, failure+file) {
+			t.Errorf("missing staged formatting failure for %q:\n%s", file, output)
+		}
 	}
 }
 
