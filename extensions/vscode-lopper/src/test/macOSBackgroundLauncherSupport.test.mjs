@@ -84,6 +84,34 @@ test("accepts only an explicit passed result and exact isolated process identity
   assert.equal(matchesTestProcess("/Applications/Code --user-data-dir=/tmp/profile", "/tmp/Code.app/Contents/MacOS/Electron", "/tmp/profile"), false);
 });
 
+test("cleanup bounds each escalation phase and rejects when processes never exit", async () => {
+  const events = [];
+  await assert.rejects(cleanupMatchingTestProcesses({
+    listProcesses: () => { events.push("list"); return [101]; },
+    terminate: (pid, signal) => events.push(`${pid}:${signal}`),
+    wait: async () => { events.push("wait"); },
+    attempts: 2,
+  }), /did not exit after bounded cleanup/);
+  assert.deepEqual(events, [
+    "list", "101:SIGTERM", "list", "wait", "list", "wait",
+    "list", "101:SIGKILL", "list", "wait", "list", "wait", "list",
+  ]);
+});
+
+test("cleanup stops polling immediately after the next observation finds no process", async () => {
+  let active = true;
+  let waits = 0;
+  const signals = [];
+  await cleanupMatchingTestProcesses({
+    listProcesses: () => active ? [101] : [],
+    terminate: (pid, signal) => signals.push([pid, signal]),
+    wait: async () => { waits += 1; active = false; },
+    attempts: 10,
+  });
+  assert.equal(waits, 1);
+  assert.deepEqual(signals, [[101, "SIGTERM"]]);
+});
+
 
 test("resolves app bundles independently of the downloaded executable name", () => {
   for (const executable of ["Electron", "Code", "Code - Insiders"]) {

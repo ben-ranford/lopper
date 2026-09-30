@@ -764,15 +764,19 @@ function executableCandidates(command: string, platform: NodeJS.Platform): strin
 
 async function extractZipArchive(archivePath: string, extractDir: string): Promise<void> {
   const zip = new AdmZip(archivePath);
-  for (const entry of zip.getEntries()) {
-    const destinationPath = archiveDestinationPath(extractDir, entry.entryName);
-    if (entry.isDirectory) {
-      await mkdir(destinationPath, { recursive: true });
-      continue;
-    }
-    await mkdir(path.dirname(destinationPath), { recursive: true });
-    await writeFile(destinationPath, entry.getData());
-  }
+  // Entries can share a destination after normalization, so preserve archive order.
+  await zip.getEntries().reduce<Promise<void>>(
+    (previous, entry) => previous.then(async () => {
+      const destinationPath = archiveDestinationPath(extractDir, entry.entryName);
+      if (entry.isDirectory) {
+        await mkdir(destinationPath, { recursive: true });
+        return;
+      }
+      await mkdir(path.dirname(destinationPath), { recursive: true });
+      await writeFile(destinationPath, entry.getData());
+    }),
+    Promise.resolve(),
+  );
 }
 
 async function extractTarArchive(archivePath: string, extractDir: string): Promise<void> {
@@ -876,7 +880,7 @@ function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): bo
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
-async function canonicalPath(targetPath: string): Promise<string> {
+function canonicalPath(targetPath: string): Promise<string> {
   return realpath(targetPath);
 }
 

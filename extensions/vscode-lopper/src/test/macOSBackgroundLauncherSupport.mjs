@@ -44,22 +44,21 @@ export function terminateMatchingTestProcesses(processOutput, executablePath, us
 }
 
 export async function cleanupMatchingTestProcesses({ listProcesses, terminate, wait, attempts = 10 }) {
-  let pids = listProcesses();
-  pids.forEach((pid) => terminate(pid, "SIGTERM"));
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    pids = listProcesses();
-    if (pids.length === 0) return;
-    await wait();
-  }
-  pids = listProcesses();
-  pids.forEach((pid) => terminate(pid, "SIGKILL"));
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (listProcesses().length === 0) return;
-    await wait();
-  }
+  listProcesses().forEach((pid) => terminate(pid, "SIGTERM"));
+  if (await waitForMatchingProcessesToExit(listProcesses, wait, attempts)) return;
+  listProcesses().forEach((pid) => terminate(pid, "SIGKILL"));
+  if (await waitForMatchingProcessesToExit(listProcesses, wait, attempts)) return;
   if (listProcesses().length > 0) {
     throw new Error("Isolated VS Code test processes did not exit after bounded cleanup");
   }
+}
+
+async function waitForMatchingProcessesToExit(listProcesses, wait, remainingAttempts) {
+  if (remainingAttempts <= 0 || Number.isNaN(remainingAttempts)) return false;
+  if (listProcesses().length === 0) return true;
+  // Each observation depends on the preceding delay; retries must not overlap.
+  await wait();
+  return waitForMatchingProcessesToExit(listProcesses, wait, remainingAttempts - 1);
 }
 
 // Join cleanup into the same promise as child exit: stopping open can emit exit

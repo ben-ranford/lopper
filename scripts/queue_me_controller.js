@@ -348,7 +348,7 @@ function followerStatusBody(leaderNumber, { conflictSkipped = false } = {}) {
   return `## Queue status\n\nQueued behind #${leaderNumber}. ${orderingSummary}`;
 }
 
-async function syncFollowerStatuses({
+function syncFollowerStatuses({
   github,
   owner,
   repo,
@@ -359,7 +359,10 @@ async function syncFollowerStatuses({
   conflictSkipped = false,
   disableFollowers = false,
 }) {
-  for (const follower of followers) {
+  // Serialize each follower's mutations: disable its auto-merge before
+  // publishing its position, and stop the queue refresh on the first error.
+  // Concurrent mutations can also exhaust GitHub's secondary rate limit.
+  return followers.reduce((previous, follower) => previous.then(async () => {
     if (disableFollowers) {
       await disableAutoMerge(github, owner, repo, follower.number);
     }
@@ -374,7 +377,7 @@ async function syncFollowerStatuses({
           eventQueueEntry?.number === follower.number && eventAction === 'labeled',
       },
     );
-  }
+  }), Promise.resolve());
 }
 
 async function disableAutoMerge(github, owner, repo, number) {

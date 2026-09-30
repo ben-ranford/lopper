@@ -767,6 +767,59 @@ test('controller disables followers and arms only the oldest numbered pull reque
   );
 });
 
+test('controller finishes each follower before starting the next GitHub mutation', async () => {
+  const followers = [makePull(20), makePull(30)];
+  const harness = makeHarness({
+    pulls: [makePull(10), ...followers],
+    eventPull: followers[0],
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+      30: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+    },
+  });
+  const { github } = harness.args;
+  const firstDisableStarted = Promise.withResolvers();
+  const firstDisableFinished = Promise.withResolvers();
+  const originalGraphql = github.graphql;
+  github.graphql = async (query, variables) => {
+    if (query.includes('DisableQueueAutoMerge') && variables.pullRequestId === 'PR_20') {
+      firstDisableStarted.resolve();
+      await firstDisableFinished.promise;
+    }
+    return originalGraphql(query, variables);
+  };
+  const completion = runController(harness.args);
+  await firstDisableStarted.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.calls.disabled, []);
+  assert.equal(commentsFor(harness, 20), '');
+  firstDisableFinished.resolve();
+  await completion;
+  assert.deepEqual(harness.calls.disabled, [20, 30]);
+  assert.match(commentsFor(harness, 20), /Queued behind #10/);
+});
+
+test('controller stops later followers when a status request fails', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10), makePull(20), makePull(30)],
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+      30: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+    },
+  });
+  const { github } = harness.args;
+  const originalPaginate = github.paginate;
+  const failure = new Error('status request failed');
+  github.paginate = (method, input) => input.issue_number === 20
+    ? Promise.reject(failure)
+    : originalPaginate(method, input);
+
+  await assert.rejects(runController(harness.args), failure);
+
+  assert.deepEqual(harness.calls.disabled, [20]);
+  assert.equal(commentsFor(harness, 30), '');
+});
+
 test('queue refresh updates a stale follower position after the leader advances', async () => {
   const formerLeader = makePull(3);
   const currentLeader = makePull(5);
