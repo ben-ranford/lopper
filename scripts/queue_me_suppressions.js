@@ -309,6 +309,10 @@ function literalEnd(content, start, path, shell) {
   const end = quoteEnd(content, start, delimiter, multiline, escapes);
   if (end === undefined) return undefined;
   const literal = content.slice(start, end);
+  if (pythonReplacementLiteral(content, start, literal, path) &&
+      unclosedPythonReplacement(literal.slice(delimiter.length, -delimiter.length), path)) {
+    hold(`ambiguous Python f-string replacement boundary in ${path}; syntax requires review`);
+  }
   if (hasSuspectMarker(literal)) auditLiteralExecution(content, start, literal, path, shell, quote);
   return end;
 }
@@ -329,10 +333,52 @@ function interpreterCommand(prefix) {
       (/^-[A-Za-z]+$/.test(option) && [...interpreter.flags].some((flag) => option.includes(flag)))));
 }
 
+function pythonReplacementLiteral(content, start, literal, path) {
+  if (!/\.py$/i.test(path) || !literal.replaceAll('{{', '').includes('{')) return false;
+  return ['fr', 'rf', 'f'].some((prefix) => start >= prefix.length &&
+    content.slice(start - prefix.length, start).toLowerCase() === prefix &&
+    !/\w/.test(content[start - prefix.length - 1] ?? ''));
+}
+
+function pythonExpressionDataEnd(content, start, path) {
+  const quote = content[start];
+  if (quote === '#') {
+    const newline = content.indexOf('\n', start);
+    return newline < 0 ? content.length : newline;
+  }
+  if (quote !== '"' && quote !== "'") return undefined;
+  const delimiter = content.startsWith(quote.repeat(3), start) ? quote.repeat(3) : quote;
+  const end = quoteEnd(content, start, delimiter, true, true);
+  if (end === undefined) hold(`ambiguous quoted data in Python f-string replacement in ${path}; syntax requires review`);
+  return end;
+}
+
+function unclosedPythonReplacement(content, path) {
+  let cursor = 0;
+  let depth = 0;
+  while (cursor < content.length) {
+    const dataEnd = depth > 0 ? pythonExpressionDataEnd(content, cursor, path) : undefined;
+    if (dataEnd !== undefined) {
+      cursor = dataEnd;
+      continue;
+    }
+    if (depth === 0 && ['{{', '}}'].includes(content.slice(cursor, cursor + 2))) {
+      cursor += 2;
+      continue;
+    }
+    if (content[cursor] === '{') depth += 1;
+    if (content[cursor] === '}') depth -= 1;
+    if (depth < 0) return true;
+    cursor += 1;
+  }
+  return depth !== 0;
+}
+
 function auditLiteralExecution(content, start, literal, path, shell, quote) {
   const prefix = content.slice(0, start).split('\n').at(-1);
   if (shell && interpreterCommand(prefix)) hold(`suppression in executable interpreter string in ${path}:${content.slice(0, start).split('\n').length}`);
   if (shell && quote === '"' && /\$\(|`/.test(literal)) hold(`possible suppression in executable string interpolation in ${path}; syntax requires review`);
+  if (pythonReplacementLiteral(content, start, literal, path)) hold(`possible suppression in executable Python f-string in ${path}; syntax requires review`);
   if (quote !== '`' || /\.go$/i.test(path) || !literal.includes('${')) return;
   const matches = [...literal.matchAll(/\$\{([^{}]*)\}/g)];
   const residue = literal.replace(/\$\{[^{}]*\}/g, '');

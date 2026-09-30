@@ -201,6 +201,40 @@ test('marker-bearing executable interpolation is an ambiguity hold', () => {
   assert.throws(() => scan('script.sh', "sh -c '\n# shellcheck disable=SC2016\necho test\n'"), /interpreter/);
 });
 
+test('marker-bearing Python replacement fields hold for every formatted string prefix', () => {
+  const probe = "def probe(user_input):\n    return f'''{eval(user_input) # nosec\n}'''\n";
+  assert.throws(() => scan('probe.py', probe), /Python f-string/);
+  for (const prefix of ['f', 'F', 'fr', 'fR', 'Fr', 'FR', 'rf', 'rF', 'Rf', 'RF']) {
+    for (const quote of ["'", '"', "'''", '"""']) {
+      assert.throws(() => scan('probe.py', `value = ${prefix}${quote}# nosec {value}${quote}`), /Python f-string/, `${prefix}${quote}`);
+    }
+  }
+  assert.throws(() => scan('probe.py', "value = f'''{{{value}}} # nosec'''"), /Python f-string/);
+});
+
+test('ordinary Python literals and escaped-brace-only formatted fixtures remain data', () => {
+  for (const prefix of ['', 'r', 'R', 'u', 'U']) {
+    assert.equal(scan('fixture.py', `value = ${prefix}'''{eval(user_input) # nosec\n}'''`).length, 0, prefix);
+  }
+  for (const prefix of ['f', 'F', 'fr', 'rf']) {
+    assert.equal(scan('fixture.py', `value = ${prefix}'''{{eval(user_input) # nosec}}'''`).length, 0, prefix);
+    assert.equal(scan('fixture.py', `value = ${prefix}'''# nosec'''`).length, 0, prefix);
+  }
+  assert.equal(scan('fixture.py', "value = f'''{calculate(value)}'''").length, 0);
+});
+
+test('Python quote reuse cannot prematurely hide a replacement suppression', () => {
+  for (const quote of ["'", '"', "'''", '"""']) {
+    const source = `def probe(user_input):\n    return f${quote}{eval(${quote}1 + ${quote} + user_input) # nosec\n}${quote}\n`;
+    assert.throws(() => scan('probe.py', source), /Python f-string/, quote);
+  }
+  const disguisedBrace = 'value = f\'\'\'{eval("}") + eval(\'\'\'1 + \'\'\' + user_input) # nosec\n}\'\'\'';
+  assert.throws(() => scan('probe.py', disguisedBrace), /Python f-string/);
+  const commentBrace = 'value = f\'\'\'{eval( # }\n\'\'\'1 + \'\'\' + user_input) # nosec\n}\'\'\'';
+  assert.throws(() => scan('probe.py', commentBrace), /Python f-string/);
+  assert.equal(scan('fixture.py', 'value = f"""{format("}")} # ordinary text"""\nexample = "# nosec"').length, 0);
+});
+
 test('interpreter short option clusters and supported code flags cannot hide markers', () => {
   for (const prefix of ['bash -ec', '/bin/bash -e -c', 'bash -c --', 'sh -ce', 'zsh -fc', 'python3 -I -c', 'ruby -we', 'node -pe', 'node --eval', 'node --print']) {
     assert.throws(() => scan('script.sh', `${prefix} '\n# shellcheck disable=SC2016\necho test\n'`), /interpreter/, prefix);
