@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestSortedImportUsesPreservesImportEvidence(t *testing.T) {
 	if first.Name != "symbol" {
 		t.Fatal("changing a result entry mutated the map entry")
 	}
-	if got := SortedImportUses(nil); got == nil || len(got) != 0 {
+	if got := SortedImportUses(nil); !reflect.DeepEqual(got, []report.ImportUse{}) {
 		t.Fatalf("empty imports = %#v, want allocated empty slice", got)
 	}
 }
@@ -40,7 +41,7 @@ func TestUniqueTrimmedStringsRetainsEncounterOrder(t *testing.T) {
 	if !slices.Equal(input, original) {
 		t.Fatal("deduplication mutated input")
 	}
-	if got := UniqueTrimmedStrings(nil); got == nil || len(got) != 0 {
+	if got := UniqueTrimmedStrings(nil); !reflect.DeepEqual(got, []string{}) {
 		t.Fatalf("empty strings = %#v, want allocated empty slice", got)
 	}
 }
