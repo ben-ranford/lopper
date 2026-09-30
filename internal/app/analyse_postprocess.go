@@ -71,11 +71,7 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.ResolveBaselineSnapshotPath)
 }
 
-var analysisBaselineWriter = immutableBaselineWriter[report.Report]{
-	keyName:       "baseline",
-	save:          report.SaveSnapshot,
-	appendWarning: appendBaselineSaveWarning,
-}
+var analysisBaselineWriter = newImmutableBaselineWriter("baseline", report.SaveSnapshot, appendBaselineSaveWarning)
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
 	return analysisBaselineWriter.saveIfNeeded(reportData, repoPath, baselineKeyRequestFromAnalyse(req), req.SaveBaseline, now)
@@ -157,6 +153,16 @@ type immutableBaselineWriter[T any] struct {
 	keyName       string
 	save          func(string, string, T, time.Time) (string, error)
 	appendWarning func(T, string) T
+}
+
+// newImmutableBaselineWriter constructs the format binding once. Request paths,
+// keys, enablement, and timestamps remain inputs to each save operation.
+func newImmutableBaselineWriter[T any](keyName string, save func(string, string, T, time.Time) (string, error), appendWarning func(T, string) T) immutableBaselineWriter[T] {
+	return immutableBaselineWriter[T]{
+		keyName:       keyName,
+		save:          save,
+		appendWarning: appendWarning,
+	}
 }
 
 func (writer immutableBaselineWriter[T]) saveIfNeeded(reportData T, repoPath string, req baselineKeyRequest, enabled bool, now time.Time) (T, error) {
