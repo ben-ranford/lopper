@@ -26,10 +26,12 @@ const EXTRA_MARKER_PATTERNS = [
   /\b(?:ruff|flake8)[ \t]*:[ \t]*noqa\b/gi,
   /\b(?:biome|deno-lint)-ignore\b/gi,
   /\b(?:oxlint-disable|ts-nocheck|noinspection)\b/gi,
+  /\bgosec[ \t]*:[ \t]*disable\b/gi,
 ];
 const SUSPECT_PATTERNS = [
   /\bno(?:lint|sec|sonar|qa)\b/i,
   /\b(?:eslint|oxlint)-disable\b/i,
+  /\beslint[ \t\r\n]+/i,
   /\bts-(?:ignore|expect-error|nocheck)\b/i,
   /\bcoverage[ \t]*:[ \t]*ignore\b/i,
   /\bpragma[ \t]*:[ \t]*no[ \t]+(?:cover|branch)\b/i,
@@ -146,28 +148,32 @@ function textBlobBody(blob, entry) {
   if (typeof blob.text !== 'string') hold(`missing text for immutable blob ${entry.path}`);
   const body = Buffer.from(blob.text, 'utf8');
   if (body.length !== entry.size || utf8.decode(body) !== blob.text) {
-    hold(`incomplete or non-lossless UTF-8 blob ${entry.path}`);
+    return undefined;
   }
   return body;
 }
 
-async function binaryBlobBody({ github, owner, repo, entry }) {
+async function restBlobBody({ github, owner, repo, entry }) {
   const { data } = await github.rest.git.getBlob({ owner, repo, file_sha: entry.sha });
   if (data?.sha !== entry.sha || data.size !== entry.size || data.encoding !== 'base64' || typeof data.content !== 'string') {
-    hold(`missing or mismatched binary blob ${entry.path}`);
+    hold(`missing or mismatched REST blob ${entry.path}`);
   }
-  if (data.content.length > MAX_BLOB_BYTES * 2) hold(`oversized binary blob response ${entry.path}`);
+  if (data.content.length > MAX_BLOB_BYTES * 2) hold(`oversized REST blob response ${entry.path}`);
   const encoded = data.content.replaceAll('\r', '').replaceAll('\n', '');
   const body = Buffer.from(encoded, 'base64');
-  if (body.length !== entry.size || body.toString('base64') !== encoded) hold(`invalid binary blob encoding ${entry.path}`);
+  if (body.length !== entry.size || body.toString('base64') !== encoded) hold(`invalid REST blob encoding ${entry.path}`);
   return body;
 }
 
 async function readBlobBody({ github, owner, repo, entry, blob }) {
   assertBlob(blob, entry);
-  if (!blob.isBinary) return { body: textBlobBody(blob, entry), apiRequests: 0 };
-  if (blob.text !== null) hold(`inconsistent binary blob ${entry.path}`);
-  const body = await binaryBlobBody({ github, owner, repo, entry });
+  if (blob.isBinary && blob.text !== null) hold(`inconsistent binary blob ${entry.path}`);
+  if (!blob.isBinary) {
+    const body = textBlobBody(blob, entry);
+    if (body !== undefined) return { body, apiRequests: 0 };
+  }
+  // Binary data and transformed text require the immutable base64 representation.
+  const body = await restBlobBody({ github, owner, repo, entry });
   return { body, apiRequests: 1 };
 }
 
@@ -260,7 +266,7 @@ function configDirective(line) {
   const patterns = [
     /\bexclude[-_](?:rules|lines|patterns)["']?[ \t]*[=:]/i,
     /\b(?:skip[-_](?:files|dirs)|disable[-_]error[-_]code)["']?[ \t]*[=:]/i,
-    /\b(?:exclusions|omit|ignores?)["']?[ \t]*[=:]/i,
+    /\b(?:exclude|exclusions|omit|ignores?)["']?[ \t]*[=:]/i,
     /^[ \t]*disable[ \t]*[=:]/i,
     /\bGOSEC_EXCLUDE_RULES[ \t]*[?:+]?=[ \t]*\S/i,
   ];
@@ -305,10 +311,25 @@ function literalEnd(content, start, path, shell) {
   return end;
 }
 
+function interpreterCommand(prefix) {
+  const tokens = prefix.trim().split(/\s+/);
+  const options = [];
+  while (tokens.at(-1)?.startsWith('-')) options.push(tokens.pop());
+  const command = (tokens.pop() ?? '').split('/').at(-1);
+  const interpreters = [
+    { command: /^(?:ba|k|z)?sh$/, flags: 'c', long: [] },
+    { command: /^python[\d.]*$/, flags: 'c', long: [] },
+    { command: /^ruby$/, flags: 'e', long: [] },
+    { command: /^node$/, flags: 'ep', long: ['--eval', '--print'] },
+  ];
+  return interpreters.some((interpreter) => interpreter.command.test(command) &&
+    options.some((option) => interpreter.long.includes(option) ||
+      (/^-[A-Za-z]+$/.test(option) && [...interpreter.flags].some((flag) => option.includes(flag)))));
+}
+
 function auditLiteralExecution(content, start, literal, path, shell, quote) {
   const prefix = content.slice(0, start).split('\n').at(-1);
-  const interpreter = /\b(?:(?:ba|k|z)?sh|python[\d.]*|ruby)[ \t]+-c[ \t]*$|\bnode[ \t]+-[ep][ \t]*$/;
-  if (shell && interpreter.test(prefix)) hold(`suppression in executable interpreter string in ${path}:${content.slice(0, start).split('\n').length}`);
+  if (shell && interpreterCommand(prefix)) hold(`suppression in executable interpreter string in ${path}:${content.slice(0, start).split('\n').length}`);
   if (shell && quote === '"' && /\$\(|`/.test(literal)) hold(`possible suppression in executable string interpolation in ${path}; syntax requires review`);
   if (quote !== '`' || /\.go$/i.test(path) || !literal.includes('${')) return;
   const matches = [...literal.matchAll(/\$\{([^{}]*)\}/g)];
@@ -317,11 +338,36 @@ function auditLiteralExecution(content, start, literal, path, shell, quote) {
   if (residue.includes('${') || active) hold(`possible suppression in executable string interpolation in ${path}; syntax requires review`);
 }
 
+function inlineRuleColons(content) {
+  const colons = [];
+  let depth = 0;
+  for (let cursor = 0; cursor < content.length; cursor += 1) {
+    const character = content[cursor];
+    if (['"', "'"].includes(character)) {
+      cursor = (quoteEnd(content, cursor, character, true, true) ?? content.length) - 1;
+      continue;
+    }
+    if (depth === 0 && content.startsWith('--', cursor)) break;
+    if (character === ':' && depth === 0) colons.push(cursor);
+    if ('[{'.includes(character)) depth += 1;
+    if (']}'.includes(character)) depth -= 1;
+  }
+  return colons;
+}
+
+function inlineESLintDisable(comment) {
+  const prefix = /^\/\*+\s*eslint\s+/.exec(comment);
+  if (!prefix) return false;
+  const content = comment.slice(prefix[0].length, -2);
+  return inlineRuleColons(content).some((cursor) => disabledValueAt(content, cursor + 1));
+}
+
 function directiveInComment(comment) {
   // Sonar recognizes its marker anywhere in a comment, including prose.
-  if (/\bNOSONAR\b/i.test(comment)) return true;
+  if (/\bNOSONAR\b/i.test(comment) || inlineESLintDisable(comment)) return true;
   const normalized = normalizeMarkers(comment);
-  return /^(?:\/\/|\/\*+|#)\s*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
+  return /#nolint\b/.test(normalized) ||
+    /^(?:\/\/|\/\*+|#)\s*@?nolint\b|^[ \t]*\*[ \t]*nolint\b/m.test(normalized);
 }
 
 function commentAt(content, cursor, prefixes, shell) {

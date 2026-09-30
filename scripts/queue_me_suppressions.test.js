@@ -125,6 +125,45 @@ test('quoted Go raw fixtures and shell strings are inert but following markers r
   assert.equal(scan('fixture.js', 'const sample = "// eslint-disable";\n').length, 0);
 });
 
+test('Go security tags in comments hold while detector literals remain data', () => {
+  for (const comment of [
+    '// #nosec G204',
+    'run() // #nosec G204',
+    '//gosec:disable G204',
+    '/* #nosec G204 */',
+    '/* rationale\n #nosec G204 */',
+    '/* rationale #nosec G204 */',
+  ]) assert.ok(scan('source.go', comment).length, comment);
+  for (const marker of ['// #nosec G204', '//gosec:disable G204']) {
+    assert.equal(scan('fixture_test.go', `const fixture = ${JSON.stringify(marker)}`).length, 0);
+    assert.equal(scan('fixture_test.go', 'const fixture = `' + marker + '`').length, 0);
+  }
+  assert.equal(scan('source.go', '// Explain what the nosec directive means.').length, 0);
+  assert.equal(scan('source.go', '//gosec:enable G204').length, 0);
+});
+
+test('ESLint inline configuration disables only the top-level rule severity', () => {
+  for (const rules of [
+    'no-eval: "off"',
+    'no-eval: 0',
+    'no-eval: ["off", { allow: true }]',
+    'no-eval: [0]',
+    'curly: ["error", { option: "off" }], no-eval: 0',
+    '"@plugin/no-eval": "off" -- retained rationale',
+    '\n no-eval:\n [0]\n',
+  ]) assert.ok(scan('source.js', `/* eslint ${rules} */\neval("hi");`).length, rules);
+  for (const rules of [
+    'no-eval: 1',
+    'no-eval: 2',
+    'no-eval: "warn"',
+    'no-eval: ["error", { option: "off", nested: { option: 0 } }]',
+    'no-eval: [2, "off"]',
+    'curly: 2 -- An example disabled rule would say no-eval: 0.',
+  ]) assert.equal(scan('source.js', `/* eslint ${rules} */\neval("hi");`).length, 0, rules);
+  assert.equal(scan('fixture.js', 'const fixture = \'/* eslint no-eval: "off" */\';').length, 0);
+  assert.equal(scan('fixture.js', 'const fixture = `/* eslint no-eval: 0 */`;').length, 0);
+});
+
 test('comment apostrophes and JavaScript regex quotes cannot hide later directives', () => {
   for (const content of [
     "/* don't mask the next line */\n// eslint-disable-next-line no-undef\nmissing();",
@@ -149,6 +188,15 @@ test('marker-bearing executable interpolation is an ambiguity hold', () => {
   assert.throws(() => scan('script.sh', "sh -c '\n# shellcheck disable=SC2016\necho test\n'"), /interpreter/);
 });
 
+test('interpreter short option clusters and supported code flags cannot hide markers', () => {
+  for (const prefix of ['bash -ec', '/bin/bash -e -c', 'bash -c --', 'sh -ce', 'zsh -fc', 'python3 -I -c', 'ruby -we', 'node -pe', 'node --eval', 'node --print']) {
+    assert.throws(() => scan('script.sh', `${prefix} '\n# shellcheck disable=SC2016\necho test\n'`), /interpreter/, prefix);
+  }
+  assert.throws(() => scan('script.sh', 'node -e \'/* eslint no-eval: "off" */ eval("hi")\''), /interpreter/);
+  assert.equal(scan('script.sh', 'example=\'/* eslint no-eval: "off" */\'').length, 0);
+  assert.equal(scan('script.sh', "value='\n# shellcheck disable=SC2016\n'").length, 0);
+});
+
 test('literal cat heredocs are data; shell interpreter heredocs and active following lines hold', () => {
   assert.equal(scan('fixture.sh', "cat <<'DATA'\n# shellcheck disable=SC2016\nDATA\n").length, 0);
   assert.equal(scan('fixture.sh', "bash <<'DATA'\n# shellcheck disable=SC2016\nDATA\n").length, 1);
@@ -168,6 +216,7 @@ test('configuration exclusions and unsupported marker syntax remain actionable h
     ['.golangci.yml', 'linters:\n  exclusions:\n    paths: [src]'],
     ['.golangci.yml', 'linters:\n  disable:\n    - gosec\n'],
     ['pyproject.toml', '[tool.ruff.lint]\nignore = ["E501"]\n'],
+    ['pyproject.toml', '[tool.ruff]\nexclude = ["src/**"]\n'],
     ['.shellcheckrc', 'disable=SC2016'],
     ['Makefile', 'GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/main\\.go:G204'],
     ['code.unknown', '# nolint:all'],
@@ -216,7 +265,7 @@ test('wrong commit, missing immutable evidence and GraphQL errors cannot pass', 
   }
 });
 
-test('blob responses must be complete, exact and lossless UTF-8', async () => {
+test('missing or untrusted blob metadata never triggers a REST fallback', async () => {
   const mutations = [
     () => null,
     (blob) => ({ ...blob, __typename: 'Tree' }),
@@ -226,11 +275,38 @@ test('blob responses must be complete, exact and lossless UTF-8', async () => {
     (blob) => ({ ...blob, isTruncated: undefined }),
     (blob) => ({ ...blob, isBinary: null }),
     (blob) => ({ ...blob, text: null }),
-    (blob) => ({ ...blob, text: '' }),
-    (blob) => ({ ...blob, text: '\ud800' }),
   ];
   for (const blob of mutations) {
-    await assert.rejects(verifySuppressions(fixture({ 'a.go': 'abc' }, { blob }).args), /Suppression audit held/);
+    const harness = fixture({ 'a.go': 'abc' }, { blob });
+    await assert.rejects(verifySuppressions(harness.args), /Suppression audit held/);
+    assert.equal(harness.calls.filter(([kind]) => kind === 'binary').length, 0);
+  }
+});
+
+test('lossy GraphQL text falls back to exact immutable REST bytes', async () => {
+  for (const text of ['', '\ud800']) {
+    const harness = fixture({ 'a.go': 'abc' }, { blob: (blob) => ({ ...blob, text }) });
+    const evidence = await verifySuppressions(harness.args);
+    assert.equal(evidence.apiRequests, 4);
+    assert.equal(harness.calls.filter(([kind]) => kind === 'binary').length, 1);
+    assert.equal(harness.calls.at(-1)[1].file_sha, harness.files[0].sha);
+  }
+  await assert.rejects(verifySuppressions(fixture({ 'a.go': '//nolint:all' }, {
+    blob: (blob) => ({ ...blob, text: '' }),
+  }).args), /a.go:1/);
+});
+
+test('lossy-text REST fallback still requires exact identity and canonical encoding', async () => {
+  for (const binary of [
+    (data) => ({ ...data, sha: POLICY }),
+    (data) => ({ ...data, size: 99 }),
+    (data) => ({ ...data, encoding: 'none' }),
+    (data) => ({ ...data, content: data.content + '!' }),
+    (data) => ({ ...data, content: '' }),
+  ]) {
+    const harness = fixture({ 'a.go': 'abc' }, { blob: (blob) => ({ ...blob, text: '' }), binary });
+    await assert.rejects(verifySuppressions(harness.args), /REST blob/);
+    assert.equal(harness.calls.filter(([kind]) => kind === 'binary').length, 1);
   }
 });
 
@@ -255,7 +331,7 @@ test('binary data uses only its immutable REST blob and validates canonical byte
     (data) => ({ ...data, content: data.content + '!' }),
     (data) => ({ ...data, content: '' }),
   ]) {
-    await assert.rejects(verifySuppressions(fixture({ 'image.gif': Buffer.from('GIF89a\0') }, { binary }).args), /binary blob/);
+    await assert.rejects(verifySuppressions(fixture({ 'image.gif': Buffer.from('GIF89a\0') }, { binary }).args), /REST blob/);
   }
 });
 

@@ -733,6 +733,19 @@ async function advanceQueuedPull({
   return false;
 }
 
+async function disarmQueuedPulls(github, owner, repo, pulls, failures) {
+  await pulls.reduce((previous, pull) => previous.then(async () => {
+    try {
+      await disableAutoMerge(github, owner, repo, pull.number);
+    } catch (error) {
+      failures.push(`#${pull.number}: ${safeError(error)}`);
+    }
+  }), Promise.resolve());
+  if (failures.length) {
+    throw new Error(`Queue reconciliation failed; no admission attempted. ${failures.join('; ')}`);
+  }
+}
+
 async function runController({
   github,
   context,
@@ -748,6 +761,7 @@ async function runController({
   const { data: repository } = await github.rest.repos.get({ owner, repo });
   const defaultBranch = repository.default_branch;
   const eventPull = context.payload.pull_request;
+  const reconciliationFailures = [];
   await reconcileEventPull({
     github,
     context,
@@ -756,6 +770,8 @@ async function runController({
     queueLabel,
     defaultBranch,
     eventPull,
+  }).catch((error) => {
+    reconciliationFailures.push(`Event PR #${eventPull?.number}: ${safeError(error)}`);
   });
 
   const pulls = await github.paginate(github.rest.pulls.list, {
@@ -769,8 +785,7 @@ async function runController({
   const labeled = pulls.filter((pull) => hasLabel(pull, queueLabel));
   // Revoke every retained request before any expensive audit, including
   // followers and retargeted PRs that no longer belong in this queue.
-  await labeled.reduce((previous, pull) => previous.then(() =>
-    disableAutoMerge(github, owner, repo, pull.number)), Promise.resolve());
+  await disarmQueuedPulls(github, owner, repo, labeled, reconciliationFailures);
   const queued = sortQueuedPulls(labeled.filter((pull) => pull.base?.ref === defaultBranch));
   if (queued.length === 0) {
     core.notice(`No open ${defaultBranch} pull requests carry the ${queueLabel} label.`);

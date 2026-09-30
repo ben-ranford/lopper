@@ -201,6 +201,7 @@ function makeHarness(options = {}) {
         },
         listComments: async () => {},
         createComment: async (input) => {
+          if (options.commentErrors?.[input.issue_number]) throw options.commentErrors[input.issue_number];
           const comment = { id: calls.comments.length + 1, body: input.body, user: { type: 'Bot' } };
           comments.set(input.issue_number, [comment]);
           calls.comments.push({ number: input.issue_number, body: input.body });
@@ -307,6 +308,7 @@ function makeHarness(options = {}) {
       }
       if (query.includes('DisableQueueAutoMerge')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
+        if (options.disableErrors?.[state.number]) throw options.disableErrors[state.number];
         if (options.disableError) throw options.disableError;
         state.autoMergeRequest = null;
         calls.disabled.push(state.number);
@@ -1636,6 +1638,35 @@ test('failed revocation stops the queue before any evidence or merge', async () 
   await assert.rejects(runController(h.args), /cannot disarm/);
   assert.deepEqual(h.calls.evidence, []);
   assert.deepEqual(h.calls.merged, []);
+});
+
+test('failed revocation still attempts every later retained request before aborting', async () => {
+  const h = makeHarness({
+    pulls: [makePull(10), makePull(20), makePull(30)],
+    initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} }, 30: { autoMergeRequest: {} } },
+    disableErrors: { 10: new Error('first failure'), 30: new Error('last failure') },
+  });
+  await assert.rejects(runController(h.args), /#10: first failure; #30: last failure/);
+  assert.deepEqual(h.calls.disabled, [20]);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+test('event reconciliation errors do not skip other retained requests', async (t) => {
+  for (const failure of ['revocation', 'comment']) {
+    await t.test(failure, async () => {
+      const h = makeHarness({
+        pulls: [makePull(20)], eventPull: makePull(10, { labels: [] }), action: 'unlabeled',
+        initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} } },
+        disableErrors: failure === 'revocation' ? { 10: new Error('event failure') } : {},
+        commentErrors: failure === 'comment' ? { 10: new Error('event failure') } : {},
+      });
+      await assert.rejects(runController(h.args), /Event PR #10: event failure/);
+      assert.ok(h.calls.disabled.includes(20));
+      assert.deepEqual(h.calls.evidence, []);
+      assert.deepEqual(h.calls.merged, []);
+    });
+  }
 });
 
 test('old evidence cannot bless another head or base', async () => {
