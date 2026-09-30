@@ -14,6 +14,12 @@ type ResolveOptions struct {
 	Disable []string
 }
 
+// Overrides is one independently validated source of explicit feature choices.
+type Overrides struct {
+	Enable  []string
+	Disable []string
+}
+
 type Set struct {
 	enabled      map[string]bool
 	byCode       map[string]Flag
@@ -60,6 +66,27 @@ func (r *Registry) Resolve(opts ResolveOptions) (Set, error) {
 		byName:       copyFlagMap(r.byName),
 		deprecations: deprecations,
 	}, nil
+}
+
+// ResolveLayers applies explicit layers in increasing precedence after opts.
+// Each layer retains its validation and deprecation diagnostics even when a
+// later layer overrides its choice for the same canonical feature code.
+func (r *Registry) ResolveLayers(opts ResolveOptions, layers ...Overrides) (Set, error) {
+	if r == nil {
+		r = DefaultRegistry()
+	}
+	resolved, err := r.Resolve(opts)
+	if err != nil {
+		return Set{}, err
+	}
+	for _, layer := range layers {
+		deprecations, err := r.applyExplicitOverrides(resolved.enabled, layer.Enable, layer.Disable)
+		if err != nil {
+			return Set{}, err
+		}
+		resolved.deprecations = mergeDeprecatedReferences(resolved.deprecations, deprecations)
+	}
+	return resolved, nil
 }
 
 func (r *Registry) channelDefaults(channel Channel) map[string]bool {

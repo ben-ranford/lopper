@@ -7,9 +7,14 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/app"
+	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-const snapshotOutputPathUsage = "snapshot output path"
+const (
+	snapshotOutputPathUsage = "snapshot output path"
+	staveTUIFeatureName     = "stave-tui-preview"
+)
 
 func parseTUI(args []string, req app.Request) (app.Request, error) {
 	normalizedArgs, err := normalizeArgs(args)
@@ -22,6 +27,7 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	fs.SetOutput(io.Discard)
 
 	repoPath := fs.String("repo", req.RepoPath, "repository path")
+	configPath := fs.String("config", "", "config file path (relative to repository)")
 	languageFlag := fs.String("language", req.TUI.Language, "language adapter")
 	top := fs.Int("top", req.TUI.TopN, "top N dependencies")
 	filter := fs.String("filter", req.TUI.Filter, "filter dependencies")
@@ -72,14 +78,36 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 		BaselineStorePath: strings.TrimSpace(*baselineStorePath),
 		BaselineKey:       strings.TrimSpace(*baselineKey),
 	}
-	features, err := resolveFeatureRefs(enableFeatures.Values(), disableFeatures.Values())
+	features, useStave, err := resolveTUIFeatures(*repoPath, *configPath, enableFeatures.Values(), disableFeatures.Values())
 	if err != nil {
 		return req, err
 	}
 	req.TUI.Features = features
-	req.TUI.UseStavePreview = featureExplicitlyEnabled(enableFeatures.Values(), "stave-tui-preview")
+	req.TUI.UseStavePreview = useStave
 
 	return req, nil
+}
+
+func resolveTUIFeatures(repoPath, configPath string, enable, disable []string) (featureflags.Set, bool, error) {
+	config, err := thresholds.LoadWithPolicy(strings.TrimSpace(repoPath), configPath)
+	if err != nil {
+		return featureflags.Set{}, false, err
+	}
+	channel, lock, err := resolveFeatureBuildContext()
+	if err != nil {
+		return featureflags.Set{}, false, err
+	}
+	features, err := featureRegistryProvider().ResolveLayers(featureflags.ResolveOptions{
+		Channel: channel,
+		Lock:    lock,
+		Enable:  config.Features.Enable,
+		Disable: config.Features.Disable,
+	}, featureflags.Overrides{Enable: enable, Disable: disable})
+	if err != nil {
+		return featureflags.Set{}, false, err
+	}
+	explicit := featureExplicitlyEnabled(enable, staveTUIFeatureName) || featureExplicitlyEnabled(config.Features.Enable, staveTUIFeatureName)
+	return features, explicit && features.Enabled(staveTUIFeatureName), nil
 }
 
 func featureExplicitlyEnabled(refs []string, canonical string) bool {
