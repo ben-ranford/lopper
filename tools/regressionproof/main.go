@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
@@ -35,6 +36,11 @@ const (
 )
 
 type testAction string
+
+type declaredTestResult struct {
+	action testAction
+	output []byte
+}
 
 const (
 	testActionPass testAction = "pass"
@@ -238,7 +244,7 @@ func (r *runner) prove(ctx context.Context, repoRoot, baseSHA string, declaratio
 		if err := r.compilePackage(ctx, worktreeRoot, declaration.PackagePath); err != nil {
 			return finish(fmt.Errorf("base regression test package %s must compile before proof: %w", declaration.PackagePath, err))
 		}
-		if err := r.expectFailure(ctx, worktreeRoot, basePackage, declaration); err != nil {
+		if err := r.expectFailure(ctx, worktreeRoot, basePackage, declaration, stdout); err != nil {
 			return finish(err)
 		}
 		headPackage, err := r.resolvePackage(ctx, repoRoot, declaration.PackagePath)
@@ -403,14 +409,14 @@ func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath strin
 	return err
 }
 
-func (r *runner) expectFailure(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) error {
-	action, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
+func (r *runner) expectFailure(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration, stdout io.Writer) error {
+	result, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
 	if err != nil {
 		return fmt.Errorf("run base regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 	}
-	switch action {
+	switch result.action {
 	case testActionFail:
-		return nil
+		return writeBaseFailureOutput(stdout, declaration, result.output)
 	case testActionSkip:
 		return fmt.Errorf("base regression test must fail instead of skip: %s::%s", declaration.PackagePath, declaration.TestName)
 	case testActionPass:
@@ -419,34 +425,48 @@ func (r *runner) expectFailure(ctx context.Context, repoRoot, expectedPackage st
 	return fmt.Errorf("base regression test finished without a recognized outcome: %s::%s", declaration.PackagePath, declaration.TestName)
 }
 
+func writeBaseFailureOutput(stdout io.Writer, declaration prmetadata.RegressionDeclaration, output []byte) error {
+	if _, err := fmt.Fprintf(stdout, "Expected base failure: %s::%s\n", declaration.PackagePath, declaration.TestName); err != nil {
+		return fmt.Errorf("write base regression failure status: %w", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		// Escape controls and hashes so modern and legacy workflow commands stay literal.
+		quoted := strings.ReplaceAll(strconv.Quote(line), "#", `\x23`)
+		if _, err := fmt.Fprintf(stdout, "base-test-output: %s\n", quoted); err != nil {
+			return fmt.Errorf("write base regression failure output: %w", err)
+		}
+	}
+	return nil
+}
+
 func (r *runner) expectPass(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) error {
-	action, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
+	result, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
 	if err != nil {
 		return fmt.Errorf("pull request regression test must pass on head for %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 	}
-	if action == testActionSkip {
+	if result.action == testActionSkip {
 		return fmt.Errorf("pull request regression test must pass instead of skip on head for %s::%s", declaration.PackagePath, declaration.TestName)
 	}
-	if action != testActionPass {
+	if result.action != testActionPass {
 		return fmt.Errorf("pull request regression test must pass on head for %s::%s", declaration.PackagePath, declaration.TestName)
 	}
 	return nil
 }
 
-func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
+func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) (declaredTestResult, error) {
 	output, err := r.runGo(ctx, repoRoot, regressionProofGoTestArgs("-count=1", "-json", "-run", "^"+declaration.TestName+"$", declaration.PackagePath))
 	action, parseErr := parseDeclaredTestAction(output, expectedPackage, declaration.TestName)
 	if parseErr != nil {
 		if err != nil {
-			return "", errors.Join(err, parseErr)
+			return declaredTestResult{}, errors.Join(err, parseErr)
 		}
-		return "", parseErr
+		return declaredTestResult{}, parseErr
 	}
 	var exitErr *exec.ExitError
 	if err != nil && (action == testActionPass || !errors.As(err, &exitErr)) {
-		return "", err
+		return declaredTestResult{}, err
 	}
-	return action, nil
+	return declaredTestResult{action: action, output: output}, nil
 }
 
 func regressionProofGoTestArgs(args ...string) []string {
