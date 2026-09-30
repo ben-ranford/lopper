@@ -33,16 +33,25 @@ preflight_process_tree() {
 	return
 }
 
+signal_preflight_readers() {
+	reader_signal=$1
+	while IFS= read -r reader_pid; do
+		case "$reader_pid" in
+			''|0|*[!0-9]*) continue ;;
+			*) kill "-$reader_signal" "$reader_pid" 2>/dev/null || : ;;
+		esac
+	done
+	return 0
+}
+
 terminate_preflight_reader() (
 	# Keep the original descendants even if TERM makes their parent exit.
 	reader_pids=$(preflight_process_tree "$1")
-	# shellcheck disable=SC2086 # The tree contains only numeric process IDs.
-	kill -TERM $reader_pids 2>/dev/null || :
+	printf '%s\n' "$reader_pids" | signal_preflight_readers TERM
 	sleep 1
 	# Include any descendants created during the bounded grace period.
-	reader_pids="$reader_pids $(preflight_process_tree "$1")"
-	# shellcheck disable=SC2086
-	kill -KILL $reader_pids 2>/dev/null || :
+	updated_reader_pids=$(preflight_process_tree "$1")
+	printf '%s\n' "$reader_pids" "$updated_reader_pids" | signal_preflight_readers KILL
 	return 0
 )
 

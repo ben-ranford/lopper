@@ -197,11 +197,10 @@ func TestHooksUninstallIgnoresCommandScopedHookPathOverride(t *testing.T) {
 func TestHooksUninstallIgnoresGlobalConfigFileSelector(t *testing.T) {
 	repo := newHookFixture(t)
 	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
-	home := t.TempDir()
-	runCommand(t, repo, "git", "config", "--file", filepath.Join(home, ".gitconfig"), "core.hooksPath", managed)
+	env := hookHomeConfigEnvironment(t, repo, managed, "HOME")
 	override := filepath.Join(t.TempDir(), "empty.cfg")
 	writeFile(t, override, "")
-	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GIT_CONFIG_GLOBAL=" + override}
+	env = append(env, "GIT_CONFIG_GLOBAL="+override)
 	output, err := hookCommandWithEnv(repo, env, "make", "hooks-uninstall")
 	if err != nil {
 		t.Fatalf("uninstall with global Git config selector: %v\n%s", err, output)
@@ -218,8 +217,7 @@ func TestHooksCleanupIgnoresSystemConfigFileSelector(t *testing.T) {
 	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
 	override := filepath.Join(t.TempDir(), "system.cfg")
 	runCommand(t, repo, "git", "config", "--file", override, "core.hooksPath", managed)
-	home := t.TempDir()
-	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GIT_CONFIG_SYSTEM=" + override}
+	env := []string{"XDG_CONFIG_HOME=", "GIT_CONFIG_SYSTEM=" + override}
 	output, err := hookCommandWithEnv(repo, env, "sh", "scripts/cleanup-hook-snapshot.sh")
 	if err != nil {
 		t.Fatalf("cleanup with system Git config selector: %v\n%s", err, output)
@@ -299,9 +297,8 @@ func TestHooksCleanupIgnoresNoSystemConfigSelector(t *testing.T) {
 	bin := t.TempDir()
 	// Model installed system configuration without modifying the host's Git config.
 	writeFileMode(t, filepath.Join(bin, "git"), "#!/bin/sh\nGIT_CONFIG_SYSTEM=\"$TEST_SYSTEM_CONFIG\" exec \"$TEST_REAL_GIT\" \"$@\"\n", 0o755)
-	home := t.TempDir()
 	env := []string{
-		"HOME=" + home, "XDG_CONFIG_HOME=" + home,
+		"XDG_CONFIG_HOME=",
 		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"TEST_SYSTEM_CONFIG=" + systemConfig, "TEST_REAL_GIT=" + realGit,
 		"GIT_CONFIG_NOSYSTEM=1",
