@@ -115,6 +115,22 @@ func TestIndependentPackageVariants(t *testing.T) {
 	}
 }
 
+func TestExhaustivePackageVariantProviders(t *testing.T) {
+	root := t.TempDir()
+	for path, source := range map[string]string{
+		"types_linux.go":   "package fixture; import s \"github.com/ben-ranford/lopper/internal/lang/shared\"; type Stats = s.DependencyStats",
+		"types_windows.go": "package fixture; import shared \"github.com/ben-ranford/lopper/internal/lang/shared\"; type Stats = shared.DependencyStats",
+		"consumer.go":      "//go:build linux || windows\n\npackage fixture; import r \"github.com/ben-ranford/lopper/internal/report\"; func build(name string, measured Stats) r.DependencyReport { " + packageReport + " }",
+	} {
+		testutil.MustWriteFile(t, filepath.Join(root, path), source)
+	}
+	var output bytes.Buffer
+	code := run([]string{"-root", root}, &output, &output)
+	if code != 1 || strings.Count(output.String(), "consumer.go:3: violation dependency-report-mapping in build") != 1 {
+		t.Fatalf("exhaustive variant provenance: code=%d output=%s", code, &output)
+	}
+}
+
 func checkPackageReportCopy(t *testing.T, declaration, parameter, setup, report string) {
 	t.Helper()
 	root := t.TempDir()

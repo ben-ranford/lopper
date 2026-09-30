@@ -20,25 +20,58 @@ func sourceAnalysisGroups(files []*ast.File, sources map[string][]byte, position
 	return constrainedAnalysisGroups(files, predicates)
 }
 
-// A target receives only declarations guaranteed to exist whenever it is built.
-// Identical contexts share parsing and binding work; every target emits once.
+// Each scope contains only declarations guaranteed under its build condition.
+// Equal binding contexts share parsing; findings later require target coverage.
 func constrainedAnalysisGroups(files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate) []analysisGroup {
 	var groups []analysisGroup
 	contexts := make(map[string]int)
+	anchors := sourceBuildPlatformRegions()
+	for _, file := range files {
+		anchors = append(anchors, predicates[file])
+	}
 	for _, target := range files {
-		group, identity := constrainedAnalysisGroup(target, files, predicates)
-		if index, found := contexts[identity]; found {
-			groups[index].targets[target] = true
-			continue
+		goal := predicates[target]
+		groups = appendBuildAnalysisGroup(groups, contexts, target, files, predicates, goal)
+		for _, anchor := range anchors {
+			condition := goal.and(anchor)
+			if !condition.valid {
+				continue
+			}
+			condition.prepare()
+			if condition.witness {
+				groups = appendBuildAnalysisGroup(groups, contexts, target, files, predicates, condition)
+			}
 		}
-		contexts[identity] = len(groups)
-		groups = append(groups, group)
 	}
 	return groups
 }
 
-func constrainedAnalysisGroup(target *ast.File, files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate) (analysisGroup, string) {
-	possible := possibleAnalysisFiles(target, files, predicates)
+func appendBuildAnalysisGroup(groups []analysisGroup, contexts map[string]int, target *ast.File, files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate, condition *sourceBuildPredicate) []analysisGroup {
+	group, identity := constrainedAnalysisGroup(target, files, predicates, condition)
+	index, found := contexts[identity]
+	if !found {
+		index = len(groups)
+		contexts[identity] = index
+		group.support = make(map[*ast.File]*analysisBuildSupport)
+		groups = append(groups, group)
+	}
+	selected := &groups[index]
+	selected.targets[target] = true
+	if selected.support[target] == nil {
+		selected.support[target] = &analysisBuildSupport{goal: predicates[target]}
+	}
+	support := selected.support[target]
+	if condition == predicates[target] {
+		support.direct = true
+		support.contexts = nil
+	} else if !support.direct {
+		support.contexts = append(support.contexts, condition)
+	}
+	return groups
+}
+
+func constrainedAnalysisGroup(target *ast.File, files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate, condition *sourceBuildPredicate) (analysisGroup, string) {
+	possible := possibleAnalysisFiles(target, files, predicates, condition)
 	keys, owners := analysisBuildDeclarations(files, possible)
 	group := analysisGroup{targets: map[*ast.File]bool{target: true}}
 	identity := make([]byte, len(files))
@@ -47,7 +80,7 @@ func constrainedAnalysisGroup(target *ast.File, files []*ast.File, predicates ma
 		if !possible[file] {
 			continue
 		}
-		if file == target || predicates[target].implies(predicates[file]) && unambiguousAnalysisKeys(file, keys[file], owners) {
+		if file == target || condition.implies(predicates[file]) && unambiguousAnalysisKeys(file, keys[file], owners) {
 			group.files = append(group.files, file)
 			identity[index] = 'i'
 		} else {
@@ -58,10 +91,10 @@ func constrainedAnalysisGroup(target *ast.File, files []*ast.File, predicates ma
 	return group, string(identity)
 }
 
-func possibleAnalysisFiles(target *ast.File, files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate) map[*ast.File]bool {
+func possibleAnalysisFiles(target *ast.File, files []*ast.File, predicates map[*ast.File]*sourceBuildPredicate, condition *sourceBuildPredicate) map[*ast.File]bool {
 	possible := make(map[*ast.File]bool, len(files))
 	for _, file := range files {
-		if file == target || !predicates[target].excludes(predicates[file]) {
+		if file == target || !condition.excludes(predicates[file]) {
 			possible[file] = true
 		}
 	}

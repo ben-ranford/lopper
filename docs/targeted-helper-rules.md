@@ -42,15 +42,18 @@ explicit statistics result types. Instantiated generic aliases retain explicit
 alias targets with complete type-argument lists; unresolved type-parameter
 results and alias targets remain unknown.
 All production source files are scanned, including platform-specific files.
-Each source file retains declarations from siblings whose build constraints are
-guaranteed by its own filename and source constraints. This preserves providers
-across independent platform or tag axes, such as an amd64 statistics alias used
-by a linux/amd64 consumer. Constraint reasoning is conservative and does not
-enumerate tag combinations: ambiguous alternatives retain unknown name and method
-bindings, while provably incompatible files cannot supply declarations or shadows.
+Each source file is analyzed with declarations guaranteed by its build context.
+Additional platform and provider contexts preserve complementary declarations,
+such as equivalent statistics aliases in Linux and Windows files used by one
+consumer. A diagnostic from these contexts requires agreeing support that covers
+the consumer's constraints; a violation requires complete blocking support.
+Constraint reasoning is conservative and does not enumerate arbitrary tag
+combinations: ambiguous alternatives retain unknown name and method bindings,
+while provably incompatible files cannot supply declarations or shadows.
 Platform proofs use conventional GOOS/GOARCH selection, including Go's platform
 aliases; forcing additional reserved platform tags through `-tags` is outside
-this model. Other tags remain symbolic and do not inherit the scanner host's values.
+this model. Other tags remain symbolic and do not inherit the scanner host's values;
+joint tag combinations not established by the source predicates remain unproven.
 Common files do not borrow ambiguous variant declarations. Findings are emitted
 once for each source location, and helper ownership follows physical files even
 when `//line` directives rename positions.

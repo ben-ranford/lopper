@@ -27,21 +27,19 @@ func AnalyzeSources(sources map[string][]byte) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	var findings []Finding
+	results := make(analysisFindings)
 	for _, files := range groups {
 		for _, group := range sourceAnalysisGroups(files, sources, fset) {
 			fresh, positions, parseErr := parseAnalysisGroup(group, sources, fset)
 			if parseErr != nil {
 				return nil, parseErr
 			}
-			findings = append(findings, packageFindings(fresh, fingerprints, positions)...)
+			results.include(fresh, packageFindings(fresh, fingerprints, positions), positions)
 		}
 	}
+	findings := results.covered()
 	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].Path != findings[j].Path {
-			return findings[i].Path < findings[j].Path
-		}
-		return findings[i].Line < findings[j].Line
+		return analysisFindingLess(findings[i], findings[j])
 	})
 	return findings, nil
 }
@@ -72,6 +70,9 @@ func parseAnalysisGroup(group analysisGroup, sources map[string][]byte, original
 	if group.targets != nil {
 		fresh.targets = make(map[*ast.File]bool)
 	}
+	if group.support != nil {
+		fresh.support = make(map[*ast.File]*analysisBuildSupport)
+	}
 	for _, file := range group.files {
 		path := original.PositionFor(file.Pos(), false).Filename
 		parsed, err := parser.ParseFile(fset, path, sources[path], 0)
@@ -81,6 +82,9 @@ func parseAnalysisGroup(group analysisGroup, sources map[string][]byte, original
 		fresh.files = append(fresh.files, parsed)
 		if group.targets[file] {
 			fresh.targets[parsed] = true
+		}
+		if support := group.support[file]; support != nil {
+			fresh.support[parsed] = support
 		}
 	}
 	return fresh, fset, nil

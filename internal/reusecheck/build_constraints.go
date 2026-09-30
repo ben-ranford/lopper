@@ -17,6 +17,7 @@ type sourceBuildPredicate struct {
 	valid, ready  bool
 	witness       bool
 	states        []buildWorldFacts
+	domain        buildWorldDomain
 }
 
 type buildOperation uint8
@@ -37,6 +38,11 @@ type buildTerm struct {
 }
 
 type buildWorld struct{ os, arch string }
+
+type buildWorldDomain struct {
+	restricted bool
+	worlds     []buildWorld
+}
 
 type buildWorldFacts struct {
 	world buildWorld
@@ -81,6 +87,206 @@ func (p *sourceBuildPredicate) excludes(other *sourceBuildPredicate) bool {
 	return p.proves(other, false)
 }
 
+func (p *sourceBuildPredicate) and(other *sourceBuildPredicate) *sourceBuildPredicate {
+	return combineBuildPredicates(p, other, true)
+}
+
+func (p *sourceBuildPredicate) or(other *sourceBuildPredicate) *sourceBuildPredicate {
+	return combineBuildPredicates(p, other, false)
+}
+
+func combineBuildPredicates(left, right *sourceBuildPredicate, conjunction bool) *sourceBuildPredicate {
+	if !left.valid || !right.valid {
+		return &sourceBuildPredicate{}
+	}
+	if equalBuildTerms(left.term, right.term) {
+		if right.domain.restricted {
+			return right
+		}
+		return left
+	}
+	if constant := simplifyBuildCombination(left, right, conjunction); constant != nil {
+		return constant
+	}
+	op, inverse := buildOr, buildAnd
+	if conjunction {
+		op, inverse = buildAnd, buildOr
+	}
+	return &sourceBuildPredicate{
+		term:    &buildTerm{op: op, left: left.term, right: right.term},
+		inverse: &buildTerm{op: inverse, left: left.inverse, right: right.inverse},
+		domain:  combineBuildWorlds(left.domain, right.domain, conjunction), valid: true,
+	}
+}
+
+func simplifyBuildCombination(left, right *sourceBuildPredicate, conjunction bool) *sourceBuildPredicate {
+	identity, terminal := buildFalse, buildTrue
+	if conjunction {
+		identity, terminal = buildTrue, buildFalse
+	}
+	if left.term.op == identity || right.term.op == terminal {
+		return right
+	}
+	if right.term.op == identity || left.term.op == terminal {
+		return left
+	}
+	return nil
+}
+
+// An explicitly restricted empty domain is impossible.
+func combineBuildWorlds(left, right buildWorldDomain, conjunction bool) buildWorldDomain {
+	if conjunction {
+		if !left.restricted {
+			return right
+		}
+		if !right.restricted {
+			return left
+		}
+	} else if !left.restricted || !right.restricted {
+		return buildWorldDomain{}
+	}
+	selected := make(map[buildWorld]bool, len(left.worlds))
+	for _, world := range left.worlds {
+		selected[world] = true
+	}
+	return buildWorldDomain{restricted: true, worlds: mergedBuildWorlds(left.worlds, right.worlds, selected, conjunction)}
+}
+
+func mergedBuildWorlds(left, right []buildWorld, selected map[buildWorld]bool, conjunction bool) []buildWorld {
+	worlds := make([]buildWorld, 0, len(left)+len(right))
+	if !conjunction {
+		worlds = append(worlds, left...)
+	}
+	for _, world := range right {
+		if selected[world] == conjunction {
+			worlds = append(worlds, world)
+			selected[world] = true
+		}
+	}
+	return worlds
+}
+
+// Support conditions share immutable subtrees and use a balanced disjunction.
+// Hashes only choose equality buckets; collisions cannot establish a proof.
+func unionSourceBuildPredicates(predicates []*sourceBuildPredicate) *sourceBuildPredicate {
+	unique := uniqueBuildPredicates(predicates)
+	if len(unique) == 0 {
+		return &sourceBuildPredicate{term: &buildTerm{op: buildFalse}, inverse: &buildTerm{op: buildTrue}, valid: true}
+	}
+	for len(unique) > 1 {
+		var next []*sourceBuildPredicate
+		for index := 0; index < len(unique); index += 2 {
+			combined := unique[index]
+			if index+1 < len(unique) {
+				combined = combined.or(unique[index+1])
+			}
+			next = append(next, combined)
+		}
+		unique = next
+	}
+	return unique[0]
+}
+
+func uniqueBuildPredicates(predicates []*sourceBuildPredicate) []*sourceBuildPredicate {
+	hashes := make(map[*buildTerm]uint64)
+	buckets := make(map[uint64][]*sourceBuildPredicate)
+	var unique []*sourceBuildPredicate
+	for _, predicate := range predicates {
+		if !predicate.valid {
+			return []*sourceBuildPredicate{predicate}
+		}
+		key := buildTermHash(predicate.term, hashes)
+		if !equivalentBuildPredicate(buckets[key], predicate) {
+			buckets[key] = append(buckets[key], predicate)
+			unique = append(unique, predicate)
+		}
+	}
+	return unique
+}
+
+func equivalentBuildPredicate(candidates []*sourceBuildPredicate, predicate *sourceBuildPredicate) bool {
+	for _, candidate := range candidates {
+		if equalBuildTerms(candidate.term, predicate.term) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildTermHash(term *buildTerm, cached map[*buildTerm]uint64) uint64 {
+	if value, found := cached[term]; found {
+		return value
+	}
+	const multiplier uint64 = 1099511628211
+	value := uint64(term.op+1) * multiplier
+	for index := 0; index < len(term.tag); index++ {
+		value = (value ^ uint64(term.tag[index])) * multiplier
+	}
+	if term.negative {
+		value ^= 1
+	}
+	if term.op == buildAnd || term.op == buildOr {
+		value = (value ^ buildTermHash(term.left, cached)) * multiplier
+		value = (value ^ buildTermHash(term.right, cached)) * multiplier
+	}
+	cached[term] = value
+	return value
+}
+
+func sourceBuildPlatformRegions() []*sourceBuildPredicate {
+	systems := buildSystemRegions()
+	architectures := buildArchitectureRegions()
+	var regions []*sourceBuildPredicate
+	for _, world := range allBuildWorlds() {
+		region := systems[world.os].and(architectures[world.arch])
+		region.domain = buildWorldDomain{restricted: true, worlds: []buildWorld{world}}
+		region.states = []buildWorldFacts{{world: world}}
+		region.ready, region.witness = true, true
+		regions = append(regions, region)
+	}
+	return regions
+}
+
+func buildSystemRegions() map[string]*sourceBuildPredicate {
+	regions := make(map[string]*sourceBuildPredicate)
+	for _, system := range buildKnownOS {
+		region := buildTagPredicate(system, false)
+		for _, alias := range buildKnownOS {
+			if buildOSAlias(alias) == system {
+				region = region.and(buildTagPredicate(alias, true))
+			}
+		}
+		regions[system] = region
+	}
+	unknown := excludedBuildTags(buildKnownOS)
+	regions["other"] = unknown.and(buildTagPredicate("unix", true))
+	regions["other-unix"] = unknown.and(buildTagPredicate("unix", false))
+	return regions
+}
+
+func buildArchitectureRegions() map[string]*sourceBuildPredicate {
+	regions := make(map[string]*sourceBuildPredicate)
+	for _, architecture := range buildKnownArch {
+		regions[architecture] = buildTagPredicate(architecture, false)
+	}
+	regions["other"] = excludedBuildTags(buildKnownArch)
+	return regions
+}
+
+func excludedBuildTags(tags []string) *sourceBuildPredicate {
+	predicate := &sourceBuildPredicate{term: &buildTerm{op: buildTrue}, inverse: &buildTerm{op: buildFalse}, valid: true}
+	for _, tag := range tags {
+		predicate = predicate.and(buildTagPredicate(tag, true))
+	}
+	return predicate
+}
+
+func buildTagPredicate(tag string, negative bool) *sourceBuildPredicate {
+	return &sourceBuildPredicate{
+		term: &buildTerm{op: buildTag, tag: tag, negative: negative}, inverse: &buildTerm{op: buildTag, tag: tag, negative: !negative}, valid: true,
+	}
+}
+
 func (p *sourceBuildPredicate) proves(other *sourceBuildPredicate, implication bool) bool {
 	if !p.valid || !other.valid {
 		return false
@@ -109,17 +315,29 @@ func (p *sourceBuildPredicate) proves(other *sourceBuildPredicate, implication b
 // Enumerating the fixed platform domain does not enumerate custom tag choices.
 // The extra worlds cover future platforms, including either Unix possibility.
 func (p *sourceBuildPredicate) prepare() {
-	if p.ready {
+	if !p.valid || p.ready {
 		return
 	}
 	p.ready = true
+	worlds := p.domain.worlds
+	if !p.domain.restricted {
+		worlds = allBuildWorlds()
+	}
+	for _, world := range worlds {
+		p.addWorld(world)
+	}
+}
+
+func allBuildWorlds() []buildWorld {
 	systems := append(append([]string(nil), buildKnownOS...), "other", "other-unix")
 	architectures := append(append([]string(nil), buildKnownArch...), "other")
+	worlds := make([]buildWorld, 0, len(systems)*len(architectures))
 	for _, system := range systems {
 		for _, architecture := range architectures {
-			p.addWorld(buildWorld{os: system, arch: architecture})
+			worlds = append(worlds, buildWorld{os: system, arch: architecture})
 		}
 	}
+	return worlds
 }
 
 func (p *sourceBuildPredicate) addWorld(world buildWorld) {
@@ -266,6 +484,9 @@ func containsBuildName(names []string, name string) bool {
 }
 
 func equalBuildTerms(left, right *buildTerm) bool {
+	if left == right {
+		return true
+	}
 	if left.op != right.op || left.tag != right.tag || left.negative != right.negative {
 		return false
 	}

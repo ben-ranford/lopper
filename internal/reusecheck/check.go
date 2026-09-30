@@ -20,6 +20,7 @@ type Finding struct {
 	Rule     string `json:"rule"`
 	Helper   string `json:"helper"`
 	Advisory bool   `json:"advisory,omitempty"`
+	offset   int
 }
 
 func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[string]string) []ast.Stmt {
@@ -301,7 +302,7 @@ func collectionFindings(path string, fn *ast.FuncDecl, packages map[string]strin
 		found = false
 	}
 	if found && (filepath.ToSlash(path) != matched.owner || fn.Name.Name != matched.function) {
-		findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(fn.Pos()).Line, Function: fn.Name.Name, Rule: matched.rule, Helper: matched.helper})
+		findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(fn.Pos()).Line, Function: fn.Name.Name, Rule: matched.rule, Helper: matched.helper, offset: fset.PositionFor(fn.Pos(), false).Offset})
 	}
 	return findings
 }
@@ -352,7 +353,7 @@ func scopedReportMappingFindings(path string, scope reportMappingScope, packages
 			// The brace retains its source position when the type is inferred or
 			// replaced with a synthetic qualifier for a dot import.
 			owner = scope.literalOwner(owner, literal.Lbrace, fset)
-			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Lbrace).Line, Function: owner, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, scope.declarations)})
+			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Lbrace).Line, Function: owner, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, scope.declarations), offset: fset.PositionFor(literal.Lbrace, false).Offset})
 		}
 		return true
 	})

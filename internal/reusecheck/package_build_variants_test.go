@@ -36,22 +36,29 @@ func TestBuildContextsCoalesceTargets(t *testing.T) {
 	}
 	for _, files := range packages {
 		groups := sourceAnalysisGroups(files, sources, fset)
-		if len(groups) >= len(files) {
-			t.Fatalf("equal target contexts did not coalesce: %d groups for %d files", len(groups), len(files))
-		}
-		seen := make(map[string]bool)
-		for _, group := range groups {
-			for target := range group.targets {
-				path := fset.PositionFor(target.Pos(), false).Filename
-				if seen[path] {
-					t.Fatalf("target %s belongs to multiple output scopes", path)
-				}
-				seen[path] = true
+		assertCoalescedTargets(t, groups, fset, len(files))
+	}
+}
+
+func assertCoalescedTargets(t *testing.T, groups []analysisGroup, fset *token.FileSet, want int) {
+	t.Helper()
+	seen := make(map[string]bool)
+	coalesced := false
+	for _, group := range groups {
+		coalesced = coalesced || len(group.targets) > 1
+		for target := range group.targets {
+			if !group.support[target].direct {
+				continue
 			}
+			path := fset.PositionFor(target.Pos(), false).Filename
+			if seen[path] {
+				t.Fatalf("target %s belongs to multiple baseline scopes", path)
+			}
+			seen[path] = true
 		}
-		if len(seen) != len(files) {
-			t.Fatalf("coalesced contexts lost targets: %v", seen)
-		}
+	}
+	if len(seen) != want || !coalesced {
+		t.Fatalf("coalesced contexts lost targets: %v", seen)
 	}
 }
 

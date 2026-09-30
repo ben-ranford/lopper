@@ -6,6 +6,13 @@ type analysisGroup struct {
 	files   []*ast.File
 	targets map[*ast.File]bool
 	omitted []*ast.File
+	support map[*ast.File]*analysisBuildSupport
+}
+
+type analysisBuildSupport struct {
+	goal     *sourceBuildPredicate
+	contexts []*sourceBuildPredicate
+	direct   bool
 }
 
 // Common files retain their shared declarations. Each conflicting file gets
