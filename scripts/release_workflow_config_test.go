@@ -3842,9 +3842,9 @@ func TestMakefileBenchGatePinsRequestedBaseRefToResolvedCommit(t *testing.T) {
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkPinnedBase"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio", "internal/errutil")
 	runGitCommand(t, repo, "commit", "-m", "add base benchmark")
 	baseSHA := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
 	runGitCommand(t, repo, "branch", "rolling-base", baseSHA)
@@ -4213,9 +4213,9 @@ func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testi
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio", "internal/errutil")
 	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
 
 	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), "package benchpkg\n\nimport \"testing\"\n\nfunc TestOrdinary(t *testing.T) {}\n")
@@ -4299,7 +4299,7 @@ func TestMakefileBenchGateIgnoresChangedOrdinaryTestOnlyEmbeddedFixtures(t *test
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	files := []benchmarkFixtureFile{
 		{path: "benchpkg/bench_test.go", content: benchmarkTestSource("benchpkg", "BenchmarkShared")},
 		{path: "benchpkg/ordinary_test.go", content: `package benchpkg
@@ -4320,7 +4320,7 @@ func TestOrdinaryEmbeddedFixture(t *testing.T) {
 `},
 		{path: "benchpkg/testdata/ordinary.txt", content: "base ordinary fixture\n"},
 	}
-	paths := []string{"go.mod", "tools/benchdelta", "internal/safeio"}
+	paths := []string{"go.mod", "tools/benchdelta", "internal/safeio", "internal/errutil"}
 	for _, file := range files {
 		writeFile(t, filepath.Join(repo, file.path), file.content)
 		paths = append(paths, file.path)
