@@ -8,184 +8,113 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
 
-// TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget asserts the
-// structural properties that make this gate immune to the exact bypass the
-// Codex finding described: ci.yml's pull_request-triggered "verify" job runs
-// from the pull request's own (potentially tampered) workflow file, so a PR
-// could previously delete or neuter its suppression-verification step and
-// have its own required check report success trivially. This workflow
-// instead triggers on pull_request_target (always resolved from the base
-// branch), performs no checkout, executes no PR-controlled code, and derives
-// its only PR-controlled input (the "pr-report-inputs" artifact) through a
-// head-SHA-bound lookup against this repository's own genuine "ci" workflow
-// runs -- never anything the pull request event payload could forge.
-func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
+// The aggregate consumes only its own producer artifact with read-only API access.
+// Its pull_request workflow is PR-editable; these contracts do not establish
+// trusted source provenance or prevent a malicious PR deleting its own gate.
+func TestSuppressionVerifyWorkflowUsesReadOnlyCurrentRunArtifact(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
-	workflowText := readConfig(t, ".github/workflows/suppression-verify.yml")
-
-	var trigger pullRequestTargetTriggerWorkflow
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &trigger)
-	wantTypes := []string{"opened", "edited", "synchronize", "reopened", "ready_for_review", "labeled", "unlabeled"}
-	if !slices.Equal(trigger.On.PullRequestTarget.Types, wantTypes) {
-		t.Fatalf("suppression verify workflow pull_request_target types = %v, want %v", trigger.On.PullRequestTarget.Types, wantTypes)
-	}
-
-	for _, fragment := range []string{
-		"pull_request_target:",
-		"permissions: {}",
-		"concurrency:",
-		"group: suppression-verify-${{ github.event.pull_request.number }}",
-		"cancel-in-progress: true",
-	} {
-		if !strings.Contains(workflowText, fragment) {
-			t.Fatalf("suppression verify workflow missing %q", fragment)
-		}
-	}
-	for _, forbidden := range []string{
-		"actions/checkout@",
-		"github.event.pull_request.head.ref",
-	} {
-		if strings.Contains(workflowText, forbidden) {
-			t.Fatalf("suppression verify workflow contains unsafe fragment %q", forbidden)
-		}
-	}
-
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
 	assertWorkflowJobOmitsCheckout(t, verify, "suppression verify")
 	assertWorkflowJobStepRunsOmitAllFold(t, verify, "suppression verify", []string{
-		"go run ./",
-		"npm install",
-		"npx ",
-		"./extensions/",
+		"go run ./", "npm install", "npx ", "./extensions/",
+		"checks.create", "checks.update", "listWorkflowRunArtifacts", "listWorkflowRuns",
 	})
 	if got, want := verify.Permissions, (map[string]string{
-		"contents":      "read",
-		"actions":       "read",
-		"checks":        "write",
-		"issues":        "read",
-		"pull-requests": "read",
+		"contents": "read", "actions": "read", "issues": "read", "pull-requests": "read",
 	}); !maps.Equal(got, want) {
 		t.Fatalf("suppression verify job permissions = %v, want %v", got, want)
 	}
 	assertWorkflowStepOrder(t, verify,
-		"Publish pending suppression-verify check",
-		"Resolve trusted ci artifact for this pull request head",
+		"Require every verification job",
+		"Initialize suppression verification",
 		"Download PR report inputs",
 		"Validate PR report inputs",
 		"Verify inline suppression tracking issues were published",
-		"Report suppression verification check conclusion",
 	)
-
-	// pull_request_target's own job checks are reported against the
-	// default branch's HEAD SHA, not the PR's head commit -- unlike
-	// pull_request, where GitHub associates the run with the merge ref.
-	// Without an explicit head_sha-bound check run, this workflow could
-	// never actually gate the PR it is meant to verify, silently defeating
-	// the "dedicated required status check" this gate exists to provide.
-	pending := workflowStepByName(t, workflow.Jobs, "verify", "Publish pending suppression-verify check")
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: pending.With["script"]}, "publish pending check", []string{
-		"checks.create",
-		"head_sha: context.payload.pull_request.head.sha",
-		"status: 'in_progress'",
-		"core.setOutput('check-id'",
-		// Shared by the later waiting steps so every deadline is measured
-		// from this job's own start rather than restarting a fresh budget
-		// per step, which could otherwise let their combined wait exceed
-		// the job's own 20-minute timeout.
-		"core.setOutput('job-start-ms'",
-	})
-
-	report := workflowStepByName(t, workflow.Jobs, "verify", "Report suppression verification check conclusion")
-	if report.If != "always()" {
-		t.Fatalf("report check conclusion step must always run, got if: %q", report.If)
+	for _, name := range []string{
+		"Initialize suppression verification", "Download PR report inputs",
+		"Validate PR report inputs", "Verify inline suppression tracking issues were published",
+	} {
+		step := workflowStepByName(t, workflow.Jobs, "verify", name)
+		if step.If != "${{ github.event_name == 'pull_request' && !env.ACT }}" {
+			t.Fatalf("%s must run on hosted PRs and skip manual/ACT runs, got %q", name, step.If)
+		}
 	}
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: report.With["script"]}, "report check conclusion", []string{
-		"checks.update",
-		"status: 'completed'",
-		"VERIFY_OUTCOME",
-	})
-
-	resolve := workflowStepByName(t, workflow.Jobs, "verify", "Resolve trusted ci artifact for this pull request head")
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: resolve.With["script"]}, "resolve trusted ci artifact", []string{
-		"workflow_id: 'ci.yml'",
-		"event: 'pull_request'",
-		"head_sha: headSha",
-		"listWorkflowRunArtifacts",
-		"!candidate.expired",
-		"core.setOutput('artifact-id'",
-		"core.setOutput('run-id'",
-		// The same head SHA can be shared by more than one open PR (e.g.
-		// one branch opened against both a release branch and main, or --
-		// for forks, where GitHub does not expose a pull_requests
-		// association at all -- the same fork branch/commit reused across
-		// PRs with different bases). Matching runs after the fact by
-		// association or repository is not sufficient to disambiguate every
-		// such case; only an artifact name bound to this PR's own number
-		// (set by "ci.yml" from its own event payload, not forgeable by PR
-		// content) can.
-		"pullNumber = context.payload.pull_request.number",
-		"artifactName = `pr-report-inputs-${pullNumber}`",
-		"const completed = candidates.filter((run) => run.status === 'completed')",
-		// An empty candidate list must be treated as "still pending", not
-		// "no run will ever appear": this verifier and the "ci" run it
-		// waits on are dispatched by the same event, but nothing guarantees
-		// their runs become visible through the API in the same instant, so
-		// failing closed on zero visible candidates would make the required
-		// check nondeterministically fail on ordinary PR events instead of
-		// using its ten-minute polling window.
-		"const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed')",
-		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
-		// at the same head SHA while an earlier, already-completed run
-		// (computed against the base this PR has since moved away from)
-		// still exists there; excluding runs created before this event
-		// (with a skew allowance, since both workflows fire from the same
-		// webhook delivery) stops that stale run's artifact from being
-		// trusted while the fresh one is still in flight.
-		"baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base)",
-		"earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0",
-		".filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs)",
-	})
-
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")
-	if got, want := download.With["artifact-ids"], "${{ steps.resolve_artifact.outputs.artifact-id }}"; got != want {
-		t.Fatalf("download PR report inputs artifact-ids = %q, want %q", got, want)
+	if got, want := download.With["artifact-ids"], "${{ needs.verify-checks.outputs.pr_report_artifact_id }}"; got != want {
+		t.Fatalf("download artifact-ids = %q, want %q", got, want)
 	}
-	if got, want := download.With["run-id"], "${{ steps.resolve_artifact.outputs.run-id }}"; got != want {
-		t.Fatalf("download PR report inputs run-id = %q, want %q", got, want)
+	if download.With["run-id"] != "" || download.With["name"] != "" || download.With["pattern"] != "" {
+		t.Fatal("download must select the producer artifact in this run without a cross-run/name fallback")
+	}
+	if download.With["merge-multiple"] != "true" || download.With["path"] != "${{ runner.temp }}/pr-report-inputs" {
+		t.Fatal("artifact files must be downloaded directly into the validated input directory")
 	}
 }
 
-func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testing.T) {
+func TestSuppressionVerifyInitializationRejectsMissingArtifact(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	init := workflowStepByName(t, workflow.Jobs, "verify", "Initialize suppression verification")
+	assertWorkflowStepEnv(t, init, "suppression initialization", map[string]string{
+		"PR_REPORT_ARTIFACT_ID": "${{ needs.verify-checks.outputs.pr_report_artifact_id }}",
+	})
+	for _, artifactID := range []string{"", "0", "-1", "invalid", "12345"} {
+		t.Run(artifactID, func(t *testing.T) {
+			dir := t.TempDir()
+			outputPath := filepath.Join(dir, "output")
+			output, err := runShellCommand(dir, init.Run, map[string]string{
+				"PR_REPORT_ARTIFACT_ID": artifactID, "GITHUB_OUTPUT": outputPath,
+			})
+			if artifactID != "12345" {
+				if err == nil {
+					t.Fatalf("invalid artifact ID %q passed: %s", artifactID, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid artifact ID failed: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(outputPath)
+			if err != nil || !strings.HasPrefix(string(data), "job-start-ms=") {
+				t.Fatalf("initialization must publish the shared deadline origin: %s (%v)", data, err)
+			}
+		})
+	}
+}
+
+func TestCIWorkflowAggregatesSuppressionTrackingResult(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
 	assertWorkflowStepOrder(t, verify,
-		"Resolve trusted ci artifact for this pull request head",
+		"Initialize suppression verification",
 		"Download PR report inputs",
 		"Validate PR report inputs",
 		"Verify inline suppression tracking issues were published",
 	)
 
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-	if gate.If != "" {
-		t.Fatalf("suppression tracking gate must run unconditionally on pull_request_target, got if: %q", gate.If)
+	if gate.If != "${{ github.event_name == 'pull_request' && !env.ACT }}" {
+		t.Fatalf("suppression tracking gate must run on hosted pull requests, got if: %q", gate.If)
 	}
 	assertWorkflowStepEnv(t, gate, "suppression tracking gate", map[string]string{
 		"GH_TOKEN":          "${{ github.token }}",
+		"GH_REPO":           "${{ github.repository }}",
 		"PR_NUMBER":         "${{ github.event.pull_request.number }}",
 		"SUPPRESSIONS_FILE": "${{ runner.temp }}/pr-report-inputs/inline-suppressions.json",
-		"JOB_START_MS":      "${{ steps.pending_check.outputs.job-start-ms }}",
+		"JOB_START_MS":      "${{ steps.suppression_verification.outputs.job-start-ms }}",
 	})
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		"jq -r '.suppressions[].fingerprint'",
@@ -203,11 +132,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
-		// Measured from the same job-start origin the artifact-resolution
-		// step uses, with buffer before the job's own 20-minute timeout, so
-		// GitHub cannot cancel the job mid-poll and leave the
-		// "suppression-verify" check stuck "in_progress" instead of
-		// reporting failure.
+		// Share the initialization timestamp with a margin before the job timeout.
 		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
 		`now_ms="$(date +%s%3N)"`,
 		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,
@@ -462,7 +387,7 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	invocation := fingerprintBindingInvocation(t, gate.Run)
@@ -506,7 +431,7 @@ func TestCIWorkflowMissingSuspectsCheckRejectsARecordBoundToTheWrongLine(t *test
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	const recordedLine = `jq -j '.suppressions[] | .file, "\u0001", (.line | tostring), "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"`
@@ -568,7 +493,7 @@ func TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift(t *te
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	invocation := fingerprintBindingInvocation(t, gate.Run)
@@ -624,7 +549,7 @@ func TestCIWorkflowFlattensPaginatedPullFilesResponse(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	const start = `pr_files_json="$(gh api`
@@ -717,7 +642,7 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -813,7 +738,7 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 func TestCIWorkflowSuspectScanDetectsShellOperatorComment(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 	line := "echo hi;#nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
@@ -833,7 +758,7 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -862,7 +787,7 @@ func TestCIWorkflowSuspectScanRespectsShellOperatorEscapes(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -888,7 +813,7 @@ func TestCIWorkflowSuspectScanRespectsShellOperatorEscapes(t *testing.T) {
 func TestCIWorkflowSuspectScanDistinguishesShellSubstitutionClosers(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 	for _, tc := range shellBoundaryCases() {
@@ -916,7 +841,7 @@ func TestCIWorkflowSuspectScanDetectsGoColonCommentBoundaries(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -939,7 +864,7 @@ func TestCIWorkflowSuspectScanDetectsGoColonCommentBoundaries(t *testing.T) {
 func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 	for _, line := range goColonCaseVariantLines() {
@@ -953,7 +878,7 @@ func TestCIWorkflowSuspectScanDetectsCaseVariantGoColonMarkers(t *testing.T) {
 func TestCIWorkflowSuspectScanDetectsQuotedShellMarkerCaseVariants(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 	for _, line := range quotedShellMarkerCaseVariants() {
@@ -969,7 +894,7 @@ func TestCIWorkflowSuspectScanCarriesGoColonLineComments(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -1028,7 +953,7 @@ func TestCIWorkflowSuspectScanKeepsIndependentGoLexicalState(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 	marker := "nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
@@ -1088,7 +1013,7 @@ func TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
@@ -1150,7 +1075,7 @@ func TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	varsLine := sourceFileTestLine(t, gate.Run)
@@ -1209,7 +1134,7 @@ func TestCIWorkflowRejectsANonNullButTruncatedPatch(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
 	varsLine := sourceFileTestLine(t, gate.Run)

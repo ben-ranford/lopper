@@ -11,6 +11,20 @@ command-line arguments:
 | List extension commits | `log --format=%H%x00%s --stdin -- extensions/vscode-lopper` | One validated stable-tag-to-HEAD range |
 | Inspect commit paths | `diff-tree --no-commit-id --name-only -r --stdin` | One validated full commit ID |
 
+## Production caller audit
+
+The release-note scripts call these operations through the following paths:
+
+| Caller | Operation | Input and origin |
+| --- | --- | --- |
+| `release_build_notes.generate` | `git_file` | Validated previous stable tag and fixed `go.mod` path |
+| `old_lockfile` | `git_file` | Independently validated previous stable tag and fixed extension lockfile path |
+| `old_package` | `git_file` | Independently validated previous stable tag and fixed extension package path |
+| `visible_extension_commits` | `git_extension_log` | Previous stable tag supplied by `source_notes` from the VS Code generator |
+| `visible_extension_commits` | `git_commit_paths` | Full commit ID from Git's `%H` log output |
+| `configured_marketplace_icon_path` | `git_file` | Commit ID from the same log and fixed extension package path |
+| `user_visible_manifest_change` | `git_file` | Current commit ID and its parent from the same log, each with the fixed extension package path |
+
 Both CLI entry points still reject invalid stable tags before file reads or
 subprocess execution. Each Git operation also validates its own input. Tags use
 three one-to-nine-digit components after `v`; commit IDs are exactly 40 or 64
@@ -43,6 +57,11 @@ and fixed-command/stdin assertions. A positive control confirms the subprocess
 interceptor observes a real invocation boundary. Existing temporary-repository
 tests exercise successful release generation, commit inspection, parent
 manifests, and missing historical files using Git itself.
+
+Each Python suite also calls its real argument parser and CLI handler with
+malformed tags while intercepting `subprocess.Popen`, asserting that no process
+starts. Direct rejection probes for `old_lockfile` and `old_package` verify that
+these exported readers enforce the tag boundary independently of the CLI.
 
 This implementation supersedes PR #1727's evidence-only disposition proposal.
 It changes the subprocess boundary in code without scanner suppressions or

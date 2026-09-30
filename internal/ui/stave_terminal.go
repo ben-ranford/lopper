@@ -577,7 +577,7 @@ func terminalSafeText(s string) string { return fmt.Sprintf("%s\n", terminal.San
 // runStaveTerminal starts Bubble Tea with explicit streams/context. The
 // generic Stave session is wired here, keeping all type assertions out of the
 // model's input and rendering paths.
-func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepared any, input io.Reader, output io.Writer, alt bool) error {
+func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepared any, input io.Reader, output io.Writer, alt bool) (resultErr error) {
 	runCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	sendEvent := func(c context.Context, raw any, ev event.Event) error {
@@ -597,6 +597,11 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 	if err != nil {
 		return err
 	}
+	restoreTerminal, err := enterStaveTerminalRaw(terminalInput)
+	if err != nil {
+		return errors.Join(err, terminalInput.close())
+	}
+	defer func() { resultErr = errors.Join(resultErr, restoreTerminal()) }()
 	program := tea.NewProgram(m, tea.WithInput(terminalInput.terminal()), tea.WithOutput(output), tea.WithoutSignalHandler())
 	m.startInput = func() { terminalInput.start(program) }
 	programFinished := make(chan struct{})
@@ -613,7 +618,8 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 	_, err = program.Run()
 	close(programFinished)
 	inputErr := terminalInput.close()
-	return errors.Join(finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err), inputErr)
+	restoreErr := restoreTerminal()
+	return errors.Join(finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err), inputErr, restoreErr)
 }
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {

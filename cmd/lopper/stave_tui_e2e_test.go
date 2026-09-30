@@ -17,7 +17,7 @@ import (
 	"github.com/creack/pty"
 )
 
-const stavePTYTimeout = 20 * time.Second
+const stavePTYTimeout = 30 * time.Second
 
 type ptyReadResult struct {
 	n   int
