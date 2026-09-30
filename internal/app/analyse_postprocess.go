@@ -165,20 +165,20 @@ func newImmutableBaselineWriter[T any](keyName string, save func(string, string,
 	}
 }
 
-func (writer immutableBaselineWriter[T]) saveIfNeeded(reportData T, repoPath string, req baselineKeyRequest, enabled bool, now time.Time) (T, error) {
+func (w *immutableBaselineWriter[T]) saveIfNeeded(reportData T, repoPath string, req baselineKeyRequest, enabled bool, now time.Time) (T, error) {
 	if !enabled {
 		return reportData, nil
 	}
 
-	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, req, writer.keyName)
+	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, req, w.keyName)
 	if err != nil {
 		return reportData, err
 	}
-	savedPath, err := writer.save(storePath, saveKey, reportData, now)
+	savedPath, err := w.save(storePath, saveKey, reportData, now)
 	if err != nil {
 		return reportData, err
 	}
-	return writer.appendWarning(reportData, savedPath), nil
+	return w.appendWarning(reportData, savedPath), nil
 }
 
 func appendBaselineSaveWarning(reportData report.Report, savedPath string) report.Report {
