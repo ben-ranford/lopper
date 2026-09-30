@@ -19,6 +19,10 @@ var openRenameNoReplaceDir = func(root *osRoot) (renameNoReplaceDir, error) {
 	return root.root.Open(".")
 }
 
+func renameNoReplaceBetweenRoots(oldRoot, newRoot *osRoot, oldName, newName string) error {
+	return renameNoReplaceBetweenRootsSyscall(oldRoot, newRoot, oldName, newName, renameNoReplaceOp, renameNoReplaceAt)
+}
+
 func renameNoReplaceBetweenRootsSyscall(oldRoot, newRoot *osRoot, oldName, newName, op string, renameAt renameNoReplaceAtFunc) (returnErr error) {
 	oldDir, err := openRenameNoReplaceDir(oldRoot)
 	if err != nil {
