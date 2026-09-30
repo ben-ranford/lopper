@@ -27,7 +27,7 @@ func TestLocalFunctionLiteralCollections(t *testing.T) {
 				t.Fatal("fixture does not contain the function literal")
 			}
 			line := strings.Count(prefix, "\n") + 1
-			if finding.Function != "outer.func" || finding.Rule != "sorted-unique-trimmed" || finding.Line != line || finding.Advisory {
+			if !strings.HasPrefix(finding.Function, "outer.func@") || finding.Rule != "sorted-unique-trimmed" || finding.Line != line || finding.Advisory {
 				t.Fatalf("literal diagnostic lost its enclosing function, contract or location: %+v", finding)
 			}
 		})
@@ -39,7 +39,7 @@ func TestLocalFunctionLiteralContractsAndOwner(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			source := localCollectionSource("func " + owner.function + "() { _ = " + collectionFunctionLiteral(name) + " }")
 			findings, err := Analyze(owner.owner, []byte(source))
-			if err != nil || len(findings) != 1 || findings[0].Rule != owner.rule || findings[0].Function != owner.function+".func" {
+			if err != nil || len(findings) != 1 || findings[0].Rule != owner.rule || !strings.HasPrefix(findings[0].Function, owner.function+".func@") {
 				t.Fatalf("nested implementation inherited the canonical owner's exemption: %+v error=%v", findings, err)
 			}
 		})
@@ -69,7 +69,7 @@ func TestLocalFunctionLiteralReportFindingsAreNotRepeated(t *testing.T) {
 	if err != nil || len(findings) != 2 {
 		t.Fatalf("collection or report findings missing/repeated: %+v error=%v", findings, err)
 	}
-	if findings[0].Rule != "sorted-unique-trimmed" || findings[1].Rule != "dependency-report-mapping" || findings[1].Function != "outer" || findings[1].Advisory {
+	if findings[0].Rule != "sorted-unique-trimmed" || findings[1].Rule != "dependency-report-mapping" || !strings.HasPrefix(findings[1].Function, "outer.func@") || findings[1].Advisory {
 		t.Fatalf("unexpected mixed closure findings: %+v", findings)
 	}
 }

@@ -64,7 +64,7 @@ func fileFindings(file *ast.File, packages map[string]string, info *types.Info, 
 	var findings []Finding
 	path := fset.Position(file.Pos()).Filename
 	for _, decl := range file.Decls {
-		for _, fn := range declaredFunctions(decl) {
+		for _, fn := range declaredFunctions(decl, fset) {
 			if fn.Body != nil {
 				findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)
 				findings = append(findings, localCollectionFindings(path, fn, packages, info, fingerprints, fset)...)
@@ -80,7 +80,7 @@ func localCollectionFindings(path string, fn *ast.FuncDecl, packages map[string]
 	var findings []Finding
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		if literal, ok := node.(*ast.FuncLit); ok {
-			local := &ast.FuncDecl{Name: ast.NewIdent(fn.Name.Name + ".func"), Type: literal.Type, Body: literal.Body}
+			local := &ast.FuncDecl{Name: ast.NewIdent(functionLiteralName(fn.Name.Name, literal, fset)), Type: literal.Type, Body: literal.Body}
 			findings = append(findings, collectionFindings(path, local, packages, info, fingerprints, fset)...)
 		}
 		return true

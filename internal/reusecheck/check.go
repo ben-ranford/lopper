@@ -280,7 +280,17 @@ func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]st
 	var findings []Finding
 	declarations := localDeclarations(fn, info)
 	literalTypes := compositeLiteralTypes(fn.Body)
+	owners := []string{fn.Name.Name}
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if node == nil {
+			owners = owners[:len(owners)-1]
+			return false
+		}
+		owner := owners[len(owners)-1]
+		if closure, ok := node.(*ast.FuncLit); ok {
+			owner = functionLiteralName(fn.Name.Name, closure, fset)
+		}
+		owners = append(owners, owner)
 		literal, ok := node.(*ast.CompositeLit)
 		if ok {
 			resolved := *literal
@@ -288,7 +298,7 @@ func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]st
 			literal = &resolved
 		}
 		if ok && (reportMapping(literal, packages, info, declarations) || partialReportMapping(literal, packages, info, declarations)) {
-			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Pos()).Line, Function: fn.Name.Name, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, declarations)})
+			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Pos()).Line, Function: owner, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, declarations)})
 		}
 		return true
 	})
@@ -317,20 +327,18 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 		return ""
 	}
 	receiver := selector.X
-	key := stableStatsReceiver(receiver, packages, info)
+	canonical := canonicalStatsReceiver(receiver, packages, info, declarations)
+	key := stableStatsReceiver(canonical, packages, info)
 	if key == "" {
 		return ""
 	}
-	typ := collectionValueType(receiver, false, info, declarations)
-	if typ == nil {
-		typ = resolvedCollectionType(receiver, info, declarations)
-	}
-	if typ == nil {
-		typ = inferredStatsReceiverType(receiver, packages, info, declarations)
-	}
+	typ := sourceStatsReceiverType(receiver, packages, info, declarations)
 	if typ != nil {
 		if dependencyStatsType(typ, packages) {
 			return key
+		}
+		if member := sourceMemberSelection(typ, field, packages, info); member.stats {
+			return stableStatsReceiver(appendReceiverMembers(canonical, member.path[:len(member.path)-1]), packages, info)
 		}
 		return ""
 	}

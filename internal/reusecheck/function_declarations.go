@@ -1,14 +1,20 @@
 package reusecheck
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 )
 
 // A function stored in a package variable has the same contract-bearing body as
 // a function declaration. Give it the variable's name for diagnostic attribution.
-func declaredFunctions(declaration ast.Decl) []*ast.FuncDecl {
+func declaredFunctions(declaration ast.Decl, fset *token.FileSet) []*ast.FuncDecl {
 	if fn, ok := declaration.(*ast.FuncDecl); ok {
+		if fn.Recv != nil || fn.Name.Name == "_" || fn.Name.Name == "init" {
+			copied := *fn
+			copied.Name = ast.NewIdent(positionedFunctionName(fn.Name.Name, fn.Pos(), fset))
+			return []*ast.FuncDecl{&copied}
+		}
 		return []*ast.FuncDecl{fn}
 	}
 	group, ok := declaration.(*ast.GenDecl)
@@ -24,15 +30,15 @@ func declaredFunctions(declaration ast.Decl) []*ast.FuncDecl {
 			if paired {
 				name = value.Names[index].Name
 			}
-			functions = append(functions, initializerFunctions(expression, name, paired)...)
+			functions = append(functions, initializerFunctions(expression, name, paired, fset)...)
 		}
 	}
 	return functions
 }
 
-func initializerFunctions(expression ast.Expr, name string, paired bool) []*ast.FuncDecl {
+func initializerFunctions(expression ast.Expr, name string, paired bool, fset *token.FileSet) []*ast.FuncDecl {
 	var direct *ast.FuncLit
-	if paired {
+	if paired && name != "_" {
 		direct, _ = unparen(expression).(*ast.FuncLit)
 	}
 	var functions []*ast.FuncDecl
@@ -43,7 +49,7 @@ func initializerFunctions(expression ast.Expr, name string, paired bool) []*ast.
 		}
 		attribution := name
 		if literal != direct {
-			attribution += ".func"
+			attribution = functionLiteralName(name, literal, fset)
 		}
 		functions = append(functions, &ast.FuncDecl{
 			Name: ast.NewIdent(attribution), Type: literal.Type, Body: literal.Body,
@@ -52,4 +58,15 @@ func initializerFunctions(expression ast.Expr, name string, paired bool) []*ast.
 		return false
 	})
 	return functions
+}
+
+func functionLiteralName(parent string, literal *ast.FuncLit, fset *token.FileSet) string {
+	return positionedFunctionName(parent, literal.Pos(), fset)
+}
+
+func positionedFunctionName(parent string, pos token.Pos, fset *token.FileSet) string {
+	// Physical file coordinates distinguish same-line siblings and remain stable
+	// when another file changes or a //line directive aliases source positions.
+	position := fset.PositionFor(pos, false)
+	return fmt.Sprintf("%s.func@%d:%d", parent, position.Line, position.Column)
 }

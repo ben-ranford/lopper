@@ -3,6 +3,7 @@ package reusecheck
 import (
 	"go/ast"
 	"go/types"
+	"maps"
 )
 
 // Method names have no parser object, so retain their source signatures beside
@@ -29,15 +30,19 @@ func sourceCallResultType(call *ast.CallExpr, info *types.Info, declarations map
 }
 
 func sourceCallResultAt(call *ast.CallExpr, count, index int, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Expr {
-	signature := sourceFunctionType(call.Fun, info, declarations, seen)
-	if signature == nil || !sourceCallArity(call, signature) {
-		return nil
-	}
-	results := fieldListTypes(signature.Results)
+	results := sourceCallResults(call, info, declarations, seen)
 	if len(results) != count {
 		return nil
 	}
 	return results[index]
+}
+
+func sourceCallResults(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) []ast.Expr {
+	signature := sourceFunctionType(call.Fun, info, declarations, seen)
+	if signature == nil || !sourceCallArity(call, signature, info, declarations, seen) {
+		return nil
+	}
+	return fieldListTypes(signature.Results)
 }
 
 func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) *ast.FuncType {
@@ -49,15 +54,18 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 	case *ast.CallExpr:
 		return declaredFunctionType(sourceCallResultAt(value, 1, 0, info, declarations, seen))
 	case *ast.IndexExpr:
-		return instantiatedSourceFunctionType(value.X, 1, info, declarations, seen)
+		return indexedSourceFunctionType(value, info, declarations, seen)
 	case *ast.IndexListExpr:
 		return instantiatedSourceFunctionType(value.X, len(value.Indices), info, declarations, seen)
+	case *ast.StarExpr:
+		return indirectSourceFunctionType(value, info, declarations, seen)
 	case *ast.Ident:
 		object := info.ObjectOf(value)
 		if object == nil || seen[object] {
 			return nil
 		}
 		seen[object] = true
+		defer delete(seen, object)
 		declaration := sourceBindingDeclaration(sourceCallableDeclaration(object, info, declarations), info, declarations, seen)
 		if initializer := aliasInitializer(declaration); initializer != nil {
 			return sourceFunctionType(initializer, info, declarations, seen)
@@ -67,6 +75,21 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 		return sourceSelectorFunctionType(value, info, declarations)
 	}
 	return nil
+}
+
+func indexedSourceFunctionType(expression *ast.IndexExpr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) *ast.FuncType {
+	if _, namedFunction := argumentCallObject(expression.X, info).(*types.Func); namedFunction {
+		if signature := instantiatedSourceFunctionType(expression.X, 1, info, declarations, seen); signature != nil {
+			return signature
+		}
+	}
+	return indirectSourceFunctionType(expression, info, declarations, seen)
+}
+
+func indirectSourceFunctionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) *ast.FuncType {
+	// Collection traversal keeps every ancestor guard, but its local bindings
+	// must not prevent a sibling argument from using the same callable again.
+	return declaredFunctionType(resolvedCollectionTypeSeen(expression, info, declarations, maps.Clone(seen)))
 }
 
 func sourceSelectorFunctionType(selector *ast.SelectorExpr, info *types.Info, declarations map[types.Object]ast.Node) *ast.FuncType {
@@ -187,15 +210,103 @@ func functionWithReceiver(original *ast.FuncType, receiver []*ast.Field) *ast.Fu
 	return &signature
 }
 
-func sourceCallArity(call *ast.CallExpr, signature *ast.FuncType) bool {
+func sourceCallArity(call *ast.CallExpr, signature *ast.FuncType, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) bool {
+	arguments, known := sourceCallArgumentCount(call, info, declarations, seen)
+	if !known {
+		return false
+	}
 	parameters := fieldListTypes(signature.Params)
 	if len(parameters) != 0 {
 		if _, variadic := parameters[len(parameters)-1].(*ast.Ellipsis); variadic {
 			if call.Ellipsis.IsValid() {
-				return len(call.Args) == len(parameters)
+				return arguments == len(parameters)
 			}
-			return len(call.Args) >= len(parameters)-1
+			return arguments >= len(parameters)-1
 		}
 	}
-	return !call.Ellipsis.IsValid() && len(call.Args) == len(parameters)
+	return !call.Ellipsis.IsValid() && arguments == len(parameters)
+}
+
+// Only a sole call without ellipsis may expand its result tuple into arguments.
+// Source signatures must prove each nested call's arity and result count first.
+func sourceCallArgumentCount(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) (int, bool) {
+	for _, expression := range call.Args {
+		argument, ok := unparen(expression).(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		results := sourceArgumentResultCount(argument, info, declarations, seen)
+		if results == 0 {
+			return 0, false
+		}
+		if len(call.Args) == 1 && !call.Ellipsis.IsValid() {
+			return results, true
+		}
+		if results != 1 {
+			return 0, false
+		}
+	}
+	return len(call.Args), true
+}
+
+func sourceArgumentResultCount(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) int {
+	name := ""
+	if builtin, ok := argumentCallObject(call.Fun, info).(*types.Builtin); ok {
+		name = builtin.Name()
+	} else if !argumentConversionType(call.Fun, info) {
+		return len(sourceCallResults(call, info, declarations, seen))
+	}
+	arguments, known := sourceCallArgumentCount(call, info, declarations, seen)
+	if known && scalarArgumentCallArity(name, arguments, call.Ellipsis.IsValid()) {
+		return 1
+	}
+	return 0
+}
+
+func argumentCallObject(expression ast.Expr, info *types.Info) types.Object {
+	switch value := unparen(expression).(type) {
+	case *ast.Ident:
+		return info.ObjectOf(value)
+	case *ast.SelectorExpr:
+		return info.ObjectOf(value.Sel)
+	}
+	return nil
+}
+
+func argumentConversionType(expression ast.Expr, info *types.Info) bool {
+	switch value := unparen(expression).(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		_, typeName := argumentCallObject(value, info).(*types.TypeName)
+		return typeName
+	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StructType, *ast.InterfaceType, *ast.FuncType:
+		return true
+	case *ast.StarExpr:
+		return argumentConversionType(value.X, info)
+	case *ast.IndexExpr:
+		return argumentConversionType(value.X, info)
+	case *ast.IndexListExpr:
+		return argumentConversionType(value.X, info)
+	}
+	return false
+}
+
+// Builtins and conversions have known scalar results, unlike unproven imported
+// calls. Check their argument shape without duplicating Go's type checker.
+func scalarArgumentCallArity(name string, arguments int, ellipsis bool) bool {
+	if ellipsis {
+		return name == "append" && arguments == 2
+	}
+	switch name {
+	case "", "len", "cap", "real", "imag", "new":
+		return arguments == 1
+	case "copy", "complex":
+		return arguments == 2
+	case "recover":
+		return arguments == 0
+	case "append", "min", "max":
+		return arguments >= 1
+	case "make":
+		return arguments >= 1 && arguments <= 3
+	}
+	return false
 }

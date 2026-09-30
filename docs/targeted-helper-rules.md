@@ -23,11 +23,15 @@ package type validation. Unknown forms are not classified as proven copies.
 Package-level function variables and function literals in package initializers or
 local scopes are checked alongside function declarations. Nested collection
 findings retain their enclosing function and source location without repeating
-report-mapping findings.
+report-mapping findings. Each nested closure's diagnostic identity includes its
+physical line and column, so an exception for one closure cannot cover a sibling.
+Methods, blank bindings and `init` functions also have distinct identities;
+ordinary named package functions retain their function scope.
 Source-declared function and interface-method result signatures, plus collection
 element types, retain statistics provenance, including tuple assignments, nested
-indexes and named containers; distinct named statistics
-types remain separate from the shared helper contract.
+indexes and named containers. Sole tuple-valued call arguments retain their
+source-proven argument count; distinct named statistics types remain separate
+from the shared helper contract.
 Files in the same directory and package share declaration bindings, with import
 ownership retained from each declaration's source file. Generic functions retain
 explicit statistics result types. Instantiated generic aliases retain explicit
@@ -39,6 +43,8 @@ so an arbitrary build variant cannot supply cross-file provenance.
 
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.
+Unambiguous promoted members resolve through their source-declared embedded
+statistics field; shadowed, competing or unknown embedding paths remain unproven.
 Mappings with deliberate overrides or mixed sources remain advisory when four
 of six fields have recognized statistics provenance. Calls or channel receives in
 the literal also keep a mapping advisory: they may change the statistics between
@@ -67,6 +73,8 @@ excluded from production enforcement; test duplication remains advisory.
 For a reviewed exception, pass `-exceptions path/to/exceptions.json`. The file is
 an array of objects with `path`, `function`, `rule`, `sha256`, `reason` and `issue`.
 The SHA-256 is of the complete source file; any edit invalidates the approval.
+Use the exact function identity emitted in the diagnostic, including a position
+suffix when present.
 The issue must link to a repository issue documenting why the contract must
 remain separate. Paths must be relative Go source paths, rules must name a supported contract,
 and issue links must identify a positive issue number in this repository. Unknown
@@ -74,9 +82,10 @@ fields, null arrays, malformed entries and duplicate entries fail closed. Review
 inline suppressions or directory-wide exceptions.
 
 On the development checkout at `dfe361e`, the helper-only command took approximately
-0.5 seconds with a warm Go build cache. Cost is linear in parsed source size and
-scans production Go files outside hidden directories, vendor, node_modules and
-testdata. Positive/negative contract fixtures live in `internal/reusecheck` tests;
+0.5 seconds with a warm Go build cache. The command scans production Go files
+outside hidden directories, vendor, node_modules and testdata. Embedded-field
+lookups visit each resolved source struct once, preserving ambiguity without
+enumerating every embedding path. Positive/negative contract fixtures live in `internal/reusecheck` tests;
 CLI fixtures exercise failing source, read errors, exceptions and exit statuses.
 
 Refs #1615. The dedicated required GitHub status, merge-group behavior, protected

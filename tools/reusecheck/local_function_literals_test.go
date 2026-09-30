@@ -20,7 +20,7 @@ func TestRunRejectsFunctionLiteralCopy(t *testing.T) {
 			testutil.MustWriteFile(t, filepath.Join(root, "internal", "lang", "copy.go"), source)
 			var output bytes.Buffer
 			code := run([]string{"-root", root}, &output, &output)
-			if code != 1 || strings.Count(output.String(), "violation sorted-set-keys in "+tc.owner+": use shared.SortedKeys") != 1 {
+			if code != 1 || strings.Count(output.String(), "violation sorted-set-keys in "+tc.owner+"@") != 1 || !strings.Contains(output.String(), ": use shared.SortedKeys") {
 				t.Fatalf("collection closure: code=%d output=%s", code, &output)
 			}
 		})

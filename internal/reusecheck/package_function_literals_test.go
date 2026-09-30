@@ -26,7 +26,7 @@ func TestPackageInitializerCollectionLiterals(t *testing.T) {
 			}
 			prefix, _, _ := strings.Cut(source, literal)
 			finding := findings[0]
-			if finding.Function != "builders.func" || finding.Rule != "sorted-unique-trimmed" || finding.Line != strings.Count(prefix, "\n")+1 || finding.Advisory {
+			if !strings.HasPrefix(finding.Function, "builders.func@") || finding.Rule != "sorted-unique-trimmed" || finding.Line != strings.Count(prefix, "\n")+1 || finding.Advisory {
 				t.Fatalf("initializer attribution or source location: %+v", finding)
 			}
 		})
@@ -37,14 +37,14 @@ func TestPackageInitializerLiteralOwnerExemptions(t *testing.T) {
 	for name, owner := range collectionOwners {
 		source := localCollectionSource("var " + owner.function + " = []any{" + strings.TrimSpace(collectionFunctionLiteral(name)) + "}")
 		findings, err := Analyze(owner.owner, []byte(source))
-		if err != nil || len(findings) != 1 || findings[0].Function != owner.function+".func" || findings[0].Rule != owner.rule {
+		if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0].Function, owner.function+".func@") || findings[0].Rule != owner.rule {
 			t.Fatalf("initializer inherited canonical owner exemption: %+v error=%v", findings, err)
 		}
 	}
 	header, mapping, _ := strings.Cut(mappingFixture, "func build")
 	source := header + "var BuildDependencyReportFromStats = []any{func" + mapping + "}"
 	findings, err := Analyze("internal/lang/shared/dependency_usage_stats.go", []byte(source))
-	if err != nil || len(findings) != 1 || findings[0].Function != "BuildDependencyReportFromStats.func" || findings[0].Advisory {
+	if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0].Function, "BuildDependencyReportFromStats.func@") || findings[0].Advisory {
 		t.Fatalf("report initializer inherited canonical owner exemption: %+v error=%v", findings, err)
 	}
 }
@@ -58,7 +58,7 @@ func TestPackageInitializerReportLiterals(t *testing.T) {
 	} {
 		source := header + fmt.Sprintf(wrapper, mapping)
 		findings, err := Analyze("fixture.go", []byte(source))
-		if err != nil || len(findings) != 1 || findings[0].Function != "builders.func" || findings[0].Advisory || findings[0].Rule != "dependency-report-mapping" {
+		if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0].Function, "builders.func@") || findings[0].Advisory || findings[0].Rule != "dependency-report-mapping" {
 			t.Fatalf("package report closure: %+v error=%v", findings, err)
 		}
 	}
@@ -71,7 +71,7 @@ func TestPackageInitializerNestedFindingsAreUnique(t *testing.T) {
 	if err != nil || len(findings) != 2 {
 		t.Fatalf("nested package findings missing/repeated: %+v error=%v", findings, err)
 	}
-	if findings[0].Function != "builders.func.func" || findings[0].Rule != "sorted-unique-trimmed" || findings[1].Function != "builders.func" || findings[1].Rule != "dependency-report-mapping" || findings[1].Advisory {
+	if strings.Count(findings[0].Function, ".func@") != 2 || findings[0].Rule != "sorted-unique-trimmed" || strings.Count(findings[1].Function, ".func@") != 2 || findings[1].Rule != "dependency-report-mapping" || findings[1].Advisory {
 		t.Fatalf("nested package attribution: %+v", findings)
 	}
 	source = localCollectionSource("var builders = []any{\n" + collectionFunctionLiteral("trimmed") + ",\n" + collectionFunctionLiteral("trimmed") + ",\n}")
@@ -79,7 +79,7 @@ func TestPackageInitializerNestedFindingsAreUnique(t *testing.T) {
 		t.Fatalf("sibling package closures missing/repeated: %+v error=%v", findings, err)
 	}
 	source = localCollectionSource("var builders = func() func([]string) []string { return " + collectionFunctionLiteral("trimmed") + " }()")
-	if findings, err = Analyze("fixture.go", []byte(source)); err != nil || len(findings) != 1 || findings[0].Function != "builders.func.func" {
+	if findings, err = Analyze("fixture.go", []byte(source)); err != nil || len(findings) != 1 || strings.Count(findings[0].Function, ".func@") != 2 {
 		t.Fatalf("immediately invoked package closure: %+v error=%v", findings, err)
 	}
 }

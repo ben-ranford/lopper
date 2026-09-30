@@ -264,7 +264,7 @@ func resolvedCollectionTypeSeen(expression ast.Expr, info *types.Info, declarati
 			expression = item.X
 		case *ast.CallExpr:
 			if !builtinAppend(item, info) {
-				return collectionIndirection(collectionCallType(item, info, declarations), operations)
+				return collectionIndirection(collectionCallType(item, info, declarations, seen), operations)
 			}
 			operations = append(operations, collectionAppend)
 			expression = item.Args[0]
@@ -311,11 +311,11 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	return nil
 }
 
-func collectionCallType(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+func collectionCallType(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Expr {
 	if allocated := allocatedCallType(call, info); allocated != nil {
 		return allocated
 	}
-	return sourceCallResultType(call, info, declarations)
+	return sourceCallResultAt(call, 1, 0, info, declarations, seen)
 }
 
 func allocatedCallType(item *ast.CallExpr, info *types.Info) ast.Expr {
