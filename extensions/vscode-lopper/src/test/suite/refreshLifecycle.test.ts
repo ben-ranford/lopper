@@ -71,12 +71,12 @@ suite("refresh lifecycle", () => {
     });
   });
 
-  test("initialization skips folders with automatic refresh disabled", async function () {
+  test("initialization skips automatic scans when automatic refresh is disabled", async function () {
     this.timeout(30_000);
 
     await withAutomaticRefreshFolders(async (folders) => {
       await vscode.workspace.getConfiguration("lopper", folders[0].uri)
-        .update("autoRefresh", false, vscode.ConfigurationTarget.WorkspaceFolder);
+        .update("autoRefresh", false, vscode.ConfigurationTarget.Workspace);
       const visited: vscode.WorkspaceFolder[] = [];
       await withController({
         analyseWorkspace: async (folder): Promise<WorkspaceAnalysis> => {
@@ -86,7 +86,7 @@ suite("refresh lifecycle", () => {
         exportWorkspace: async (): Promise<string> => "",
       }, async (controller) => {
         await controller.initialize();
-        assert.deepEqual(visited, [folders[1]]);
+        assert.deepEqual(visited, []);
       });
     });
   });
@@ -933,15 +933,13 @@ async function withAutomaticRefreshFolders(
 ): Promise<void> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   assert.equal(folders.length, 2, "expected the two-folder smoke workspace");
-  const configurations = folders.map((folder) => vscode.workspace.getConfiguration("lopper", folder.uri));
-  const previousValues = configurations.map((configuration) => configuration.inspect<boolean>("autoRefresh")?.workspaceFolderValue);
+  const configuration = vscode.workspace.getConfiguration("lopper");
+  const previousValue = configuration.inspect<boolean>("autoRefresh")?.workspaceValue;
   try {
-    await Promise.all(configurations.map((configuration) =>
-      configuration.update("autoRefresh", true, vscode.ConfigurationTarget.WorkspaceFolder)));
+    await configuration.update("autoRefresh", true, vscode.ConfigurationTarget.Workspace);
     await run(folders);
   } finally {
-    await Promise.all(configurations.map((configuration, index) =>
-      configuration.update("autoRefresh", previousValues[index], vscode.ConfigurationTarget.WorkspaceFolder)));
+    await configuration.update("autoRefresh", previousValue, vscode.ConfigurationTarget.Workspace);
   }
 }
 
