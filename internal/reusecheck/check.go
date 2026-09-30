@@ -94,25 +94,51 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 		}
 		stats = receiver
 	}
-	return !reportLiteralHasEffects(literal)
+	return !reportLiteralHasEffects(literal, packages, info)
 }
 
 // Calls and receives can change the stats between field reads. Without proving
 // their effects, replacing the literal with one stats snapshot is only advice.
-func reportLiteralHasEffects(literal *ast.CompositeLit) bool {
+func reportLiteralHasEffects(expression ast.Expr, packages map[string]string, info *types.Info) bool {
 	effects := false
-	ast.Inspect(literal, func(node ast.Node) bool {
+	ast.Inspect(expression, func(node ast.Node) bool {
 		switch value := node.(type) {
 		case *ast.FuncLit:
 			return false
 		case *ast.CallExpr:
-			effects = true
+			effects = effects || !provenTypeConversion(value, packages, info) || reportLiteralHasEffects(value.Args[0], packages, info)
+			return false
 		case *ast.UnaryExpr:
 			effects = effects || value.Op == token.ARROW
 		}
 		return !effects
 	})
 	return effects
+}
+
+// Conversion targets are types, so only their operand is evaluated. Keep
+// unknown imported functions and lexically shadowed type names effectful.
+func provenTypeConversion(call *ast.CallExpr, packages map[string]string, info *types.Info) bool {
+	if len(call.Args) != 1 || call.Ellipsis.IsValid() {
+		return false
+	}
+	return ownedStatsConversionType(call.Fun, packages) || info != nil && argumentConversionType(call.Fun, info)
+}
+
+func ownedStatsConversionType(expression ast.Expr, packages map[string]string) bool {
+	seen := make(map[ast.Expr]bool)
+	for {
+		expression = unaliasedType(expression)
+		if expression == nil || seen[expression] {
+			return false
+		}
+		seen[expression] = true
+		pointer, ok := expression.(*ast.StarExpr)
+		if !ok {
+			return imported(expression, packages, sharedPackage, "DependencyStats")
+		}
+		expression = pointer.X
+	}
 }
 
 func dependencyStats(declaration ast.Node, packages map[string]string, info *types.Info) bool {
@@ -378,6 +404,9 @@ func inferredStatsReceiverType(expression ast.Expr, packages map[string]string, 
 		case *ast.TypeAssertExpr:
 			return collectionIndirection(item.Type, operations)
 		case *ast.CallExpr:
+			if provenTypeConversion(item, packages, info) {
+				return collectionIndirection(item.Fun, operations)
+			}
 			return collectionIndirection(inferredStatsCallType(item, packages, info, declarations), operations)
 		default:
 			return nil
@@ -397,30 +426,40 @@ func statsFactoryResultType(call *ast.CallExpr, packages map[string]string) ast.
 }
 
 // A repeated receiver must resolve to the same lexical objects and contain no
-// calls or receives: evaluating it once must preserve the copied field values.
+// function calls or receives: evaluating it once must preserve the copied field
+// values. Proven type conversions retain their target and stable operand.
 func stableStatsReceiver(expression ast.Expr, packages map[string]string, info *types.Info) string {
+	return stableStatsReceiverSeen(expression, packages, info, make(map[ast.Expr]bool))
+}
+
+func stableStatsReceiverSeen(expression ast.Expr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	identity := func(operand ast.Expr) string {
+		return stableStatsReceiverSeen(operand, packages, info, active)
+	}
 	switch value := unparen(expression).(type) {
 	case *ast.Ident:
 		if object := info.ObjectOf(value); object != nil {
 			return fmt.Sprintf("%p", object)
 		}
 	case *ast.SelectorExpr:
-		return wrapReceiverIdentity("", stableStatsReceiver(value.X, packages, info), "."+value.Sel.Name)
+		return wrapReceiverIdentity("", identity(value.X), "."+value.Sel.Name)
 	case *ast.BasicLit:
 		return value.Kind.String() + ":" + value.Value
 	case *ast.StarExpr:
-		return wrapReceiverIdentity("*(", stableStatsReceiver(value.X, packages, info), ")")
+		return wrapReceiverIdentity("*(", identity(value.X), ")")
 	case *ast.UnaryExpr:
 		switch value.Op {
 		case token.AND, token.ADD, token.SUB, token.XOR, token.NOT:
-			return wrapReceiverIdentity(value.Op.String()+"(", stableStatsReceiver(value.X, packages, info), ")")
+			return wrapReceiverIdentity(value.Op.String()+"(", identity(value.X), ")")
 		}
 	case *ast.BinaryExpr:
-		return pairedReceiverIdentity("binary:"+value.Op.String(), stableStatsReceiver(value.X, packages, info), stableStatsReceiver(value.Y, packages, info))
+		return pairedReceiverIdentity("binary:"+value.Op.String(), identity(value.X), identity(value.Y))
 	case *ast.IndexExpr:
-		return pairedReceiverIdentity("index", stableStatsReceiver(value.X, packages, info), stableStatsReceiver(value.Index, packages, info))
+		return pairedReceiverIdentity("index", identity(value.X), identity(value.Index))
 	case *ast.TypeAssertExpr:
-		return assertedReceiverIdentity(value, packages, info)
+		return assertedReceiverIdentity(value, packages, info, active)
+	case *ast.CallExpr:
+		return convertedReceiverIdentity(value, packages, info, active)
 	}
 	return ""
 }
@@ -439,10 +478,19 @@ func pairedReceiverIdentity(operation, first, second string) string {
 	return operation + "(" + first + "," + second + ")"
 }
 
-func assertedReceiverIdentity(assertion *ast.TypeAssertExpr, packages map[string]string, info *types.Info) string {
-	operand := stableStatsReceiver(assertion.X, packages, info)
-	typ := assertedTypeIdentity(assertion.Type, packages, info, make(map[ast.Expr]bool))
+func assertedReceiverIdentity(assertion *ast.TypeAssertExpr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	operand := stableStatsReceiverSeen(assertion.X, packages, info, active)
+	typ := assertedTypeIdentity(assertion.Type, packages, info, active)
 	return pairedReceiverIdentity("assert", operand, typ)
+}
+
+func convertedReceiverIdentity(conversion *ast.CallExpr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	if !provenTypeConversion(conversion, packages, info) {
+		return ""
+	}
+	operand := stableStatsReceiverSeen(conversion.Args[0], packages, info, active)
+	target := assertedTypeIdentity(conversion.Fun, packages, info, active)
+	return pairedReceiverIdentity("convert", target, operand)
 }
 
 // Assertion types are part of receiver identity: the same interface operand
@@ -465,7 +513,7 @@ func assertedTypeIdentity(expression ast.Expr, packages map[string]string, info 
 	case *ast.ArrayType:
 		length := "slice"
 		if value.Len != nil {
-			length = stableStatsReceiver(value.Len, packages, info)
+			length = stableStatsReceiverSeen(value.Len, packages, info, active)
 		}
 		return pairedReceiverIdentity("array", length, assertedTypeIdentity(value.Elt, packages, info, active))
 	case *ast.MapType:

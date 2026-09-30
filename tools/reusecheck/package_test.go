@@ -36,15 +36,7 @@ func TestPackageSourceProvenance(t *testing.T) {
 		{"promoted fields", "type Holder struct { s.DependencyStats }", ", measured Holder", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			declarations := "package fixture\nimport s \"github.com/ben-ranford/lopper/internal/lang/shared\"\n" + tc.declaration
-			consumer := "package fixture\nimport r \"github.com/ben-ranford/lopper/internal/report\"\nfunc build(name string" + tc.parameter + ") r.DependencyReport { " + tc.setup + packageReport + " }"
-			testutil.MustWriteFile(t, filepath.Join(root, "declarations.go"), declarations)
-			testutil.MustWriteFile(t, filepath.Join(root, "consumer.go"), consumer)
-			var output bytes.Buffer
-			if code := run([]string{"-root", root}, &output, &output); code != 1 || !strings.Contains(output.String(), "consumer.go:3: violation dependency-report-mapping in build") {
-				t.Fatalf("code=%d output=%s", code, &output)
-			}
+			checkPackageReportCopy(t, tc.declaration, tc.parameter, tc.setup, packageReport)
 		})
 	}
 }
@@ -60,5 +52,29 @@ func TestPackageProvenanceExcludesNonProductionDeclarations(t *testing.T) {
 				t.Fatalf("non-production declaration supplied provenance: code=%d output=%s", code, &output)
 			}
 		})
+	}
+}
+
+func TestConvertedReportCopies(t *testing.T) {
+	for _, tc := range []struct{ name, report string }{
+		{"name", strings.Replace(packageReport, "Name:name", "Name:string(name)", 1)},
+		{"receiver", strings.ReplaceAll(packageReport, "measured.", "Stats(raw).")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkPackageReportCopy(t, "type Stats = s.DependencyStats; type Raw s.DependencyStats", ", measured Stats, raw Raw", "", tc.report)
+		})
+	}
+}
+
+func checkPackageReportCopy(t *testing.T, declaration, parameter, setup, report string) {
+	t.Helper()
+	root := t.TempDir()
+	declarations := "package fixture\nimport s \"github.com/ben-ranford/lopper/internal/lang/shared\"\n" + declaration
+	consumer := "package fixture\nimport r \"github.com/ben-ranford/lopper/internal/report\"\nfunc build(name string" + parameter + ") r.DependencyReport { " + setup + report + " }"
+	testutil.MustWriteFile(t, filepath.Join(root, "declarations.go"), declarations)
+	testutil.MustWriteFile(t, filepath.Join(root, "consumer.go"), consumer)
+	var output bytes.Buffer
+	if code := run([]string{"-root", root}, &output, &output); code != 1 || !strings.Contains(output.String(), "consumer.go:3: violation dependency-report-mapping in build") {
+		t.Fatalf("code=%d output=%s", code, &output)
 	}
 }

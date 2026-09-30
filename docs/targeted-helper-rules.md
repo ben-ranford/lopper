@@ -46,10 +46,12 @@ members of the same local `shared.DependencyStats` value, plus name/language.
 Unambiguous promoted members resolve through their source-declared embedded
 statistics field; shadowed, competing or unknown embedding paths remain unproven.
 Mappings with deliberate overrides or mixed sources remain advisory when four
-of six fields have recognized statistics provenance. Calls or channel receives in
+of six fields have recognized statistics provenance. Unproven calls or channel receives in
 the literal also keep a mapping advisory: they may change the statistics between
-field reads, so a single helper snapshot is not proven equivalent. Stable
-address-taken and directly type-asserted receivers retain their source type
+field reads, so a single helper snapshot is not proven equivalent. Proven type
+conversions retain blocking findings while their operands are checked for effects.
+Direct converted receivers retain both their target type and stable operand identity.
+Stable address-taken and directly type-asserted receivers retain their source type
 provenance and identity. Pure unary and binary index expressions retain their
 operators, grouping and lexical operands; different expressions remain separate.
 Valid helper calls

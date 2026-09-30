@@ -58,7 +58,7 @@ func TestReportLiteralIgnoresUncalledClosureBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reportLiteralHasEffects(expression.(*ast.CompositeLit)) {
+	if reportLiteralHasEffects(expression.(*ast.CompositeLit), nil, nil) {
 		t.Fatal("constructing a closure does not execute its body")
 	}
 }
