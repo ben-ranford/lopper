@@ -456,12 +456,26 @@ func stableStatsReceiverSeen(expression ast.Expr, packages map[string]string, in
 		return pairedReceiverIdentity("binary:"+value.Op.String(), identity(value.X), identity(value.Y))
 	case *ast.IndexExpr:
 		return pairedReceiverIdentity("index", identity(value.X), identity(value.Index))
+	case *ast.SliceExpr:
+		return slicedReceiverIdentity(value, packages, info, active)
 	case *ast.TypeAssertExpr:
 		return assertedReceiverIdentity(value, packages, info, active)
 	case *ast.CallExpr:
 		return convertedReceiverIdentity(value, packages, info, active)
 	}
 	return ""
+}
+
+func slicedReceiverIdentity(slice *ast.SliceExpr, packages map[string]string, info *types.Info, active map[ast.Expr]bool) string {
+	identity := stableStatsReceiverSeen(slice.X, packages, info, active)
+	for _, bound := range []ast.Expr{slice.Low, slice.High, slice.Max} {
+		component := "omitted"
+		if bound != nil {
+			component = stableStatsReceiverSeen(bound, packages, info, active)
+		}
+		identity = pairedReceiverIdentity("bound", identity, component)
+	}
+	return wrapReceiverIdentity(fmt.Sprintf("slice(%t:", slice.Slice3), identity, ")")
 }
 
 func wrapReceiverIdentity(prefix, operand, suffix string) string {

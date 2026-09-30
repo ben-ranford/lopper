@@ -231,6 +231,11 @@ func canonicalStatsReceiver(expression ast.Expr, packages map[string]string, inf
 		copied := *value
 		copied.X, copied.Index = canonical(value.X), canonical(value.Index)
 		return &copied
+	case *ast.SliceExpr:
+		copied := *value
+		copied.X = canonical(value.X)
+		copied.Low, copied.High, copied.Max = canonical(value.Low), canonical(value.High), canonical(value.Max)
+		return &copied
 	case *ast.StarExpr:
 		copied := *value
 		copied.X = canonical(value.X)
@@ -247,6 +252,13 @@ func canonicalStatsReceiver(expression ast.Expr, packages map[string]string, inf
 		copied := *value
 		copied.X = canonical(value.X)
 		return &copied
+	case *ast.CallExpr:
+		if provenTypeConversion(value, packages, info) {
+			copied := *value
+			copied.Args = []ast.Expr{canonical(value.Args[0])}
+			return &copied
+		}
+		return expression
 	default:
 		return expression
 	}

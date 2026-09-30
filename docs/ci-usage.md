@@ -53,11 +53,13 @@ and the later workflow coverage pass. Each build channel has two independent job
 | `verify-tests` / `verify-rolling-tests` | Normal and leak tests, including tagged variants and Python checks (`make ci-tests`) |
 | `verify-checks` / `verify-rolling-checks` | Every remaining Makefile CI gate (`make ci-checks`), including race tests, security, benchmarks, build, and coverage |
 
-Primary PR regression proof, memory approval, demo checks, lopper reports, and the
+Linux PR regression proof, memory approval, demo checks, lopper reports, and the
 second coverage pass remain in `verify-checks`. Both coverage thresholds and report
 publication permissions are unchanged. `verify` and `verify (rolling)` retain their
 check names and aggregate the corresponding checks and tests jobs.
-They fail if either execution job fails, is cancelled, or is unexpectedly skipped.
+The primary `verify` check also requires `regression-proof-windows`, running on
+`windows-latest` with the same event SHA and no persisted checkout credentials.
+They fail if any required execution job fails, is cancelled, or is skipped.
 The primary aggregate forwards the exact report artifact ID to the existing
 publication job. On hosted pull requests, `verify` also downloads that current-run
 artifact and validates suppression tracking with read-only API access. Aggregate
@@ -70,9 +72,26 @@ job. Runtime Python artifact checks run in each execution workspace, including a
 final test-workspace check after failures. Local and release `make ci` retain the
 original complete prerequisite order.
 
+`Regression-Test: ./package::TestName` declarations keep the same format. CI locates
+each exact test function and evaluates its Go filename and build constraints with
+the `regressionproof` tag using fixed hosted amd64, baseline `amd64.v1`, gc and cgo
+enabled contexts. This keeps routing identical on both hosts. Tests available on Linux run there; tests available only
+on Windows run in the required Windows proof job. Missing, ambiguous, or unsupported
+declarations fail. Each selected proof must compile on the base, fail there, then
+pass on the head; a missing or skipped test outcome fails. The tool's ordinary local
+invocation still attempts every declaration; `--target-os linux` and
+`--target-os windows` select the corresponding CI partition and require a native
+runner whenever that partition contains tests. Native Windows proof uses the hosted
+Git for Windows installation at `C:\Program Files\Git\cmd\git.exe` with a sanitized
+environment. The Windows job resolves the active Go root after setup; the tool
+accepts its absolute executable only under the hosted Go cache on `C:` or `D:`.
+It permits setup-go's `C:` to `D:` junction for the identical version and architecture,
+and rejects missing executables and unrelated redirected paths.
+
 The two extra test jobs raise the workflow's simultaneously runnable execution jobs
 from seven to nine (four verification jobs, two OS smoke jobs, two VS Code smoke
-jobs, and Homebrew). Aggregate/report jobs follow their producers. This bounded
+jobs, and Homebrew); native Windows regression proof adds one further job.
+Aggregate/report jobs follow their producers. This bounded
 split avoids creating one runner job per Makefile target; account-wide runner
 limits and concurrent PRs still affect queue time. See GitHub's
 [runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)

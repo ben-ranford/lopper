@@ -53,7 +53,8 @@ conversions retain blocking findings while their operands are checked for effect
 Direct converted receivers retain both their target type and stable operand identity.
 Stable address-taken and directly type-asserted receivers retain their source type
 provenance and identity. Pure unary and binary index expressions retain their
-operators, grouping and lexical operands; different expressions remain separate.
+operators, grouping and lexical operands. Stable slice receivers retain their
+collection, low/high/max bounds and slice form; distinct expressions remain separate.
 Valid helper calls
 followed by language-specific changes pass. Discarded/decorative helper calls do not waive a
 remaining duplicate mapping or collection implementation. Sorted operations are

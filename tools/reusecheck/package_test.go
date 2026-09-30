@@ -55,13 +55,14 @@ func TestPackageProvenanceExcludesNonProductionDeclarations(t *testing.T) {
 	}
 }
 
-func TestConvertedReportCopies(t *testing.T) {
+func TestReportExpressionCopies(t *testing.T) {
 	for _, tc := range []struct{ name, report string }{
 		{"name", strings.Replace(packageReport, "Name:name", "Name:string(name)", 1)},
 		{"receiver", strings.ReplaceAll(packageReport, "measured.", "Stats(raw).")},
+		{"slice", strings.ReplaceAll(packageReport, "measured.", "values[:][0].")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			checkPackageReportCopy(t, "type Stats = s.DependencyStats; type Raw s.DependencyStats", ", measured Stats, raw Raw", "", tc.report)
+			checkPackageReportCopy(t, "type Stats = s.DependencyStats; type Raw s.DependencyStats", ", measured Stats, raw Raw, values []Stats", "", tc.report)
 		})
 	}
 }
