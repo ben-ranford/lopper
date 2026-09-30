@@ -151,9 +151,9 @@ func OpenOrCreatePinnedDirectory(root Root, parentPath, name string, perm os.Fil
 // name without following untrusted symlinks. It returns the opened ancestor,
 // that ancestor's canonical path, and any remaining missing path components.
 func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, error) {
-	return openRootExistingAncestorNoFollowWith(name, fileSystem.Abs, filepath.Rel, fileSystem.OpenRoot, func(root Root, childName, requestedPath string) (Root, string, error) {
+	return openRootPathWith(name, fileSystem.Abs, filepath.Rel, fileSystem.OpenRoot, func(root Root, childName, requestedPath string) (Root, string, error) {
 		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
-	})
+	}, allowMissingRootSuffix)
 }
 
 type osFileSystem struct{}
@@ -178,42 +178,44 @@ func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
 	return openRootNoFollowWith(name, f.Abs, filepath.Rel, f.OpenRoot, f.openRootChildPinned)
 }
 
+type rootPathPolicy uint8
+
+const (
+	requireRootPath rootPathPolicy = iota
+	allowMissingRootSuffix
+)
+
 func openRootNoFollowWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error)) (Root, error) {
+	root, _, _, err := openRootPathWith(name, absFn, relFn, openRootFn, openRootChildFn, requireRootPath)
+	return root, err
+}
+
+// openRootPathWith owns the volume-root setup and handle transfers for both
+// strict traversal and traversal that may stop at a missing suffix.
+func openRootPathWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error), policy rootPathPolicy) (Root, string, []string, error) {
 	absName, err := absFn(name)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
-
 	volumeRoot := filepath.VolumeName(absName) + string(os.PathSeparator)
 	rel, err := relFn(volumeRoot, absName)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	root, err := openRootFn(volumeRoot)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	if rel == "." {
-		return root, nil
+		return root, volumeRoot, nil, nil
 	}
-
-	currentPath := volumeRoot
-	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
-		if part == "" || part == "." {
-			continue
-		}
-		requestedPath := filepath.Join(currentPath, part)
-		next, nextPath, err := openRootChildFn(root, part, requestedPath)
-		if err != nil {
-			return nil, closeRootWithError(root, err)
-		}
-		if err := root.Close(); err != nil {
-			return nil, closeRootWithError(next, err)
-		}
-		root = next
-		currentPath = nextPath
+	var parts []string
+	if policy == allowMissingRootSuffix {
+		_, parts = splitPinnedPath(rel)
+	} else {
+		parts = strings.Split(rel, string(os.PathSeparator))
 	}
-	return root, nil
+	return openRootPathComponents(root, volumeRoot, parts, openRootChildFn, policy)
 }
 
 func (f *osFileSystem) openRootChildPinned(root Root, name, requestedPath string) (Root, string, error) {
@@ -302,37 +304,20 @@ func openRootChildNoFollow(root Root, name, path string) (Root, error) {
 	return openValidatedChildRoot(root, name, path, func() (fs.FileInfo, error) { return root.Lstat(name) }, "root contains symlink", "root is not a directory", "root changed while opening")
 }
 
-func openRootExistingAncestorNoFollowWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error)) (Root, string, []string, error) {
-	absName, err := absFn(name)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	volumeRoot := filepath.VolumeName(absName) + string(os.PathSeparator)
-	rel, err := relFn(volumeRoot, absName)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	root, err := openRootFn(volumeRoot)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	if rel == "." {
-		return root, volumeRoot, nil, nil
-	}
-	_, parts := splitPinnedPath(rel)
-	return openExistingRootAncestors(root, volumeRoot, parts, openRootChildFn)
-}
-
-func openExistingRootAncestors(root Root, currentPath string, parts []string, openRootChildFn func(Root, string, string) (Root, string, error)) (Root, string, []string, error) {
+func openRootPathComponents(root Root, currentPath string, parts []string, openRootChildFn func(Root, string, string) (Root, string, error), policy rootPathPolicy) (Root, string, []string, error) {
 	for idx, part := range parts {
-		requestedPath := filepath.Join(currentPath, part)
-		exists, err := rootChildExists(root, part)
-		if err != nil {
-			return nil, "", nil, closeRootWithError(root, err)
+		if part == "" || part == "." {
+			continue
 		}
-		if !exists {
-			return root, currentPath, parts[idx:], nil
+		requestedPath := filepath.Join(currentPath, part)
+		if policy == allowMissingRootSuffix {
+			exists, err := rootChildExists(root, part)
+			if err != nil {
+				return nil, "", nil, closeRootWithError(root, err)
+			}
+			if !exists {
+				return root, currentPath, parts[idx:], nil
+			}
 		}
 		next, nextPath, err := openRootChildFn(root, part, requestedPath)
 		if err != nil {
