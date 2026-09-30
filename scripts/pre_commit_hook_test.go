@@ -442,6 +442,45 @@ func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
 	}
 }
 
+func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
+	for _, fixture := range []struct{ name, source, failure string }{
+		{"formatted", "package sample\n\nfunc Value() int { return 2 }\n", ""},
+		{"unformatted", "package sample\n\nfunc Value() int {return 2}\n", "staged Go file must be gofmt-formatted: "},
+		{"invalid", "package sample\n\nfunc {\n", "gofmt failed for "},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			repoDir := newHookFixture(t)
+			files := []string{"space name.go", "line\nbreak.go", `back\slash.go`, `quote'"$name.go`, "-leading.go", ":(glob)*.go"}
+			for _, file := range files {
+				writeFile(t, filepath.Join(repoDir, file), fixture.source)
+			}
+			runCommand(t, repoDir, "git", append([]string{"--literal-pathspecs", "add", "--"}, files...)...)
+			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
+			tempDir := t.TempDir()
+			output, err := hookCommandWithEnv(repoDir, []string{"TMPDIR=" + tempDir}, filepath.Join(hookDir, "pre-commit"))
+			if fixture.failure == "" {
+				if err != nil {
+					t.Fatalf("literal filenames blocked formatted files: %v\n%s", err, output)
+				}
+			} else {
+				if err == nil || strings.Contains(output, "running full make ci") {
+					t.Fatalf("invalid staged formatting permitted CI: %v\n%s", err, output)
+				}
+				for _, file := range files {
+					if !strings.Contains(output, fixture.failure+file) {
+						t.Errorf("missing staged formatting failure for %q:\n%s", file, output)
+					}
+				}
+			}
+			entries, err := os.ReadDir(tempDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("hook did not clean temporary files: %v, %v", entries, err)
+			}
+			assertHookWorktreeCleaned(t, repoDir)
+		})
+	}
+}
+
 func newHookFixture(t *testing.T) string {
 	t.Helper()
 	repoDir := filepath.Join(t.TempDir(), "repo")

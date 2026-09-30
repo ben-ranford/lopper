@@ -128,7 +128,7 @@ jobs:
 
           git_network() (
             exec 3<<<"${auth_header}"
-            # shellcheck disable=SC2016 # expand the authorization header only in the clean child shell.
+            exec 4<&0
             "${env_bin}" -i \
               HOME="${git_home}" \
               PATH=/usr/bin:/bin \
@@ -145,13 +145,13 @@ jobs:
               GIT_CONFIG_KEY_3=protocol.ext.allow \
               GIT_CONFIG_VALUE_3=never \
               GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
-              "${bash_bin}" -c '
-                IFS= read -r auth_header <&3
-                exec 3<&-
-                export GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"
-                unset auth_header
-                exec /usr/bin/git "$@"
-              ' git_network "$@"
+              "${bash_bin}" -s -- "$@" <<'GIT_NETWORK_SCRIPT'
+          IFS= read -r auth_header <&3
+          exec 3<&-
+          export GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"
+          unset auth_header
+          exec /usr/bin/git "$@" <&4 4<&-
+          GIT_NETWORK_SCRIPT
           )
 
           release_pr_branch="$(jq -er '.[0].headBranchName' <<<"${RELEASE_PLEASE_PRS}")"
