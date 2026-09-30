@@ -156,6 +156,21 @@ if [ "${1-}" = worktree ]; then
 fi
 if [ -n "${1-}" ]; then exit 0; fi
 
+# HOME and XDG_CONFIG_HOME can hide persistent global hook references just as
+# Git's file selectors can. Bash (also required by the installed hook) resolves
+# an unset HOME through the account database, unlike some POSIX shells.
+account_home=$(run_preflight_git bash -c 'unset HOME; printf "%sx" ~') || exit 0
+account_home=${account_home%x}
+absolute_path "$account_home" || exit 0
+if [ "${HOME-}" != "$account_home" ]; then
+	echo "Retaining managed hook snapshot: HOME differs from the account home" >&2
+	exit 0
+fi
+case "${XDG_CONFIG_HOME-}" in
+	''|"$account_home/.config") ;;
+	*) echo "Retaining managed hook snapshot: XDG_CONFIG_HOME selects a custom root" >&2; exit 0 ;;
+esac
+
 if [ -n "$requested_managed_dir" ]; then
 	managed_hooks_path "$requested_managed_dir" || exit 0
 	managed_dir=$requested_managed_dir
