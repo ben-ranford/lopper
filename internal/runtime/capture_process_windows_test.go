@@ -58,18 +58,17 @@ func TestWindowsCommandCancellationWithoutProcess(t *testing.T) {
 func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	tempDir := t.TempDir()
 	markerPath := filepath.Join(tempDir, "child.pid")
-	scriptPath := filepath.Join(tempDir, "spawn-child.ps1")
-	if err := os.WriteFile(scriptPath, []byte(`param([string]$marker)
-$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c ping -n 30 127.0.0.1 >NUL' -PassThru
-[System.IO.File]::WriteAllText($marker, $child.Id.ToString())
-Wait-Process -Id $child.Id
-`), 0o600); err != nil {
-		t.Fatalf("write child process script: %v", err)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable: %v", err)
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, markerPath)
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWindowsDescendantHelper$")
+	cmd.Env = append(os.Environ(), "LOPPER_WINDOWS_DESCENDANT_ROLE=parent", "LOPPER_WINDOWS_DESCENDANT_MARKER="+markerPath)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
 	ConfigureCommandCancellation(cmd)
 	cleanup, err := StartCommand(cmd)
 	if err != nil {
@@ -89,6 +88,9 @@ Wait-Process -Id $child.Id
 			if waitErr := cmd.Wait(); waitErr != nil {
 				t.Logf("reap cancelled command: %v", waitErr)
 			}
+		}
+		if t.Failed() {
+			t.Logf("descendant helper output: %s", output.String())
 		}
 	}()
 
@@ -132,4 +134,35 @@ func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32
 	}
 	t.Fatalf("child process marker was not created within %s", timeout)
 	return 0
+}
+
+// TestWindowsDescendantHelper runs only in subprocesses of the cancellation test.
+// Using the already-built test executable avoids PowerShell and cmd startup.
+func TestWindowsDescendantHelper(t *testing.T) {
+	switch os.Getenv("LOPPER_WINDOWS_DESCENDANT_ROLE") {
+	case "parent":
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := exec.Command(executable, "-test.run=^TestWindowsDescendantHelper$")
+		child.Env = append(os.Environ(), "LOPPER_WINDOWS_DESCENDANT_ROLE=child")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Run(); err != nil {
+			t.Fatalf("run descendant helper: %v", err)
+		}
+	case "child":
+		marker := os.Getenv("LOPPER_WINDOWS_DESCENDANT_MARKER")
+		// Publish only a complete PID after the descendant is actually running.
+		if err := os.WriteFile(marker+".tmp", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write descendant readiness: %v", err)
+		}
+		if err := os.Rename(marker+".tmp", marker); err != nil {
+			t.Fatalf("publish descendant readiness: %v", err)
+		}
+		for {
+			time.Sleep(time.Minute)
+		}
+	}
 }
