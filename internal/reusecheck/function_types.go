@@ -21,6 +21,10 @@ func inferredStatsCallType(call *ast.CallExpr, packages map[string]string, info 
 	if result := statsFactoryResultType(call, packages); result != nil {
 		return result
 	}
+	return sourceCallResultType(call, info, declarations)
+}
+
+func sourceCallResultType(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
 	signature := sourceFunctionType(call.Fun, info, declarations, make(map[types.Object]bool))
 	if signature == nil || !sourceCallArity(call, signature) {
 		return nil

@@ -236,6 +236,8 @@ test-race-lockfiledrift-head:
 # the regular test/race/leak/coverage targets remain the repository-wide gates.
 stave-ui-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui -run '^(TestStave|TestCompareParity|TestLopperStave|TestNewStaveRenderer)'
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -count=100 -timeout=5m ./internal/ui -run '^TestStaveTerminalParentCancellationPublishesIndeterminateOutcome$$'
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -count=100 -timeout=5m ./internal/ui -run '^TestStaveTerminalParentCancellationPublishesIndeterminateOutcome$$'
 	@results=$$(mktemp); \
 	trap 'rm -f "$$results"' EXIT INT TERM; \
 	if ! $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -json -count=1 ./cmd/lopper -run '^(TestStaveTUI.*|TestTUIWithoutStaveFlagUsesLegacyLinePath)$$' > "$$results"; then \

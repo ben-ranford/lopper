@@ -96,13 +96,7 @@ func normalizeFileImports(file *ast.File, info *types.Info, names map[string]str
 		if node == nil {
 			return false
 		}
-		if selector, ok := node.(*ast.SelectorExpr); ok {
-			if qualifier, ok := selector.X.(*ast.Ident); ok {
-				if path := packageQualifierPath(qualifier, fileImports, info); path != "" {
-					qualifier.Name = names[path]
-				}
-			}
-		}
+		normalizeSelectorImport(node, fileImports, names, info)
 		for _, field := range expressionFields(node) {
 			normalizeDotImport(field, fileImports, names, info)
 		}
@@ -116,6 +110,20 @@ func normalizeFileImports(file *ast.File, info *types.Info, names map[string]str
 		if err == nil {
 			specification.Name = ast.NewIdent(names[path])
 		}
+	}
+}
+
+func normalizeSelectorImport(node ast.Node, packages, names map[string]string, info *types.Info) {
+	selector, ok := node.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return
+	}
+	if path := packageQualifierPath(qualifier, packages, info); path != "" {
+		qualifier.Name = names[path]
 	}
 }
 

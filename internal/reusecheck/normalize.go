@@ -236,7 +236,7 @@ func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations 
 			expression = item.X
 		case *ast.CallExpr:
 			if !builtinAppend(item, info) {
-				return collectionIndirection(allocatedCallType(item, info), operations)
+				return collectionIndirection(collectionCallType(item, info, declarations), operations)
 			}
 			operations = append(operations, collectionAppend)
 			expression = item.Args[0]
@@ -258,6 +258,9 @@ func resolvedCollectionType(expression ast.Expr, info *types.Info, declarations 
 func declaredCollectionType(declaration ast.Node) ast.Expr {
 	switch item := declaration.(type) {
 	case *ast.Field:
+		if variadic, ok := item.Type.(*ast.Ellipsis); ok {
+			return &ast.ArrayType{Elt: variadic.Elt}
+		}
 		return item.Type
 	case *ast.ValueSpec:
 		return item.Type
@@ -268,6 +271,8 @@ func declaredCollectionType(declaration ast.Node) ast.Expr {
 
 func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 	switch item := unparen(expression).(type) {
+	case *ast.TypeAssertExpr:
+		return item.Type
 	case *ast.CompositeLit:
 		return item.Type
 	case *ast.FuncLit:
@@ -276,6 +281,13 @@ func allocatedCollectionType(expression ast.Expr, info *types.Info) ast.Expr {
 		return allocatedCallType(item, info)
 	}
 	return nil
+}
+
+func collectionCallType(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+	if allocated := allocatedCallType(call, info); allocated != nil {
+		return allocated
+	}
+	return sourceCallResultType(call, info, declarations)
 }
 
 func allocatedCallType(item *ast.CallExpr, info *types.Info) ast.Expr {
