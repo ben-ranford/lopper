@@ -31,6 +31,7 @@ var (
 const (
 	buildVCSFlag            = "-buildvcs=false"
 	regressionProofBuildTag = "regressionproof"
+	proofStatusWriteError   = "write regression proof status: %v\n"
 )
 
 type testAction string
@@ -148,13 +149,13 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	}
 	if !prmetadata.IsFixTitle(*title) {
 		if _, writeErr := fmt.Fprintln(stdout, "Regression proof skipped: non-fix PR."); writeErr != nil {
-			return writeError(r.stderr, "write regression proof status: %v\n", writeErr)
+			return writeError(r.stderr, proofStatusWriteError, writeErr)
 		}
 		return 0
 	}
 	if metadata.ExemptionReason != "" {
 		if _, writeErr := fmt.Fprintf(stdout, "Regression proof exempted by regression-exempt label: %s\n", metadata.ExemptionReason); writeErr != nil {
-			return writeError(r.stderr, "write regression proof status: %v\n", writeErr)
+			return writeError(r.stderr, proofStatusWriteError, writeErr)
 		}
 		return 0
 	}
@@ -173,7 +174,7 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	}
 	if len(declarations) == 0 {
 		if _, err := fmt.Fprintf(stdout, "No regression declarations assigned to %s; the other required native proof job must verify them.\n", *targetOS); err != nil {
-			return writeError(r.stderr, "write regression proof status: %v\n", err)
+			return writeError(r.stderr, proofStatusWriteError, err)
 		}
 		return 0
 	}

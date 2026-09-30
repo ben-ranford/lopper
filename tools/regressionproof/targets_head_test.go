@@ -31,24 +31,29 @@ func TestTargetDeclarationRouting(t *testing.T) {
 		{name: "method is not a test", filename: "buggy_test.go", source: "package buggy\ntype T struct{}\nfunc (T) TestRegressionProof() {}\n", wantErr: "no matching test function"},
 		{name: "invalid Go", filename: "buggy_test.go", source: "package buggy\nfunc", wantErr: "parse regression source"},
 	}
-	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestRegressionProof"}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := t.TempDir()
 			writeFiles(t, repo, map[string]string{"buggy/" + tt.filename: tt.source, "buggy/readme.txt": "fixture"})
-			for _, target := range []string{"linux", "windows"} {
-				selected, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, target)
-				if tt.wantErr != "" {
-					if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-						t.Fatalf("target %s error = %v, want %q", target, err, tt.wantErr)
-					}
-					continue
-				}
-				if err != nil || (len(selected) == 1) != (target == tt.target) {
-					t.Fatalf("target %s selection = %v, %v; want only %s", target, selected, err, tt.target)
-				}
-			}
+			assertTargetDeclarationRouting(t, repo, tt.target, tt.wantErr)
 		})
+	}
+}
+
+func assertTargetDeclarationRouting(t *testing.T, repo, wantTarget, wantErr string) {
+	t.Helper()
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestRegressionProof"}
+	for _, target := range []string{"linux", "windows"} {
+		selected, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, target)
+		if wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("target %s error = %v, want %q", target, err, wantErr)
+			}
+			continue
+		}
+		if err != nil || (len(selected) == 1) != (target == wantTarget) {
+			t.Fatalf("target %s selection = %v, %v; want only %s", target, selected, err, wantTarget)
+		}
 	}
 }
 

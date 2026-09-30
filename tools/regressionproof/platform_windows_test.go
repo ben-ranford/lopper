@@ -14,21 +14,7 @@ import (
 )
 
 func TestWindowsProofGitResolver(t *testing.T) {
-	file, err := os.CreateTemp(t.TempDir(), "git-*.exe")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	regularInfo, err := os.Stat(file.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	directoryInfo, err := os.Stat(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	regularInfo, directoryInfo := windowsProofResolverFileInfo(t)
 	for _, tt := range []struct {
 		name        string
 		info        os.FileInfo
@@ -69,6 +55,26 @@ func TestWindowsProofGitResolver(t *testing.T) {
 			}
 		})
 	}
+}
+
+func windowsProofResolverFileInfo(t *testing.T) (os.FileInfo, os.FileInfo) {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "git-*.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	regularInfo, err := os.Stat(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directoryInfo, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return regularInfo, directoryInfo
 }
 
 func TestWindowsProofGitEnvironment(t *testing.T) {
