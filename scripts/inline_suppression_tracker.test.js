@@ -1147,6 +1147,61 @@ test('closes all tracking issues when a pull request closes without merging', as
   assert.match(harness.calls.infos.join('\n'), /Closed inline suppression tracking issue #62; pull request #42 closed without merging\./);
 });
 
+test('stops later tracking issue closes when an earlier close fails', async () => {
+  const harness = makeHarness({
+    action: 'closed',
+    pull: { merged: false },
+    searchItems: () => [61, 62].map((number) => ({
+      number,
+      body: '<!-- lopper-inline-suppression-pr:42 -->',
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    })),
+  });
+  const firstCloseStarted = Promise.withResolvers();
+  const firstCloseFinished = Promise.withResolvers();
+  harness.args.github.rest.issues.update = (input) => {
+    harness.calls.updated.push(input);
+    firstCloseStarted.resolve();
+    return firstCloseFinished.promise;
+  };
+  const failure = new Error('close failed');
+  const rejected = assert.rejects(trackInlineSuppressions(harness.args), failure);
+  await firstCloseStarted.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.calls.updated.map((call) => call.issue_number), [61]);
+  firstCloseFinished.reject(failure);
+  await rejected;
+  assert.deepEqual(harness.calls.updated.map((call) => call.issue_number), [61]);
+  assert.deepEqual(harness.calls.infos, []);
+});
+
+test('stops later records when an earlier tracking issue cannot be published', async () => {
+  const harness = makeHarness({
+    files: ['first.go', 'second.go'].map((filename) => ({
+      filename,
+      status: 'added',
+      patch: patchFor(trackedLine()),
+    })),
+  });
+  const firstCreateStarted = Promise.withResolvers();
+  const firstCreateFinished = Promise.withResolvers();
+  harness.args.github.rest.issues.create = (input) => {
+    harness.calls.created.push(input);
+    firstCreateStarted.resolve();
+    return firstCreateFinished.promise;
+  };
+  const failure = new Error('create failed');
+  const rejected = assert.rejects(trackInlineSuppressions(harness.args), failure);
+  await firstCreateStarted.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].title, /first\.go/);
+  firstCreateFinished.reject(failure);
+  await rejected;
+  assert.equal(harness.calls.created.length, 1);
+  assert.deepEqual(harness.calls.infos, []);
+});
+
 test('leaves tracking issues open when a pull request closes because it merged', async () => {
   const fingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
   const harness = makeHarness({
@@ -1469,7 +1524,7 @@ test('fails closed above the GitHub 3000-file pull diff boundary', async () => {
   assert.equal(harness.calls.created.length, 0);
 });
 
-test('stops fetching occurrences once the record limit is reached', async () => {
+test('stops fetching occurrences and later files once the record limit is reached', async () => {
   // An untrusted PR that adds far more than MAX_RECORDS properly annotated
   // marker lines must not force one Contents/Blob API call per marker
   // before the limit is enforced -- that could exhaust the write-token
@@ -1487,6 +1542,11 @@ test('stops fetching occurrences once the record limit is reached', async () => 
         status: 'added',
         patch,
       },
+      {
+        filename: 'later.go',
+        status: 'added',
+        patch: patchFor(trackedLine()),
+      },
     ],
   });
 
@@ -1498,10 +1558,7 @@ test('stops fetching occurrences once the record limit is reached', async () => 
     },
   );
   assert.equal(harness.calls.created.length, 0);
-  assert.ok(
-    harness.calls.contentFetches <= testables.MAX_RECORDS,
-    `expected at most ${testables.MAX_RECORDS} content fetches, got ${harness.calls.contentFetches}`,
-  );
+  assert.equal(harness.calls.contentFetches, 1);
 });
 
 test('skips the head-content fetch entirely for files with no possible marker', async () => {

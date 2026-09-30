@@ -2,6 +2,7 @@ package reusecheck
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 )
 
@@ -204,11 +205,44 @@ func sourceStatsReceiverType(expression ast.Expr, packages map[string]string, in
 	return typ
 }
 
-func appendReceiverMembers(expression ast.Expr, names []string) ast.Expr {
+func canonicalReceiverMembers(expression, typ ast.Expr, names []string, packages map[string]string, info *types.Info) (ast.Expr, ast.Expr) {
 	for _, name := range names {
+		expression = canonicalSelectorReceiver(expression, typ, packages)
 		expression = &ast.SelectorExpr{X: expression, Sel: ast.NewIdent(name)}
+		typ = sourceMemberSelection(typ, name, packages, info).typ
+	}
+	return expression, typ
+}
+
+func canonicalSelectorReceiver(expression, typ ast.Expr, packages map[string]string) ast.Expr {
+	if pointer, ok := underlyingCollectionType(typ).(*ast.StarExpr); ok {
+		_, structure := resolveTypeDeclarations(pointer.X, false).(*ast.StructType)
+		if structure || dependencyStatsPointerType(typ, packages) {
+			return canonicalReceiverDereference(expression, typ)
+		}
 	}
 	return expression
+}
+
+func canonicalArrayReceiver(expression, typ ast.Expr) ast.Expr {
+	if pointer, ok := underlyingCollectionType(typ).(*ast.StarExpr); ok {
+		array, known := underlyingCollectionType(pointer.X).(*ast.ArrayType)
+		if known && array.Len != nil {
+			return canonicalReceiverDereference(expression, typ)
+		}
+	}
+	return expression
+}
+
+// Cancel *& only after source provenance proves the operand is a pointer.
+// Other explicit dereferences remain part of the receiver's value identity.
+func canonicalReceiverDereference(expression, typ ast.Expr) ast.Expr {
+	if _, pointer := underlyingCollectionType(typ).(*ast.StarExpr); pointer {
+		if address, ok := unparen(expression).(*ast.UnaryExpr); ok && address.Op == token.AND {
+			return address.X
+		}
+	}
+	return &ast.StarExpr{X: expression}
 }
 
 // Copy expression nodes before expanding promoted selectors. Lexical objects
@@ -222,24 +256,24 @@ func canonicalStatsReceiver(expression ast.Expr, packages map[string]string, inf
 		typ := sourceStatsReceiverType(value.X, packages, info, declarations)
 		member := sourceMemberSelection(typ, value.Sel.Name, packages, info)
 		if len(member.path) != 0 {
-			return appendReceiverMembers(canonical(value.X), member.path)
+			expanded, _ := canonicalReceiverMembers(canonical(value.X), typ, member.path, packages, info)
+			return expanded
 		}
 		copied := *value
-		copied.X = canonical(value.X)
+		copied.X = canonicalSelectorReceiver(canonical(value.X), typ, packages)
 		return &copied
 	case *ast.IndexExpr:
 		copied := *value
-		copied.X, copied.Index = canonical(value.X), canonical(value.Index)
+		copied.X = canonicalArrayReceiver(canonical(value.X), sourceStatsReceiverType(value.X, packages, info, declarations))
+		copied.Index = canonical(value.Index)
 		return &copied
 	case *ast.SliceExpr:
 		copied := *value
-		copied.X = canonical(value.X)
+		copied.X = canonicalArrayReceiver(canonical(value.X), sourceStatsReceiverType(value.X, packages, info, declarations))
 		copied.Low, copied.High, copied.Max = canonical(value.Low), canonical(value.High), canonical(value.Max)
 		return &copied
 	case *ast.StarExpr:
-		copied := *value
-		copied.X = canonical(value.X)
-		return &copied
+		return canonicalReceiverDereference(canonical(value.X), sourceStatsReceiverType(value.X, packages, info, declarations))
 	case *ast.UnaryExpr:
 		copied := *value
 		copied.X = canonical(value.X)

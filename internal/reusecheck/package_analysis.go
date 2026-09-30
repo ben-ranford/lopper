@@ -64,6 +64,10 @@ func fileFindings(file *ast.File, packages map[string]string, info *types.Info, 
 	var findings []Finding
 	path := fset.Position(file.Pos()).Filename
 	for _, decl := range file.Decls {
+		for _, initializer := range packageInitializers(decl) {
+			scope := reportMappingScope{root: initializer.expression, name: initializer.name}
+			findings = append(findings, scopedReportMappingFindings(path, scope, packages, info, fset)...)
+		}
 		for _, fn := range declaredFunctions(decl, fset) {
 			if fn.Body != nil {
 				findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)

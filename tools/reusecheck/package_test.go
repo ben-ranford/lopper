@@ -61,10 +61,23 @@ func TestReportExpressionCopies(t *testing.T) {
 		{"name", strings.Replace(packageReport, "Name:name", "Name:string(name)", 1)},
 		{"receiver", strings.ReplaceAll(packageReport, "measured.", "Stats(raw).")},
 		{"slice", strings.ReplaceAll(packageReport, "measured.", "values[:][0].")},
+		{"mixed pointer", strings.ReplaceAll(strings.Replace(packageReport, "measured.UsedCount", "(*pointer).UsedCount", 1), "measured.", "pointer.")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			checkPackageReportCopy(t, "type Stats = s.DependencyStats; type Raw s.DependencyStats", ", measured Stats, raw Raw, values []Stats", "", tc.report)
+			checkPackageReportCopy(t, "type Stats = s.DependencyStats; type Raw s.DependencyStats", ", measured Stats, raw Raw, values []Stats, pointer *Stats", "", tc.report)
 		})
+	}
+}
+
+func TestPackageReportInitializer(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, "stats.go"), "package fixture; import s \"github.com/ben-ranford/lopper/internal/lang/shared\"; var measured s.DependencyStats; var name string")
+	source := "package fixture\nimport r \"github.com/ben-ranford/lopper/internal/report\"\nvar dependency = " + strings.TrimPrefix(packageReport, "return ")
+	testutil.MustWriteFile(t, filepath.Join(root, "report.go"), source)
+	var output bytes.Buffer
+	code := run([]string{"-root", root}, &output, &output)
+	if code != 1 || strings.Count(output.String(), "report.go:3: violation dependency-report-mapping in dependency") != 1 {
+		t.Fatalf("package initializer: code=%d output=%s", code, &output)
 	}
 }
 

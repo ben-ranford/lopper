@@ -143,6 +143,47 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("extracts overlapping zip destinations in archive order", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-zip-order-"));
+    try {
+      const releaseTag = "v1.0.0";
+      const host = { platform: "win32" as const, arch: "x64" };
+      const zip = new AdmZip();
+      zip.addFile("first", Buffer.alloc(256 * 1024, "a"));
+      zip.addFile("last", Buffer.from("final binary"));
+      zip.getEntry("first")!.entryName = "bundle//lopper.exe";
+      zip.getEntry("last")!.entryName = "bundle/lopper.exe";
+      const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
+      zip.writeZip(archivePath);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
+
+      const result = await installer.ensureInstalled();
+
+      assert.equal(await readFile(result.binaryPath, "utf8"), "final binary");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects zip managed binaries with escaping archive entries", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-zip-escape-"));
+    try {
+      const releaseTag = "v1.0.0";
+      const host = { platform: "win32" as const, arch: "x64" };
+      const zip = new AdmZip();
+      zip.addFile("binary", Buffer.from("unsafe binary"));
+      zip.getEntry("binary")!.entryName = "../lopper.exe";
+      const archivePath = path.join(tempRoot, assetNameForRelease(releaseTag, host));
+      zip.writeZip(archivePath);
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
+
+      await assert.rejects(installer.ensureInstalled(), /escapes the extraction directory/);
+      assert.equal(await installer.findInstalledBinary(), undefined);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("reuses v-prefixed managed cache for unprefixed configured release tags", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
     try {

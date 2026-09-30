@@ -17,11 +17,25 @@ func declaredFunctions(declaration ast.Decl, fset *token.FileSet) []*ast.FuncDec
 		}
 		return []*ast.FuncDecl{fn}
 	}
+	var functions []*ast.FuncDecl
+	for _, initializer := range packageInitializers(declaration) {
+		functions = append(functions, initializerFunctions(initializer.expression, initializer.name, initializer.paired, fset)...)
+	}
+	return functions
+}
+
+type packageInitializer struct {
+	name       string
+	expression ast.Expr
+	paired     bool
+}
+
+func packageInitializers(declaration ast.Decl) []packageInitializer {
 	group, ok := declaration.(*ast.GenDecl)
 	if !ok || group.Tok != token.VAR {
 		return nil
 	}
-	var functions []*ast.FuncDecl
+	var initializers []packageInitializer
 	for _, specification := range group.Specs {
 		value := specification.(*ast.ValueSpec)
 		for index, expression := range value.Values {
@@ -30,10 +44,10 @@ func declaredFunctions(declaration ast.Decl, fset *token.FileSet) []*ast.FuncDec
 			if paired {
 				name = value.Names[index].Name
 			}
-			functions = append(functions, initializerFunctions(expression, name, paired, fset)...)
+			initializers = append(initializers, packageInitializer{name, expression, paired})
 		}
 	}
-	return functions
+	return initializers
 }
 
 func initializerFunctions(expression ast.Expr, name string, paired bool, fset *token.FileSet) []*ast.FuncDecl {
@@ -65,8 +79,12 @@ func functionLiteralName(parent string, literal *ast.FuncLit, fset *token.FileSe
 }
 
 func positionedFunctionName(parent string, pos token.Pos, fset *token.FileSet) string {
+	return positionedScopeName(parent, "func", pos, fset)
+}
+
+func positionedScopeName(parent, kind string, pos token.Pos, fset *token.FileSet) string {
 	// Physical file coordinates distinguish same-line siblings and remain stable
 	// when another file changes or a //line directive aliases source positions.
 	position := fset.PositionFor(pos, false)
-	return fmt.Sprintf("%s.func@%d:%d", parent, position.Line, position.Column)
+	return fmt.Sprintf("%s.%s@%d:%d", parent, kind, position.Line, position.Column)
 }

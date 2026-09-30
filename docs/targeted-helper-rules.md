@@ -23,16 +23,19 @@ package type validation. Unknown forms are not classified as proven copies.
 Package-level function variables and function literals in package initializers or
 local scopes are checked alongside function declarations. Nested collection
 findings retain their enclosing function and source location without repeating
-report-mapping findings. Each nested closure's diagnostic identity includes its
-physical line and column, so an exception for one closure cannot cover a sibling.
-Methods, blank bindings and `init` functions also have distinct identities;
-ordinary named package functions retain their function scope.
+report-mapping findings. Report literals in package variable initializers retain
+their containing variable's diagnostic ownership. Each nested closure's diagnostic
+identity includes its physical line and column, so an exception for one closure
+cannot cover a sibling.
+Methods, package initializers, blank bindings and `init` functions also have
+distinct identities; ordinary named package functions retain their function scope.
 Source-declared function and interface-method result signatures, plus collection
 element types, retain statistics provenance, including tuple assignments, nested
 indexes and named containers. Sole tuple-valued call arguments retain their
 source-proven argument count. Defined pointer types retain the ownership of
 their pointee; distinct named statistics value types remain separate from the
-shared helper contract.
+shared helper contract. Source-proven implicit and explicit pointer dereferences
+retain the same statistics receiver identity.
 Files in the same directory and package share declaration bindings, with import
 ownership retained from each declaration's source file. Generic functions retain
 explicit statistics result types. Instantiated generic aliases retain explicit

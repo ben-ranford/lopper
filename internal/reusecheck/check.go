@@ -307,18 +307,39 @@ func collectionFindings(path string, fn *ast.FuncDecl, packages map[string]strin
 }
 
 func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fset *token.FileSet) []Finding {
+	scope := reportMappingScope{root: fn.Body, name: fn.Name.Name, declarations: localDeclarations(fn, info), closures: true}
+	return scopedReportMappingFindings(path, scope, packages, info, fset)
+}
+
+type reportMappingScope struct {
+	root         ast.Node
+	name         string
+	declarations map[types.Object]ast.Node
+	closures     bool
+}
+
+func (s *reportMappingScope) literalOwner(owner string, position token.Pos, fset *token.FileSet) string {
+	if s.closures {
+		return owner
+	}
+	return positionedScopeName(s.name, "init", position, fset)
+}
+
+func scopedReportMappingFindings(path string, scope reportMappingScope, packages map[string]string, info *types.Info, fset *token.FileSet) []Finding {
 	var findings []Finding
-	declarations := localDeclarations(fn, info)
-	literalTypes := compositeLiteralTypes(fn.Body)
-	owners := []string{fn.Name.Name}
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
+	literalTypes := compositeLiteralTypes(scope.root)
+	owners := []string{scope.name}
+	ast.Inspect(scope.root, func(node ast.Node) bool {
 		if node == nil {
 			owners = owners[:len(owners)-1]
 			return false
 		}
 		owner := owners[len(owners)-1]
 		if closure, ok := node.(*ast.FuncLit); ok {
-			owner = functionLiteralName(fn.Name.Name, closure, fset)
+			if !scope.closures {
+				return false
+			}
+			owner = functionLiteralName(scope.name, closure, fset)
 		}
 		owners = append(owners, owner)
 		literal, ok := node.(*ast.CompositeLit)
@@ -327,8 +348,11 @@ func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]st
 			resolved.Type = literalTypes[literal]
 			literal = &resolved
 		}
-		if ok && (reportMapping(literal, packages, info, declarations) || partialReportMapping(literal, packages, info, declarations)) {
-			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Pos()).Line, Function: owner, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, declarations)})
+		if ok && (reportMapping(literal, packages, info, scope.declarations) || partialReportMapping(literal, packages, info, scope.declarations)) {
+			// The brace retains its source position when the type is inferred or
+			// replaced with a synthetic qualifier for a dot import.
+			owner = scope.literalOwner(owner, literal.Lbrace, fset)
+			findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(literal.Lbrace).Line, Function: owner, Rule: "dependency-report-mapping", Helper: "shared.BuildDependencyReportFromStats", Advisory: !reportMapping(literal, packages, info, scope.declarations)})
 		}
 		return true
 	})
@@ -365,10 +389,11 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 	typ := sourceStatsReceiverType(receiver, packages, info, declarations)
 	if typ != nil {
 		if dependencyStatsType(typ, packages) {
-			return key
+			return statsValueReceiverIdentity(canonical, typ, packages, info)
 		}
 		if member := sourceMemberSelection(typ, field, packages, info); member.stats {
-			return stableStatsReceiver(appendReceiverMembers(canonical, member.path[:len(member.path)-1]), packages, info)
+			promoted, promotedType := canonicalReceiverMembers(canonical, typ, member.path[:len(member.path)-1], packages, info)
+			return statsValueReceiverIdentity(promoted, promotedType, packages, info)
 		}
 		return ""
 	}
@@ -377,6 +402,13 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 		return key
 	}
 	return ""
+}
+
+func statsValueReceiverIdentity(expression, typ ast.Expr, packages map[string]string, info *types.Info) string {
+	if dependencyStatsPointerType(typ, packages) {
+		expression = canonicalReceiverDereference(expression, typ)
+	}
+	return stableStatsReceiver(expression, packages, info)
 }
 
 // Preserve inferred provenance while applying each explicit pointer operation.
