@@ -2048,7 +2048,6 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 }
 
 func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
-
 	for name, fixture := range map[string]struct {
 		content         string
 		wantTrustedPath bool
