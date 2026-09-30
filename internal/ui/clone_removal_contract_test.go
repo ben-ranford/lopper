@@ -91,7 +91,6 @@ func TestStaveModelSerializationAndHashCompatibility(t *testing.T) {
 }
 
 func staveSerializationContractModel() staveSummaryModel {
-	color := true
 	view := mapSummaryReportView(report.Report{
 		Dependencies: []report.DependencyReport{{
 			Language: "go", Name: "alpha", UsedPercent: 12.5,
@@ -105,11 +104,17 @@ func staveSerializationContractModel() staveSummaryModel {
 		EffectivePolicy:     &report.EffectivePolicy{Sources: []string{"policy"}},
 		BaselineComparison:  &report.BaselineComparison{BaselineKey: "old", CurrentKey: "new"},
 	})
+	model := stavePopulatedModelFixture("go:alpha")
+	model.view = &view
+	return model
+}
+
+func stavePopulatedModelFixture(selected string) staveSummaryModel {
+	color := true
 	return staveSummaryModel{
-		view: &view,
 		opts: &Options{RepoPath: ".", Language: "go", Filter: "f", Sort: "name", BaselinePath: "base", BaselineStorePath: "store", BaselineKey: "key", TopN: 2, PageSize: 3, Width: 80, ASCII: true, UseStavePreview: true, Color: &color},
 		interaction: staveSummaryInteraction{
-			summary:     summaryState{filter: "f", sortMode: sortByName, page: 2, pageSize: 3, showHelp: true, selectedDependency: "go:alpha"},
+			summary:     summaryState{filter: "f", sortMode: sortByName, page: 2, pageSize: 3, showHelp: true, selectedDependency: selected},
 			selectedRow: 1, focusPane: "detail", commandMode: true, filterBuffer: "filter f",
 			viewport: layout.Size{Width: 80, Height: 24}, help: true, status: "ok", error: "err",
 			pendingConfirm: "confirm", pendingCallID: "call", pendingActionID: "action", quit: true,
