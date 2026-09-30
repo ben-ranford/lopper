@@ -71,16 +71,14 @@ func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string
 	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.ResolveBaselineSnapshotPath)
 }
 
+var analysisBaselineWriter = immutableBaselineWriter[report.Report]{
+	keyName:       "baseline",
+	save:          report.SaveSnapshot,
+	appendWarning: appendBaselineSaveWarning,
+}
+
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
-	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
-		enabled:       req.SaveBaseline,
-		repoPath:      repoPath,
-		req:           baselineKeyRequestFromAnalyse(req),
-		keyName:       "baseline",
-		now:           now,
-		save:          report.SaveSnapshot,
-		appendWarning: appendBaselineSaveWarning,
-	})
+	return analysisBaselineWriter.saveIfNeeded(reportData, repoPath, baselineKeyRequestFromAnalyse(req), req.SaveBaseline, now)
 }
 
 func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
@@ -153,30 +151,28 @@ func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName str
 	return key, nil
 }
 
-type immutableBaselineSaveConfig[T any] struct {
-	enabled       bool
-	repoPath      string
-	req           baselineKeyRequest
+// immutableBaselineWriter binds each report format to its snapshot persistence
+// and warning behavior, leaving request-specific save decisions to saveIfNeeded.
+type immutableBaselineWriter[T any] struct {
 	keyName       string
-	now           time.Time
 	save          func(string, string, T, time.Time) (string, error)
 	appendWarning func(T, string) T
 }
 
-func saveImmutableBaselineSnapshot[T any](reportData T, cfg immutableBaselineSaveConfig[T]) (T, error) {
-	if !cfg.enabled {
+func (writer immutableBaselineWriter[T]) saveIfNeeded(reportData T, repoPath string, req baselineKeyRequest, enabled bool, now time.Time) (T, error) {
+	if !enabled {
 		return reportData, nil
 	}
 
-	storePath, saveKey, err := resolveBaselineSaveTarget(cfg.repoPath, cfg.req, cfg.keyName)
+	storePath, saveKey, err := resolveBaselineSaveTarget(repoPath, req, writer.keyName)
 	if err != nil {
 		return reportData, err
 	}
-	savedPath, err := cfg.save(storePath, saveKey, reportData, cfg.now)
+	savedPath, err := writer.save(storePath, saveKey, reportData, now)
 	if err != nil {
 		return reportData, err
 	}
-	return cfg.appendWarning(reportData, savedPath), nil
+	return writer.appendWarning(reportData, savedPath), nil
 }
 
 func appendBaselineSaveWarning(reportData report.Report, savedPath string) report.Report {

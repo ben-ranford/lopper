@@ -107,16 +107,14 @@ func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPa
 	return dashboard.ApplyBaselineWithKeys(reportData, baseline, baselineKey, currentKey)
 }
 
+var dashboardBaselineWriter = immutableBaselineWriter[dashboard.Report]{
+	keyName:       "dashboard baseline",
+	save:          dashboard.SaveSnapshot,
+	appendWarning: appendDashboardBaselineSaveWarning,
+}
+
 func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, now time.Time) (dashboard.Report, error) {
-	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[dashboard.Report]{
-		enabled:       resolved.saveBaseline,
-		repoPath:      repoPath,
-		req:           baselineKeyRequestFromDashboard(resolved),
-		keyName:       "dashboard baseline",
-		now:           now,
-		save:          dashboard.SaveSnapshot,
-		appendWarning: appendDashboardBaselineSaveWarning,
-	})
+	return dashboardBaselineWriter.saveIfNeeded(reportData, repoPath, baselineKeyRequestFromDashboard(resolved), resolved.saveBaseline, now)
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
