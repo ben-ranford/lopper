@@ -14,6 +14,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/report/pep440"
 	"github.com/ben-ranford/lopper/internal/workspace"
@@ -1014,20 +1015,7 @@ func dependencyIdentityEvidence(dep report.DependencyReport) []string {
 }
 
 func compactPRReviewEvidence(values []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
+	return shared.UniqueTrimmedStrings(values)
 }
 
 func sortPRReviewRows(rows []prReviewRow) {
