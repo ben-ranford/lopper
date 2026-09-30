@@ -4,7 +4,7 @@ import "go/ast"
 
 type analysisGroup struct {
 	files   []*ast.File
-	target  *ast.File
+	targets map[*ast.File]bool
 	omitted []*ast.File
 }
 
@@ -38,7 +38,10 @@ func analysisGroups(files []*ast.File) []analysisGroup {
 }
 
 func scopedAnalysisGroup(included []*ast.File, target *ast.File, all []*ast.File) analysisGroup {
-	group := analysisGroup{files: included, target: target}
+	group := analysisGroup{files: included}
+	if target != nil {
+		group.targets = map[*ast.File]bool{target: true}
+	}
 	selected := make(map[*ast.File]bool, len(included))
 	for _, file := range included {
 		selected[file] = true

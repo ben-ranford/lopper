@@ -98,6 +98,23 @@ func TestPackageVariantProvenance(t *testing.T) {
 	}
 }
 
+func TestIndependentPackageVariants(t *testing.T) {
+	root := t.TempDir()
+	for path, source := range map[string]string{
+		"types_amd64.go":            "package fixture; import s \"github.com/ben-ranford/lopper/internal/lang/shared\"; type Stats = s.DependencyStats",
+		"types_arm64.go":            "package fixture; type Stats struct{}",
+		"consumer_linux_amd64.go":   "package fixture; import r \"github.com/ben-ranford/lopper/internal/report\"; func build(name string, measured Stats) r.DependencyReport { " + packageReport + " }",
+		"consumer_windows_amd64.go": "package fixture; func build() {}",
+	} {
+		testutil.MustWriteFile(t, filepath.Join(root, path), source)
+	}
+	var output bytes.Buffer
+	code := run([]string{"-root", root}, &output, &output)
+	if code != 1 || strings.Count(output.String(), "consumer_linux_amd64.go:1: violation dependency-report-mapping in build") != 1 {
+		t.Fatalf("independent variant provenance: code=%d output=%s", code, &output)
+	}
+}
+
 func checkPackageReportCopy(t *testing.T, declaration, parameter, setup, report string) {
 	t.Helper()
 	root := t.TempDir()

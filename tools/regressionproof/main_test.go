@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -158,9 +159,16 @@ func TestRegressionProof(t *testing.T) {
 		},
 	})
 
-	code, stderr := runRegressionProof(t, repo, regressionProofInvocation{title: "fix(buggy): add proof gate", body: regressionProofBody()})
+	var output bytes.Buffer
+	invocation := regressionProofInvocation{title: "fix(buggy): add proof gate", body: regressionProofBody(), stdout: &output}
+	code, stderr := runRegressionProof(t, repo, invocation)
 	if code != 0 {
 		t.Fatalf("run exited with %d, want 0 (stderr: %s)", code, stderr)
+	}
+	for _, want := range []string{"Expected base failure: ./buggy::TestRegressionProof", "Fixed() = false, want true", "Regression proof verified:"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("proof output missing %q: %s", want, &output)
+		}
 	}
 }
 
@@ -715,7 +723,7 @@ func testExpectHelpers(t *testing.T) {
 	r := &runner{stderr: &bytes.Buffer{}, execCommand: func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return nil, errors.New("boom")
 	}}
-	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil {
+	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}, io.Discard); err == nil {
 		t.Fatal("expectFailure succeeded for non-exit error")
 	}
 	if err := r.expectPass(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil {
@@ -725,14 +733,14 @@ func testExpectHelpers(t *testing.T) {
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return []byte("{\"Action\":\"fail\",\"Package\":\"example.com/pkg\",\"Test\":\"TestThing\"}\n"), &exec.ExitError{}
 	}
-	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err != nil {
+	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}, io.Discard); err != nil {
 		t.Fatalf("expectFailure returned error for exit failure: %v", err)
 	}
 
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return []byte("{\"Action\":\"skip\",\"Package\":\"example.com/pkg\",\"Test\":\"TestThing\"}\n"), nil
 	}
-	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "must fail instead of skip") {
+	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}, io.Discard); err == nil || !strings.Contains(err.Error(), "must fail instead of skip") {
 		t.Fatalf("expectFailure error = %v, want skipped-test rejection", err)
 	}
 	if err := r.expectPass(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "must pass instead of skip") {
@@ -742,7 +750,7 @@ func testExpectHelpers(t *testing.T) {
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return []byte("{\"Action\":\"run\",\"Package\":\"example.com/pkg\",\"Test\":\"TestThing\"}\n"), nil
 	}
-	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "did not report an outcome") {
+	if err := r.expectFailure(context.Background(), ".", expectedPackage, prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}, io.Discard); err == nil || !strings.Contains(err.Error(), "did not report an outcome") {
 		t.Fatalf("expectFailure error = %v, want unrecognized outcome rejection", err)
 	}
 }
@@ -1230,10 +1238,11 @@ func TestRegressionProof(t *testing.T) {
 		},
 	})
 
-	r := &runner{stderr: &bytes.Buffer{}, execCommand: (&execRunner{}).Run}
 	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestRegressionProof"}
-	if err := r.prove(context.Background(), repo.path, repo.baseSHA, []prmetadata.RegressionDeclaration{declaration}, &errWriter{}); err == nil {
-		t.Fatal("prove succeeded despite status write failure")
+	for _, prefix := range []string{"Expected base failure:", "base-test-output:", "Regression proof verified:"} {
+		t.Run(prefix, func(t *testing.T) {
+			assertProofOutputFailure(t, repo, declaration, prefix)
+		})
 	}
 }
 
@@ -1269,8 +1278,9 @@ func TestMain(t *testing.T) {
 }
 
 type regressionProofInvocation struct {
-	title string
-	body  string
+	title  string
+	body   string
+	stdout io.Writer
 }
 
 func runRegressionProof(t *testing.T, repo regressionProofRepo, invocation regressionProofInvocation) (int, string) {
@@ -1281,13 +1291,16 @@ func runRegressionProof(t *testing.T, repo regressionProofRepo, invocation regre
 		t.Fatalf("write body file: %v", err)
 	}
 
-	var stdout bytes.Buffer
+	stdout := invocation.stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
 	var stderr bytes.Buffer
 	env := map[string]string{
 		"PR_TITLE":    invocation.title,
 		"PR_BASE_SHA": repo.baseSHA,
 	}
-	code := run([]string{"--repo", repo.path, "--body-file", bodyFile}, regressionProofEnv(env), &stdout, &stderr)
+	code := run([]string{"--repo", repo.path, "--body-file", bodyFile}, regressionProofEnv(env), stdout, &stderr)
 	return code, stderr.String()
 }
 

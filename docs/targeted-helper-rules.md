@@ -41,13 +41,19 @@ ownership retained from each declaration's source file. Generic functions retain
 explicit statistics result types. Instantiated generic aliases retain explicit
 alias targets with complete type-argument lists; unresolved type-parameter
 results and alias targets remain unknown.
-All production source files are scanned, including platform-specific files. When
-files declare conflicting package-level names or methods, common files are checked
-together and accompany each conflicting file in its own analysis scope. Common
-files do not borrow ambiguous variant declarations, and findings are emitted once
-for each source location. Omitted declarations retain unknown name and method
-bindings so they cannot expose a builtin or imported helper by accident. Helper
-ownership follows physical files even when `//line` directives rename positions.
+All production source files are scanned, including platform-specific files.
+Each source file retains declarations from siblings whose build constraints are
+guaranteed by its own filename and source constraints. This preserves providers
+across independent platform or tag axes, such as an amd64 statistics alias used
+by a linux/amd64 consumer. Constraint reasoning is conservative and does not
+enumerate tag combinations: ambiguous alternatives retain unknown name and method
+bindings, while provably incompatible files cannot supply declarations or shadows.
+Platform proofs use conventional GOOS/GOARCH selection, including Go's platform
+aliases; forcing additional reserved platform tags through `-tags` is outside
+this model. Other tags remain symbolic and do not inherit the scanner host's values.
+Common files do not borrow ambiguous variant declarations. Findings are emitted
+once for each source location, and helper ownership follows physical files even
+when `//line` directives rename positions.
 
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.

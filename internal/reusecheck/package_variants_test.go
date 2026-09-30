@@ -185,7 +185,7 @@ func TestAnalysisGroupReparseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := analysisGroup{files: []*ast.File{file}, target: file}
+	group := analysisGroup{files: []*ast.File{file}, targets: map[*ast.File]bool{file: true}}
 	if _, _, err := parseAnalysisGroup(group, map[string][]byte{"source.go": []byte("package")}, fset); err == nil {
 		t.Fatal("invalid source bytes must fail without partial group findings")
 	}

@@ -21,11 +21,11 @@ func TestAnalysisGroupsIsolateDuplicateObjects(t *testing.T) {
 		if len(groups) != len(files) {
 			t.Fatalf("declarations %q grouped into %d groups, want %d", declarations, len(groups), len(files))
 		}
-		if groups[0].target != nil || len(groups[0].files) != 1 || groups[0].files[0] != files[2] {
+		if groups[0].targets != nil || len(groups[0].files) != 1 || groups[0].files[0] != files[2] {
 			t.Fatal("unambiguous declarations must be analyzed together once")
 		}
 		for index, group := range groups[1:] {
-			if group.target != files[index] || len(group.files) != 2 || group.files[0] != files[index] || group.files[1] != files[2] {
+			if !group.targets[files[index]] || len(group.files) != 2 || group.files[0] != files[index] || group.files[1] != files[2] {
 				t.Fatalf("variant group %d lost its target or common declarations", index)
 			}
 		}
@@ -55,7 +55,7 @@ func TestAnalysisGroupsCombineUnambiguousSources(t *testing.T) {
 		"func build() {}; func (Holder) second() {}; func _() {}",
 	)
 	groups := analysisGroups(files)
-	if len(groups) != 1 || len(groups[0].files) != len(files) || groups[0].target != nil {
+	if len(groups) != 1 || len(groups[0].files) != len(files) || groups[0].targets != nil {
 		t.Fatalf("unambiguous files produced %d groups, want one combined group", len(groups))
 	}
 	for index, file := range files {
@@ -71,7 +71,7 @@ func TestAnalysisGroupsSingleAndEmpty(t *testing.T) {
 	}
 	files := parseAnalysisGroupFiles(t, "func build() {}; func init() {}; var _ = 1")
 	groups := analysisGroups(files)
-	if len(groups) != 1 || len(groups[0].files) != 1 || groups[0].files[0] != files[0] || groups[0].target != nil {
+	if len(groups) != 1 || len(groups[0].files) != 1 || groups[0].files[0] != files[0] || groups[0].targets != nil {
 		t.Fatal("single source must remain one unchanged group")
 	}
 }
@@ -83,7 +83,7 @@ func TestAnalysisGroupsBoundIndependentConflicts(t *testing.T) {
 		t.Fatalf("independent conflicts produced %d groups, want common plus four targets", len(groups))
 	}
 	for index, group := range groups[1:] {
-		if group.target != files[index] || len(group.files) != 2 || group.files[1] != files[4] {
+		if !group.targets[files[index]] || len(group.files) != 2 || group.files[1] != files[4] {
 			t.Fatalf("group %d combined variants or lost common declarations", index)
 		}
 	}
@@ -100,7 +100,7 @@ func TestAnalysisGroupsKeepAllOmittedOwners(t *testing.T) {
 			t.Fatalf("target scope lost an omitted owner: %+v", group)
 		}
 		for _, file := range group.omitted {
-			if file == group.target || file == files[3] {
+			if group.targets[file] || file == files[3] {
 				t.Fatal("selected source was retained as an omitted variant")
 			}
 		}

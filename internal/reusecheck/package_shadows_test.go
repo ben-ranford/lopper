@@ -22,6 +22,20 @@ func use() { _ = len([]string{}); var _ DependencyStats; _ = maker(); _, _ = sta
 func len([]string) int { return 1 }; type DependencyStats struct{}
 func maker() DependencyStats { return DependencyStats{} }; var state = DependencyStats{}; const limit = 3`)
 	shadow := analysisShadows(included, omitted)
+	checkOpaqueShadowDeclarations(t, shadow)
+	info := packageBindings(append([]*ast.File{shadow}, included...), fset)
+	checkOpaqueShadowBindings(t, included[0], info)
+	normalizePackageImports(append([]*ast.File{shadow}, included...), info)
+	ast.Inspect(included[0], func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "DependencyStats" {
+			t.Fatal("opaque package binding reverted to dot-import ownership")
+		}
+		return true
+	})
+}
+
+func checkOpaqueShadowDeclarations(t *testing.T, shadow *ast.File) {
+	t.Helper()
 	if shadow == nil || len(shadow.Decls) != 5 {
 		t.Fatalf("unexpected opaque declarations: %+v", shadow)
 	}
@@ -32,9 +46,12 @@ func maker() DependencyStats { return DependencyStats{} }; var state = Dependenc
 			t.Fatalf("shadow retained provenance or lost parser binding: %+v", value)
 		}
 	}
-	info := packageBindings(append([]*ast.File{shadow}, included...), fset)
+}
+
+func checkOpaqueShadowBindings(t *testing.T, file *ast.File, info *types.Info) {
+	t.Helper()
 	seen := make(map[string]bool)
-	ast.Inspect(included[0], func(node ast.Node) bool {
+	ast.Inspect(file, func(node ast.Node) bool {
 		ident, ok := node.(*ast.Ident)
 		if !ok || !shadowTestName(ident.Name) {
 			return true
@@ -52,13 +69,6 @@ func maker() DependencyStats { return DependencyStats{} }; var state = Dependenc
 	if len(seen) != 5 {
 		t.Fatalf("missing lexical uses: %v", seen)
 	}
-	normalizePackageImports(append([]*ast.File{shadow}, included...), info)
-	ast.Inspect(included[0], func(node ast.Node) bool {
-		if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "DependencyStats" {
-			t.Fatal("opaque package binding reverted to dot-import ownership")
-		}
-		return true
-	})
 }
 
 func shadowTestName(name string) bool {
@@ -79,14 +89,7 @@ len := func(value int) int { return value }; _ = len(0) }`)
 	omitted := parseShadowSources(t, fset, "package fixture; var len func([]string) int; type DependencyStats struct{}; var named int")
 	shadow := analysisShadows(included, omitted)
 	info := packageBindings(append([]*ast.File{shadow}, included...), fset)
-	missing := make(map[string]*ast.Ident)
-	for _, ident := range included[0].Unresolved {
-		if ident.Name == "len" || ident.Name == "DependencyStats" || ident.Name == "named" {
-			delete(info.Uses, ident)
-			ident.Obj = nil
-			missing[ident.Name] = ident
-		}
-	}
+	missing := clearShadowOperandBindings(included[0], info)
 	bindAnalysisShadows(included, shadow, info)
 	for _, name := range []string{"len", "DependencyStats"} {
 		ident := missing[name]
@@ -106,6 +109,18 @@ len := func(value int) int { return value }; _ = len(0) }`)
 			t.Fatal("opaque fallback captured a local shadow")
 		}
 	}
+}
+
+func clearShadowOperandBindings(file *ast.File, info *types.Info) map[string]*ast.Ident {
+	missing := make(map[string]*ast.Ident)
+	for _, ident := range file.Unresolved {
+		if ident.Name == "len" || ident.Name == "DependencyStats" || ident.Name == "named" {
+			delete(info.Uses, ident)
+			ident.Obj = nil
+			missing[ident.Name] = ident
+		}
+	}
+	return missing
 }
 
 func TestAnalysisShadowsIncludedNamesDischarge(t *testing.T) {
@@ -187,8 +202,16 @@ func checkShadowReceivers(t *testing.T, omitted, blocked []string) {
 	}
 	info := packageBindings(append([]*ast.File{shadow}, included...), fset)
 	bindAnalysisShadows(included, shadow, info)
+	actual := shadowedReceiverNames(included, info)
+	if !reflect.DeepEqual(actual, blocked) {
+		t.Fatalf("method shadows=%v want=%v", actual, blocked)
+	}
+	checkOpaqueMethodDeclarations(t, shadow, info)
+}
+
+func shadowedReceiverNames(files []*ast.File, info *types.Info) []string {
 	var actual []string
-	for name, declarations := range analysisTypeDeclarations(included) {
+	for name, declarations := range analysisTypeDeclarations(files) {
 		receiver := ast.Expr(declarations[0].Name)
 		switch name {
 		case "Generic":
@@ -201,9 +224,11 @@ func checkShadowReceivers(t *testing.T, omitted, blocked []string) {
 		}
 	}
 	sort.Strings(actual)
-	if !reflect.DeepEqual(actual, blocked) {
-		t.Fatalf("method shadows=%v want=%v", actual, blocked)
-	}
+	return actual
+}
+
+func checkOpaqueMethodDeclarations(t *testing.T, shadow *ast.File, info *types.Info) {
+	t.Helper()
 	for _, declaration := range shadow.Decls {
 		if method, ok := declaration.(*ast.FuncDecl); ok {
 			if method.Body != nil || method.Type.Params.NumFields() != 0 || method.Type.Results.NumFields() != 0 || len(method.Recv.List[0].Names) != 0 {
@@ -291,20 +316,26 @@ func TestAnalysisShadowsAliasScope(t *testing.T) {
 			included := parseShadowSources(t, fset, append([]string{common}, tc.included...)...)
 			omitted := parseShadowSources(t, fset, tc.omitted...)
 			shadow := analysisShadows(included, omitted)
-			var methods []string
-			if shadow != nil {
-				for _, declaration := range shadow.Decls {
-					if function, ok := declaration.(*ast.FuncDecl); ok {
-						methods = append(methods, analysisFunctionKey(function))
-					}
-				}
-			}
-			sort.Strings(methods)
+			methods := shadowMethodKeys(shadow)
 			if !reflect.DeepEqual(methods, tc.methods) {
 				t.Fatalf("shadow method owners=%v want=%v", methods, tc.methods)
 			}
 		})
 	}
+}
+
+func shadowMethodKeys(shadow *ast.File) []string {
+	if shadow == nil {
+		return nil
+	}
+	var methods []string
+	for _, declaration := range shadow.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			methods = append(methods, analysisFunctionKey(function))
+		}
+	}
+	sort.Strings(methods)
+	return methods
 }
 
 func TestAnalysisReceiverAliasTraversalIsBounded(t *testing.T) {

@@ -29,7 +29,7 @@ func AnalyzeSources(sources map[string][]byte) ([]Finding, error) {
 	}
 	var findings []Finding
 	for _, files := range groups {
-		for _, group := range analysisGroups(files) {
+		for _, group := range sourceAnalysisGroups(files, sources, fset) {
 			fresh, positions, parseErr := parseAnalysisGroup(group, sources, fset)
 			if parseErr != nil {
 				return nil, parseErr
@@ -69,6 +69,9 @@ func parseSourcePackages(sources map[string][]byte, fset *token.FileSet) (map[st
 func parseAnalysisGroup(group analysisGroup, sources map[string][]byte, original *token.FileSet) (analysisGroup, *token.FileSet, error) {
 	fset := token.NewFileSet()
 	fresh := analysisGroup{omitted: group.omitted}
+	if group.targets != nil {
+		fresh.targets = make(map[*ast.File]bool)
+	}
 	for _, file := range group.files {
 		path := original.PositionFor(file.Pos(), false).Filename
 		parsed, err := parser.ParseFile(fset, path, sources[path], 0)
@@ -76,8 +79,8 @@ func parseAnalysisGroup(group analysisGroup, sources map[string][]byte, original
 			return analysisGroup{}, nil, err
 		}
 		fresh.files = append(fresh.files, parsed)
-		if file == group.target {
-			fresh.target = parsed
+		if group.targets[file] {
+			fresh.targets[parsed] = true
 		}
 	}
 	return fresh, fset, nil
@@ -126,7 +129,7 @@ func packageFindings(group analysisGroup, fingerprints map[string]contract, fset
 	packages := normalizePackageImports(files, info)
 	var findings []Finding
 	for _, file := range group.files {
-		if group.target == nil || file == group.target {
+		if group.targets == nil || group.targets[file] {
 			findings = append(findings, fileFindings(file, packages, info, fingerprints, fset)...)
 		}
 	}
