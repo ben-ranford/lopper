@@ -1,0 +1,55 @@
+package main
+
+import (
+	"bytes"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
+)
+
+const packageReport = `return r.DependencyReport{Name:name, Language:"fixture",
+UsedExportsCount:measured.UsedCount, TotalExportsCount:measured.TotalCount,
+UsedPercent:measured.UsedPercent, TopUsedSymbols:measured.TopSymbols,
+UsedImports:measured.UsedImports, UnusedImports:measured.UnusedImports}`
+
+func TestPackageSourceProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name, declaration, parameter, setup string
+	}{
+		{"function", "func stats() s.DependencyStats { return s.DependencyStats{} }", "", "measured := stats();"},
+		{"alias", "type Stats = s.DependencyStats", ", measured Stats", ""},
+		{"alias chain", "type Stats = Inner; type Inner = s.DependencyStats", ", measured Stats", ""},
+		{"collection", "type Stats []s.DependencyStats", ", all Stats", "measured := all[0];"},
+		{"field", "type Holder struct { Stats s.DependencyStats }", ", holder Holder", "measured := holder.Stats;"},
+		{"embedded", "type Holder struct { s.DependencyStats }", ", holder Holder", "measured := holder.DependencyStats;"},
+		{"function variable", "var stats = func() s.DependencyStats { return s.DependencyStats{} }", "", "measured := stats();"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			declarations := "package fixture\nimport s \"github.com/ben-ranford/lopper/internal/lang/shared\"\n" + tc.declaration
+			consumer := "package fixture\nimport r \"github.com/ben-ranford/lopper/internal/report\"\nfunc build(name string" + tc.parameter + ") r.DependencyReport { " + tc.setup + packageReport + " }"
+			testutil.MustWriteFile(t, filepath.Join(root, "declarations.go"), declarations)
+			testutil.MustWriteFile(t, filepath.Join(root, "consumer.go"), consumer)
+			var output bytes.Buffer
+			if code := run([]string{"-root", root}, &output, &output); code != 1 || !strings.Contains(output.String(), "consumer.go:3: violation dependency-report-mapping in build") {
+				t.Fatalf("code=%d output=%s", code, &output)
+			}
+		})
+	}
+}
+
+func TestPackageProvenanceExcludesNonProductionDeclarations(t *testing.T) {
+	for _, provider := range []string{"declarations_test.go", "testdata/declarations.go", "vendor/declarations.go"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(root, provider), "package fixture; import s \"github.com/ben-ranford/lopper/internal/lang/shared\"; type Stats = s.DependencyStats")
+			testutil.MustWriteFile(t, filepath.Join(root, "consumer.go"), "package fixture; import r \"github.com/ben-ranford/lopper/internal/report\"; func build(name string, measured Stats) r.DependencyReport { "+packageReport+" }")
+			var output bytes.Buffer
+			if code := run([]string{"-root", root}, &output, &output); code != 0 || output.Len() != 0 {
+				t.Fatalf("non-production declaration supplied provenance: code=%d output=%s", code, &output)
+			}
+		})
+	}
+}

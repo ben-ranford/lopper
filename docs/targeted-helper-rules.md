@@ -24,6 +24,12 @@ Package-level function variables are checked alongside function declarations.
 Source-declared function result signatures and collection element types retain
 statistics provenance, including named containers; distinct named statistics
 types remain separate from the shared helper contract.
+Files in the same directory and package share declaration bindings, with import
+ownership retained from each declaration's source file. Generic functions retain
+explicit statistics result types; unresolved type-parameter results remain unknown.
+All production source files are scanned, including platform-specific files. When
+files declare conflicting package-level names or methods, each file is checked separately
+so an arbitrary build variant cannot supply cross-file provenance.
 
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.

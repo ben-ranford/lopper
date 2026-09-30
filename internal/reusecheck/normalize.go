@@ -92,8 +92,6 @@ func imported(expr ast.Expr, packages map[string]string, path, name string) bool
 }
 
 func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types.Info) string {
-	restoreDots := expandDotImports(fn, packages)
-	defer restoreDots()
 	restoreAliases := expandSignatureAliases(fn.Type)
 	defer restoreAliases()
 	restore := stripExpressionParentheses(fn)
@@ -157,22 +155,9 @@ func canonicalName(ident, functionName *ast.Ident, packages map[string]string, i
 	return ""
 }
 
-// bindings asks go/types for lexical def/use ownership. The isolated function may
-// reference unavailable package declarations; no type error is interpreted as
-// proof of a contract. Import ownership and concrete field provenance are checked
-// separately, while unresolved syntax cannot match a template.
+// bindings retains the single-file entry point used by contract templates.
 func bindings(file *ast.File, fset *token.FileSet) *types.Info {
-	info := &types.Info{Implicits: make(map[ast.Node]types.Object), Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
-	defer indexEmbeddedFields(file, info)
-	defer indexFunctionDeclarations(file, info)
-	config := types.Config{Error: func(error) {
-		// Continue collecting lexical bindings when isolated source cannot type-check.
-	}}
-	if _, err := config.Check("bindings", fset, []*ast.File{file}, info); err != nil {
-		// Keep lexical bindings even when imports are unavailable.
-		return info
-	}
-	return info
+	return packageBindings([]*ast.File{file}, fset)
 }
 
 func isLocalObject(object types.Object) bool {

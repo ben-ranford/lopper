@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -21,32 +20,6 @@ type Finding struct {
 	Rule     string `json:"rule"`
 	Helper   string `json:"helper"`
 	Advisory bool   `json:"advisory,omitempty"`
-}
-
-// Analyze parses source fail-closed. Matches preserve exact operations, constants,
-// import ownership and local def/use bindings; they are not similarity scores.
-func Analyze(path string, source []byte) ([]Finding, error) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, source, 0)
-	if err != nil {
-		return nil, err
-	}
-	fingerprints, err := contractFingerprints(collectionContracts)
-	if err != nil {
-		return nil, err
-	}
-	packages := imports(file)
-	info := bindings(file, fset)
-	var findings []Finding
-	for _, decl := range file.Decls {
-		for _, fn := range declaredFunctions(decl) {
-			if fn.Body != nil {
-				findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)
-			}
-		}
-	}
-	sort.Slice(findings, func(i, j int) bool { return findings[i].Line < findings[j].Line })
-	return findings, nil
 }
 
 func withoutDecorativeCalls(path string, statements []ast.Stmt, packages map[string]string) []ast.Stmt {

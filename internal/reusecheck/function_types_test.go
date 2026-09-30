@@ -110,9 +110,6 @@ func TestUnprovenSourceFunctionCalls(t *testing.T) {
 	for _, parameter := range []string{"factory int", "factory s.UnknownFactory"} {
 		checkSourceStatsCall(t, "", parameter, "", "factory()", "")
 	}
-	for _, call := range []string{"factory()", "factory[int]()"} {
-		checkSourceStatsCall(t, "func factory[T any]() s.DependencyStats { panic(0) }", "", "", call, "")
-	}
 	checkSourceStatsCall(t, "", "", "", "s.UnknownFactory()", "")
 	checkSourceStatsCall(t, "", "", "", "s.BuildDependencyStats(\"name\", nil, nil)", "s.DependencyStats")
 }
@@ -172,15 +169,21 @@ func TestSourceFunctionResultReportMappings(t *testing.T) {
 		{"*s.DependencyStats", "measured := factory()", "(&measured)", false},
 	} {
 		t.Run(tc.result+tc.setup+tc.receiver, func(t *testing.T) {
-			source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
-			source = strings.Replace(source, `_ = s.BuildDependencyReportFromStats(name, "python", measured)`, tc.setup, 1)
-			source = strings.ReplaceAll(source, "measured.", tc.receiver+".")
-			source += "\ntype Stats s.DependencyStats\nfunc factory() " + tc.result + " { panic(0) }"
-			findings, err := Analyze("fixture.go", []byte(source))
-			if err != nil || (len(findings) == 1 && !findings[0].Advisory) != tc.want || (!tc.want && len(findings) != 0) {
-				t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, tc.want)
-			}
+			declaration := "type Stats s.DependencyStats\nfunc factory() " + tc.result + " { panic(0) }"
+			checkSourceFunctionReportMapping(t, declaration, tc.setup, tc.receiver, tc.want)
 		})
+	}
+}
+
+func checkSourceFunctionReportMapping(t *testing.T, declaration, setup, receiver string, want bool) {
+	t.Helper()
+	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
+	source = strings.Replace(source, `_ = s.BuildDependencyReportFromStats(name, "python", measured)`, setup, 1)
+	source = strings.ReplaceAll(source, "measured.", receiver+".")
+	source += "\n" + declaration
+	findings, err := Analyze("fixture.go", []byte(source))
+	if err != nil || (len(findings) == 1 && !findings[0].Advisory) != want || (!want && len(findings) != 0) {
+		t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, want)
 	}
 }
 

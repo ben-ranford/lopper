@@ -88,7 +88,7 @@ func scanRoot(root rootFS, exceptionsPath string, legacy bool, stdout, stderr io
 }
 
 func scanSources(root rootFS, exceptions []reusecheck.Exception, legacy bool, stdout io.Writer) (int, error) {
-	violations := 0
+	sources := make(map[string][]byte)
 	err := fs.WalkDir(root.FileSystem(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -102,28 +102,30 @@ func scanSources(root rootFS, exceptions []reusecheck.Exception, legacy bool, st
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		count, err := scanFile(root, path, exceptions, legacy, stdout)
-		violations += count
+		data, err := root.ReadFile(path)
+		if err == nil {
+			sources[filepath.ToSlash(path)] = data
+		}
 		return err
 	})
-	return violations, err
+	if err != nil {
+		return 0, err
+	}
+	return scanPackageSources(sources, exceptions, legacy, stdout)
 }
 
 func skipDirectory(path, name string) bool {
 	return path != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "testdata")
 }
 
-func scanFile(root rootFS, path string, exceptions []reusecheck.Exception, legacy bool, stdout io.Writer) (int, error) {
-	data, err := root.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	findings, err := reusecheck.Analyze(filepath.ToSlash(path), data)
+func scanPackageSources(sources map[string][]byte, exceptions []reusecheck.Exception, legacy bool, stdout io.Writer) (int, error) {
+	findings, err := reusecheck.AnalyzeSources(sources)
 	if err != nil {
 		return 0, err
 	}
 	violations := 0
 	for _, finding := range findings {
+		data := sources[finding.Path]
 		if reusecheck.Approved(finding, data, exceptions) {
 			continue
 		}

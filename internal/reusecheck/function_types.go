@@ -22,7 +22,7 @@ func inferredStatsCallType(call *ast.CallExpr, packages map[string]string, info 
 		return result
 	}
 	signature := sourceFunctionType(call.Fun, info, declarations, make(map[types.Object]bool))
-	if signature == nil || signature.TypeParams.NumFields() != 0 || !sourceCallArity(call, signature) {
+	if signature == nil || !sourceCallArity(call, signature) {
 		return nil
 	}
 	results := fieldListTypes(signature.Results)
@@ -38,6 +38,10 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 		return value.Type
 	case *ast.TypeAssertExpr:
 		return declaredFunctionType(value.Type)
+	case *ast.IndexExpr:
+		return instantiatedSourceFunctionType(value.X, 1, info, declarations, seen)
+	case *ast.IndexListExpr:
+		return instantiatedSourceFunctionType(value.X, len(value.Indices), info, declarations, seen)
 	case *ast.Ident:
 		object := info.ObjectOf(value)
 		if object == nil || seen[object] {
@@ -57,6 +61,16 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 		return declaredFunctionType(declaredSelectorType(value, info))
 	}
 	return nil
+}
+
+// Type arguments do not change an explicit result type. Keep type-parameter
+// results unresolved rather than treating the arguments as substitution proof.
+func instantiatedSourceFunctionType(expression ast.Expr, count int, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) *ast.FuncType {
+	signature := sourceFunctionType(expression, info, declarations, seen)
+	if signature == nil || count == 0 || count > signature.TypeParams.NumFields() {
+		return nil
+	}
+	return signature
 }
 
 func sourceCallableDeclaration(object types.Object, info *types.Info, declarations map[types.Object]ast.Node) ast.Node {
