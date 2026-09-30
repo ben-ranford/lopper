@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	resolveGitBinaryPath = gitexec.ResolveBinaryPath
+	resolveGitBinaryPath = resolveProofGitBinaryPath
 	removeAll            = os.RemoveAll
 	mkdirTemp            = os.MkdirTemp
 	readFileUnder        = safeio.ReadFileUnder
@@ -31,6 +31,7 @@ var (
 const (
 	buildVCSFlag            = "-buildvcs=false"
 	regressionProofBuildTag = "regressionproof"
+	proofStatusWriteError   = "write regression proof status: %v\n"
 )
 
 type testAction string
@@ -122,8 +123,12 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	baseSHA := fs.String("base-sha", strings.TrimSpace(getenv("PR_BASE_SHA")), "pull request base SHA")
 	bodyFile := fs.String("body-file", strings.TrimSpace(getenv("PR_BODY_FILE")), "path to a file containing the pull request body")
 	exemptionLabel := fs.String("regression-exempt-label", exemptionLabelDefault, "whether the pull request has the maintainer-controlled regression-exempt label")
+	targetOS := fs.String("target-os", "", "select declarations for the required linux or windows proof job")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if err := validateProofTarget(*targetOS); err != nil {
+		return writeError(r.stderr, "%v\n", err)
 	}
 	hasExemptionLabel, err := prmetadata.ParseRegressionExemptionLabel(*exemptionLabel)
 	if err != nil {
@@ -144,13 +149,13 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	}
 	if !prmetadata.IsFixTitle(*title) {
 		if _, writeErr := fmt.Fprintln(stdout, "Regression proof skipped: non-fix PR."); writeErr != nil {
-			return writeError(r.stderr, "write regression proof status: %v\n", writeErr)
+			return writeError(r.stderr, proofStatusWriteError, writeErr)
 		}
 		return 0
 	}
 	if metadata.ExemptionReason != "" {
 		if _, writeErr := fmt.Fprintf(stdout, "Regression proof exempted by regression-exempt label: %s\n", metadata.ExemptionReason); writeErr != nil {
-			return writeError(r.stderr, "write regression proof status: %v\n", writeErr)
+			return writeError(r.stderr, proofStatusWriteError, writeErr)
 		}
 		return 0
 	}
@@ -163,8 +168,21 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return writeError(r.stderr, "resolve repo root: %v\n", err)
 	}
+	declarations, err := selectTargetDeclarations(repoAbs, metadata.Declarations, *targetOS)
+	if err != nil {
+		return writeError(r.stderr, "%v\n", err)
+	}
+	if len(declarations) == 0 {
+		if _, err := fmt.Fprintf(stdout, "No regression declarations assigned to %s; the other required native proof job must verify them.\n", *targetOS); err != nil {
+			return writeError(r.stderr, proofStatusWriteError, err)
+		}
+		return 0
+	}
+	if err := requireNativeProofTarget(*targetOS); err != nil {
+		return writeError(r.stderr, "%v\n", err)
+	}
 	ctx := context.Background()
-	if err := r.prove(ctx, repoAbs, strings.TrimSpace(*baseSHA), metadata.Declarations, stdout); err != nil {
+	if err := r.prove(ctx, repoAbs, strings.TrimSpace(*baseSHA), declarations, stdout); err != nil {
 		return writeError(r.stderr, "%v\n", err)
 	}
 	return 0
@@ -352,7 +370,7 @@ func copyProofFiles(headRoot, baseRoot string, files []string) (returnErr error)
 
 func (r *runner) resolvePackage(ctx context.Context, repoRoot, packagePath string) (string, error) {
 	args := []string{"list", buildVCSFlag, "-tags", regressionProofBuildTag, "-f", "{{.ImportPath}}", packagePath}
-	output, err := r.execCommand(ctx, "go", args, repoRoot, os.Environ())
+	output, err := r.runGo(ctx, repoRoot, args)
 	if err != nil {
 		return "", fmt.Errorf("resolve regression-test package %s: %w", packagePath, err)
 	}
@@ -381,7 +399,7 @@ func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath strin
 	}()
 
 	testBinaryPath := filepath.Join(testBinaryDir, "test-binary")
-	_, err = r.execCommand(ctx, "go", regressionProofGoTestArgs("-c", "-o", testBinaryPath, packagePath), repoRoot, os.Environ())
+	_, err = r.runGo(ctx, repoRoot, regressionProofGoTestArgs("-c", "-o", testBinaryPath, packagePath))
 	return err
 }
 
@@ -416,7 +434,7 @@ func (r *runner) expectPass(ctx context.Context, repoRoot, expectedPackage strin
 }
 
 func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
-	output, err := r.execCommand(ctx, "go", regressionProofGoTestArgs("-count=1", "-json", "-run", "^"+declaration.TestName+"$", declaration.PackagePath), repoRoot, os.Environ())
+	output, err := r.runGo(ctx, repoRoot, regressionProofGoTestArgs("-count=1", "-json", "-run", "^"+declaration.TestName+"$", declaration.PackagePath))
 	action, parseErr := parseDeclaredTestAction(output, expectedPackage, declaration.TestName)
 	if parseErr != nil {
 		if err != nil {
@@ -425,7 +443,7 @@ func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage 
 		return "", parseErr
 	}
 	var exitErr *exec.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
+	if err != nil && (action == testActionPass || !errors.As(err, &exitErr)) {
 		return "", err
 	}
 	return action, nil
@@ -434,6 +452,14 @@ func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage 
 func regressionProofGoTestArgs(args ...string) []string {
 	result := []string{"test", buildVCSFlag, "-tags", regressionProofBuildTag}
 	return append(result, args...)
+}
+
+func (r *runner) runGo(ctx context.Context, repoRoot string, args []string) ([]byte, error) {
+	goPath, err := proofGoBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	return r.execCommand(ctx, goPath, args, repoRoot, os.Environ())
 }
 
 func parseDeclaredTestAction(output []byte, expectedPackage, testName string) (testAction, error) {
@@ -478,7 +504,7 @@ func (r *runner) runGit(ctx context.Context, repoRoot string, args ...string) ([
 	}
 	fullArgs := append(gitexec.SafeConfigArgs(), "-C", repoRoot)
 	fullArgs = append(fullArgs, args...)
-	return r.execCommand(ctx, gitPath, fullArgs, repoRoot, gitexec.SanitizedEnv())
+	return r.execCommand(ctx, gitPath, fullArgs, repoRoot, proofGitEnv())
 }
 
 func writeError(stderr io.Writer, format string, args ...any) int {

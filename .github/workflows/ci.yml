@@ -210,7 +210,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: |
-          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
+          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL" --target-os linux
 
       - name: Fail on unapproved memory regression
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
@@ -834,9 +834,58 @@ jobs:
       source_sha: ${{ github.sha }}
       build_channel: rolling
 
+  regression-proof-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve native Go toolchain
+        shell: pwsh
+        run: |
+          $goRoot = go env GOROOT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "REGRESSION_PROOF_GO_ROOT=$goRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Test native Windows proof tools
+        shell: pwsh
+        run: go test ./tools/regressionproof -run '^TestWindowsProof' -count=1
+
+      - name: Write PR body for regression proof
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-regression-body.md');
+            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            core.exportVariable('PR_BODY_FILE', bodyPath);
+
+      - name: Prove Windows regression tests for fix PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
+        shell: pwsh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
+        run: go run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
+
   verify:
     if: ${{ always() }}
-    needs: [verify-checks, verify-tests]
+    needs: [verify-checks, verify-tests, regression-proof-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -851,8 +900,9 @@ jobs:
         env:
           CHECKS_RESULT: ${{ needs.verify-checks.result }}
           TESTS_RESULT: ${{ needs.verify-tests.result }}
+          WINDOWS_PROOF_RESULT: ${{ needs.regression-proof-windows.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success
 
       - name: Initialize suppression verification
         id: suppression_verification

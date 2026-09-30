@@ -99,7 +99,11 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open child process %d for synchronization: %v", childPID, err)
 	}
-	defer win.CloseHandle(childProcess)
+	defer func() {
+		if err := win.CloseHandle(childProcess); err != nil {
+			t.Errorf("close child process handle: %v", err)
+		}
+	}()
 
 	cancel()
 	if err := cmd.Wait(); err == nil {
