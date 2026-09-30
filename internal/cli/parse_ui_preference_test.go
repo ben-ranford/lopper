@@ -25,6 +25,26 @@ func TestParseUIPreference(t *testing.T) {
 	}
 }
 
+func TestParseUIPreferenceArgumentOrder(t *testing.T) {
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		name, choice string
+		args         []string
+	}{
+		{"first", "stave", []string{"--ui-preference", "stave", "--repo", repo, "--language", "js-ts"}},
+		{"middle", "legacy", []string{"--repo", repo, "--ui-preference", "legacy", "--language", "js-ts"}},
+		{"last", "ask", []string{"--repo", repo, "--language", "js-ts", "--ui-preference", "ask"}},
+		{"equals", "stave", []string{"--ui-preference=stave", "--repo", repo, "--language", "js-ts"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := mustParseArgs(t, append([]string{"tui"}, tc.args...))
+			if req.TUI.UIPreference != tc.choice || req.RepoPath != repo || req.TUI.Language != "js-ts" {
+				t.Fatalf("preference=%q repo=%q language=%q", req.TUI.UIPreference, req.RepoPath, req.TUI.Language)
+			}
+		})
+	}
+}
+
 func TestParseUIPreferenceExplicitSources(t *testing.T) {
 	for _, source := range []string{"config", "cli"} {
 		for _, decision := range []string{"enable", "disable"} {
