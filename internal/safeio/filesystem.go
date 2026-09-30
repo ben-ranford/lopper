@@ -273,7 +273,7 @@ func trustedRootAliasTarget(requestedPath string) (string, bool) {
 }
 
 func openValidatedChildRoot(root Root, name, path string, infoFn func() (fs.FileInfo, error), symlinkMessage, notDirMessage, changedMessage string) (Root, error) {
-	next, err := openValidatedRoot(root, name, path, infoFn, symlinkMessage, notDirMessage, changedMessage, closeRootWithError)
+	next, err := openValidatedRoot(root, name, path, infoFn, rootValidationMessages{symlinkMessage, notDirMessage, changedMessage}, closeRootWithError)
 	if err != nil {
 		return nil, err
 	}

@@ -20,20 +20,26 @@ type childRootOperations[T any] interface {
 // result; failures close an acquired child and retain any close error.
 // changedMessage preserves the caller's diagnostic for an identity mismatch.
 func OpenPinnedChildRoot[T childRootOperations[T]](root T, name, path, changedMessage string) (T, error) {
-	return openValidatedRoot(root, name, path, func() (fs.FileInfo, error) { return root.Lstat(name) }, "root contains symlink", "root is not a directory", changedMessage, func(child T, err error) error { return errors.Join(err, child.Close()) })
+	return openValidatedRoot(root, name, path, func() (fs.FileInfo, error) { return root.Lstat(name) }, rootValidationMessages{"root contains symlink", "root is not a directory", changedMessage}, func(child T, err error) error { return errors.Join(err, child.Close()) })
 }
 
-func openValidatedRoot[T childRootOperations[T]](root T, name, path string, infoFn func() (fs.FileInfo, error), symlinkMessage, notDirMessage, changedMessage string, closeWithError func(T, error) error) (T, error) {
+type rootValidationMessages struct {
+	symlink string
+	notDir  string
+	changed string
+}
+
+func openValidatedRoot[T childRootOperations[T]](root T, name, path string, infoFn func() (fs.FileInfo, error), messages rootValidationMessages, closeWithError func(T, error) error) (T, error) {
 	var zero T
 	info, err := infoFn()
 	if err != nil {
 		return zero, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return zero, fmt.Errorf("%s: %s", symlinkMessage, path)
+		return zero, fmt.Errorf("%s: %s", messages.symlink, path)
 	}
 	if !info.IsDir() {
-		return zero, fmt.Errorf("%s: %s", notDirMessage, path)
+		return zero, fmt.Errorf("%s: %s", messages.notDir, path)
 	}
 
 	child, err := root.OpenRoot(name)
@@ -45,7 +51,7 @@ func openValidatedRoot[T childRootOperations[T]](root T, name, path string, info
 		return zero, closeWithError(child, err)
 	}
 	if !os.SameFile(info, openedInfo) {
-		return zero, closeWithError(child, fmt.Errorf("%s: %s", changedMessage, path))
+		return zero, closeWithError(child, fmt.Errorf("%s: %s", messages.changed, path))
 	}
 	return child, nil
 }
