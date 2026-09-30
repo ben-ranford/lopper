@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"golang.org/x/sys/windows"
 )
 
 const proofWindowsGitPath = `C:\Program Files\Git\cmd\git.exe`
@@ -15,14 +17,14 @@ const proofWindowsGoCacheCanonical = `D:\hostedtoolcache\windows\go`
 const proofWindowsSystemPath = `PATH=C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Windows\System32;C:\Windows`
 
 func resolveProofGitBinaryPath() (string, error) {
-	return resolveWindowsProofGitBinaryPath(os.Stat, filepath.EvalSymlinks)
+	return resolveWindowsProofGitBinaryPath(os.Stat, windowsProofFinalPath)
 }
 
-func resolveWindowsProofGitBinaryPath(stat func(string) (os.FileInfo, error), evalSymlinks func(string) (string, error)) (string, error) {
-	return validateWindowsProofExecutable(proofWindowsGitPath, proofWindowsGitPath, "git", stat, evalSymlinks)
+func resolveWindowsProofGitBinaryPath(stat func(string) (os.FileInfo, error), resolveFinalPath func(string) (string, error)) (string, error) {
+	return validateWindowsProofExecutable(proofWindowsGitPath, proofWindowsGitPath, "git", stat, resolveFinalPath)
 }
 
-func validateWindowsProofExecutable(path, canonicalPath, name string, stat func(string) (os.FileInfo, error), evalSymlinks func(string) (string, error)) (string, error) {
+func validateWindowsProofExecutable(path, canonicalPath, name string, stat func(string) (os.FileInfo, error), resolveFinalPath func(string) (string, error)) (string, error) {
 	info, err := stat(path)
 	if err != nil {
 		return "", fmt.Errorf("locate trusted Windows %s executable: %w", name, err)
@@ -30,7 +32,7 @@ func validateWindowsProofExecutable(path, canonicalPath, name string, stat func(
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("trusted Windows %s executable must be a regular file: %s", name, path)
 	}
-	resolved, err := evalSymlinks(path)
+	resolved, err := resolveFinalPath(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve trusted Windows %s executable: %w", name, err)
 	}
@@ -39,6 +41,43 @@ func validateWindowsProofExecutable(path, canonicalPath, name string, stat func(
 		return "", fmt.Errorf("trusted Windows %s executable must not redirect to another path: %s", name, resolved)
 	}
 	return resolved, nil
+}
+
+func windowsProofFinalPath(path string) (resolved string, returnErr error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	handle, err := windows.CreateFile(name, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return "", err
+	}
+	defer func() { returnErr = errors.Join(returnErr, windows.CloseHandle(handle)) }()
+	// Resolve the opened executable directly instead of normalizing each
+	// junction ancestor with filepath.EvalSymlinks.
+	buffer := make([]uint16, 32768)
+	length, err := windows.GetFinalPathNameByHandle(handle, &buffer[0], uint32(len(buffer)), 0)
+	if err != nil {
+		return "", err
+	}
+	if length == 0 || length >= uint32(len(buffer)) {
+		return "", errors.New("final Windows executable path is empty or exceeds the supported length")
+	}
+	return normalizeWindowsProofFinalPath(windows.UTF16ToString(buffer[:length]))
+}
+
+func normalizeWindowsProofFinalPath(path string) (string, error) {
+	if !strings.HasPrefix(path, `\\?\`) {
+		return "", errors.New("final Windows executable path lacks the DOS device prefix")
+	}
+	dosPath := strings.TrimPrefix(path, `\\?\`)
+	if len(dosPath) < 3 || dosPath[1] != ':' || dosPath[2] != '\\' ||
+		((dosPath[0] < 'A' || dosPath[0] > 'Z') && (dosPath[0] < 'a' || dosPath[0] > 'z')) {
+		return "", errors.New("final Windows executable path must name an absolute DOS drive path")
+	}
+	return dosPath, nil
 }
 
 func proofGitEnv() []string {
@@ -77,10 +116,10 @@ func stripWindowsProofGitEnvKey(key string) bool {
 }
 
 func proofGoBinaryPath() (string, error) {
-	return resolveWindowsProofGoBinaryPath(os.Getenv("REGRESSION_PROOF_GO_ROOT"), os.Stat, filepath.EvalSymlinks)
+	return resolveWindowsProofGoBinaryPath(os.Getenv("REGRESSION_PROOF_GO_ROOT"), os.Stat, windowsProofFinalPath)
 }
 
-func resolveWindowsProofGoBinaryPath(root string, stat func(string) (os.FileInfo, error), evalSymlinks func(string) (string, error)) (string, error) {
+func resolveWindowsProofGoBinaryPath(root string, stat func(string) (os.FileInfo, error), resolveFinalPath func(string) (string, error)) (string, error) {
 	root = filepath.Clean(root)
 	if !filepath.IsAbs(root) || (!strings.HasPrefix(strings.ToLower(root), strings.ToLower(proofWindowsGoCache)+`\`) &&
 		!strings.HasPrefix(strings.ToLower(root), strings.ToLower(proofWindowsGoCacheCanonical)+`\`)) {
@@ -90,5 +129,5 @@ func resolveWindowsProofGoBinaryPath(root string, stat func(string) (os.FileInfo
 	// Hosted setup-go links its C: cache entry to the same version on D:.
 	// Permit only that exact correspondence, never an arbitrary junction target.
 	canonicalPath := proofWindowsGoCacheCanonical + path[len(proofWindowsGoCache):]
-	return validateWindowsProofExecutable(path, canonicalPath, "go", stat, evalSymlinks)
+	return validateWindowsProofExecutable(path, canonicalPath, "go", stat, resolveFinalPath)
 }

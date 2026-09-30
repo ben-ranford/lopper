@@ -170,3 +170,46 @@ func TestWindowsProofRejectsUntrustedGoRoot(t *testing.T) {
 		t.Fatal("untrusted Go toolchain was accepted")
 	}
 }
+
+func TestWindowsProofFinalPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tool.exe")
+	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := windowsProofFinalPath(path)
+	if err != nil {
+		t.Fatalf("resolve opened file: %v", err)
+	}
+	originalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil || !os.SameFile(originalInfo, resolvedInfo) {
+		t.Fatalf("final path must identify the opened file: %q (%v)", resolved, err)
+	}
+	for _, path := range []string{path + ".missing", "nul\x00path"} {
+		if _, err := windowsProofFinalPath(path); err == nil {
+			t.Fatalf("invalid path %q was accepted", path)
+		}
+	}
+}
+
+func TestWindowsProofFinalPathRejectsOtherNamespaces(t *testing.T) {
+	for _, path := range []string{
+		`\\?\C:\Program Files\Git\cmd\git.exe`, `\\?\d:\hostedtoolcache\windows\go\1.27.1\x64\bin\go.exe`,
+	} {
+		resolved, err := normalizeWindowsProofFinalPath(path)
+		if err != nil || resolved != strings.TrimPrefix(path, `\\?\`) {
+			t.Fatalf("DOS path %q returned %q, %v", path, resolved, err)
+		}
+	}
+	for _, path := range []string{
+		"", `C:\tool.exe`, `\\?\`, `\\?\C:tool.exe`, `\\?\C:/tool.exe`, `\\?\1:\tool.exe`,
+		`\\?\UNC\server\share\tool.exe`, `\\?\Volume{guid}\tool.exe`, `\Device\HarddiskVolume1\tool.exe`,
+	} {
+		if _, err := normalizeWindowsProofFinalPath(path); err == nil {
+			t.Fatalf("unexpected path namespace %q was accepted", path)
+		}
+	}
+}
