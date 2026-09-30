@@ -25,15 +25,19 @@ func inferredStatsCallType(call *ast.CallExpr, packages map[string]string, info 
 }
 
 func sourceCallResultType(call *ast.CallExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	signature := sourceFunctionType(call.Fun, info, declarations, make(map[types.Object]bool))
+	return sourceCallResultAt(call, 1, 0, info, declarations, make(map[types.Object]bool))
+}
+
+func sourceCallResultAt(call *ast.CallExpr, count, index int, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Expr {
+	signature := sourceFunctionType(call.Fun, info, declarations, seen)
 	if signature == nil || !sourceCallArity(call, signature) {
 		return nil
 	}
 	results := fieldListTypes(signature.Results)
-	if len(results) != 1 {
+	if len(results) != count {
 		return nil
 	}
-	return results[0]
+	return results[index]
 }
 
 func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) *ast.FuncType {
@@ -52,7 +56,7 @@ func sourceFunctionType(expression ast.Expr, info *types.Info, declarations map[
 			return nil
 		}
 		seen[object] = true
-		declaration := sourceCallableDeclaration(object, info, declarations)
+		declaration := sourceBindingDeclaration(sourceCallableDeclaration(object, info, declarations), info, declarations, seen)
 		if initializer := aliasInitializer(declaration); initializer != nil {
 			return sourceFunctionType(initializer, info, declarations, seen)
 		}
@@ -81,7 +85,7 @@ func sourceCallableDeclaration(object types.Object, info *types.Info, declaratio
 	if object == nil {
 		return nil
 	}
-	if declaration, _ := unwrapBinding(declarations[object]); declaration != nil {
+	if declaration := declarations[object]; declaration != nil {
 		return declaration
 	}
 	for node, defined := range info.Implicits {

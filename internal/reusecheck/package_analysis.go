@@ -67,9 +67,24 @@ func fileFindings(file *ast.File, packages map[string]string, info *types.Info, 
 		for _, fn := range declaredFunctions(decl) {
 			if fn.Body != nil {
 				findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)
+				findings = append(findings, localCollectionFindings(path, fn, packages, info, fingerprints, fset)...)
 			}
 		}
 	}
+	return findings
+}
+
+// Report mappings already walk nested bodies. Check each local collection
+// contract separately without repeating those report findings.
+func localCollectionFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
+	var findings []Finding
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.FuncLit); ok {
+			local := &ast.FuncDecl{Name: ast.NewIdent(fn.Name.Name + ".func"), Type: literal.Type, Body: literal.Body}
+			findings = append(findings, collectionFindings(path, local, packages, info, fingerprints, fset)...)
+		}
+		return true
+	})
 	return findings
 }
 

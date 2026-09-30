@@ -254,6 +254,14 @@ func contractFingerprints(source string) (map[string]contract, error) {
 }
 
 func functionFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
+	findings := collectionFindings(path, fn, packages, info, fingerprints, fset)
+	if filepath.ToSlash(path) == "internal/lang/shared/dependency_usage_stats.go" && fn.Name.Name == "BuildDependencyReportFromStats" {
+		return findings
+	}
+	return append(findings, reportMappingFindings(path, fn, packages, info, fset)...)
+}
+
+func collectionFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fingerprints map[string]contract, fset *token.FileSet) []Finding {
 	var findings []Finding
 	matched, found := fingerprints[canonicalWithoutDecorativeCalls(path, fn, packages, info)]
 	if matched.rule == "sorted-set-keys" && !strings.HasPrefix(filepath.ToSlash(path), "internal/lang/") {
@@ -265,10 +273,7 @@ func functionFindings(path string, fn *ast.FuncDecl, packages map[string]string,
 	if found && (filepath.ToSlash(path) != matched.owner || fn.Name.Name != matched.function) {
 		findings = append(findings, Finding{Path: filepath.ToSlash(path), Line: fset.Position(fn.Pos()).Line, Function: fn.Name.Name, Rule: matched.rule, Helper: matched.helper})
 	}
-	if filepath.ToSlash(path) == "internal/lang/shared/dependency_usage_stats.go" && fn.Name.Name == "BuildDependencyReportFromStats" {
-		return findings
-	}
-	return append(findings, reportMappingFindings(path, fn, packages, info, fset)...)
+	return findings
 }
 
 func reportMappingFindings(path string, fn *ast.FuncDecl, packages map[string]string, info *types.Info, fset *token.FileSet) []Finding {

@@ -13,6 +13,8 @@ func TestCollectionProvenanceAcrossCLISources(t *testing.T) {
 	for _, tc := range []struct {
 		name, declaration, parameter, setup string
 	}{
+		{"generic alias", "type GenericStats[T any] = Stats", ", measured GenericStats[int]", ""},
+		{"tuple results", "func stats() (error, Stats) { panic(0) }", "", "_, measured := stats();"},
 		{"source function", "func stats() []Stats { panic(0) }", "", "values := stats(); measured := values[0];"},
 		{"collection assertion", "", ", raw any", "values, ok := raw.([]Stats); _ = ok; measured := values[0];"},
 		{"variadic parameter", "", ", values ...Stats", "measured := values[0];"},

@@ -13,12 +13,12 @@ func bindingDeclaration(node ast.Node, index int) ast.Node {
 		copied := *item
 		copied.Names = item.Names[index : index+1]
 		copied.Values = bindingValues(item.Values, len(item.Names), index)
-		return preserveCommaOK(&copied, len(item.Names), len(item.Values))
+		return preserveBinding(&copied, item.Values, len(item.Names), index)
 	case *ast.AssignStmt:
 		copied := *item
 		copied.Lhs = item.Lhs[index : index+1]
 		copied.Rhs = bindingValues(item.Rhs, len(item.Lhs), index)
-		return preserveCommaOK(&copied, len(item.Lhs), len(item.Rhs))
+		return preserveBinding(&copied, item.Rhs, len(item.Lhs), index)
 	default:
 		return node
 	}
@@ -45,11 +45,31 @@ func bindingValues(values []ast.Expr, count, index int) []ast.Expr {
 // Retain tuple context after selecting one binding; slices have no comma-ok form.
 type commaOKBinding struct{ ast.Node }
 
-func preserveCommaOK(node ast.Node, count, values int) ast.Node {
-	if count == 2 && values == 1 {
+type tupleCallBinding struct {
+	ast.Node
+	call         *ast.CallExpr
+	count, index int
+}
+
+func preserveBinding(node ast.Node, values []ast.Expr, count, index int) ast.Node {
+	if count > 1 && len(values) == 1 {
+		if call, ok := unparen(values[0]).(*ast.CallExpr); ok {
+			return &tupleCallBinding{Node: node, call: call, count: count, index: index}
+		}
+	}
+	if count == 2 && len(values) == 1 {
 		return &commaOKBinding{node}
 	}
 	return node
+}
+
+func sourceBindingDeclaration(node ast.Node, info *types.Info, declarations map[types.Object]ast.Node, seen map[types.Object]bool) ast.Node {
+	if binding, ok := node.(*tupleCallBinding); ok {
+		result := sourceCallResultAt(binding.call, binding.count, binding.index, info, declarations, seen)
+		return &ast.Field{Type: result}
+	}
+	declaration, _ := unwrapBinding(node)
+	return declaration
 }
 
 func unwrapBinding(node ast.Node) (ast.Node, bool) {

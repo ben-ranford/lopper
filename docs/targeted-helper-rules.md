@@ -20,13 +20,17 @@ semantic equivalence or similarity engine. External packages are not loaded or
 executed; source-declared `DependencyStats` provenance and imported factory calls
 are checked conservatively. Ordinary compilation remains responsible for full
 package type validation. Unknown forms are not classified as proven copies.
-Package-level function variables are checked alongside function declarations.
+Package-level function variables and local function literals are checked alongside
+function declarations. Nested collection findings retain their enclosing function
+and source location without repeating report-mapping findings.
 Source-declared function result signatures and collection element types retain
-statistics provenance, including named containers; distinct named statistics
+statistics provenance, including tuple assignments and named containers; distinct named statistics
 types remain separate from the shared helper contract.
 Files in the same directory and package share declaration bindings, with import
 ownership retained from each declaration's source file. Generic functions retain
-explicit statistics result types; unresolved type-parameter results remain unknown.
+explicit statistics result types. Instantiated generic aliases retain explicit
+alias targets with complete type-argument lists; unresolved type-parameter
+results and alias targets remain unknown.
 All production source files are scanned, including platform-specific files. When
 files declare conflicting package-level names or methods, each file is checked separately
 so an arbitrary build variant cannot supply cross-file provenance.

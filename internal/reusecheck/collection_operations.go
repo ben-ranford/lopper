@@ -72,7 +72,7 @@ func resolveCollectionIdentifier(ident *ast.Ident, info *types.Info, declaration
 		return nil, false
 	}
 	seen[object] = true
-	declaration := declarations[object]
+	declaration := sourceBindingDeclaration(sourceCallableDeclaration(object, info, declarations), info, declarations, seen)
 	if initializer := aliasInitializer(declaration); initializer != nil {
 		return initializer, true
 	}

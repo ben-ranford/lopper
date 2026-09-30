@@ -62,12 +62,8 @@ func resolveTypeDeclarations(expression ast.Expr, aliasesOnly bool) ast.Expr {
 	seen := make(map[*ast.TypeSpec]bool)
 	for {
 		expression = unparen(expression)
-		ident, ok := expression.(*ast.Ident)
-		if !ok || ident.Obj == nil {
-			return expression
-		}
-		alias, ok := ident.Obj.Decl.(*ast.TypeSpec)
-		if !ok || (aliasesOnly && !alias.Assign.IsValid()) {
+		alias := instantiatedTypeDeclaration(expression)
+		if alias == nil || (aliasesOnly && !alias.Assign.IsValid()) {
 			return expression
 		}
 		if seen[alias] {
@@ -76,6 +72,28 @@ func resolveTypeDeclarations(expression ast.Expr, aliasesOnly bool) ast.Expr {
 		seen[alias] = true
 		expression = alias.Type
 	}
+}
+
+// Type arguments do not change an explicit alias target. Follow its declaration
+// only with the complete argument list; parameter-dependent targets stay local
+// type parameters and cannot acquire imported ownership without substitution.
+func instantiatedTypeDeclaration(expression ast.Expr) *ast.TypeSpec {
+	arguments := 0
+	switch instance := expression.(type) {
+	case *ast.IndexExpr:
+		expression, arguments = instance.X, 1
+	case *ast.IndexListExpr:
+		expression, arguments = instance.X, len(instance.Indices)
+	}
+	ident, ok := unparen(expression).(*ast.Ident)
+	if !ok || ident.Obj == nil {
+		return nil
+	}
+	declaration, ok := ident.Obj.Decl.(*ast.TypeSpec)
+	if !ok || declaration.TypeParams.NumFields() != arguments {
+		return nil
+	}
+	return declaration
 }
 
 func imported(expr ast.Expr, packages map[string]string, path, name string) bool {
