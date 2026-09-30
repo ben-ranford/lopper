@@ -122,7 +122,25 @@ func reportMapping(literal *ast.CompositeLit, packages map[string]string, info *
 		}
 		stats = receiver
 	}
-	return true
+	return !reportLiteralHasEffects(literal)
+}
+
+// Calls and receives can change the stats between field reads. Without proving
+// their effects, replacing the literal with one stats snapshot is only advice.
+func reportLiteralHasEffects(literal *ast.CompositeLit) bool {
+	effects := false
+	ast.Inspect(literal, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.CallExpr:
+			effects = true
+		case *ast.UnaryExpr:
+			effects = effects || value.Op == token.ARROW
+		}
+		return !effects
+	})
+	return effects
 }
 
 func dependencyStats(declaration ast.Node, packages map[string]string, info *types.Info) bool {
@@ -331,7 +349,7 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 		typ = resolvedCollectionType(receiver, info, declarations)
 	}
 	if typ == nil {
-		typ = assertedStatsReceiverType(receiver, info, declarations)
+		typ = inferredStatsReceiverType(receiver, packages, info, declarations)
 	}
 	if typ != nil {
 		if dependencyStatsType(typ, packages) {
@@ -346,13 +364,18 @@ func mappedStatsReceiver(expression ast.Expr, field string, packages map[string]
 	return ""
 }
 
-// Preserve assertion provenance while applying each explicit pointer operation.
-func assertedStatsReceiverType(expression ast.Expr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
+// Preserve inferred provenance while applying each explicit pointer operation.
+func inferredStatsReceiverType(expression ast.Expr, packages map[string]string, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
 	seen := make(map[types.Object]bool)
 	var operations []collectionOperation
 	for {
 		switch item := unparen(expression).(type) {
 		case *ast.Ident:
+			object := info.ObjectOf(item)
+			declaration, _ := unwrapBinding(declarations[object])
+			if ranged, ok := declaration.(*ast.RangeStmt); ok {
+				return collectionIndirection(rangeValueType(ranged, object, info, declarations), operations)
+			}
 			resolved, follow := resolveCollectionIdentifier(item, info, declarations, seen)
 			if !follow {
 				return nil
@@ -369,10 +392,23 @@ func assertedStatsReceiverType(expression ast.Expr, info *types.Info, declaratio
 			expression = item.X
 		case *ast.TypeAssertExpr:
 			return collectionIndirection(item.Type, operations)
+		case *ast.CallExpr:
+			return collectionIndirection(statsFactoryResultType(item, packages), operations)
 		default:
 			return nil
 		}
 	}
+}
+
+func statsFactoryResultType(call *ast.CallExpr, packages map[string]string) ast.Expr {
+	if len(call.Args) != 3 || !imported(call.Fun, packages, sharedPackage, "BuildDependencyStats") {
+		return nil
+	}
+	name := ast.NewIdent("DependencyStats")
+	if factory, ok := unparen(call.Fun).(*ast.SelectorExpr); ok {
+		return &ast.SelectorExpr{X: factory.X, Sel: name}
+	}
+	return name
 }
 
 // A repeated receiver must resolve to the same lexical objects and contain no
@@ -392,6 +428,12 @@ func stableStatsReceiver(expression ast.Expr, info *types.Info) string {
 	case *ast.StarExpr:
 		if operand := stableStatsReceiver(value.X, info); operand != "" {
 			return "*(" + operand + ")"
+		}
+	case *ast.UnaryExpr:
+		if value.Op == token.AND {
+			if operand := stableStatsReceiver(value.X, info); operand != "" {
+				return "&(" + operand + ")"
+			}
 		}
 	case *ast.IndexExpr:
 		collection := stableStatsReceiver(value.X, info)

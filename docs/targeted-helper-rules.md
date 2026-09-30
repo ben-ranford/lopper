@@ -24,7 +24,10 @@ package type validation. Unknown forms are not classified as proven copies.
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.
 Mappings with deliberate overrides or mixed sources remain advisory when four
-of six fields have recognized statistics provenance. Valid helper calls followed by
+of six fields have recognized statistics provenance. Calls or channel receives in
+the literal also keep a mapping advisory: they may change the statistics between
+field reads, so a single helper snapshot is not proven equivalent. Stable
+address-taken receivers retain their source type provenance. Valid helper calls followed by
 language-specific changes pass. Discarded/decorative helper calls do not waive a
 remaining duplicate mapping or collection implementation. Sorted operations are
 not interchangeable with insertion-order, different trimming, non-nil-empty or
