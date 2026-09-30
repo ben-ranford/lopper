@@ -303,17 +303,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
           this.explorer.refresh();
         }),
         vscode.workspace.onDidGrantWorkspaceTrust(async () => {
-          for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-              continue;
-            }
-            await this.refreshWorkspace({
-              folder,
-              revealErrors: false,
-              document: this.activeDocumentForFolder(folder),
-              trigger: "workspace-trust",
-            });
-          }
+          await this.refreshAutomaticWorkspaces(vscode.workspace.workspaceFolders ?? [], "workspace-trust");
         }),
       );
       for (const watcherPattern of ["**/build.gradle", "**/build.gradle.kts", "**/AndroidManifest.xml"]) {
@@ -335,17 +325,25 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
       this.updateStatus("Lopper: no workspace", "Open a folder to analyse with Lopper.");
       return;
     }
-    for (const folder of folders) {
+    await this.refreshAutomaticWorkspaces(folders, "initial");
+  }
+
+  private refreshAutomaticWorkspaces(
+    folders: readonly vscode.WorkspaceFolder[],
+    trigger: "initial" | "workspace-trust",
+  ): Promise<void> {
+    // Automatic scans share status output and binary resolution, so retain workspace order.
+    return folders.reduce((previous, folder) => previous.then(() => {
       if (!vscode.workspace.getConfiguration("lopper", folder.uri).get<boolean>("autoRefresh", true)) {
-        continue;
+        return;
       }
-      await this.refreshWorkspace({
+      return this.refreshWorkspace({
         folder,
         revealErrors: false,
         document: this.activeDocumentForFolder(folder),
-        trigger: "initial",
+        trigger,
       });
-    }
+    }), Promise.resolve());
   }
 
   async handleConfigurationChange(event: Pick<vscode.ConfigurationChangeEvent, "affectsConfiguration">): Promise<void> {
@@ -1225,7 +1223,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     if (candidates.length === 0) {
       return undefined;
     }
-    return vscode.window.showQuickPick(candidates, {
+    return await vscode.window.showQuickPick(candidates, {
       title: "Apply Lopper codemod",
       placeHolder: "Choose a dependency with a safe codemod suggestion",
     });
@@ -1253,7 +1251,7 @@ class LopperController implements LopperControllerContract, vscode.HoverProvider
     scopeMode: LopperScopeMode,
     allowDirty: boolean,
   ): Promise<WorkspaceCodemodApplyResult> {
-    return vscode.window.withProgress(
+    return await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: `Applying Lopper codemod for ${dependencyName}`,
@@ -1898,25 +1896,27 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     return element;
   }
 
-  async getChildren(element?: LopperExplorerTreeItem): Promise<LopperExplorerTreeItem[]> {
-    if (!element) {
-      return this.getFolders().map((folder) => this.createFolderItem(folder));
-    }
+  getChildren(element?: LopperExplorerTreeItem): Promise<LopperExplorerTreeItem[]> {
+    return Promise.resolve().then(() => {
+      if (!element) {
+        return this.getFolders().map((folder) => this.createFolderItem(folder));
+      }
 
-    switch (element.data.kind) {
-      case "folder":
-        return this.getFolderChildren(element.data.folderPath);
-      case "dependency":
-        return this.getDependencyChildren(element.data.folderPath, element.data.dependencyName ?? "");
-      case "group":
-        return this.getImportChildren(
-          element.data.folderPath,
-          element.data.dependencyName ?? "",
-          element.data.groupKind ?? "usedImports",
-        );
-      default:
-        return [];
-    }
+      switch (element.data.kind) {
+        case "folder":
+          return this.getFolderChildren(element.data.folderPath);
+        case "dependency":
+          return this.getDependencyChildren(element.data.folderPath, element.data.dependencyName ?? "");
+        case "group":
+          return this.getImportChildren(
+            element.data.folderPath,
+            element.data.dependencyName ?? "",
+            element.data.groupKind ?? "usedImports",
+          );
+        default:
+          return [];
+      }
+    });
   }
 
   private createFolderItem(folder: vscode.WorkspaceFolder): LopperExplorerTreeItem {
@@ -1938,7 +1938,7 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
     return item;
   }
 
-  private async getFolderChildren(folderPath: string): Promise<LopperExplorerTreeItem[]> {
+  private getFolderChildren(folderPath: string): LopperExplorerTreeItem[] {
     const folder = findWorkspaceFolder(folderPath);
     if (!folder) {
       return [];

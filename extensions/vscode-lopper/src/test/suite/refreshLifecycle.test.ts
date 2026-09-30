@@ -30,6 +30,96 @@ suite("refresh lifecycle", () => {
     deactivate();
   });
 
+  test("initializes workspace folders in order without overlapping automatic scans", async function () {
+    this.timeout(30_000);
+
+    await withAutomaticRefreshFolders(async (folders) => {
+      const { binaryPath, signature, cleanup } = await createBinaryFixture();
+      const calls: Array<{ folder: vscode.WorkspaceFolder; pending: Deferred<WorkspaceAnalysis> }> = [];
+      const controller = __testing.createController({
+        analyseWorkspace: (folder): Promise<WorkspaceAnalysis> => {
+          const pending = deferred<WorkspaceAnalysis>();
+          calls.push({ folder, pending });
+          return pending.promise;
+        },
+        exportWorkspace: async (): Promise<string> => "",
+        applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+          throw new Error("unexpected codemod apply");
+        },
+      }, { resolveLanguage: async () => "js-ts" });
+
+      try {
+        const initialization = controller.initialize();
+        await waitForAssertion(() => assert.equal(calls.length, 1));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(calls.map((call) => call.folder), [folders[0]]);
+
+        calls[0].pending.resolve(makeWorkspaceAnalysis({
+          folder: folders[0], binaryPath, binarySignature: signature, dependencyCount: 1, usedPercent: 50,
+        }));
+        await waitForAssertion(() => assert.equal(calls.length, 2));
+        assert.deepEqual(calls.map((call) => call.folder), folders);
+        calls[1].pending.resolve(makeWorkspaceAnalysis({
+          folder: folders[1], binaryPath, binarySignature: signature, dependencyCount: 0, usedPercent: 0,
+        }));
+        await waitForPromise(initialization, "workspace initialization");
+        assert.match(controller.getLatestSummary(), /0 deps/);
+      } finally {
+        controller.dispose();
+        await cleanup();
+      }
+    });
+  });
+
+  test("initialization skips folders with automatic refresh disabled", async function () {
+    this.timeout(30_000);
+
+    await withAutomaticRefreshFolders(async (folders) => {
+      await vscode.workspace.getConfiguration("lopper", folders[0].uri)
+        .update("autoRefresh", false, vscode.ConfigurationTarget.WorkspaceFolder);
+      const visited: vscode.WorkspaceFolder[] = [];
+      await withController({
+        analyseWorkspace: async (folder): Promise<WorkspaceAnalysis> => {
+          visited.push(folder);
+          throw new Error("fixture analysis unavailable");
+        },
+        exportWorkspace: async (): Promise<string> => "",
+      }, async (controller) => {
+        await controller.initialize();
+        assert.deepEqual(visited, [folders[1]]);
+      });
+    });
+  });
+
+  test("initialization rejects before starting later folders when language resolution fails", async function () {
+    this.timeout(30_000);
+
+    await withAutomaticRefreshFolders(async (folders) => {
+      const failure = new Error("language resolution failed");
+      const visited: string[] = [];
+      const controller = __testing.createController({
+        analyseWorkspace: async (): Promise<WorkspaceAnalysis> => {
+          throw new Error("analysis must not start after language resolution failed");
+        },
+        exportWorkspace: async (): Promise<string> => "",
+        applyCodemod: async (): Promise<WorkspaceCodemodApplyResult> => {
+          throw new Error("unexpected codemod apply");
+        },
+      }, {
+        resolveLanguage: async (_configured, _document, workspacePath) => {
+          visited.push(workspacePath ?? "");
+          throw failure;
+        },
+      });
+      try {
+        await assert.rejects(controller.initialize(), (error) => error === failure);
+        assert.deepEqual(visited, [folders[0].uri.fsPath]);
+      } finally {
+        controller.dispose();
+      }
+    });
+  });
+
   test("reuses in-flight refreshes for identical requests", async function () {
     this.timeout(30_000);
 
@@ -837,6 +927,23 @@ suite("refresh lifecycle", () => {
     );
   });
 });
+
+async function withAutomaticRefreshFolders(
+  run: (folders: readonly vscode.WorkspaceFolder[]) => Promise<void>,
+): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  assert.equal(folders.length, 2, "expected the two-folder smoke workspace");
+  const configurations = folders.map((folder) => vscode.workspace.getConfiguration("lopper", folder.uri));
+  const previousValues = configurations.map((configuration) => configuration.inspect<boolean>("autoRefresh")?.workspaceFolderValue);
+  try {
+    await Promise.all(configurations.map((configuration) =>
+      configuration.update("autoRefresh", true, vscode.ConfigurationTarget.WorkspaceFolder)));
+    await run(folders);
+  } finally {
+    await Promise.all(configurations.map((configuration, index) =>
+      configuration.update("autoRefresh", previousValues[index], vscode.ConfigurationTarget.WorkspaceFolder)));
+  }
+}
 
 async function withHarness(run: (harness: LifecycleHarness) => Promise<void>): Promise<void> {
   const folder = primaryWorkspaceFolder();

@@ -282,7 +282,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
       output,
       {
         install: async (releaseTag, install) => {
-          return vscode.window.withProgress(
+          return await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Notification,
               title: "Installing lopper CLI",
@@ -300,7 +300,7 @@ export class LopperRunner implements WorkspaceAnalysisRunner {
                 if (token.isCancellationRequested) {
                   abortController.abort();
                 }
-                return install(abortController.signal);
+                return await install(abortController.signal);
               } finally {
                 cancellation.dispose();
               }
@@ -824,16 +824,34 @@ async function runWithConcurrency<T>(
 ): Promise<void> {
   const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
   let nextIndex = 0;
+  let remaining = items.length;
+  if (!(workerCount > 0)) {
+    return;
+  }
 
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIndex < items.length) {
-        const item = items[nextIndex];
-        nextIndex += 1;
-        await worker(item);
+  await new Promise<void>((resolve, reject) => {
+    // Each slot releases its promise before starting the next item, keeping only
+    // the active operations in memory even when the input contains many items.
+    const runNext = (): void => {
+      if (nextIndex >= items.length) {
+        return;
       }
-    }),
-  );
+      const item = items[nextIndex];
+      nextIndex += 1;
+      Promise.resolve().then(() => worker(item)).then(() => {
+        remaining -= 1;
+        if (remaining === 0) {
+          resolve();
+        } else {
+          runNext();
+        }
+      }, reject);
+    };
+
+    for (let slot = 0; slot < workerCount; slot += 1) {
+      runNext();
+    }
+  });
 }
 
 function codemodLanguageForDependency(dependency: LopperDependencyReport, requestedLanguage: LopperLanguage): LopperLanguage | undefined {

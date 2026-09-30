@@ -10,7 +10,7 @@ import {
   sbomAttestationExportsFeature,
   vscodePreviewCapabilityParityFeature,
 } from "../../featureCapabilities";
-import type { BinaryResolutionRequest } from "../../managedBinary";
+import { ManagedBinaryInstaller, type BinaryResolutionRequest, type ManagedBinaryInstallResult } from "../../managedBinary";
 import {
   BinaryResolutionError,
   defaultCodemodAnalysisConcurrency,
@@ -256,6 +256,74 @@ suite("lopper runner", () => {
     assert.equal(resolvedRequest?.workspaceRoot, folder.uri.fsPath);
   });
 
+  test("keeps managed install cancellation subscribed until the installer settles", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-runner-progress-"));
+    const previousPath = process.env.PATH;
+    const previousBinaryPath = process.env.LOPPER_BINARY_PATH;
+    const previousWithProgress = vscode.window.withProgress;
+    const previousFindInstalled = ManagedBinaryInstaller.prototype.findInstalledBinary;
+    const previousEnsureInstalled = ManagedBinaryInstaller.prototype.ensureInstalled;
+    const installStarted = deferred<AbortSignal>();
+    const installResult = deferred<ManagedBinaryInstallResult>();
+    let cancel: (() => void) | undefined;
+    let subscriptionDisposed = false;
+    let completion: Promise<void> | undefined;
+
+    try {
+      process.env.PATH = "";
+      delete process.env.LOPPER_BINARY_PATH;
+      ManagedBinaryInstaller.prototype.findInstalledBinary = async () => undefined;
+      ManagedBinaryInstaller.prototype.ensureInstalled = (_tag, signal) => {
+        assert.ok(signal, "the progress callback must supply a cancellation signal");
+        installStarted.resolve(signal);
+        return installResult.promise;
+      };
+      vscode.window.withProgress = (_options, task) => task(
+        { report: () => undefined },
+        {
+          isCancellationRequested: false,
+          onCancellationRequested: (listener) => {
+            cancel = () => listener(undefined);
+            return {
+              dispose: () => {
+                subscriptionDisposed = true;
+                cancel = undefined;
+              },
+            };
+          },
+        },
+      );
+      const folder = { uri: vscode.Uri.file(tempRoot), name: "managed-install", index: 0 };
+      completion = assert.rejects(createRunner(tempRoot).resolveBinaryPath(folder), /install failed/);
+      const signal = await Promise.race([
+        installStarted.promise,
+        completion.then(() => { throw new Error("binary resolution finished before installation started"); }),
+      ]);
+
+      assert.equal(subscriptionDisposed, false, "the listener must remain active while installation is pending");
+      assert.ok(cancel);
+      cancel();
+      assert.equal(signal.aborted, true, "cancellation during installation must reach the installer");
+      installResult.reject(new Error("install failed"));
+      await completion;
+      assert.equal(subscriptionDisposed, true, "the listener must be disposed after a rejected install");
+    } finally {
+      try {
+        if (completion) {
+          installResult.reject(new Error("install failed"));
+          await completion;
+        }
+      } finally {
+        vscode.window.withProgress = previousWithProgress;
+        ManagedBinaryInstaller.prototype.findInstalledBinary = previousFindInstalled;
+        ManagedBinaryInstaller.prototype.ensureInstalled = previousEnsureInstalled;
+        restoreEnv("PATH", previousPath);
+        restoreEnv("LOPPER_BINARY_PATH", previousBinaryPath);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("applies codemods with guarded CLI flags and optional dirty override", async () => {
     const folder = workspaceFolder();
     const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
@@ -401,6 +469,66 @@ suite("lopper runner", () => {
       "scope-d",
       "scope-e",
     ]);
+  });
+
+  test("refills a failed codemod slot while other analyses remain pending", async () => {
+    const folder = workspaceFolder();
+    const context = { globalStorageUri: vscode.Uri.file(folder.uri.fsPath) } as vscode.ExtensionContext;
+    const names = ["scope-a", "scope-b", "scope-c", "scope-d", "scope-e"];
+    const pendingReports = new Map(names.map((name) => [name, deferred<LopperReport>()]));
+    const startedNames: string[] = [];
+    const firstSlotsStarted = deferred<void>();
+    const replacementStarted = deferred<void>();
+    const runner = new LopperRunner(
+      { appendLine: () => undefined },
+      context,
+      {
+        binaryLifecycle: { resolveBinaryPath: async () => "/managed/lopper" },
+        reportExecutor: {
+          runCommand: async () => "",
+          runReport: async (_binaryPath, args) => {
+            if (!args.includes("--suggest-only")) {
+              return {
+                dependencies: names.map((name) => ({
+                  name, language: "js-ts", usedExportsCount: 1, totalExportsCount: 2, usedPercent: 50,
+                })),
+              };
+            }
+            const name = args.at(-1)!;
+            startedNames.push(name);
+            if (startedNames.length === defaultCodemodAnalysisConcurrency) {
+              firstSlotsStarted.resolve();
+            }
+            if (name === "scope-e") {
+              replacementStarted.resolve();
+            }
+            return pendingReports.get(name)!.promise;
+          },
+        },
+      },
+    );
+    const analysis = runner.analyseWorkspace(folder);
+    try {
+      await firstSlotsStarted.promise;
+      assert.deepEqual(startedNames, names.slice(0, defaultCodemodAnalysisConcurrency));
+      pendingReports.get("scope-b")!.reject(new Error("focused analysis failed"));
+      await replacementStarted.promise;
+      assert.deepEqual(startedNames, names);
+    } finally {
+      for (const [name, pending] of pendingReports) {
+        pending.resolve({
+          dependencies: [{
+            name,
+            usedExportsCount: 1,
+            totalExportsCount: 2,
+            usedPercent: 50,
+            codemod: { mode: "suggest-only", suggestions: [] },
+          }],
+        });
+      }
+    }
+    const result = await analysis;
+    assert.deepEqual([...result.codemodsByDependency.keys()], ["scope-a", "scope-c", "scope-d", "scope-e"]);
   });
 
   test("runs a runtime test command exactly once per analysis", async () => {
@@ -1200,6 +1328,20 @@ async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function platformBinaryName(): string {

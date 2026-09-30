@@ -1117,10 +1117,11 @@ async function listChangedFiles({ github, context, pull, expectedCount }) {
 }
 
 async function collectSuppressionRecords({ github, files, context, pull }) {
-  const records = new Map();
-  for (const file of files) {
+  // Each scan consumes the preceding record set so the publication limit
+  // stops later content reads, and record order follows GitHub's file order.
+  const records = await files.reduce((previous, file) => previous.then(async (collected) => {
     if (!TRACKED_FILE_STATUSES.has(file.status) || !isSourceFile(file.filename)) {
-      continue;
+      return collected;
     }
     if (
       file.status === 'renamed' &&
@@ -1128,17 +1129,18 @@ async function collectSuppressionRecords({ github, files, context, pull }) {
       file.additions === 0 &&
       file.deletions === 0
     ) {
-      continue;
+      return collected;
     }
     assertCompletePatch(file);
-    await scanPatch(records, {
+    await scanPatch(collected, {
       github,
       file: file.filename,
       patch: file.patch,
       context,
       headSHA: pull.head.sha,
     });
-  }
+    return collected;
+  }), Promise.resolve(new Map()));
   if (records.size > MAX_RECORDS) {
     throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
   }
@@ -1295,11 +1297,20 @@ async function findTrustedTrackingIssuesForPull({ github, context, pullNumber })
 
 async function reconcileDisappearedSuppressions({ github, context, pull, records, core }) {
   const tracked = await findTrustedTrackingIssuesForPull({ github, context, pullNumber: pull.number });
-  for (const issue of tracked) {
+  const disappeared = tracked.filter((issue) => {
     const fingerprint = fingerprintFromIssueBody(issue.body);
-    if (!fingerprint || records.has(fingerprint)) {
-      continue;
-    }
+    return fingerprint && !records.has(fingerprint);
+  });
+  await closeTrackingIssues({
+    github, context, core, issues: disappeared,
+    reason: `the suppression no longer appears in pull request #${pull.number}`,
+  });
+}
+
+function closeTrackingIssues({ github, context, core, issues, reason }) {
+  // GitHub writes remain serialized and fail fast; do not burst mutations
+  // against the secondary rate limit or continue after a failed close.
+  return issues.reduce((previous, issue) => previous.then(async () => {
     await github.rest.issues.update({
       owner: context.repo.owner,
       repo: context.repo.repo,
@@ -1307,8 +1318,8 @@ async function reconcileDisappearedSuppressions({ github, context, pull, records
       state: 'closed',
       state_reason: 'not_planned',
     });
-    core.info(`Closed inline suppression tracking issue #${issue.number}; the suppression no longer appears in pull request #${pull.number}.`);
-  }
+    core.info(`Closed inline suppression tracking issue #${issue.number}; ${reason}.`);
+  }), Promise.resolve());
 }
 
 async function cleanupClosedPullTrackingIssues({ github, context, core }) {
@@ -1317,16 +1328,10 @@ async function cleanupClosedPullTrackingIssues({ github, context, core }) {
     throw new TypeError('Pull request number is required to clean up inline suppression tracking issues.');
   }
   const tracked = await findTrustedTrackingIssuesForPull({ github, context, pullNumber: pull.number });
-  for (const issue of tracked) {
-    await github.rest.issues.update({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      issue_number: issue.number,
-      state: 'closed',
-      state_reason: 'not_planned',
-    });
-    core.info(`Closed inline suppression tracking issue #${issue.number}; pull request #${pull.number} closed without merging.`);
-  }
+  await closeTrackingIssues({
+    github, context, core, issues: tracked,
+    reason: `pull request #${pull.number} closed without merging`,
+  });
 }
 
 async function trackInlineSuppressions({ github, context, core }) {
@@ -1355,11 +1360,12 @@ async function trackInlineSuppressions({ github, context, core }) {
     return;
   }
 
-  for (const record of records.values()) {
+  // Preserve the same serialized, fail-fast write policy used for closes.
+  await [...records.values()].reduce((previous, record) => previous.then(async () => {
     const result = await upsertTrackingIssue({ github, context, record, pullNumber: pull.number });
     const verb = result.action === 'updated' ? 'Updated' : 'Opened';
     core.info(`${verb} inline suppression tracking issue #${result.number} for ${record.file}:${record.line}.`);
-  }
+  }), Promise.resolve());
 }
 
 module.exports = trackInlineSuppressions;
