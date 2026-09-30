@@ -128,18 +128,14 @@ func TestStavePreviewParentCancellationRestoresTerminalAndReturnsCause(t *testin
 	waitSignalOutput(t, capture, returned, func(output string) bool {
 		return strings.Contains(output, "Status: Stave preview") && strings.Contains(output, "\x1b[?1049h")
 	})
-	if _, err := master.Write([]byte(":refresh")); err != nil {
-		t.Fatalf("start refresh action: %v", err)
-	}
-	// Wait for command acceptance before submitting it. Rendering the initial
-	// frame does not prove that the PTY input queue has been processed.
-	waitSignalOutput(t, capture, returned, func(output string) bool {
-		return strings.Contains(ansi.Strip(output), "Command: refresh")
-	})
-	if _, err := master.Write([]byte("\r")); err != nil {
+	// The analyzer's start signal acknowledges both command acceptance and
+	// refresh startup. Do not infer acceptance from the output byte stream:
+	// differential rendering can split "Command: refresh" across cursor moves
+	// and intervening screen content even when the command is fully visible.
+	if _, err := master.Write([]byte(":refresh\r")); err != nil {
 		t.Fatalf("submit refresh action: %v", err)
 	}
-	waitForParentCancellationRefresh(t, analyzer.started, "startup", staveSignalSubprocessBound, capture)
+	waitForParentCancellationRefresh(t, analyzer.started, "command acceptance and startup", staveSignalSubprocessBound, capture)
 
 	parentCause := errors.New("parent cancellation")
 	if _, err := master.Write([]byte(strings.Repeat("x", 1024))); err != nil {
@@ -195,7 +191,8 @@ func waitForParentCancellationRefresh(t *testing.T, signal <-chan struct{}, phas
 	select {
 	case <-signal:
 	case <-time.After(bound):
-		t.Fatalf("refresh %s was not observed within %s; output=%q", phase, bound, capture.String())
+		output := capture.String()
+		t.Fatalf("refresh %s was not observed within %s; output=%q (plain=%q)", phase, bound, output, ansi.Strip(output))
 	}
 }
 
