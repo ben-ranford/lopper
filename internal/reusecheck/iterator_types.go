@@ -20,7 +20,7 @@ func iteratorYieldTypes(iterator *ast.FuncType) []ast.Expr {
 	if len(parameters) != 1 || len(fieldListTypes(iterator.Results)) != 0 {
 		return nil
 	}
-	yield, ok := unaliasedType(parameters[0]).(*ast.FuncType)
+	yield, ok := underlyingCollectionType(parameters[0]).(*ast.FuncType)
 	if !ok {
 		return nil
 	}

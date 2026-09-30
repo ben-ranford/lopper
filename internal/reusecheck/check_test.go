@@ -320,7 +320,7 @@ func TestStatsTypeAliasProvenance(t *testing.T) {
 
 func TestShadowedNewIsNotStatsProvenance(t *testing.T) {
 	source := strings.Replace(mappingFixture, "measured s.DependencyStats", "unused string", 1)
-	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(s.DependencyStats) *s.DependencyStats { return nil }\n measured := new(s.DependencyStats)\n _ = s.BuildDependencyReportFromStats", 1)
+	source = strings.Replace(source, "_ = s.BuildDependencyReportFromStats", "new := func(any) *OtherStats { return nil }\n measured := new(s.DependencyStats{})\n _ = s.BuildDependencyReportFromStats", 1)
 	findings, err := Analyze("fixture.go", []byte(source))
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("shadowed new findings=%+v err=%v", findings, err)
@@ -724,7 +724,7 @@ func TestAliasedRangeCollections(t *testing.T) {
 		{"type Stats = [2]s.DependencyStats", "*Stats", "for _, measured := range values {", 1},
 		{"type Stats = map[s.DependencyStats]bool", "Stats", "for measured := range values {", 1},
 		{"type Stats = chan s.DependencyStats", "Stats", "for measured := range values {", 1},
-		{"type Stats []s.DependencyStats", "Stats", "for _, measured := range values {", 0},
+		{"type Stats []s.DependencyStats", "Stats", "for _, measured := range values {", 1},
 		{"type Stats = Stats", "Stats", "for _, measured := range values {", 0},
 	} {
 		source := strings.Replace(mappingFixture, "func build", tc.declaration+"; func build", 1)

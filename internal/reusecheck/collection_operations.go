@@ -30,13 +30,13 @@ func collectionOperationType(expression ast.Expr, operation collectionOperation)
 	case collectionAddress:
 		return &ast.StarExpr{X: expression}
 	case collectionDereference:
-		if pointer, ok := expression.(*ast.StarExpr); ok {
+		if pointer, ok := underlyingCollectionType(expression).(*ast.StarExpr); ok {
 			return pointer.X
 		}
 	case collectionSlice:
-		return slicedCollectionType(expression)
+		return slicedCollectionType(underlyingCollectionType(expression))
 	case collectionAppend:
-		if slice, ok := expression.(*ast.ArrayType); ok && slice.Len == nil {
+		if slice, ok := underlyingCollectionType(expression).(*ast.ArrayType); ok && slice.Len == nil {
 			return slice
 		}
 	}
@@ -45,7 +45,7 @@ func collectionOperationType(expression ast.Expr, operation collectionOperation)
 
 func slicedCollectionType(expression ast.Expr) ast.Expr {
 	if pointer, ok := expression.(*ast.StarExpr); ok {
-		array, valid := unaliasedType(pointer.X).(*ast.ArrayType)
+		array, valid := underlyingCollectionType(pointer.X).(*ast.ArrayType)
 		if !valid || array.Len == nil {
 			return nil
 		}

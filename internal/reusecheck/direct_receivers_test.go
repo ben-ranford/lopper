@@ -6,10 +6,7 @@ import (
 )
 
 func TestDirectStatsReceivers(t *testing.T) {
-	for _, tc := range []struct {
-		parameter, receiver string
-		want                bool
-	}{
+	checkDirectStatsReceivers(t, []statsReceiverCase{
 		{"values []s.DependencyStats", "values[0]", true},
 		{"values [2]*s.DependencyStats", "values[0]", true},
 		{"values *[2]s.DependencyStats", "values[0]", true},
@@ -23,16 +20,7 @@ func TestDirectStatsReceivers(t *testing.T) {
 		{"values []OtherStats", "values[0]", false},
 		{"values []s.DependencyStats", "values[next()]", false},
 		{"values func() []s.DependencyStats", "values()[0]", false},
-	} {
-		t.Run(tc.parameter+tc.receiver, func(t *testing.T) {
-			source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
-			source = strings.ReplaceAll(source, "measured.", tc.receiver+".")
-			findings, err := Analyze("fixture.go", []byte(source))
-			if err != nil || (len(findings) == 1 && !findings[0].Advisory) != tc.want || (!tc.want && len(findings) != 0) {
-				t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, tc.want)
-			}
-		})
-	}
+	})
 }
 
 func TestDifferentIndexedStatsReceiversRemainAdvisory(t *testing.T) {
@@ -121,5 +109,24 @@ func TestDifferentStructFieldStatsReceiversRemainAdvisory(t *testing.T) {
 	findings, err := Analyze("fixture.go", []byte(source))
 	if err != nil || len(findings) != 1 || !findings[0].Advisory {
 		t.Fatalf("findings=%+v err=%v", findings, err)
+	}
+}
+
+type statsReceiverCase struct {
+	parameter, receiver string
+	want                bool
+}
+
+func checkDirectStatsReceivers(t *testing.T, cases []statsReceiverCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.parameter+tc.receiver, func(t *testing.T) {
+			source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
+			source = strings.ReplaceAll(source, "measured.", tc.receiver+".")
+			findings, err := Analyze("fixture.go", []byte(source))
+			if err != nil || (len(findings) == 1 && !findings[0].Advisory) != tc.want || (!tc.want && len(findings) != 0) {
+				t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, tc.want)
+			}
+		})
 	}
 }

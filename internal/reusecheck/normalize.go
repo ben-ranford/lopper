@@ -43,6 +43,22 @@ func unparen(expression ast.Expr) ast.Expr {
 
 // Follow only lexical type aliases (=), never distinct defined types.
 func unaliasedType(expression ast.Expr) ast.Expr {
+	return resolveTypeDeclarations(expression, true)
+}
+
+// Resolve only the container's outer shape; its element types retain their
+// declared identities, including distinct types based on DependencyStats.
+func underlyingCollectionType(expression ast.Expr) ast.Expr {
+	resolved := resolveTypeDeclarations(expression, false)
+	switch resolved.(type) {
+	case nil, *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.StarExpr:
+		return resolved
+	default:
+		return unaliasedType(expression)
+	}
+}
+
+func resolveTypeDeclarations(expression ast.Expr, aliasesOnly bool) ast.Expr {
 	seen := make(map[*ast.TypeSpec]bool)
 	for {
 		expression = unparen(expression)
@@ -51,7 +67,7 @@ func unaliasedType(expression ast.Expr) ast.Expr {
 			return expression
 		}
 		alias, ok := ident.Obj.Decl.(*ast.TypeSpec)
-		if !ok || !alias.Assign.IsValid() {
+		if !ok || (aliasesOnly && !alias.Assign.IsValid()) {
 			return expression
 		}
 		if seen[alias] {
@@ -148,6 +164,7 @@ func canonicalName(ident, functionName *ast.Ident, packages map[string]string, i
 func bindings(file *ast.File, fset *token.FileSet) *types.Info {
 	info := &types.Info{Implicits: make(map[ast.Node]types.Object), Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
 	defer indexEmbeddedFields(file, info)
+	defer indexFunctionDeclarations(file, info)
 	config := types.Config{Error: func(error) {
 		// Continue collecting lexical bindings when isolated source cannot type-check.
 	}}
@@ -189,13 +206,13 @@ func rangeValueType(statement *ast.RangeStmt, object types.Object, info *types.I
 	expression := resolvedCollectionType(statement.X, info, declarations)
 	var element ast.Expr
 	binding := statement.Value
-	switch collection := unaliasedType(expression).(type) {
+	switch collection := underlyingCollectionType(expression).(type) {
 	case *ast.FuncType:
 		return iteratorRangeValue(collection, statement, object, info)
 	case *ast.ArrayType:
 		element = collection.Elt
 	case *ast.StarExpr:
-		array, ok := unaliasedType(collection.X).(*ast.ArrayType)
+		array, ok := underlyingCollectionType(collection.X).(*ast.ArrayType)
 		if ok && array.Len != nil {
 			element = array.Elt
 		}
@@ -420,8 +437,8 @@ func expressionFields(node ast.Node) []reflect.Value {
 }
 
 func collectionConversionType(expression ast.Expr) bool {
-	switch unaliasedType(expression).(type) {
-	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StarExpr:
+	switch underlyingCollectionType(expression).(type) {
+	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.StarExpr:
 		return true
 	default:
 		return false

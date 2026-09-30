@@ -39,12 +39,11 @@ func Analyze(path string, source []byte) ([]Finding, error) {
 	info := bindings(file, fset)
 	var findings []Finding
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+		for _, fn := range declaredFunctions(decl) {
+			if fn.Body != nil {
+				findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)
+			}
 		}
-		findings = append(findings, functionFindings(path, fn, packages, info, fingerprints, fset)...)
-
 	}
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Line < findings[j].Line })
 	return findings, nil
@@ -393,7 +392,7 @@ func inferredStatsReceiverType(expression ast.Expr, packages map[string]string, 
 		case *ast.TypeAssertExpr:
 			return collectionIndirection(item.Type, operations)
 		case *ast.CallExpr:
-			return collectionIndirection(statsFactoryResultType(item, packages), operations)
+			return collectionIndirection(inferredStatsCallType(item, packages, info, declarations), operations)
 		default:
 			return nil
 		}

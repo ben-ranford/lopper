@@ -8,10 +8,7 @@ import (
 )
 
 func TestAddressTakenStatsReceivers(t *testing.T) {
-	for _, tc := range []struct {
-		parameter, receiver string
-		want                bool
-	}{
+	checkDirectStatsReceivers(t, []statsReceiverCase{
 		{"measured s.DependencyStats", "(&measured)", true},
 		{"measured s.DependencyStats", "(&((measured)))", true},
 		{"measured *s.DependencyStats", "(&(*measured))", true},
@@ -21,16 +18,7 @@ func TestAddressTakenStatsReceivers(t *testing.T) {
 		{"measured chan s.DependencyStats", "(<-measured)", false},
 		{"measured s.DependencyStats", "(-measured)", false},
 		{"measured func() s.DependencyStats", "(&measured())", false},
-	} {
-		t.Run(tc.parameter+tc.receiver, func(t *testing.T) {
-			source := strings.Replace(mappingFixture, "measured s.DependencyStats", tc.parameter, 1)
-			source = strings.ReplaceAll(source, "measured.", tc.receiver+".")
-			findings, err := Analyze("fixture.go", []byte(source))
-			if err != nil || (len(findings) == 1 && !findings[0].Advisory) != tc.want || (!tc.want && len(findings) != 0) {
-				t.Fatalf("findings=%+v err=%v want violation=%v", findings, err, tc.want)
-			}
-		})
-	}
+	})
 }
 
 func TestReportMappingEvaluationEffects(t *testing.T) {

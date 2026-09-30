@@ -20,6 +20,10 @@ semantic equivalence or similarity engine. External packages are not loaded or
 executed; source-declared `DependencyStats` provenance and imported factory calls
 are checked conservatively. Ordinary compilation remains responsible for full
 package type validation. Unknown forms are not classified as proven copies.
+Package-level function variables are checked alongside function declarations.
+Source-declared function result signatures and collection element types retain
+statistics provenance, including named containers; distinct named statistics
+types remain separate from the shared helper contract.
 
 The report rule requires all six common statistics fields to select the expected
 members of the same local `shared.DependencyStats` value, plus name/language.
@@ -27,8 +31,8 @@ Mappings with deliberate overrides or mixed sources remain advisory when four
 of six fields have recognized statistics provenance. Calls or channel receives in
 the literal also keep a mapping advisory: they may change the statistics between
 field reads, so a single helper snapshot is not proven equivalent. Stable
-address-taken receivers retain their source type provenance. Valid helper calls followed by
-language-specific changes pass. Discarded/decorative helper calls do not waive a
+address-taken receivers retain their source type provenance. Valid helper calls
+followed by language-specific changes pass. Discarded/decorative helper calls do not waive a
 remaining duplicate mapping or collection implementation. Sorted operations are
 not interchangeable with insertion-order, different trimming, non-nil-empty or
 input-mutating variants. Private analysis helpers are suggested only in analysis;

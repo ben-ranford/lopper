@@ -60,7 +60,7 @@ func unwrapBinding(node ast.Node) (ast.Node, bool) {
 }
 
 func indexedValueType(indexed *ast.IndexExpr, commaOK bool, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	collection := unaliasedType(resolvedCollectionType(indexed.X, info, declarations))
+	collection := underlyingCollectionType(resolvedCollectionType(indexed.X, info, declarations))
 	if mapping, ok := collection.(*ast.MapType); ok {
 		return mapping.Value
 	}
@@ -68,7 +68,7 @@ func indexedValueType(indexed *ast.IndexExpr, commaOK bool, info *types.Info, de
 		return nil
 	}
 	if pointer, ok := collection.(*ast.StarExpr); ok {
-		array, valid := unaliasedType(pointer.X).(*ast.ArrayType)
+		array, valid := underlyingCollectionType(pointer.X).(*ast.ArrayType)
 		if !valid || array.Len == nil {
 			return nil
 		}
@@ -81,7 +81,7 @@ func indexedValueType(indexed *ast.IndexExpr, commaOK bool, info *types.Info, de
 }
 
 func receivedValueType(receive *ast.UnaryExpr, info *types.Info, declarations map[types.Object]ast.Node) ast.Expr {
-	channel, ok := unaliasedType(resolvedCollectionType(receive.X, info, declarations)).(*ast.ChanType)
+	channel, ok := underlyingCollectionType(resolvedCollectionType(receive.X, info, declarations)).(*ast.ChanType)
 	if !ok || channel.Dir == ast.SEND {
 		return nil
 	}
