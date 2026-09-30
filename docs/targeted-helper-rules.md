@@ -20,9 +20,10 @@ semantic equivalence or similarity engine. External packages are not loaded or
 executed; source-declared `DependencyStats` provenance and imported factory calls
 are checked conservatively. Ordinary compilation remains responsible for full
 package type validation. Unknown forms are not classified as proven copies.
-Package-level function variables and local function literals are checked alongside
-function declarations. Nested collection findings retain their enclosing function
-and source location without repeating report-mapping findings.
+Package-level function variables and function literals in package initializers or
+local scopes are checked alongside function declarations. Nested collection
+findings retain their enclosing function and source location without repeating
+report-mapping findings.
 Source-declared function and interface-method result signatures, plus collection
 element types, retain statistics provenance, including tuple assignments, nested
 indexes and named containers; distinct named statistics
