@@ -30,8 +30,9 @@ ordinary named package functions retain their function scope.
 Source-declared function and interface-method result signatures, plus collection
 element types, retain statistics provenance, including tuple assignments, nested
 indexes and named containers. Sole tuple-valued call arguments retain their
-source-proven argument count; distinct named statistics types remain separate
-from the shared helper contract.
+source-proven argument count. Defined pointer types retain the ownership of
+their pointee; distinct named statistics value types remain separate from the
+shared helper contract.
 Files in the same directory and package share declaration bindings, with import
 ownership retained from each declaration's source file. Generic functions retain
 explicit statistics result types. Instantiated generic aliases retain explicit

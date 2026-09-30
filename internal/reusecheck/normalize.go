@@ -116,7 +116,7 @@ func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types
 	defer restore()
 	names := make(map[types.Object]string)
 	original := make(map[*ast.Ident]string)
-	ast.Inspect(fn, func(node ast.Node) bool {
+	rename := func(node ast.Node) bool {
 		ident, ok := node.(*ast.Ident)
 		if !ok {
 			return true
@@ -127,7 +127,11 @@ func canonicalFunction(fn *ast.FuncDecl, packages map[string]string, info *types
 			ident.Name = replacement
 		}
 		return true
-	})
+	}
+	// Only these nodes enter the fingerprint. An unused receiver must not
+	// consume a parameter's canonical name; any body use retains its object.
+	ast.Inspect(fn.Type, rename)
+	ast.Inspect(fn.Body, rename)
 	defer func() {
 		for ident, name := range original {
 			ident.Name = name

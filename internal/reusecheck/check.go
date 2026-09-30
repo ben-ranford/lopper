@@ -157,11 +157,16 @@ func dependencyStats(declaration ast.Node, packages map[string]string, info *typ
 }
 
 func dependencyStatsType(expression ast.Expr, packages map[string]string) bool {
-	expression = unaliasedType(expression)
 	if imported(expression, packages, sharedPackage, "DependencyStats") {
 		return true
 	}
-	pointer, ok := expression.(*ast.StarExpr)
+	return dependencyStatsPointerType(expression, packages)
+}
+
+// Defined pointer types retain field selection through their one underlying
+// pointer. Resolve that outer shape without erasing the pointee's identity.
+func dependencyStatsPointerType(expression ast.Expr, packages map[string]string) bool {
+	pointer, ok := underlyingCollectionType(expression).(*ast.StarExpr)
 	return ok && imported(pointer.X, packages, sharedPackage, "DependencyStats")
 }
 
@@ -193,11 +198,10 @@ func dependencyStatsFactory(values []ast.Expr, packages map[string]string, info 
 func dependencyStatsPointer(expression ast.Expr, packages map[string]string, info *types.Info) bool {
 	switch value := unparen(expression).(type) {
 	case *ast.TypeAssertExpr:
-		pointer, ok := unaliasedType(value.Type).(*ast.StarExpr)
-		return ok && imported(pointer.X, packages, sharedPackage, "DependencyStats")
+		return dependencyStatsPointerType(value.Type, packages)
 	case *ast.CallExpr:
-		if pointer, ok := unaliasedType(value.Fun).(*ast.StarExpr); ok {
-			return len(value.Args) == 1 && imported(pointer.X, packages, sharedPackage, "DependencyStats")
+		if dependencyStatsPointerType(value.Fun, packages) {
+			return len(value.Args) == 1
 		}
 		builtin, ok := unparen(value.Fun).(*ast.Ident)
 		if !ok || info == nil {

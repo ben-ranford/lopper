@@ -34,6 +34,7 @@ func TestPackageSourceProvenance(t *testing.T) {
 		{"nested collection", "type Matrix [][]s.DependencyStats", ", values Matrix", "measured := values[0][1];"},
 		{"tuple arguments", "func pair() (int, string) { return 0, \"\" }; func stats(int, string) s.DependencyStats { panic(0) }", "", "measured := stats(pair());"},
 		{"promoted fields", "type Holder struct { s.DependencyStats }", ", measured Holder", ""},
+		{"defined pointer", "type StatsPtr *s.DependencyStats", ", measured StatsPtr", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			checkPackageReportCopy(t, tc.declaration, tc.parameter, tc.setup, packageReport)
