@@ -29,6 +29,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test Windows preference and console input handoff
+        shell: pwsh
+        run: go test ./internal/ui -run '^(TestPreferenceConsole|TestStaveConsole)' -v -count=1 -timeout 30s
+
       - name: Test Windows runtime cancellation
         shell: pwsh
         run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant|TestWindowsJobCleanupWaitsForDescendants|TestWindowsJobCleanupIsConcurrentAndRepeatable|TestWindowsJobRepeatedStartPreservesCommand|TestWindowsJobCancellationRacesCleanup|TestWindowsJobPreCanceledStartReleasesCommand)$' -v -count=50 -timeout 2m
