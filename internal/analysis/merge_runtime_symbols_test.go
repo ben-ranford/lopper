@@ -24,10 +24,10 @@ func TestMergeRuntimeSymbolsRanksCountsBeforeModuleAndSymbol(t *testing.T) {
 	got := mergeRuntimeSymbolUsage(left, right)
 	want := []report.RuntimeSymbolUsage{
 		{Module: "z", Symbol: "top", Count: 3},
-		{Module: "a", Symbol: "b", Count: 2},
-		{Module: "a", Symbol: "z", Count: 2},
-		{Module: "b", Symbol: "a", Count: 2},
-		{Module: "c", Symbol: "a", Count: 2},
+		beforeLeft[2],
+		beforeLeft[1],
+		beforeLeft[0],
+		beforeRight[2],
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("merged symbols = %#v, want %#v", got, want)
