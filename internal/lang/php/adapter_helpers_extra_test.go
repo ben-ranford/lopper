@@ -968,15 +968,14 @@ func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionByteLimitHit(t *test
 func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
 	scan := scanResult{
 		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
-		Files: []fileScan{{
-			Path: "src/small.php",
+		Files: []fileScan{{ScannedFile: shared.ScannedFile{Path: "src/small.php",
 			Imports: []importBinding{{
 				Dependency: helpersVendorLibDependency,
 				Module:     "Vendor\\Lib\\Thing",
 				Name:       "Thing",
 				Local:      "Thing",
 			}},
-			Usage: map[string]int{"Thing": 0},
+			Usage: map[string]int{"Thing": 0}},
 		}},
 	}
 
@@ -1076,9 +1075,7 @@ func TestDetectWithConfidenceEmptyRepoPathAndFileError(t *testing.T) {
 func TestDependenciesInFileAndAllDependencies(t *testing.T) {
 	scan := scanResult{
 		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
-		Files: []fileScan{{
-			Imports: []importBinding{{Dependency: "vendor/tool"}},
-		}},
+		Files:                []fileScan{{ScannedFile: shared.ScannedFile{Imports: []importBinding{{Dependency: "vendor/tool"}}}}},
 	}
 	deps := allDependencies(scan)
 	if !slices.Equal(deps, []string{helpersVendorLibDependency, "vendor/tool"}) {
@@ -2461,8 +2458,8 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 	scan := scanResult{
 		DeclaredDependencies: map[string]struct{}{"a/pkg": {}, "b/pkg": {}},
 		Files: []fileScan{
-			{Imports: []importBinding{{Dependency: "a/pkg", Name: "A", Local: "A", Module: "A"}}},
-			{Imports: []importBinding{{Dependency: "b/pkg", Name: "B", Local: "B", Module: "B"}}},
+			{ScannedFile: shared.ScannedFile{Imports: []importBinding{{Dependency: "a/pkg", Name: "A", Local: "A", Module: "A"}}}},
+			{ScannedFile: shared.ScannedFile{Imports: []importBinding{{Dependency: "b/pkg", Name: "B", Local: "B", Module: "B"}}}},
 		},
 	}
 	top, _ := buildTopPHPDependencies(1, scan, 40, report.DefaultRemovalCandidateWeights())

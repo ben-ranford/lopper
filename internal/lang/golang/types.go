@@ -4,11 +4,7 @@ import "github.com/ben-ranford/lopper/internal/lang/shared"
 
 type importBinding = shared.ImportRecord
 
-type fileScan struct {
-	Path    string
-	Imports []importBinding
-	Usage   map[string]int
-}
+type fileScan = shared.ScannedFile
 
 type scanResult struct {
 	Files                         []fileScan

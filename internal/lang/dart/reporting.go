@@ -40,7 +40,7 @@ func allDependencies(scan scanResult, previewEnabled bool) []string {
 		set[dependency] = struct{}{}
 	}
 
-	fileUsages := dartFileUsages(scan)
+	fileUsages := shared.FileUsages(scan.Files)
 	for _, dependency := range shared.ListDependencies(fileUsages, normalizeDependencyID) {
 		set[dependency] = struct{}{}
 	}
@@ -48,7 +48,7 @@ func allDependencies(scan scanResult, previewEnabled bool) []string {
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold int, previewEnabled bool) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, dartFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	meta, declared := scan.DeclaredDependencies[dependency]
 
 	dep := shared.BuildDependencyReportFromStats(dependency, "dart", stats)
@@ -101,7 +101,7 @@ func applyDeclaredDependencySignals(dep *report.DependencyReport, meta dependenc
 		dep.Provenance = buildDartDependencyProvenance(meta)
 	}
 	if meta.Override {
-		addOverrideSignals(dep, meta, previewEnabled)
+		overrideReview.addTo(dep, meta, previewEnabled)
 	}
 	if previewEnabled {
 		addPreviewDependencySourceSignals(dep, meta)
@@ -114,7 +114,7 @@ func applyDeclaredDependencySignals(dep *report.DependencyReport, meta dependenc
 		})
 	}
 	if meta.PluginLike || (previewEnabled && meta.FederatedPlugin) {
-		addPluginSignals(dep, meta, previewEnabled)
+		pluginReview.addTo(dep, meta, previewEnabled)
 	}
 	if previewEnabled && meta.FederatedPlugin {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
@@ -123,20 +123,6 @@ func applyDeclaredDependencySignals(dep *report.DependencyReport, meta dependenc
 			Message:  federatedPluginMessage(meta),
 		})
 	}
-}
-
-func addOverrideSignals(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
-	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-		Code:     "dependency-override",
-		Severity: "medium",
-		Message:  dependencyOverrideMessage(meta, previewEnabled),
-	})
-	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-		Code:      "review-dependency-override",
-		Priority:  "medium",
-		Message:   dependencyOverrideRecommendation(meta, previewEnabled),
-		Rationale: "Overrides can hide upstream changes and create drift over time.",
-	})
 }
 
 func addPreviewDependencySourceSignals(dep *report.DependencyReport, meta dependencyInfo) {
@@ -166,20 +152,6 @@ func addPreviewDependencySourceSignals(dep *report.DependencyReport, meta depend
 			Rationale: "Git-sourced dependencies can move outside normal hosted package release workflows.",
 		})
 	}
-}
-
-func addPluginSignals(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
-	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-		Code:     "flutter-plugin-dependency",
-		Severity: "medium",
-		Message:  pluginDependencyMessage(meta, previewEnabled),
-	})
-	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-		Code:      "audit-plugin-removal",
-		Priority:  "medium",
-		Message:   pluginRemovalRecommendation(meta, previewEnabled),
-		Rationale: "Plugin dependencies can bind Android/iOS platform code beyond Dart call sites.",
-	})
 }
 
 func addBroadImportSignals(dep *report.DependencyReport) {
@@ -326,12 +298,6 @@ func buildDartDependencyProvenance(meta dependencyInfo) *report.DependencyProven
 		Confidence: confidence,
 		Signals:    signals,
 	}
-}
-
-func dartFileUsages(scan scanResult) []shared.FileUsage {
-	imports := func(file fileScan) []shared.ImportRecord { return file.Imports }
-	usage := func(file fileScan) map[string]int { return file.Usage }
-	return shared.MapFileUsages(scan.Files, imports, usage)
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {

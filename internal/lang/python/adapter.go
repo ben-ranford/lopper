@@ -68,11 +68,7 @@ type pendingFromImport struct {
 	parenDepth  int
 }
 
-type fileScan struct {
-	Path    string
-	Imports []importBinding
-	Usage   map[string]int
-}
+type fileScan = shared.ScannedFile
 
 type scanResult struct {
 	Files                []fileScan
@@ -905,10 +901,6 @@ func shouldSkipDir(name string) bool {
 // ShouldSkipDirectory reports whether Python discovery ignores a directory.
 func ShouldSkipDirectory(name string) bool {
 	return shared.ShouldSkipDir(name, pythonSkippedDirs)
-}
-
-func pythonFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }
 
 var pythonStdlib = map[string]bool{

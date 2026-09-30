@@ -44,8 +44,7 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 	}
 
 	scan := scanResult{
-		Files: []fileScan{{
-			Path: testMainSourceFileName,
+		Files: []fileScan{{ScannedFile: shared.ScannedFile{Path: testMainSourceFileName,
 			Imports: []importBinding{{
 				Dependency: "dep",
 				Module:     "x.dep",
@@ -53,7 +52,7 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 				Local:      "*",
 				Wildcard:   true,
 			}},
-			Usage: map[string]int{"*": 1},
+			Usage: map[string]int{"*": 1}},
 		}},
 		AmbiguousDependencies:  map[string]struct{}{"dep": {}},
 		UndeclaredDependencies: map[string]struct{}{"dep": {}},

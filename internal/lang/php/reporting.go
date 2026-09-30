@@ -58,14 +58,14 @@ func allDependencies(scan scanResult) []string {
 	for dep := range scan.DeclaredDependencies {
 		set[dep] = struct{}{}
 	}
-	for _, dep := range shared.ListDependencies(phpFileUsages(scan), normalizeDependencyID) {
+	for _, dep := range shared.ListDependencies(shared.FileUsages(scan.Files), normalizeDependencyID) {
 		set[dep] = struct{}{}
 	}
 	return shared.SortedKeys(set)
 }
 
 func buildDependencyReport(dependency string, scan scanResult, minUsagePercent int) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, phpFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
