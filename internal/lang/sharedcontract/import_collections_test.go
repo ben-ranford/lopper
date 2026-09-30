@@ -1,10 +1,11 @@
-package shared
+package sharedcontract_test
 
 import (
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -16,7 +17,7 @@ func TestSortedImportUsesPreservesImportEvidence(t *testing.T) {
 		"first":  first,
 		"second": {Module: "beta", Name: "a"},
 	}
-	got := SortedImportUses(entries)
+	got := shared.SortedImportUses(entries)
 	if len(got) != 3 || got[0].Module != "alpha" || got[1].Name != "a" || got[2].Name != "z" {
 		t.Fatalf("unexpected sorted imports: %#v", got)
 	}
@@ -27,7 +28,7 @@ func TestSortedImportUsesPreservesImportEvidence(t *testing.T) {
 	if first.Name != "symbol" {
 		t.Fatal("changing a result entry mutated the map entry")
 	}
-	if got := SortedImportUses(nil); !reflect.DeepEqual(got, []report.ImportUse{}) {
+	if got := shared.SortedImportUses(nil); !reflect.DeepEqual(got, []report.ImportUse{}) {
 		t.Fatalf("empty imports = %#v, want allocated empty slice", got)
 	}
 }
@@ -35,13 +36,13 @@ func TestSortedImportUsesPreservesImportEvidence(t *testing.T) {
 func TestUniqueTrimmedStringsRetainsEncounterOrder(t *testing.T) {
 	input := []string{" beta ", "", "alpha", "beta", "\talpha\n", "gamma"}
 	original := slices.Clone(input)
-	if got := UniqueTrimmedStrings(input); !slices.Equal(got, []string{"beta", "alpha", "gamma"}) {
+	if got := shared.UniqueTrimmedStrings(input); !slices.Equal(got, []string{"beta", "alpha", "gamma"}) {
 		t.Fatalf("unique strings = %#v", got)
 	}
 	if !slices.Equal(input, original) {
 		t.Fatal("deduplication mutated input")
 	}
-	if got := UniqueTrimmedStrings(nil); !reflect.DeepEqual(got, []string{}) {
+	if got := shared.UniqueTrimmedStrings(nil); !reflect.DeepEqual(got, []string{}) {
 		t.Fatalf("empty strings = %#v, want allocated empty slice", got)
 	}
 }
