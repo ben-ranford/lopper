@@ -56,10 +56,12 @@ and the later workflow coverage pass. Each build channel has two independent job
 Primary PR regression proof, memory approval, demo checks, lopper reports, and the
 second coverage pass remain in `verify-checks`. Both coverage thresholds and report
 publication permissions are unchanged. `verify` and `verify (rolling)` retain their
-required check names and now aggregate the corresponding checks and tests jobs.
+check names and aggregate the corresponding checks and tests jobs.
 They fail if either execution job fails, is cancelled, or is unexpectedly skipped.
 The primary aggregate forwards the exact report artifact ID to the existing
-publication job; aggregate jobs do not check out or execute repository code.
+publication job. On hosted pull requests, `verify` also downloads that current-run
+artifact and validates suppression tracking with read-only API access. Aggregate
+jobs do not check out repository code or execute downloaded artifacts.
 
 Every execution job checks out the same event SHA into its own runner. Go already
 parallelizes compilation and packages, so no blanket `make -j` or overlapping test
@@ -367,10 +369,11 @@ Inline suppression tracking:
 
 - New inline analysis suppressions must include same-line metadata: `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`.
 - `make suppression-check` defaults to read-only detection. It validates the metadata and, when `SUPPRESSION_TRACKING_OUTPUT` is set, writes a bounded `lopper-inline-suppressions-v1` JSON artifact whose fingerprint is stable across ordinary line moves while retaining the current line as display metadata.
-- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI verify job uploads the bounded suppression artifact as tokenless detection evidence, and the separate trusted `publish-pr-reports` job recomputes authoritative records from the PR diff before using `issues: write` to create or update one tracking issue per suppression fingerprint.
+- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI `verify-checks` job uploads the bounded suppression artifact as tokenless detection evidence, and the separate trusted `.github/workflows/inline-suppression-tracking.yml` workflow recomputes authoritative records from the PR diff before using `issues: write` to create or update one tracking issue per suppression fingerprint.
 - Trusted manual callers may set `SUPPRESSION_TRACKING_MODE=track` with an authenticated `gh` CLI to create or update issues directly. Read-only CI, release, and rolling validation should keep the default detection mode.
 - Existing suppressions outside the current diff remain governed by the existing diff-scoped check and are not backfilled by this gate.
-- The merge gate that verifies a tracking issue exists for every new suppression runs in `.github/workflows/suppression-verify.yml` (required check "suppression-verify"), not in `ci.yml`'s `pull_request`-triggered `verify` job: that job's workflow definition comes from the pull request's own head commit, so a check defined there could be deleted by the very PR it is meant to gate. `suppression-verify.yml` instead triggers on `pull_request_target` (always resolved from the base branch), performs no checkout, executes no PR-controlled code, and validates a `pr-report-inputs` artifact resolved and bounds-checked against the PR's own head SHA before trusting anything in it.
+- Suppression verification runs inside the required `verify` job in `.github/workflows/ci.yml`, after both verification shards succeed. It consumes the exact artifact ID from the current run's `verify-checks` producer, bounds-checks the report, independently checks the PR diff, and waits within a shared deadline for matching trusted tracking issues. The job performs no checkout and has only read permissions. Manual dispatch and local ACT runs skip this PR-only check.
+- The repository ruleset requires `verify`; the former standalone `suppression-verify` context was not required. Consolidation makes ordinary suppression failures fail `verify`, but its `pull_request` workflow definition is PR-editable: a malicious PR can change or delete its own validator. A required check name alone does not establish trusted workflow provenance. Issue creation remains isolated in the base-sourced `inline-suppression-tracking.yml` workflow; the read-only verifier does not provide tamper-proof merge enforcement.
 
 Coverage artifacts:
 

@@ -39,9 +39,14 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 	t.Helper()
 	job := workflowJobByName(t, jobs, aggregate)
 	assertWorkflowJobNeeds(t, job, aggregate, workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"})
-	if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" || len(job.Permissions) != 0 {
-		t.Fatal("aggregate must run after every result without write credentials")
+	if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" {
+		t.Fatal("aggregate must run after every result")
 	}
+	permissions := map[string]string{}
+	if aggregate == "verify" {
+		permissions = map[string]string{"actions": "read", "contents": "read", "issues": "read", "pull-requests": "read"}
+	}
+	assertWorkflowJobPermissions(t, job, aggregate, permissions)
 	assertWorkflowJobOmitsCheckout(t, job, aggregate)
 	gate := workflowStepByName(t, jobs, aggregate, "Require every verification job")
 	assertWorkflowStepEnv(t, gate, aggregate, map[string]string{

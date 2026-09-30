@@ -2,6 +2,10 @@ package ui
 
 import "io"
 
+func enterStaveTerminalRaw(*staveTerminalInput) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
 // Ultraviolet owns Windows console input mode and restores it on Close. Disable
 // Bubble Tea input: an stdin-FD adapter would open a second console reader that
 // bypasses the adapter's Read method. Bubble Tea still owns output restoration.

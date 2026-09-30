@@ -27,7 +27,7 @@ const (
 	staveSignalMarkerFD        = 3
 	staveSignalActionStarted   = "ACTION_STARTED"
 	staveSignalCancelObserved  = "CANCEL_OBSERVED"
-	staveSignalSubprocessBound = 10 * time.Second
+	staveSignalSubprocessBound = 15 * time.Second
 )
 
 // blockingRefreshAnalyzer makes the second analysis call—the interactive
