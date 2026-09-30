@@ -1456,7 +1456,7 @@ func TestSafeIOHelperCoverageBranches(t *testing.T) {
 		t.Fatalf("unexpected split pinned path: clean=%q parts=%v", cleanName, parts)
 	}
 
-	if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
+	if !isPureSentinelError(errors.Join(nil, os.ErrNotExist), os.ErrNotExist) {
 		t.Fatal("expected nil joined cause to be ignored for pure sentinel matching")
 	}
 }

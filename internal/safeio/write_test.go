@@ -10915,7 +10915,7 @@ func TestFinalSafeIOPathUtilityBranches(t *testing.T) {
 	})
 
 	t.Run("joined sentinel ignores nil causes", func(t *testing.T) {
-		if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
+		if !isPureSentinelError(errors.Join(nil, os.ErrNotExist), os.ErrNotExist) {
 			t.Fatal("expected nil joined cause to be ignored")
 		}
 	})
