@@ -337,21 +337,10 @@ func TestSwiftResolvedPackageFallbacks(t *testing.T) {
 }
 
 func TestSwiftDetectionAndScannerFallbackBranches(t *testing.T) {
-	t.Run("context error handles nil and cancellation", func(t *testing.T) {
-		testSwiftContextErrors(t)
-	})
-
-	t.Run("detect swift entry handles build skip and manifest roots", func(t *testing.T) {
-		testSwiftDetectEntryFallbacks(t)
-	})
-
-	t.Run("scanner finalization reports fallback warnings", func(t *testing.T) {
-		testSwiftScannerFinalizationFallbackWarnings(t)
-	})
-
-	t.Run("resolved pins and ignored symbols fall back to empty values", func(t *testing.T) {
-		testSwiftResolvedPinAndIgnoredSymbolFallbacks(t)
-	})
+	t.Run("context error handles nil and cancellation", testSwiftContextErrors)
+	t.Run("detect swift entry handles build skip and manifest roots", testSwiftDetectEntryFallbacks)
+	t.Run("scanner finalization reports fallback warnings", testSwiftScannerFinalizationFallbackWarnings)
+	t.Run("resolved pins and ignored symbols fall back to empty values", testSwiftResolvedPinAndIgnoredSymbolFallbacks)
 }
 
 func testSwiftContextErrors(t *testing.T) {
