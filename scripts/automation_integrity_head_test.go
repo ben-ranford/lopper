@@ -559,9 +559,12 @@ var automationExamplesFixtureSlots = make(chan struct{}, 2)
 
 func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, error) {
 	t.Helper()
-	return runAutomationExamplesFixtureWithCommand(t, lefthookYAML, func(scriptPath string) *exec.Cmd {
-		return exec.Command(scriptPath)
-	})
+	return runAutomationExamplesFixtureWithCommand(t, lefthookYAML, automationExamplesFixtureCommand)
+}
+
+func automationExamplesFixtureCommand(scriptPath string) *exec.Cmd {
+	// Execute the interpreter so a writable script handle cannot cause ETXTBSY.
+	return exec.Command("sh", scriptPath)
 }
 
 func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, newCommand func(string) *exec.Cmd) (string, error) {
