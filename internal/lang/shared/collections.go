@@ -6,11 +6,12 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/collections"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func UniqueCleanPaths(values []string) []string {
-	paths := uniqueNormalizedStrings(values, func(value string) string {
+	paths := collections.UniqueNormalizedStrings(values, func(value string) string {
 		return filepath.Clean(strings.TrimSpace(value))
 	})
 	slices.Sort(paths)
@@ -18,7 +19,7 @@ func UniqueCleanPaths(values []string) []string {
 }
 
 func UniqueTrimmedStrings(values []string) []string {
-	return uniqueNormalizedStrings(values, strings.TrimSpace)
+	return collections.UniqueTrimmedStrings(values)
 }
 
 func SortRecommendations(recommendations []report.Recommendation, priorityRank func(string) int) {
@@ -57,18 +58,4 @@ func TopCountKeys(values map[string]int, limit int) []string {
 		keys = keys[:limit]
 	}
 	return keys
-}
-
-func uniqueNormalizedStrings(values []string, normalize func(string) string) []string {
-	unique := make([]string, 0, len(values))
-	seen := make(map[string]bool, len(values))
-	for _, candidate := range values {
-		normalized := normalize(candidate)
-		if normalized == "" || seen[normalized] {
-			continue
-		}
-		seen[normalized] = true
-		unique = append(unique, normalized)
-	}
-	return unique
 }

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/collections"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -550,7 +550,7 @@ func stableRemediationID(parts ...string) string {
 }
 
 func compactEvidence(values []string) []string {
-	return shared.UniqueTrimmedStrings(values)
+	return collections.UniqueTrimmedStrings(values)
 }
 
 func isWasteRecommendationCode(code string) bool {

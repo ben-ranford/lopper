@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/collections"
 	"github.com/ben-ranford/lopper/internal/gitexec"
-	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/report/pep440"
 	"github.com/ben-ranford/lopper/internal/workspace"
@@ -1015,7 +1015,7 @@ func dependencyIdentityEvidence(dep report.DependencyReport) []string {
 }
 
 func compactPRReviewEvidence(values []string) []string {
-	return shared.UniqueTrimmedStrings(values)
+	return collections.UniqueTrimmedStrings(values)
 }
 
 func sortPRReviewRows(rows []prReviewRow) {
