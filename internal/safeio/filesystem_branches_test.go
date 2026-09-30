@@ -77,20 +77,7 @@ func TestOpenPinnedDirectoryRejectsNonReadDirFileAndJoinsCloseErrors(t *testing.
 		},
 		close: func() error { return rootCloseErr },
 	}
-	root := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != "nested" {
-				t.Fatalf("unexpected root lstat %q", name)
-			}
-			return dirInfo, nil
-		},
-		openRoot: func(name string) (Root, error) {
-			if name != "nested" {
-				t.Fatalf("unexpected root openRoot %q", name)
-			}
-			return childRoot, nil
-		},
-	}
+	root := newPinnedParentFixture(t, "nested", dirInfo, childRoot)
 
 	dir, err := OpenPinnedDirectory(root, filepath.Join("nested", "leaf"))
 	if dir != nil {

@@ -33,20 +33,7 @@ func testPinnedChildOwnership(t *testing.T, failing bool) {
 		},
 		close: func() error { closed++; return closeErr },
 	}
-	parent := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != "child" {
-				t.Fatalf("parent lookup = %q", name)
-			}
-			return info, nil
-		},
-		openRoot: func(name string) (Root, error) {
-			if name != "child" {
-				t.Fatalf("open child = %q", name)
-			}
-			return child, nil
-		},
-	}
+	parent := newPinnedParentFixture(t, "child", info, child)
 	got, openErr := OpenPinnedChildRoot[Root](parent, "child", "parent/child", "root changed while opening")
 	if failing {
 		if got != nil || !errors.Is(openErr, lookupErr) || !errors.Is(openErr, closeErr) || closed != 1 {
@@ -54,5 +41,25 @@ func testPinnedChildOwnership(t *testing.T, failing bool) {
 		}
 	} else if got != child || openErr != nil || closed != 0 {
 		t.Fatalf("successful child = %v, error = %v, closes = %d", got, openErr, closed)
+	}
+}
+
+// newPinnedParentFixture verifies that traversal looks up and opens exactly the
+// expected entry before returning the caller's child handle.
+func newPinnedParentFixture(t *testing.T, childName string, info fs.FileInfo, child Root) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != childName {
+				t.Fatalf("unexpected parent lstat %q, want %q", name, childName)
+			}
+			return info, nil
+		},
+		openRoot: func(name string) (Root, error) {
+			if name != childName {
+				t.Fatalf("unexpected parent openRoot %q, want %q", name, childName)
+			}
+			return child, nil
+		},
 	}
 }
