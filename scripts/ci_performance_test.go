@@ -38,7 +38,11 @@ func TestCIVerificationAggregatesEveryJob(t *testing.T) {
 func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConfig, aggregate string) {
 	t.Helper()
 	job := workflowJobByName(t, jobs, aggregate)
-	assertWorkflowJobNeeds(t, job, aggregate, workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"})
+	needs := workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"}
+	if aggregate == "verify" {
+		needs = append(needs, "regression-proof-windows")
+	}
+	assertWorkflowJobNeeds(t, job, aggregate, needs)
 	if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" {
 		t.Fatal("aggregate must run after every result")
 	}
@@ -49,10 +53,14 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 	assertWorkflowJobPermissions(t, job, aggregate, permissions)
 	assertWorkflowJobOmitsCheckout(t, job, aggregate)
 	gate := workflowStepByName(t, jobs, aggregate, "Require every verification job")
-	assertWorkflowStepEnv(t, gate, aggregate, map[string]string{
+	env := map[string]string{
 		"CHECKS_RESULT": "${{ needs." + aggregate + "-checks.result }}",
 		"TESTS_RESULT":  "${{ needs." + aggregate + "-tests.result }}",
-	})
+	}
+	if aggregate == "verify" {
+		env["WINDOWS_PROOF_RESULT"] = "${{ needs.regression-proof-windows.result }}"
+	}
+	assertWorkflowStepEnv(t, gate, aggregate, env)
 	assertCIVerificationOutcomes(t, gate.Run)
 }
 
@@ -60,7 +68,7 @@ func assertCIVerificationOutcomes(t *testing.T, script string) {
 	t.Helper()
 	for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
-			output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests})
+			output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success"})
 			if (err == nil) != (checks == "success" && tests == "success") {
 				t.Fatalf("checks=%q tests=%q: %v\n%s", checks, tests, err, output)
 			}
