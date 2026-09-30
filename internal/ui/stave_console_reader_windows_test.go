@@ -80,24 +80,25 @@ func TestStaveConsoleCancelAndRestoreFailures(t *testing.T) {
 }
 
 func TestStaveConsoleResizeFocusAndKeyRecords(t *testing.T) {
+	reader := &staveConsoleReader{}
 	resize := xwindows.InputRecord{EventType: xwindows.WINDOW_BUFFER_SIZE_EVENT}
 	binary.LittleEndian.PutUint16(resize.Event[:2], 100)
 	binary.LittleEndian.PutUint16(resize.Event[2:4], 30)
-	if got := string(encodeStaveConsoleEvent(resize)); got != "\x1b[8;30;100t" {
+	if got := string(reader.encodeEvent(resize)); got != "\x1b[8;30;100t" {
 		t.Fatalf("resize=%q", got)
 	}
 	focus := xwindows.InputRecord{EventType: xwindows.FOCUS_EVENT}
-	if got := string(encodeStaveConsoleEvent(focus)); got != "\x1b[O" {
+	if got := string(reader.encodeEvent(focus)); got != "\x1b[O" {
 		t.Fatalf("blur=%q", got)
 	}
 	focus.Event[0] = 1
-	if got := string(encodeStaveConsoleEvent(focus)); got != "\x1b[I" {
+	if got := string(reader.encodeEvent(focus)); got != "\x1b[I" {
 		t.Fatalf("focus=%q", got)
 	}
-	if got := encodeStaveConsoleEvent(xwindows.InputRecord{}); len(got) != 0 {
+	if got := reader.encodeEvent(xwindows.InputRecord{}); len(got) != 0 {
 		t.Fatalf("unexpected event=%q", got)
 	}
-	if got := string(encodeStaveConsoleEvent(preferenceKey('q', false, 1))); got != "\x1b[0;0;113;0;0;1_" {
+	if got := string(reader.encodeEvent(preferenceKey('q', false, 1))); got != "\x1b[0;0;113;0;0;1_" {
 		t.Fatalf("release=%q", got)
 	}
 }
