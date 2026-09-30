@@ -32,28 +32,33 @@ func TestSnapshotSavePayloadJSONFields(t *testing.T) {
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				encoded, err := json.Marshal(tc.payload)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var fields map[string]json.RawMessage
-				if err := json.Unmarshal(encoded, &fields); err != nil {
-					t.Fatal(err)
-				}
-				want := map[string]any{"schemaVersion": tc.schema, "repoPath": "repo", "baselineStorePath": "store", "baselineKey": "key", "snapshotPath": "snapshot"}
-				for key, value := range want {
-					var got any
-					if err := json.Unmarshal(fields[key], &got); err != nil || !reflect.DeepEqual(got, value) {
-						t.Fatalf("%s = %s, want %#v: %v", key, fields[key], value, err)
-					}
-				}
-				if fields[tc.summaryKey] == nil || fields["report"] == nil || fields["summary"] == nil {
-					t.Fatalf("report fields missing: %s", encoded)
-				}
-				if _, present := fields["error"]; present != failed {
-					t.Fatalf("error presence = %t, want %t: %s", present, failed, encoded)
-				}
+				assertSnapshotPayloadJSONFields(t, tc.payload, tc.summaryKey, tc.schema, failed)
 			})
 		}
+	}
+}
+
+func assertSnapshotPayloadJSONFields(t *testing.T, payload any, summaryKey, schema string, failed bool) {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"schemaVersion": schema, "repoPath": "repo", "baselineStorePath": "store", "baselineKey": "key", "snapshotPath": "snapshot"}
+	for key, value := range want {
+		var got any
+		if err := json.Unmarshal(fields[key], &got); err != nil || !reflect.DeepEqual(got, value) {
+			t.Fatalf("%s = %s, want %#v: %v", key, fields[key], value, err)
+		}
+	}
+	if fields[summaryKey] == nil || fields["report"] == nil || fields["summary"] == nil {
+		t.Fatalf("report fields missing: %s", encoded)
+	}
+	if _, present := fields["error"]; present != failed {
+		t.Fatalf("error presence = %t, want %t: %s", present, failed, encoded)
 	}
 }
