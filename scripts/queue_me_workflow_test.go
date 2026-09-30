@@ -18,6 +18,17 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 	required := []string{
 		"pull_request_target:",
 		"workflow_dispatch:",
+		"schedule:",
+		"check_run:",
+		"check_suite:",
+		"status:",
+		"workflow_run:",
+		"workflows: [ci]",
+		"github.event.pull_request.base.ref == 'main'",
+		"'queue_me_reviews.js'",
+		"'queue_me_sonar.js'",
+		"'queue_me_suppressions.js'",
+		"'inline_suppression_tracker.js'",
 		"push:",
 		"- main",
 		"- labeled",
@@ -59,6 +70,8 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"actions/github-script@v",
 		"github.event.pull_request.head",
 		"pull_request:\n",
+		"pull_request_review:",
+		"pull_request_review_comment:",
 	} {
 		if strings.Contains(workflowText, forbidden) {
 			t.Fatalf("queue-me workflow contains unsafe fragment %q", forbidden)
@@ -73,7 +86,8 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"assertCanonicalCommitIdentity",
 		"Queue identity audit failed",
 		"expectedHeadOid",
-		"enablePullRequestAutoMerge",
+		"verifyQueueEvidence",
+		"mergeVerifiedQueuedPull",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
 		"updateBranch",
@@ -87,6 +101,7 @@ func TestQueueMeControllerContract(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"requestReviews",
+		"enablePullRequestAutoMerge",
 		"force-push",
 		"updateMethod: REBASE",
 		"process.env.QUEUE_APP_PRIVATE_KEY",
@@ -125,7 +140,7 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 	if err != nil {
 		t.Fatal("node is required to test the queue-me controller")
 	}
-	command := exec.Command(node, "--test", "queue_me_controller.test.js")
+	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js", "queue_me_sonar.test.js", "queue_me_suppressions.test.js")
 	command.Dir = repoPath(t, "scripts")
 	output, err := command.CombinedOutput()
 	if err != nil {

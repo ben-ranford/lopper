@@ -129,8 +129,9 @@ function makeHarness(options = {}) {
         baseRefOid: branchSHAs[0],
         headRefOid: pull.head.sha,
         isDraft: pull.draft,
+        state: 'OPEN',
         mergeable: 'MERGEABLE',
-        mergeStateStatus: 'BLOCKED',
+        mergeStateStatus: 'CLEAN',
         autoMergeRequest: null,
         ...(options.initialStates?.[pull.number] || {}),
       },
@@ -152,6 +153,8 @@ function makeHarness(options = {}) {
   const calls = {
     activities: [],
     armed: [],
+    evidence: [],
+    mergeExpectedHeads: [],
     armExpectedHeads: [],
     branchReads: [],
     comments: [],
@@ -304,9 +307,10 @@ function makeHarness(options = {}) {
       }
       if (query.includes('DisableQueueAutoMerge')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
+        if (options.disableError) throw options.disableError;
         state.autoMergeRequest = null;
         calls.disabled.push(state.number);
-        return { disablePullRequestAutoMerge: { pullRequest: { number: state.number } } };
+        return options.disableResult || { disablePullRequestAutoMerge: { pullRequest: { number: state.number, autoMergeRequest: null } } };
       }
       if (query.includes('RebaseQueuedPull')) {
         calls.rebased.push(variables.pullRequestId);
@@ -327,8 +331,10 @@ function makeHarness(options = {}) {
       }
       if (query.includes('MergeQueuedPull')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
+        calls.mergeExpectedHeads.push(variables.expectedHeadOid);
+        if (options.mergeError) throw options.mergeError;
         calls.merged.push(state.number);
-        return { mergePullRequest: { pullRequest: { number: state.number, merged: true } } };
+        return options.mergeResult || { mergePullRequest: { pullRequest: { number: state.number, merged: true } } };
       }
       throw new Error(`unexpected GraphQL operation: ${query}`);
     },
@@ -354,6 +360,14 @@ function makeHarness(options = {}) {
         notice: (message) => calls.notices.push(message),
       },
       queueAppSlug: options.queueAppSlug,
+      trustedPolicySHA: options.trustedPolicySHA ?? 'base-sha',
+      verifyEvidence: async (input) => {
+        calls.evidence.push(input);
+        assert.equal([...states.values()].some(state => state.autoMergeRequest), false);
+        if (options.armDuringEvidence) states.get(input.pullNumber).autoMergeRequest = {};
+        if (options.evidenceError) throw options.evidenceError;
+        return options.evidenceResult || { headSHA: input.headSHA, baseSHA: input.baseSHA };
+      },
     },
     calls,
     pulls,
@@ -740,7 +754,7 @@ test('controller creates the queue label and exits cleanly for an empty queue', 
   assert.match(harness.calls.notices[0], /No open main pull requests/);
 });
 
-test('controller disables followers and arms only the oldest numbered pull request', async () => {
+test('controller disarms all retained requests and merges only the oldest verified pull request', async () => {
   const leader = makePull(10);
   const follower = makePull(20);
   const harness = makeHarness({
@@ -754,16 +768,16 @@ test('controller disables followers and arms only the oldest numbered pull reque
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.disabled, [20]);
-  assert.deepEqual(harness.calls.armed, [10]);
-  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
-  assert.deepEqual(harness.calls.merged, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
+  assert.deepEqual(harness.calls.mergeExpectedHeads, ['head-10']);
   assert.match(
     harness.calls.comments.find((comment) => comment.number === 20).body,
     /Queued behind #10/,
   );
   assert.match(
     harness.calls.comments.find((comment) => comment.number === 10).body,
-    /Squash auto-merge is armed/,
+    /GitHub accepted the exact-head guarded squash merge/,
   );
 });
 
@@ -863,7 +877,7 @@ test('controller requests a guarded base update for a stale same-repository lead
   assert.deepEqual(harness.calls.merged, []);
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /GitHub is updating this pull request branch/);
-  assert.match(harness.calls.comments[0].body, /before enabling auto-merge/);
+  assert.match(harness.calls.comments[0].body, /before collecting fresh merge evidence/);
 });
 
 test('controller revalidates queue eligibility and PR base immediately before updating a branch', async () => {
@@ -892,7 +906,8 @@ test('controller audits the queue App merge commit before arming the updated hea
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
 });
 
@@ -955,7 +970,8 @@ test('controller proves queue App update commit SHA from branch activity', async
       owner: 'octo', repo: 'lopper', ref: 'refs/heads/queue-me-10', per_page: 100, direction: 'desc',
     },
   }]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('controller updates a stale same-repository Renovate pull after provenance audit', async () => {
@@ -1002,7 +1018,7 @@ test('controller reports a rejected branch update and does not arm auto-merge', 
   assert.match(harness.calls.comments[0].body, /Queue paused while updating/);
 });
 
-test('controller arms a verified same-repository Renovate pull without rewriting its branch', async () => {
+test('controller merges a verified same-repository Renovate pull without rewriting its branch', async () => {
   const renovatePull = makePull(10, {
     user: { login: 'renovate[bot]', type: 'Bot', id: 29139614 },
   });
@@ -1014,7 +1030,8 @@ test('controller arms a verified same-repository Renovate pull without rewriting
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.rebased, []);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
 });
 
@@ -1035,7 +1052,8 @@ test('controller proves Renovate provenance with one bounded branch activity req
       owner: 'octo', repo: 'lopper', ref: 'refs/heads/queue-me-10', per_page: 100, direction: 'desc',
     },
   }]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('controller pauses Renovate provenance failures before auto-merge', async (t) => {
@@ -1080,7 +1098,8 @@ test('controller accepts Renovate branch creation and force-push provenance', as
 
       await runController(harness.args);
 
-      assert.deepEqual(harness.calls.armed, [10]);
+      assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
     });
   }
 });
@@ -1091,7 +1110,8 @@ test('controller does not read branch activity for canonical human commits', asy
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.activities, []);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('removing queue-me disables auto-merge and leaves an empty queue green', async () => {
@@ -1139,7 +1159,7 @@ test('drafts and stale fork branches pause before branch update or auto-merge', 
   }
 });
 
-test('a current fork branch can arm auto-merge without a branch update', async () => {
+test('a current fork branch can merge after trusted audits without a branch update', async () => {
   const fork = makePull(10, {
     head: { sha: 'fork-head', repo: { full_name: 'contributor/lopper' } },
   });
@@ -1148,9 +1168,10 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.rebased, []);
-  assert.deepEqual(harness.calls.armed, [10]);
-  assert.deepEqual(harness.calls.armExpectedHeads, ['fork-head']);
-  assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
+  assert.deepEqual(harness.calls.mergeExpectedHeads, ['fork-head']);
+  assert.match(harness.calls.comments[0].body, /GitHub accepted the exact-head guarded squash merge/);
 });
 
 test('a stale leader advances the queue to the next eligible pull request', async () => {
@@ -1163,12 +1184,12 @@ test('a stale leader advances the queue to the next eligible pull request', asyn
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, [20]);
-  assert.deepEqual(harness.calls.merged, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [20]);
   assert.equal(harness.calls.branchUpdates[0].pull_number, 10);
   assert.match(commentsFor(harness, 10), /GitHub is updating this pull request branch/);
   assert.match(commentsFor(harness, 10), /next queued pull request/);
-  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
+  assert.match(commentsFor(harness, 20), /GitHub accepted the exact-head guarded squash merge/);
 });
 
 test('a stale leader skip refreshes queued followers behind the selected eligible pull request', async () => {
@@ -1183,7 +1204,8 @@ test('a stale leader skip refreshes queued followers behind the selected eligibl
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, [20]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [20]);
   assert.equal(harness.calls.branchUpdates[0].pull_number, 10);
   assert.match(commentsFor(harness, 10), /GitHub is updating this pull request branch/);
   assert.match(commentsFor(harness, 30), /Queued behind #20/);
@@ -1213,10 +1235,11 @@ test('a leader that fails the identity audit advances the queue to the next elig
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, [20]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [20]);
   assert.match(commentsFor(harness, 10), /committer is a bot identity/);
   assert.match(commentsFor(harness, 10), /next queued pull request/);
-  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
+  assert.match(commentsFor(harness, 20), /GitHub accepted the exact-head guarded squash merge/);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
@@ -1233,19 +1256,12 @@ test('controller pauses when the default branch moves before auto-merge is armed
   assert.match(harness.calls.comments[0].body, /Default branch main moved/);
 });
 
-test('controller never merges an unverified head after auto-merge arming races a push', async () => {
-  const harness = makeHarness({
-    pulls: [makePull(10)],
-    armError: new Error('expected head mismatch'),
-    armErrorHead: 'pushed-head',
-  });
-
-  await assert.rejects(runController(harness.args), /Pull request head moved/);
-
-  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+test('controller passes the audited head to a guarded merge and never retries rejection', async () => {
+  const harness = makeHarness({ pulls: [makePull(10)], mergeError: new Error('expected head mismatch') });
+  await assert.rejects(runController(harness.args), /expected head mismatch/);
+  assert.deepEqual(harness.calls.mergeExpectedHeads, ['head-10']);
   assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
-  assert.match(harness.calls.comments[0].body, /Pull request head moved/);
 });
 
 test('controller revalidates baseRefName and baseRefOid immediately before auto-merge or merge', async (t) => {
@@ -1347,7 +1363,8 @@ test('a non-default-base pause comment is not replaced by a queue position', asy
   assert.equal(eventComments.length, 1);
   assert.match(eventComments[0].body, /base changed to `release`/);
   assert.doesNotMatch(eventComments[0].body, /Queued behind/);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('manually enabling auto-merge on a follower restores queue ordering', async () => {
@@ -1365,10 +1382,11 @@ test('manually enabling auto-merge on a follower restores queue ordering', async
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.disabled, [20]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
-test("the queue App's leader auto-merge event does not trigger a disable-enable loop", async () => {
+test("the queue App's leader auto-merge event revokes the retained request before auditing", async () => {
   const leader = makePull(10);
   const harness = makeHarness({
     pulls: [leader],
@@ -1383,12 +1401,12 @@ test("the queue App's leader auto-merge event does not trigger a disable-enable 
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.disabled, []);
+  assert.deepEqual(harness.calls.disabled, [10]);
   assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
-test("the queue App's auto-merge event for an advanced follower does not trigger a disable-enable loop", async () => {
+test("the queue App's follower auto-merge event revokes the retained request before auditing", async () => {
   const leader = makePull(10);
   const follower = makePull(20);
   const harness = makeHarness({
@@ -1404,9 +1422,9 @@ test("the queue App's auto-merge event for an advanced follower does not trigger
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.disabled, []);
+  assert.deepEqual(harness.calls.disabled, [20]);
   assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('controller audits canonical commits across paginated compare results', async () => {
@@ -1426,7 +1444,8 @@ test('controller audits canonical commits across paginated compare results', asy
 
   assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2, 3]);
   assert.deepEqual(harness.calls.comparisons.map((input) => input.per_page), [100, 100, 100]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
 });
 
@@ -1445,7 +1464,8 @@ test('controller audits verified Renovate commits on every compare page', async 
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, [10]);
 });
 
 test('controller rejects an invalid Renovate commit on a later compare page', async () => {
@@ -1592,4 +1612,134 @@ test('a comparison failure pauses the queue with a bounded status message', asyn
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /identity audit/);
   assert.match(harness.calls.comments[0].body, /compare failed in 'workflow'/);
+});
+
+test('missing or invalid exact-head evidence leaves every retained request disarmed', async (t) => {
+  for (const error of ['Sonar analysis pending', 'unresolved review thread', 'active suppression', 'API unavailable']) {
+    await t.test(error, async () => {
+      const h = makeHarness({
+        pulls: [makePull(10), makePull(20)], evidenceError: new Error(error),
+        initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} } },
+      });
+      await runController(h.args);
+      assert.deepEqual(h.calls.disabled, [10, 20]);
+      assert.deepEqual(h.calls.merged, []);
+      assert.deepEqual(h.calls.armed, []);
+      assert.match(commentsFor(h, 10), /exact-head evidence is not ready/);
+      assert.match(commentsFor(h, 10), new RegExp(error));
+    });
+  }
+});
+
+test('failed revocation stops the queue before any evidence or merge', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], initialStates: { 10: { autoMergeRequest: {} } }, disableError: new Error('cannot disarm') });
+  await assert.rejects(runController(h.args), /cannot disarm/);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+test('old evidence cannot bless another head or base', async () => {
+  for (const evidenceResult of [{ headSHA: 'old', baseSHA: 'base-sha' }, { headSHA: 'head-10', baseSHA: 'old' }]) {
+    const h = makeHarness({ pulls: [makePull(10)], evidenceResult });
+    await runController(h.args);
+    assert.deepEqual(h.calls.merged, []);
+    assert.match(commentsFor(h, 10), /does not match/);
+  }
+});
+
+test('required checks and merge eligibility remain authoritative after passing audits', async () => {
+  for (const mergeStateStatus of ['BLOCKED', 'BEHIND', 'UNSTABLE', 'UNKNOWN', null]) {
+    const h = makeHarness({ pulls: [makePull(10)], initialStates: { 10: { mergeStateStatus } } });
+    await runController(h.args);
+    assert.equal(h.calls.evidence.length, 1);
+    assert.deepEqual(h.calls.merged, []);
+    assert.deepEqual(h.calls.armed, []);
+    assert.match(commentsFor(h, 10), /existing repository requirements/);
+  }
+});
+
+test('label removal, close, draft conversion and head drift cancel the final merge', async (t) => {
+  const changes = [
+    ['label removed', { labels: [] }], ['closed', { state: 'closed' }],
+    ['draft', { draft: true }], ['head', { head: { sha: 'pushed-head' } }],
+    ['retargeted', { base: { ref: 'release' } }],
+  ];
+  for (const [name, override] of changes) await t.test(name, async () => {
+    const h = makeHarness({ pulls: [makePull(10)], pullGetOverrides: { 10: override } });
+    await assert.rejects(runController(h.args));
+    assert.equal(h.calls.evidence.length, 1);
+    assert.deepEqual(h.calls.merged, []);
+  });
+});
+
+test('graph state changing after the final REST read still blocks merging', async () => {
+  for (const state of [{ headRefOid: 'new' }, { state: 'CLOSED' }, { isDraft: true }, { autoMergeRequest: {} }]) {
+    const h = makeHarness({ pulls: [makePull(10)], stateAfterFinalBranchRead: { 10: state } });
+    await assert.rejects(runController(h.args));
+    assert.deepEqual(h.calls.merged, []);
+  }
+});
+
+test('base updates return without evaluating evidence from the replaced head', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], comparisonStatus: 'behind' });
+  await runController(h.args);
+  assert.equal(h.calls.branchUpdates.length, 1);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+test('trusted policy must match current default branch even when candidate edits policy', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], trustedPolicySHA: 'old-policy', initialStates: { 10: { autoMergeRequest: {} } } });
+  await runController(h.args);
+  assert.deepEqual(h.calls.disabled, [10]);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
+  assert.match(commentsFor(h, 10), /trusted policy is not from the current/);
+});
+
+test('scheduled reconciliation disarms a retargeted PR absent from the main queue', async () => {
+  const pull = makePull(10); pull.base.ref = 'release';
+  const h = makeHarness({ pulls: [pull], initialStates: { 10: { autoMergeRequest: {} } } });
+  h.args.context.eventName = 'schedule';
+  await runController(h.args);
+  assert.deepEqual(h.calls.disabled, [10]);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+
+test('evidence failure revokes auto-merge enabled during the audit', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], armDuringEvidence: true, evidenceError: new Error('Sonar pending') });
+  await runController(h.args);
+  assert.deepEqual(h.calls.disabled, [10]);
+  assert.deepEqual(h.calls.merged, []);
+  assert.match(commentsFor(h, 10), /Auto-merge remains disabled/);
+});
+
+test('revocation failure during evidence invalidation remains fatal', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], armDuringEvidence: true,
+    evidenceError: new Error('Sonar pending'), disableError: new Error('cannot revoke') });
+  await assert.rejects(runController(h.args), /cannot revoke/);
+  assert.deepEqual(h.calls.comments, []);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+
+test('missing revocation state fails closed', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], initialStates: { 10: { id: undefined } } });
+  await assert.rejects(runController(h.args), /Cannot prove/);
+  assert.deepEqual(h.calls.evidence, []);
+});
+
+test('the controller never reports an unconfirmed merge as success', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], mergeResult: { mergePullRequest: null } });
+  await assert.rejects(runController(h.args), /did not confirm/);
+  assert.doesNotMatch(commentsFor(h, 10), /GitHub accepted/);
+});
+
+
+test('unconfirmed revocation stops before evidence collection', async () => {
+  const h = makeHarness({ pulls: [makePull(10)], initialStates: { 10: { autoMergeRequest: {} } }, disableResult: {} });
+  await assert.rejects(runController(h.args), /did not confirm automatic merge revocation/);
+  assert.deepEqual(h.calls.evidence, []);
 });

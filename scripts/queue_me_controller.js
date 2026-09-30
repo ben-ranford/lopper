@@ -217,7 +217,7 @@ async function ensureQueueLabel(github, owner, repo, queueLabel) {
       repo,
       name: queueLabel,
       color: '1D76DB',
-      description: 'Rebase and squash-merge automatically in deterministic PR order',
+      description: 'Verify exact-head evidence and squash-merge in deterministic PR order',
     });
   }
 }
@@ -233,6 +233,7 @@ async function pullState(github, owner, repo, number) {
           baseRefOid
           headRefOid
           isDraft
+          state
           mergeable
           mergeStateStatus
           autoMergeRequest {
@@ -269,6 +270,7 @@ async function revalidateBranchUpdate({
   defaultBranchSHA,
   queueLabel,
   expectedHeadSHA,
+  requireSameRepository = true,
 }) {
   const [{ data: pull }, { data: branch }] = await Promise.all([
     github.rest.pulls.get({ owner, repo, pull_number: pullNumber }),
@@ -282,7 +284,7 @@ async function revalidateBranchUpdate({
       `Pull request base changed from ${defaultBranch} to ${pull.base?.ref || 'unknown'} before updating its branch.`,
     );
   }
-  if (pull.head?.repo?.full_name !== `${owner}/${repo}`) {
+  if (requireSameRepository && pull.head?.repo?.full_name !== `${owner}/${repo}`) {
     throw new Error(`Pull request #${pullNumber} no longer has a same-repository branch to update.`);
   }
   if (pull.head?.sha !== expectedHeadSHA) {
@@ -382,17 +384,23 @@ function syncFollowerStatuses({
 
 async function disableAutoMerge(github, owner, repo, number) {
   const state = await pullState(github, owner, repo, number);
-  if (!state?.autoMergeRequest) {
+  if (!state?.id || !Object.hasOwn(state, 'autoMergeRequest')) {
+    throw new Error('Cannot prove whether automatic merge is disabled.');
+  }
+  if (state.autoMergeRequest === null) {
     return;
   }
-  await github.graphql(
+  const result = await github.graphql(
     `mutation DisableQueueAutoMerge($pullRequestId: ID!) {
       disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
-        pullRequest { number }
+        pullRequest { number autoMergeRequest { enabledAt } }
       }
     }`,
     { pullRequestId: state.id },
   );
+  if (result?.disablePullRequestAutoMerge?.pullRequest?.autoMergeRequest !== null) {
+    throw new Error('GitHub did not confirm automatic merge revocation.');
+  }
 }
 
 async function verifyBranchActivityProvenance(
@@ -511,73 +519,6 @@ async function mergeNow(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
-  return github.graphql(
-    `mutation ArmQueueAutoMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
-      enablePullRequestAutoMerge(input: {
-        pullRequestId: $pullRequestId
-        expectedHeadOid: $expectedHeadOid
-        mergeMethod: SQUASH
-      }) {
-        pullRequest {
-          number
-          autoMergeRequest { enabledAt mergeMethod }
-        }
-      }
-    }`,
-    { pullRequestId, expectedHeadOid },
-  );
-}
-
-async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
-  assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
-  if (state.autoMergeRequest) {
-    return 'armed';
-  }
-  if (state.mergeable === 'MERGEABLE' && state.mergeStateStatus === 'CLEAN') {
-    await mergeNow(github, state.id, state.headRefOid);
-    return 'merged';
-  }
-  try {
-    await armAutoMerge(github, state.id, state.headRefOid);
-    return 'armed';
-  } catch (error) {
-    const refreshed = await pullStateByID(github, state.id);
-    if (refreshed.headRefOid !== state.headRefOid) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
-      );
-    }
-    assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
-    if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
-      await mergeNow(github, refreshed.id, state.headRefOid);
-      return 'merged';
-    }
-    throw error;
-  }
-}
-
-async function pullStateByID(github, pullRequestId) {
-  const result = await github.graphql(
-    `query QueuePullStateByID($pullRequestId: ID!) {
-      node(id: $pullRequestId) {
-        ... on PullRequest {
-          id
-          number
-          baseRefName
-          baseRefOid
-          headRefOid
-          mergeable
-          mergeStateStatus
-          autoMergeRequest { enabledAt mergeMethod }
-        }
-      }
-    }`,
-    { pullRequestId },
-  );
-  return result.node;
-}
-
 async function reconcileEventPull({
   github,
   context,
@@ -617,64 +558,69 @@ async function reconcileEventPull({
   );
 }
 
-function isQueueAppAutoMergeEvent({ context, queueAppSlug }) {
-  return (
-    context.eventName === 'pull_request_target' &&
-    context.payload.action === 'auto_merge_enabled' &&
-    Boolean(queueAppSlug) &&
-    context.payload.sender?.login === `${queueAppSlug}[bot]`
-  );
+async function verifyQueueEvidence(input) {
+  const { verifySuppressions } = require('./queue_me_suppressions');
+  const { verifyReviews } = require('./queue_me_reviews');
+  const { verifySonar } = require('./queue_me_sonar');
+  const suppressions = await verifySuppressions(input);
+  await verifyReviews(input);
+  const sonar = await verifySonar(input);
+  const reviews = await verifyReviews(input);
+  return { headSHA: input.headSHA, baseSHA: input.baseSHA, suppressions, sonar, reviews };
 }
 
-async function armOrMergeQueuedPull({
-  github,
-  owner,
-  repo,
-  candidate,
-  defaultBranch,
-  defaultBranchSHA,
-  update,
+async function mergeVerifiedQueuedPull({
+  github, owner, repo, candidate, defaultBranch, defaultBranchSHA, update,
+  queueLabel, trustedPolicySHA, verifyEvidence,
 }) {
+  let evidence;
   try {
-    const { data: latestBranch } = await github.rest.repos.getBranch({
-      owner,
-      repo,
-      branch: defaultBranch,
+    evidence = await verifyEvidence({
+      github, owner, repo, pullNumber: candidate.number,
+      headSHA: update.headSHA, baseSHA: defaultBranchSHA,
+      baseRef: defaultBranch, trustedPolicySHA,
     });
-    if (latestBranch.commit.sha !== defaultBranchSHA) {
-      throw new Error(
-        `Default branch ${defaultBranch} moved from ${shortSHA(defaultBranchSHA)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
-      );
+    if (evidence?.headSHA !== update.headSHA || evidence?.baseSHA !== defaultBranchSHA) {
+      throw new Error('Queue evidence does not match the audited head and base.');
     }
+  } catch (error) {
+    await disableAutoMerge(github, owner, repo, candidate.number);
+    await syncStatusComment(github, owner, repo, candidate.number,
+      `## Queue status\n\nQueue paused: exact-head evidence is not ready. Auto-merge remains disabled.\n\n\`${safeError(error)}\``);
+    return;
+  }
+  try {
+    await revalidateBranchUpdate({
+      github, owner, repo, pullNumber: candidate.number, defaultBranch,
+      defaultBranchSHA, queueLabel, expectedHeadSHA: update.headSHA,
+      requireSameRepository: false,
+    });
     const state = await pullState(github, owner, repo, candidate.number);
     if (state.headRefOid !== update.headSHA) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
-      );
+      throw new Error(`Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`);
     }
-    const result = await armOrMerge(github, state, {
-      expectedBaseRefName: defaultBranch,
-      expectedBaseRefOid: defaultBranchSHA,
-    });
-    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
-    const mergeSummary = result === 'merged'
-      ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
-      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      candidate.number,
-      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
-    );
+    assertExpectedBaseState(state, defaultBranch, defaultBranchSHA);
+    if (state.state !== 'OPEN' || state.isDraft || state.autoMergeRequest) {
+      throw new Error('Pull request eligibility changed while collecting queue evidence.');
+    }
+    const auditSummary = `Head \`${shortSHA(update.headSHA)}\` contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit, exact-head Sonar, review-thread, and suppression audits.`;
+    if (state.mergeable !== 'MERGEABLE' || state.mergeStateStatus !== 'CLEAN') {
+      await syncStatusComment(github, owner, repo, candidate.number,
+        `## Queue status\n\n${auditSummary}\n\nWaiting for GitHub's existing repository requirements. Auto-merge remains disabled; every retry collects fresh evidence.`);
+      return;
+    }
+    const merged = await mergeNow(github, state.id, update.headSHA);
+    if (merged?.mergePullRequest?.pullRequest?.merged !== true) {
+      throw new Error('GitHub did not confirm the guarded squash merge.');
+    }
+    await syncStatusComment(github, owner, repo, candidate.number,
+      `## Queue status\n\n${auditSummary}\n\nGitHub accepted the exact-head guarded squash merge after all repository requirements passed.`);
   } catch (error) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      candidate.number,
-      `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
-    );
+    // A writer may have manually enabled auto-merge during the audit. Never
+    // leave a retained request behind when this run invalidates its evidence.
+    await disableAutoMerge(github, owner, repo, candidate.number);
+    await syncStatusComment(github, owner, repo, candidate.number,
+      `## Queue status\n\nQueue paused before the guarded squash merge.\n\n\`${safeError(error)}\``);
     throw error;
   }
 }
@@ -689,8 +635,9 @@ async function advanceQueuedPull({
   queueLabel,
   queueAppSlug,
   hasFollower,
+  trustedPolicySHA,
+  verifyEvidence,
 }) {
-  await disableAutoMerge(github, owner, repo, candidate.number);
   if (candidate.draft) {
     await syncStatusComment(
       github,
@@ -705,6 +652,7 @@ async function advanceQueuedPull({
   try {
     update = await verifyHeadForQueue(github, candidate, defaultBranchSHA, queueAppSlug);
   } catch (error) {
+    await disableAutoMerge(github, owner, repo, candidate.number);
     const pauseMessage = error?.queuePauseMessage ||
       `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
     const retrySummary = hasFollower
@@ -748,6 +696,7 @@ async function advanceQueuedPull({
         expected_head_sha: update.headSHA,
       });
     } catch (error) {
+      await disableAutoMerge(github, owner, repo, candidate.number);
       await syncStatusComment(
         github,
         owner,
@@ -765,11 +714,11 @@ async function advanceQueuedPull({
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\nGitHub is updating this pull request branch with current \`${defaultBranch}\`. The queue will wait for the updated head to pass its identity audit before enabling auto-merge. ${retrySummary}`,
+      `## Queue status\n\nGitHub is updating this pull request branch with current \`${defaultBranch}\`. The queue will wait for the updated head to pass its identity audit before collecting fresh merge evidence. ${retrySummary}`,
     );
     return true;
   }
-  await armOrMergeQueuedPull({
+  await mergeVerifiedQueuedPull({
     github,
     owner,
     repo,
@@ -777,6 +726,9 @@ async function advanceQueuedPull({
     defaultBranch,
     defaultBranchSHA,
     update,
+    queueLabel,
+    trustedPolicySHA,
+    verifyEvidence,
   });
   return false;
 }
@@ -786,6 +738,8 @@ async function runController({
   context,
   core,
   queueAppSlug = process.env.QUEUE_APP_SLUG,
+  trustedPolicySHA = process.env.TRUSTED_CONTROLLER_REF,
+  verifyEvidence = verifyQueueEvidence,
 }) {
   const queueLabel = process.env.QUEUE_LABEL || DEFAULT_QUEUE_LABEL;
   const { owner, repo } = context.repo;
@@ -808,19 +762,17 @@ async function runController({
     owner,
     repo,
     state: 'open',
-    base: defaultBranch,
     sort: 'created',
     direction: 'asc',
     per_page: 100,
   });
-  const queued = sortQueuedPulls(pulls.filter((pull) => hasLabel(pull, queueLabel)));
+  const labeled = pulls.filter((pull) => hasLabel(pull, queueLabel));
+  // Revoke every retained request before any expensive audit, including
+  // followers and retargeted PRs that no longer belong in this queue.
+  for (const pull of labeled) await disableAutoMerge(github, owner, repo, pull.number);
+  const queued = sortQueuedPulls(labeled.filter((pull) => pull.base?.ref === defaultBranch));
   if (queued.length === 0) {
     core.notice(`No open ${defaultBranch} pull requests carry the ${queueLabel} label.`);
-    return;
-  }
-
-  if (isQueueAppAutoMergeEvent({ context, queueAppSlug })) {
-    core.notice(`Ignoring the queue App's auto-merge event for #${eventPull.number}.`);
     return;
   }
 
@@ -830,6 +782,14 @@ async function runController({
     repo,
     branch: defaultBranch,
   });
+
+  if (!trustedPolicySHA || trustedPolicySHA !== branch.commit.sha) {
+    for (const candidate of queued) {
+      await syncStatusComment(github, owner, repo, candidate.number,
+        '## Queue status\n\nQueue paused: trusted policy is not from the current default-branch revision. Auto-merge is disabled; retry from current main.');
+    }
+    return;
+  }
 
   for (const [index, candidate] of queued.entries()) {
     const shouldAdvance = await advanceQueuedPull({
@@ -842,6 +802,8 @@ async function runController({
       queueLabel,
       queueAppSlug,
       hasFollower: index + 1 < queued.length,
+      trustedPolicySHA,
+      verifyEvidence,
     });
     if (!shouldAdvance) {
       // Followers behind the selected (or paused-on-draft) candidate were
@@ -859,7 +821,7 @@ async function runController({
         eventQueueEntry,
         eventAction: context.payload.action,
         conflictSkipped: index > 0,
-        disableFollowers: true,
+        disableFollowers: false,
       });
       return;
     }
@@ -875,7 +837,6 @@ module.exports.testables = {
   hasLabel,
   isBranchCurrent,
   isBotIdentity,
-  isQueueAppAutoMergeEvent,
   labelName,
   queueIdentityFailureMessage,
   safeError,
@@ -883,4 +844,5 @@ module.exports.testables = {
   sortQueuedPulls,
   truncateCommentBody,
   verifyHeadForQueue,
+  verifyQueueEvidence,
 };
