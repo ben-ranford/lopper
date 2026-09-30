@@ -1184,3 +1184,28 @@ func testOpenPinnedChildRootLookupCloseJoin(t *testing.T) {
 		t.Fatalf("expected joined child lookup and close errors, got child=%v err=%v", child, err)
 	}
 }
+
+func TestReadSourceFileDisplayPathAndConfinement(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "source.py")
+	if err := os.WriteFile(source, []byte("import example\n"), 0o600); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+	t.Chdir(repo)
+	for _, path := range []string{source, "source.py"} {
+		content, display, err := ReadSourceFile(repo, path)
+		if err != nil || string(content) != "import example\n" || display != "source.py" {
+			t.Fatalf("read %q: content=%q display=%q err=%v", path, content, display, err)
+		}
+	}
+	cases := []struct {
+		path string
+		want error
+	}{
+		{filepath.Join(repo, "missing.py"), fs.ErrNotExist},
+		{filepath.Join(repo, "..", "escape.py"), safeio.ErrPathEscapesRoot},
+	}
+	for _, tc := range cases {
+		assertReadSourceFileFailure(t, repo, tc.path, tc.want)
+	}
+}
