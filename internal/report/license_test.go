@@ -104,3 +104,26 @@ func TestLicenseAdditionalBranches(t *testing.T) {
 		t.Fatalf("expected nil license to remain untouched when deny list is set")
 	}
 }
+
+func TestNormalizeSPDXIDContract(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{" \t\n!_()", ""},
+		{" gPl-2.0+ ", "GPL-2.0+"},
+		{"Apache-2.0", "APACHE-2.0"},
+		{"aZ09-.+", "AZ09-.+"},
+		{"mïtéKİß", "MT"},
+		{"MIT OR Apache-2.0", "MITORAPACHE-2.0"},
+		{"mit\xff", "MIT"},
+	}
+	for _, test := range cases {
+		t.Run(test.input, func(t *testing.T) {
+			if got := NormalizeSPDXID(test.input); got != test.want {
+				t.Fatalf("NormalizeSPDXID(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
