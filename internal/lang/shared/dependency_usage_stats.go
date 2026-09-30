@@ -109,8 +109,8 @@ func (s *statsAccumulator) build() DependencyStats {
 	totalCount := len(s.allSymbols)
 	usedPercent := calculateUsedPercent(usedCount, totalCount)
 	topSymbols := buildTopSymbols(s.symbolCounts)
-	used := flattenImports(s.usedImports)
-	unused := dedupeUnused(flattenImports(s.unusedImports), used)
+	used := SortedImportUses(s.usedImports)
+	unused := dedupeUnused(SortedImportUses(s.unusedImports), used)
 	return DependencyStats{
 		HasImports:      totalCount > 0,
 		UsedCount:       usedCount,
@@ -229,7 +229,9 @@ func addImport(dest map[string]*report.ImportUse, entry report.ImportUse) {
 	dest[key] = &copyEntry
 }
 
-func flattenImports(source map[string]*report.ImportUse) []report.ImportUse {
+// SortedImportUses copies map entries into an allocated slice ordered by module,
+// then name. Values must be non-nil; nested slices retain their backing storage.
+func SortedImportUses(source map[string]*report.ImportUse) []report.ImportUse {
 	items := make([]report.ImportUse, 0, len(source))
 	for _, entry := range source {
 		items = append(items, *entry)

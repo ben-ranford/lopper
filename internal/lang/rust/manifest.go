@@ -81,7 +81,7 @@ func extractManifestDependenciesWithCoverage(repoPath string, discovery manifest
 	for dependency, aliases := range renamed {
 		renamedByDep[dependency] = shared.SortedKeys(aliases)
 	}
-	return lookup, renamedByDep, dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
+	return lookup, renamedByDep, shared.UniqueTrimmedStrings(warnings), report.StableCoverageGaps(coverageGaps), nil
 }
 
 func mergeDependencyLookup(lookup map[string]dependencyInfo, renamed map[string]map[string]struct{}, deps map[string]dependencyInfo, warnings []string) []string {
@@ -164,7 +164,7 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 			return manifestDiscoveryResult{
 				ManifestPaths:       paths,
 				SourceFallbackRoots: []string{repoPath},
-				Warnings:            dedupeWarnings(warnings),
+				Warnings:            shared.UniqueTrimmedStrings(warnings),
 				CoverageGaps:        append([]report.CoverageGap{malformedCargoManifestCoverageGap(repoPath, rootManifest, parseErr)}, cargoManifestDiscoveryCoverageGaps(truncated)...),
 				ParsedDependencies:  make(map[string]map[string]dependencyInfo),
 			}, nil
@@ -201,7 +201,7 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 		WorkspaceManifestPaths: uniquePaths(workspaceManifestPaths),
 		ExcludedSourceRoots:    excludedSourceRoots,
 		SourceFallbackRoots:    sourceFallbackRoots,
-		Warnings:               dedupeWarnings(warnings),
+		Warnings:               shared.UniqueTrimmedStrings(warnings),
 		CoverageGaps:           malformedCoverageGaps,
 		ParsedDependencies:     make(map[string]map[string]dependencyInfo),
 	}
@@ -259,7 +259,7 @@ func discoverRepositoryManifestData(repoPath, rootManifest string, rootDependenc
 		ManifestPaths:       uniquePaths(validPaths),
 		ExcludedSourceRoots: malformedRoots,
 		SourceFallbackRoots: malformedRoots,
-		Warnings:            dedupeWarnings(warnings),
+		Warnings:            shared.UniqueTrimmedStrings(warnings),
 		CoverageGaps:        report.StableCoverageGaps(coverageGaps),
 		ParsedDependencies:  parsedDependencies,
 	}, nil
@@ -292,7 +292,7 @@ func discoverMalformedNestedCargoRoots(repoPath, rootManifest string, isolatedRo
 	roots = uniquePaths(roots)
 	fallbackRoots := unselectedMalformedRustRoots(roots, isolatedRoots...)
 	nestedPaths := validNestedManifestPaths(validPaths, fallbackRoots, isolatedRoots...)
-	return roots, fallbackRoots, nestedPaths, dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
+	return roots, fallbackRoots, nestedPaths, shared.UniqueTrimmedStrings(warnings), report.StableCoverageGaps(coverageGaps), nil
 }
 
 func unselectedMalformedRustRoots(roots []string, isolatedRoots ...[]string) []string {
@@ -412,7 +412,7 @@ func discoverManifestsByWalkWithStatus(repoPath string) ([]string, []string, boo
 	if len(paths) == 0 {
 		warnings = append(warnings, "no Cargo.toml files found for analysis")
 	}
-	return uniquePaths(paths), dedupeWarnings(warnings), truncated, nil
+	return uniquePaths(paths), shared.UniqueTrimmedStrings(warnings), truncated, nil
 }
 
 func cargoManifestDiscoveryCapWarning() string {
@@ -730,7 +730,7 @@ func cargoManifestMeta(document map[string]any) manifestMeta {
 		meta.HasPackage = true
 	}
 	workspace, _ := document["workspace"].(map[string]any)
-	meta.WorkspaceMembers = dedupeStrings(tomlStringSlice(workspace["members"]))
+	meta.WorkspaceMembers = shared.UniqueTrimmedStrings(tomlStringSlice(workspace["members"]))
 	return meta
 }
 
@@ -913,5 +913,5 @@ func extractQuotedStrings(value string) []string {
 		}
 		current.WriteByte(ch)
 	}
-	return dedupeStrings(results)
+	return shared.UniqueTrimmedStrings(results)
 }

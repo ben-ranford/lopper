@@ -3,6 +3,7 @@ package js
 import (
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -30,7 +31,7 @@ func TestFlattenImportUsesAndUnknownImportKind(t *testing.T) {
 		"a:y": {Name: "y", Module: "a"},
 		"a:x": {Name: "x", Module: "a"},
 	}
-	flattened := flattenImportUses(source)
+	flattened := shared.SortedImportUses(source)
 	if len(flattened) != 3 {
 		t.Fatalf("expected 3 flattened import uses, got %#v", flattened)
 	}
