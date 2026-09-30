@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -30,7 +31,7 @@ func TestReadSourceFileDisplayPathAndConfinement(t *testing.T) {
 	}
 	for _, tc := range cases {
 		content, display, err := ReadSourceFile(repo, tc.path)
-		if !errors.Is(err, tc.want) || content != nil || display != "" {
+		if !errors.Is(err, tc.want) || !reflect.DeepEqual(content, []byte(nil)) || display != "" {
 			t.Fatalf("read %q: content=%q display=%q err=%v, want %v", tc.path, content, display, err, tc.want)
 		}
 	}
