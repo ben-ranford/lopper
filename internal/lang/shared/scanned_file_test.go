@@ -35,7 +35,7 @@ func TestFileUsagesPreservesScanOrderAndStorage(t *testing.T) {
 
 func TestFileUsagesEmptyScan(t *testing.T) {
 	for _, files := range [][]ScannedFile{nil, {}} {
-		if got := FileUsages(files); got == nil || len(got) != 0 {
+		if got := FileUsages(files); !reflect.DeepEqual(got, []FileUsage{}) {
 			t.Fatalf("empty scan = %#v, want allocated empty slice", got)
 		}
 	}

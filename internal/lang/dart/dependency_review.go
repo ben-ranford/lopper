@@ -28,12 +28,12 @@ var pluginReview = dependencyReview{
 	recommendationMessage: pluginRemovalRecommendation,
 }
 
-func (review dependencyReview) addTo(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
+func (r *dependencyReview) addTo(dep *report.DependencyReport, meta dependencyInfo, previewEnabled bool) {
 	dep.RiskCues = append(dep.RiskCues, report.RiskCue{
-		Code: review.riskCode, Severity: "medium", Message: review.riskMessage(meta, previewEnabled),
+		Code: r.riskCode, Severity: "medium", Message: r.riskMessage(meta, previewEnabled),
 	})
 	dep.Recommendations = append(dep.Recommendations, report.Recommendation{
-		Code: review.recommendationCode, Priority: "medium",
-		Message: review.recommendationMessage(meta, previewEnabled), Rationale: review.rationale,
+		Code: r.recommendationCode, Priority: "medium",
+		Message: r.recommendationMessage(meta, previewEnabled), Rationale: r.rationale,
 	})
 }

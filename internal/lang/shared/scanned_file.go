@@ -8,14 +8,27 @@ type ScannedFile struct {
 	Usage   map[string]int
 }
 
-// DependencyUsage projects the scan into the shared reporting model. Imports
+// dependencyUsage projects the scan into the shared reporting model. Imports
 // and usage retain their backing storage; reporting treats them as read-only.
-func (file ScannedFile) DependencyUsage() FileUsage {
-	return FileUsage{Imports: file.Imports, Usage: file.Usage}
+func (f *ScannedFile) dependencyUsage() FileUsage {
+	return FileUsage{Imports: f.Imports, Usage: f.Usage}
 }
 
-// FileUsages preserves scan order and returns a non-nil slice, including for an
-// empty scan. The constraint permits adapters to embed ScannedFile with metadata.
-func FileUsages[T interface{ DependencyUsage() FileUsage }](files []T) []FileUsage {
-	return MapSlice(files, T.DependencyUsage)
+type dependencyUsager interface {
+	dependencyUsage() FileUsage
+}
+
+type fileUsageProvider[T any] interface {
+	*T
+	dependencyUsager
+}
+
+// FileUsages preserves scan order and returns an allocated slice, including for
+// an empty scan. Adapters may embed ScannedFile alongside their own metadata.
+func FileUsages[T any, P fileUsageProvider[T]](files []T) []FileUsage {
+	usages := make([]FileUsage, len(files))
+	for i := range files {
+		usages[i] = P(&files[i]).dependencyUsage()
+	}
+	return usages
 }
