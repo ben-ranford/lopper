@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -243,7 +244,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 	pyPath := filepath.Join(repo, "mod.py")
 	testutil.MustWriteFile(t, pyPath, "import requests\n")
 
-	content, rel, err := readPythonFile(repo, pyPath)
+	content, rel, err := shared.ReadSourceFile(repo, pyPath)
 	if err != nil {
 		t.Fatalf("read python file: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 		t.Fatalf("unexpected read result content=%q rel=%q", string(content), rel)
 	}
 
-	if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py")); err == nil {
 		t.Fatalf("expected missing file read error")
 	}
 
