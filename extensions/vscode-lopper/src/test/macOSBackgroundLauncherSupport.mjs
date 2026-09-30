@@ -54,7 +54,7 @@ export async function cleanupMatchingTestProcesses({ listProcesses, terminate, w
 }
 
 async function waitForMatchingProcessesToExit(listProcesses, wait, remainingAttempts) {
-  if (!(remainingAttempts > 0)) return false;
+  if (remainingAttempts <= 0 || Number.isNaN(remainingAttempts)) return false;
   if (listProcesses().length === 0) return true;
   // Each observation depends on the preceding delay; retries must not overlap.
   await wait();

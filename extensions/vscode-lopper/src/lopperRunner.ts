@@ -825,7 +825,7 @@ async function runWithConcurrency<T>(
   const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
   let nextIndex = 0;
   let remaining = items.length;
-  if (!(workerCount > 0)) {
+  if (workerCount <= 0 || Number.isNaN(workerCount)) {
     return;
   }
 
