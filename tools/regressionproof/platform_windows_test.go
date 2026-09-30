@@ -44,16 +44,21 @@ func TestWindowsProofGitResolver(t *testing.T) {
 				checkPath(path)
 				return tt.resolved, tt.resolveErr
 			})
-			if tt.wantFailure != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantFailure) || actual != "" {
-					t.Fatalf("got path=%q err=%v, want error containing %q", actual, err, tt.wantFailure)
-				}
-				return
-			}
-			if err != nil || !strings.EqualFold(actual, proofWindowsGitPath) {
-				t.Fatalf("got path=%q err=%v, want trusted path", actual, err)
-			}
+			assertWindowsProofGitResolution(t, actual, err, tt.wantFailure)
 		})
+	}
+}
+
+func assertWindowsProofGitResolution(t *testing.T, actual string, err error, wantFailure string) {
+	t.Helper()
+	if wantFailure != "" {
+		if err == nil || !strings.Contains(err.Error(), wantFailure) || actual != "" {
+			t.Fatalf("got path=%q err=%v, want error containing %q", actual, err, wantFailure)
+		}
+		return
+	}
+	if err != nil || !strings.EqualFold(actual, proofWindowsGitPath) {
+		t.Fatalf("got path=%q err=%v, want trusted path", actual, err)
 	}
 }
 
