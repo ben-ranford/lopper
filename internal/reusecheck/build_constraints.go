@@ -54,6 +54,8 @@ type buildFacts struct {
 	values   map[string]bool
 }
 
+const buildUnknownUnixOS = "other-unix"
+
 // Filename tables follow Go 1.27's src/internal/syslist/syslist.go. Historical
 // targets remain meaningful filename suffixes even after their ports disappear.
 var buildKnownOS = strings.Fields("aix android darwin dragonfly freebsd hurd illumos ios js linux nacl netbsd openbsd plan9 solaris wasip1 windows zos")
@@ -260,7 +262,7 @@ func buildSystemRegions() map[string]*sourceBuildPredicate {
 	}
 	unknown := excludedBuildTags(buildKnownOS)
 	regions["other"] = unknown.and(buildTagPredicate("unix", true))
-	regions["other-unix"] = unknown.and(buildTagPredicate("unix", false))
+	regions[buildUnknownUnixOS] = unknown.and(buildTagPredicate("unix", false))
 	return regions
 }
 
@@ -329,7 +331,7 @@ func (p *sourceBuildPredicate) prepare() {
 }
 
 func allBuildWorlds() []buildWorld {
-	systems := append(append([]string(nil), buildKnownOS...), "other", "other-unix")
+	systems := append(append([]string(nil), buildKnownOS...), "other", buildUnknownUnixOS)
 	architectures := append(append([]string(nil), buildKnownArch...), "other")
 	worlds := make([]buildWorld, 0, len(systems)*len(architectures))
 	for _, system := range systems {
@@ -455,7 +457,7 @@ func buildTagValue(tag string, world buildWorld, known map[string]bool) (bool, b
 		return world.arch == tag, true
 	}
 	if tag == "unix" {
-		return world.os == "other-unix" || strings.Contains(buildUnixOS, " "+world.os+" "), true
+		return world.os == buildUnknownUnixOS || strings.Contains(buildUnixOS, " "+world.os+" "), true
 	}
 	value, exists := known[tag]
 	return value, exists
