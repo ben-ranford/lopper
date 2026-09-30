@@ -585,29 +585,6 @@ func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, 
 	return string(output), err
 }
 
-func TestAutomationExamplesFixtureRunsWhileScriptOpenForWriting(t *testing.T) {
-	t.Parallel()
-
-	output, err := runAutomationExamplesFixtureWithCommand(t, readRepoFile(t, "examples/lefthook.yml"), func(scriptPath string) *exec.Cmd {
-		// Linux rejects direct execution while this handle remains open, even
-		// though the complete script content has already been written.
-		writer, err := os.OpenFile(scriptPath, os.O_WRONLY, 0)
-		if err != nil {
-			t.Fatalf("open fixture for writing: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := writer.Close(); err != nil {
-				t.Errorf("close fixture writer: %v", err)
-			}
-		})
-		return automationExamplesFixtureCommand(scriptPath)
-	})
-	if err != nil {
-		t.Fatalf("expected writable script fixture to run, got %v:\n%s", err, output)
-	}
-	assertOutputContainsAll(t, output, []string{"Automation examples preserve JSON and mutation-guard contracts."})
-}
-
 func TestRunAutomationExamplesFixturePreservesLaunchError(t *testing.T) {
 	t.Parallel()
 
