@@ -7,8 +7,7 @@ rollback path.
 
 ## Enable the preview
 
-The flag is preview-only and explicit-only. It is disabled unless both the
-feature flag and the command option are present:
+The flag remains preview-only and explicit-only (`LOP-FEAT-0029`). Both the resolved feature and explicit consent are required. Consent can come from a CLI enable or effective repository/policy configuration; dev, release, and rolling defaults alone never select Stave:
 
 ```sh
 lopper tui --repo . --enable-feature stave-tui-preview
@@ -21,9 +20,25 @@ lopper tui --repo . --enable-feature stave-tui-preview --snapshot -
 lopper tui --repo . --enable-feature stave-tui-preview --snapshot preview.txt
 ```
 
-Omitting `--enable-feature stave-tui-preview`, or disabling the feature,
-selects the existing Summary implementation. No report, baseline, or action
-state is shared with a previous preview process.
+To opt in for a repository, add this to `.lopper.yml` (the immutable code works too):
+
+```yaml
+features:
+  enable:
+    - stave-tui-preview
+```
+
+Then `lopper tui --repo .` or bare `lopper` in that repository selects Stave, including snapshots and line-compatible output. Discovery also supports `.lopper.yaml` and `lopper.json`. Use `lopper tui --repo . --config config/ui.yml` for a repository-relative path, or an absolute `--config` path. Missing explicit files, invalid discovered config, and invalid feature references fail before the UI starts.
+
+For a temporary rollback, run:
+
+```sh
+lopper tui --repo . --disable-feature LOP-FEAT-0029
+```
+
+CLI choices override config for the same feature, so CLI enable also overrides config disable. Without explicit CLI/config enablement, or when the effective choice is disabled, the existing Summary implementation is selected. Neither activation nor rollback writes configuration or preferences, and no prompt is added. No report, baseline, or action state is shared with a previous preview process.
+
+Repository-config activation targets v1.8.9; use a build containing this change. Earlier preview builds require explicit CLI enablement. This does not graduate the Stave preview. The [command coverage table](feature-flags.md#command-configuration-coverage) describes the current config limits for other commands.
 
 The preview uses `github.com/ben-ranford/stave v1.0.0-rc.2`. The integration
 is maintained in Lopper; it does not require a local Stave checkout or a
