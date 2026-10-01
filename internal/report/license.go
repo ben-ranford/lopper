@@ -47,7 +47,7 @@ func CountDeniedLicenses(dependencies []DependencyReport) int {
 func normalizeDenyList(values []string) map[string]struct{} {
 	normalized := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		id := normalizeSPDXID(value)
+		id := NormalizeSPDXID(value)
 		if id == "" {
 			continue
 		}
@@ -56,7 +56,9 @@ func normalizeDenyList(values []string) map[string]struct{} {
 	return normalized
 }
 
-func normalizeSPDXID(value string) string {
+// NormalizeSPDXID retains ASCII letters, digits, hyphens, dots, and plus signs,
+// and uppercases ASCII letters. It normalizes an identifier, not an expression.
+func NormalizeSPDXID(value string) string {
 	out := make([]rune, 0, len(value))
 	for _, r := range value {
 		switch {
@@ -84,7 +86,7 @@ func spdxExpressionContainsDenied(expression string, deny map[string]struct{}) b
 		if len(token) == 0 {
 			return false
 		}
-		id := normalizeSPDXID(string(token))
+		id := NormalizeSPDXID(string(token))
 		token = token[:0]
 		if id == "" {
 			return false
