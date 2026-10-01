@@ -77,7 +77,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	}
 
 	shared.SortRiskCues(dep.RiskCues)
-	shared.SortRecommendations(dep.Recommendations, recommendationPriorityRank)
+	shared.SortRecommendations(dep.Recommendations, report.RecommendationPriorityRank)
 
 	return dep, warnings
 }
@@ -345,8 +345,4 @@ func summarizeUnresolved(unresolved map[string]int) []string {
 		warnings = append(warnings, fmt.Sprintf("could not resolve Dart package import %q from pubspec data", dependency))
 	}
 	return warnings
-}
-
-func recommendationPriorityRank(priority string) int {
-	return shared.RecommendationPriorityRank(priority)
 }
