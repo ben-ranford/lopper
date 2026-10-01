@@ -4,6 +4,17 @@ preflight_runner_pid=
 preflight_watchdog_pid=
 preflight_state_dir=
 preflight_output_file=
+preflight_defer_signals=0
+preflight_pending_signal=
+
+preflight_handle_signal() {
+	if [ "$preflight_defer_signals" -eq 1 ]; then
+		preflight_pending_signal=$1
+		return 0
+	fi
+	cleanup_preflight_temps
+	exit "$1"
+}
 
 wait_preflight_child() {
 	preflight_wait_pid=$1
@@ -39,10 +50,23 @@ cleanup_preflight_git() {
 }
 
 run_preflight_git() {
-	preflight_state_dir=$(mktemp -d "${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX") || return 1
+	# Publish the temp path and child PIDs before honoring cancellation. Ignore
+	# signals only in the allocator subshell so mktemp cannot create a directory
+	# and die before its path reaches this shell.
+	preflight_pending_signal=
+	preflight_defer_signals=1
+	preflight_state_dir=$(trap '' HUP INT TERM; mktemp -d "${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX") || {
+		status=$?
+		preflight_state_dir=
+		preflight_defer_signals=0
+		[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
+		return "$status"
+	}
 	mkdir "$preflight_state_dir/active" || {
 		rmdir "$preflight_state_dir"
 		preflight_state_dir=
+		preflight_defer_signals=0
+		[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
 		return 1
 	}
 	# A separate Bash job owns its process group even when a reader exits from
@@ -192,6 +216,8 @@ exit "$status"
 			kill -TERM "$preflight_runner_pid" 2>/dev/null || :
 		fi
 	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
+	preflight_defer_signals=0
+	[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
 	status=0
 	wait_preflight_child "$preflight_runner_pid" || status=$?
 	preflight_runner_pid=
