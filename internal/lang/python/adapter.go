@@ -12,7 +12,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -146,7 +145,7 @@ func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result
 	if err != nil {
 		return err
 	}
-	content, relativePath, err := readPythonFile(repoPath, cleanPath)
+	content, relativePath, err := shared.ReadSourceFile(repoPath, cleanPath)
 	if err != nil {
 		return err
 	}
@@ -169,18 +168,6 @@ func enforceRepoBoundary(repoPath, path string) (string, error) {
 		return cleanPath, nil
 	}
 	return "", fmt.Errorf("refusing to read path outside repo: %s", path)
-}
-
-func readPythonFile(repoPath, cleanPath string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, cleanPath)
-	if err != nil {
-		return nil, "", err
-	}
-	relativePath, err := filepath.Rel(repoPath, cleanPath)
-	if err != nil {
-		relativePath = cleanPath
-	}
-	return content, relativePath, nil
 }
 
 var (

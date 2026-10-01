@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -993,7 +994,7 @@ func TestImportParsersSkipLocalAndStdlibImports(t *testing.T) {
 		t.Fatalf("expected no bindings for local module import, got %#v", bindings)
 	}
 
-	if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py")); err == nil {
 		t.Fatal("expected read error for missing python file")
 	}
 }
@@ -1004,7 +1005,7 @@ func TestReadPythonFileFallsBackWhenRelativePathComputationFails(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 
-	content, relativePath, err := readPythonFile(repoPath, "adapter.go")
+	content, relativePath, err := shared.ReadSourceFile(repoPath, "adapter.go")
 	if err != nil {
 		t.Fatalf("read python file: %v", err)
 	}
