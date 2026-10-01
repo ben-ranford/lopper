@@ -1,34 +1,32 @@
-# Temporary v1.8.9 Windows diagnostics
+# Temporary native preflight repeat — draft
 
-This branch is for manual investigation only and must not be merged or released.
-Production source files and the existing 400-execution runtime job are unchanged.
+Do not merge, release, or dispatch until root approves this exact diagnostic commit.
+Source helper: `0eb83fe3177e3071b199ffff2525c7bf6977d38b:scripts/hook-config-preflight.sh`, Git blob `e6b5e2d3dd82bf5d40f1566124afbf22d769ff13`.
+Packaged bytes and probe are read from immutable diagnostic Git objects, then checked
+against SHA-256 and helper Git-blob pins before execution. Manifest bytes are also pinned.
 
-Dispatch existing `windows-runtime.yml` on this branch with
-`historical_marker_diagnostic=false` and `preflight_termination_diagnostic=true`.
-The historical investigation is retained unchanged and is not requested for this run.
-Each supplemental job has read-only repository permissions, pinned actions and
-checkouts without persisted credentials. No repository secret is requested.
+Four original lifecycle cases are retained. Absent configuration status1/empty stderr
+and malformed configuration status128/byte-exact real stderr each run five times,
+using the same real Git binary, paths and environment for direct/wrapped results.
+Both direct and wrapped commands are bounded. Owned reader/descendant/anchor cleanup,
+empty state, unrelated sentinel, literal argv and poisoned BASH_ENV assertions remain.
+Raw test streams and retired PID/anchor records are retained under `cases/`, including on failure.
+An independent observer discovers actual ps PID/PPID/PGID headers, proves reader and
+anchor group ownership and unrelated-process exclusion, and records negative-group
+signal0 results. Windows evidence is MSYS/Cygwin POSIX group evidence, not Windows
+kernel PGIDs. Missing or unsupported native ps semantics fail closed.
 
-The historical job applies a hash-pinned observer patch to original tested merge
-41680ca9548f72e351c8ed88e98cc946347f45d4 in its own checkout. The JSON transport
-decodes to the exact reviewed UTF-8 patch before the hash check and application.
-Twenty separate test
-processes preserve the original three-test selection and ten-second marker
-assertion; each process has a thirty-second limit and the job has a fifteen-minute
-limit. Any failure keeps the job failed while all attempt evidence is retained.
-Pre-cancel process observations distinguish startup failures from cleanup results.
-Instrumentation changes output handles and can affect scheduling; a passing batch
-or ResumeThread observation alone does not establish the historical cause.
+Six separate startup controls use explicitly retained instrumented helper variants:
+known warning accepted; unknown warning rejected; missing group rejected; known
+warning without a group rejected; pre-permit interruption; and exited child.
+They preserve exact error streams, reject reader startup where required, and retain
+source diffs, process records, stopped anchors, empty state and a live sentinel.
+All14 exact-helper cases and all6 startup controls are mandatory and counted separately.
 
-The preflight job uses the exact helper Git blob from repair
-669d29704c2c21512b99ad3657568486480596e4, packaged under `.diagnostics/preflight/`.
-It extracts helper/probe bytes from the dispatched Git commit and verifies both
-SHA-256 hashes before execution, independently of Windows checkout line endings.
-It tests TERM-spawned and TERM-ignored descendants, normal exit status 7 and exact
-output, direct parent interruption, literal arguments, startup-hook poisoning,
-removal of temporary state and survival of an unrelated sentinel.
-It has a five-minute job limit and per-case guards sending TERM at eighteen seconds
-and KILL to the same owned wrapper at twenty-one seconds if necessary.
+Existing runtime and historical jobs/assets remain at diagnostic base `b8cea55ecabd9f313f5372400020b8a7183c8e02`;
+their execution is not proof for the final production PR. Dispatch preflight=true and
+historical=false only after review. Existing pinned actions, contents:read permissions,
+persist-credentials:false and five-minute supplemental job limit remain unchanged.
 
-These are supplemental investigations. They do not replace final-head PR checks,
-Codex review, current-main Sonar/suppression audits or release admission.
+Any later helper change requires fresh source binding and appropriate review before dispatch. Never
+reuse historical helper run36818780581 as evidence for changed helper bytes.

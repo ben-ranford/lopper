@@ -1,20 +1,47 @@
 {
-  "source_commit": "669d29704c2c21512b99ad3657568486480596e4",
-  "source_tree": "4ed2a33083159a7451272d8138d83403f6a071ca",
+  "source_commit": "0eb83fe3177e3071b199ffff2525c7bf6977d38b",
+  "source_tree": "eb263b1935906cb74b2822a0c55dc279cd8849b8",
   "source_helper_path": "scripts/hook-config-preflight.sh",
-  "source_helper_git_blob": "112a7e761764e9dddd1abb6c18141813572437cc",
+  "source_helper_git_blob": "e6b5e2d3dd82bf5d40f1566124afbf22d769ff13",
   "helper_path": ".diagnostics/preflight/hook-config-preflight.sh",
-  "helper_sha256": "81409fc5ba97555593214d9ed0527ffaf84654e51a3db220b31fab1565df4935",
-  "probe_sha256": "52f751c556310f5b135ab3b06546b732ae91eca9660e2b2d243fd95e8a9b6ec2",
-  "probe_source_adjustment": "Implementation owner removed one trailing space after final printf at line153; behavior unchanged. Prior probe SHA-256 b7febcf1e032d211e2bf773c8647ebfd404acd7099e5d61eae56f581705819e3.",
-  "scope": "Supplemental native Git Bash diagnostics only; not a replacement for final-head PR CI or review. The helper is an exact source Git blob packaged in this diagnostic commit.",
+  "artifact_helper_path": "scripts/hook-config-preflight.sh",
+  "helper_sha256": "f9381c99c6febfdaad1f8cbdb545acec097e0114ed6e4b0b81479d28b676d1f9",
+  "probe_sha256": "0f28d4d49780fdc56e20bad6d08df73f7898dcc31896ad11c479a0c6ae16894c",
+  "group_observer_sha256": "9b7828150c21d897e5e430ece4834cf2cfc86ed5cdf663f03fe0c52fe789c75d",
+  "startup_controls_sha256": "8f4969e0b1e3f40cd81ce68045aa8fc4b850fc59a27c1c02d6a79b2e1dc33da4",
+  "diagnostic_base": "b8cea55ecabd9f313f5372400020b8a7183c8e02",
+  "scope": "Supplemental native Git Bash proof only. No final-head CI, review, admission, or release claim.",
   "cases": [
     "term-spawn",
     "term-ignore",
     "normal-result",
-    "parent-interrupt"
+    "parent-interrupt",
+    "absent-config",
+    "invalid-config"
   ],
+  "case_repetitions": {
+    "term-spawn": 1,
+    "term-ignore": 1,
+    "normal-result": 1,
+    "parent-interrupt": 1,
+    "absent-config": 5,
+    "invalid-config": 5
+  },
+  "expected_pass_records": 14,
+  "startup_controls": [
+    "known-warning",
+    "unknown-warning",
+    "missing-group",
+    "known-warning-no-group",
+    "startup-interrupt",
+    "exited-child"
+  ],
+  "expected_startup_pass_records": 6,
+  "native_group_semantics": "MSYS/Cygwin POSIX process groups",
   "job_timeout_minutes": 5,
   "case_TERM_guard_seconds": 18,
-  "case_KILL_guard_seconds": 21
+  "case_KILL_guard_seconds": 21,
+  "normal_case_max_elapsed_seconds_exclusive": 5,
+  "source_approval": "REQUIRED: root and independent review of final helper and diagnostic commit",
+  "launch_contract": "Independent named-column ps and negative-group-signal0 observations; six explicit instrumented startup controls separate from exact helper cases"
 }
