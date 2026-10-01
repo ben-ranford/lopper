@@ -74,7 +74,10 @@ const (
 )
 
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
-var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
+var dynamicPattern = regexp.MustCompile(`(?m)(` +
+	`new\s+\$[A-Za-z_]|` +
+	`\$[A-Za-z_][A-Za-z0-9_]*\s*::|` +
+	`\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`)
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
 	result := parsePHPImports(content, filePath, resolver)
