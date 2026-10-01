@@ -187,3 +187,7 @@ Collection normalization contracts and canonical owners are documented in
 When reusing repository fixtures or Git setup in tests, follow the
 [test fixture helper contracts](docs/test-fixture-helpers.md) and preserve each
 regression's permission, output, and failure boundaries.
+
+Repository size and advisory test-clone reports are available with
+`make --silent source-size-report DUPLICATION_BASE=origin/main`. See
+[the methodology and helper ownership guidance](docs/source-size-report.md).

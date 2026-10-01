@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint reuse-check actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -32,9 +32,11 @@ GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/
 ACTIONLINT_VERSION ?= v1.7.12
 GOVULNCHECK_VERSION ?= v1.7.1-0.20260819171436-ff4f1c5e865b
 DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
+DUPLICATION_PYTHON ?= python3
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?=
+DUPLICATION_BASELINE ?= .github/duplication-baseline.json
 SUPPRESSION_BASE ?= origin/main
 BENCH_COUNT ?= 3
 BENCH_TIME ?= 200ms
@@ -89,6 +91,9 @@ lint:
 	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 	$(MAKE) gostyle
 
+reuse-check: dup-check
+	$(GO_CMD) run ./tools/reusecheck -root .
+
 actionlint:
 	$(GO_CMD) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
@@ -113,8 +118,9 @@ feature-flag-graduate:
 feature-flag-check:
 	$(GO_CMD) run ./tools/featureflag validate
 
+# A captured CI launcher must not delegate to a toolchain wrapper from PATH.
 dup-check:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) python3 -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)"
+	GOTOOLCHAIN=$(if $(LOPPER_DUPLICATION_GO),local,$(GO_TOOLCHAIN)) "$(DUPLICATION_PYTHON)" -E -S -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)" --baseline "$(DUPLICATION_BASELINE)"
 
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
@@ -504,3 +510,7 @@ test-tui: build
 
 tui-demo: build
 	$(BIN_DIR)/$(BINARY_NAME) tui --repo testdata/ui/pty-fixture --language js-ts --sort name --page-size 1
+
+.PHONY: source-size-report
+source-size-report:
+	python3 scripts/source_size_report.py --base "$(DUPLICATION_BASE)" --dupl-version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)"

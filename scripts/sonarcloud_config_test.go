@@ -6,14 +6,11 @@ import (
 	"testing"
 )
 
-func TestSonarCloudAutomaticAnalysisExcludesOnlyIntentionalJSFixtures(t *testing.T) {
+func TestSonarCloudAutomaticAnalysisIncludesJSFixtures(t *testing.T) {
 	t.Parallel()
 
-	const want = "sonar.exclusions=testdata/js/cjs/index.cjs,testdata/js/esm/index.js"
-	got := strings.ReplaceAll(readConfig(t, ".sonarcloud.properties"), "\r\n", "\n")
-	got = strings.TrimSuffix(got, "\n")
-	if got != want {
-		t.Fatalf(".sonarcloud.properties = %q, want %q", got, want)
+	if got := strings.TrimSpace(readConfig(t, ".sonarcloud.properties")); got != "" {
+		t.Fatalf(".sonarcloud.properties must not exclude sources: got %q", got)
 	}
 
 	for _, path := range []string{
@@ -21,7 +18,7 @@ func TestSonarCloudAutomaticAnalysisExcludesOnlyIntentionalJSFixtures(t *testing
 		"testdata/js/esm/index.js",
 	} {
 		if _, err := os.Stat(repoPath(t, path)); err != nil {
-			t.Fatalf("stat excluded fixture %s: %v", path, err)
+			t.Fatalf("stat included fixture %s: %v", path, err)
 		}
 	}
 }

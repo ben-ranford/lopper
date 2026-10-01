@@ -281,6 +281,11 @@ func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
 	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
 		"GH_EVENT_NAME":               "${{ github.event_name }}",
 		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
+		"LOPPER_CI_MAKE":              "${{ steps.duplication_executables.outputs.make }}",
+		"LOPPER_DUPLICATION_GO":       "${{ steps.duplication_executables.outputs.go }}",
+		"LOPPER_DUPLICATION_GIT":      "${{ steps.duplication_executables.outputs.git }}",
+		"LOPPER_DUPLICATION_REVISION": "${{ steps.duplication_executables.outputs.revision }}",
+		"DUPLICATION_PYTHON":          "${{ steps.duplication_executables.outputs.python }}",
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
 		`GH_TOKEN`,
@@ -496,7 +501,7 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`export DUPLICATION_BASE="${MEMORY_BENCH_BASE}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
-		`make ci-checks`,
+		`"${LOPPER_CI_MAKE}" ci-checks`,
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
 		`MEMORY_BENCH_BASE="origin/${base_ref}"`,
@@ -858,6 +863,7 @@ func assertRunStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, scrip
 
 	env := map[string]string{
 		"GH_EVENT_NAME":     "pull_request",
+		"LOPPER_CI_MAKE":    filepath.Join(fakeBin, "make"),
 		"MEMORY_BENCH_BASE": scenario.baseSHA,
 		"PATH":              fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
@@ -1043,6 +1049,21 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 		if strings.Contains(workflowText, forbidden) {
 			t.Fatalf("ci workflow must not contain VS Code smoke skip fragment %q", forbidden)
 		}
+	}
+}
+
+func TestCISourceSizeReportUsesResolvedMemoryBenchmarkBase(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	reportStep := workflowStepByName(t, workflow.Jobs, "verify-checks", "Report repository size and advisory test clones")
+	assertWorkflowStepRunContainsAll(t, reportStep, "repository size base resolution", []string{
+		`size_base="${MEMORY_BENCH_BASE:-origin/main}"`,
+		`DUPLICATION_BASE="${size_base}"`,
+	})
+	if strings.Contains(reportStep.Run, "github.event.pull_request.base.sha") {
+		t.Fatal("repository size report must use the resolved memory benchmark base instead of the event base SHA")
 	}
 }
 
