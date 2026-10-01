@@ -96,24 +96,39 @@ jobs:
           set -euo pipefail
           workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
           evidence="$workspace/preflight-evidence"
-          mkdir -p "$evidence"
-          source=669d29704c2c21512b99ad3657568486480596e4
+          mkdir -p "$evidence/scripts"
+          source=39a17b24e6d5b8764a0b8c3f9ce9d7e8f0f2d475
           diagnostic_sha="$(git -C "$workspace/diagnostic-assets" rev-parse HEAD)"
           test "$diagnostic_sha" = "$GITHUB_SHA"
           # Read immutable Git bytes so Windows checkout line endings cannot change either asset.
-          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/hook-config-preflight.sh > "$evidence/hook-config-preflight.sh"
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/hook-config-preflight.sh > "$evidence/scripts/hook-config-preflight.sh"
           git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/preflight-native-probe.sh > "$evidence/preflight-native-probe.sh"
           git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/manifest.json > "$evidence/source-manifest.json"
-          helper_hash="$(sha256sum "$evidence/hook-config-preflight.sh" | cut -d ' ' -f 1)"
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/group-observer.sh > "$evidence/group-observer.sh"
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/startup-controls.sh > "$evidence/startup-controls.sh"
+          helper_hash="$(sha256sum "$evidence/scripts/hook-config-preflight.sh" | cut -d ' ' -f 1)"
           probe_hash="$(sha256sum "$evidence/preflight-native-probe.sh" | cut -d ' ' -f 1)"
-          test "$helper_hash" = 81409fc5ba97555593214d9ed0527ffaf84654e51a3db220b31fab1565df4935
-          test "$probe_hash" = 52f751c556310f5b135ab3b06546b732ae91eca9660e2b2d243fd95e8a9b6ec2
+          test "$helper_hash" = 6f55616555bd6071a224eca3098c81e04d49c2bbdddfb105f1c2b81f5a2af432
+          test "$probe_hash" = 0f28d4d49780fdc56e20bad6d08df73f7898dcc31896ad11c479a0c6ae16894c
+          manifest_hash="$(sha256sum "$evidence/source-manifest.json" | cut -d ' ' -f 1)"
+          test "$manifest_hash" = c3fdb527cf1175195874ae620c2165e5be60f32ec10cbb9ca2be8f8cb77ab644
+          observer_hash="$(sha256sum "$evidence/group-observer.sh" | cut -d ' ' -f 1)"
+          test "$observer_hash" = 9b7828150c21d897e5e430ece4834cf2cfc86ed5cdf663f03fe0c52fe789c75d
+          controls_hash="$(sha256sum "$evidence/startup-controls.sh" | cut -d ' ' -f 1)"
+          test "$controls_hash" = 8f4969e0b1e3f40cd81ce68045aa8fc4b850fc59a27c1c02d6a79b2e1dc33da4
+          helper_blob="$(git hash-object "$evidence/scripts/hook-config-preflight.sh")"
+          test "$helper_blob" = 9a2b444577ca1331cae3214f058ac0d0490cd14f
+          case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ;; *) echo "Native Git Bash required" >&2; exit 1 ;; esac
           set +e
-          bash "$evidence/preflight-native-probe.sh" "$evidence/hook-config-preflight.sh" 2>&1 | tee "$evidence/probe.log"
+          LOPPER_PREFLIGHT_PROBE_EVIDENCE="$evidence/cases" bash "$evidence/preflight-native-probe.sh" "$evidence/scripts/hook-config-preflight.sh" "$evidence/group-observer.sh" 2>&1 | tee "$evidence/probe.log"
           probe_status=${PIPESTATUS[0]}
+          bash "$evidence/startup-controls.sh" "$evidence/scripts/hook-config-preflight.sh" "$evidence/group-observer.sh" "$evidence/startup" 2>&1 | tee "$evidence/startup.log"
+          startup_status=${PIPESTATUS[0]}
           set -e
-          printf '{"source_sha":"%s","diagnostic_sha":"%s","helper_sha256":"%s","probe_sha256":"%s","exit_code":%s}\n' "$source" "$diagnostic_sha" "$helper_hash" "$probe_hash" "$probe_status" > "$evidence/result.json"
-          exit "$probe_status"
+          overall_status=$probe_status
+          if [ "$startup_status" -ne 0 ]; then overall_status=$startup_status; fi
+          printf '{"source_sha":"%s","diagnostic_sha":"%s","helper_sha256":"%s","probe_sha256":"%s","group_observer_sha256":"%s","startup_controls_sha256":"%s","exit_code":%s,"main_exit_code":%s,"startup_exit_code":%s}\n' "$source" "$diagnostic_sha" "$helper_hash" "$probe_hash" "$observer_hash" "$controls_hash" "$overall_status" "$probe_status" "$startup_status" > "$evidence/result.json"
+          exit "$overall_status"
       - name: Retain supplemental preflight evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
