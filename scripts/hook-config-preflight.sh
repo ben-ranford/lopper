@@ -39,16 +39,28 @@ shift
 interrupted=
 supervisor_pid=$$
 trap "interrupted=1" HUP INT TERM
+# Capture only Bash job-launch diagnostics; the anchor restores reader stderr
+# before its body can run. No reader or descendant starts before authorization.
+exec 3>&2
+{
 set -m
 (
+	exec 2>&3 3>&-
 	set +m
 	# Forward direct anchor interruption to the supervisor as cancellation.
 	# Catching signals also preserves normal signal handling in the reader.
 	reader_interrupted=
 	trap "reader_interrupted=1; kill -TERM \"\$supervisor_pid\" 2>/dev/null || :" HUP INT TERM
-	"$@" </dev/null & reader_pid=$!
-	reader_status=0
-	wait "$reader_pid" || reader_status=$?
+	printf x >"$state_dir/ready"
+	# Builtins keep failed group setup from leaving any pre-reader descendants.
+	# The existing watchdog bounds this brief startup authorization wait.
+	while [ ! -f "$state_dir/start" ] || [ -n "$reader_interrupted" ]; do :; done
+	reader_status=124
+	if [ -z "$reader_interrupted" ]; then
+		"$@" </dev/null & reader_pid=$!
+		reader_status=0
+		wait "$reader_pid" || reader_status=$?
+	fi
 	# Keep the group leader alive, without forking during the final group kill.
 	(trap "" HUP INT TERM; exec sleep 60) & hold_pid=$!
 	if [ -z "$reader_interrupted" ] && rmdir "$state_dir/active" 2>/dev/null; then
@@ -58,21 +70,67 @@ set -m
 	while kill -0 "$hold_pid" 2>/dev/null; do wait "$hold_pid" || :; done
 ) & reader_group=$!
 set +m
+} 2>"$state_dir/launch-error"
+exec 3>&-
+while [ ! -f "$state_dir/ready" ] && [ -z "$interrupted" ]; do
+	[ "$(jobs -pr)" = "$reader_group" ] || {
+		cat "$state_dir/launch-error" >&2
+		exit 1
+	}
+	sleep 0.01
+done
+[ "$(jobs -pr)" = "$reader_group" ] || {
+	cat "$state_dir/launch-error" >&2
+	exit 1
+}
+# A live owned child cannot reuse an existing group ID. Before authorizing the
+# reader, require the kernel to confirm a group with that exact child PID.
+if ! kill -0 -- "-$reader_group" 2>/dev/null; then
+	# The unapproved anchor has run builtins only, so it has no descendants.
+	{
+		kill -KILL "$reader_group" || :
+		wait "$reader_group" || :
+	} 2>/dev/null
+	cat "$state_dir/launch-error" >&2
+	printf "%s\n" "Could not establish Git preflight process group" >&2
+	exit 1
+fi
+startup_failed=
+[ ! -f "$state_dir/expired" ] || interrupted=1
+if [ -n "$interrupted" ]; then
+	cat "$state_dir/launch-error" >&2
+fi
+if [ -z "$interrupted" ] && [ -s "$state_dir/launch-error" ]; then
+	# Bash calls setpgid in both parent and child. Accept this one child
+	# diagnostic only after the live anchored group was proven above.
+	printf "%s\n" "--: child setpgid ($reader_group to $reader_group): Operation not permitted" >"$state_dir/expected-launch-error"
+	cmp -s "$state_dir/launch-error" "$state_dir/expected-launch-error" || startup_failed=1
+	if [ -n "$startup_failed" ]; then
+		cat "$state_dir/launch-error" >&2
+	fi
+fi
+if [ -z "$interrupted" ] && [ -z "$startup_failed" ] && [ ! -f "$state_dir/expired" ]; then
+	printf x >"$state_dir/start"
+fi
 # Polling closes the signal-before-wait race and bounds interrupted waits.
 # Signal only the still-running anchored job owned by this supervisor.
-while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ]; do
+while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ]; do
 	[ "$(jobs -pr)" = "$reader_group" ] || exit 1
 	sleep 0.01
 done
 trap ":" HUP INT TERM
 [ "$(jobs -pr)" = "$reader_group" ] || exit 1
+kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 status=124
-if [ -n "$interrupted" ]; then
+if [ -n "$interrupted" ] || [ -n "$startup_failed" ]; then
+	[ -z "$startup_failed" ] || status=1
 	kill -TERM -- "-$reader_group" 2>/dev/null || :
 	sleep 1
 else
 	read -r status <"$state_dir/result" || status=1
 fi
+[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 # Bash can report the deliberately killed job between kill and wait. Keep
 # that supervisor notification out of the reader diagnostic stream; the
 # reader inherited its original stderr before this cleanup-only redirection.
