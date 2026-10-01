@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/prmetadata"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestBaseFailureOutputRetainsCompleteCaptureSafely(t *testing.T) {
@@ -104,7 +105,7 @@ func assertProofOutputFailure(t *testing.T, repo regressionProofRepo, declaratio
 	if strings.Contains(output.String(), "Regression proof verified:") {
 		t.Fatalf("proof reported success after writer failure: %q", &output)
 	}
-	if worktrees := runRepoCommand(t, repo.path, "git", "worktree", "list", "--porcelain"); strings.Count(worktrees, "worktree ") != 1 {
+	if worktrees := testutil.GitOutput(t, repo.path, "worktree", "list", "--porcelain"); strings.Count(worktrees, "worktree ") != 1 {
 		t.Fatalf("base worktree not cleaned up: %s", worktrees)
 	}
 }
