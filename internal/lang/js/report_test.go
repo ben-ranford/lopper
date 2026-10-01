@@ -2,7 +2,6 @@ package js
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +10,7 @@ import (
 )
 
 func TestReportFormatContainsDependency(t *testing.T) {
-	repoPath := filepath.Join("..", "..", "..", "testdata", "js", "esm")
+	repoPath, _, _ := setupLodashFixture(t, "import { map } from 'lodash'\nmap([1], (x) => x)\n")
 	adapter := NewAdapter()
 	reportData, err := adapter.Analyse(context.Background(), language.Request{
 		RepoPath:   repoPath,
