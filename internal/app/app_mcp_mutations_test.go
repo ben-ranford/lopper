@@ -18,9 +18,8 @@ import (
 )
 
 const (
-	mcpLodashPackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
-	mcpMapSource         = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
-	mcpPythonSource      = "import requests\nprint('ok')\n"
+	mcpMapSource    = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
+	mcpPythonSource = "import requests\nprint('ok')\n"
 )
 
 type mcpTestResponse struct {
@@ -390,14 +389,7 @@ func decodeMCPStructuredContent(t *testing.T, response mcpTestResponse, target a
 func setupMCPGitLodashFixture(t *testing.T) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
-	sourcePath := filepath.Join(repo, indexJSFile)
-	writeTextFile(t, sourcePath, mcpMapSource, 0o644)
-
-	dependencyRoot := filepath.Join(repo, "node_modules", "lodash")
-	mustMkdirAll(t, dependencyRoot)
-	writeTextFile(t, filepath.Join(dependencyRoot, "package.json"), mcpLodashPackageJSON, 0o644)
-	writeTextFile(t, filepath.Join(dependencyRoot, "index.js"), "export { map } from './map.js'\n", 0o644)
-	writeTextFile(t, filepath.Join(dependencyRoot, "map.js"), "export default function map() {}\n", 0o644)
+	sourcePath := testutil.WriteLodashMapFixture(t, repo, mcpMapSource)
 
 	testutil.RunGit(t, repo, "init")
 	testutil.RunGit(t, repo, "config", "user.email", "test@example.com")

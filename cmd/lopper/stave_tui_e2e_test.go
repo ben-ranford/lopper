@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"io"
 	"os"
 	"os/exec"
@@ -298,7 +299,7 @@ func TestStaveTUIInteractiveNavigationFilterDetailAndHelp(t *testing.T) {
 	// Other packages create and remove probe files in the source checkout.
 	// Analyse a private fixture so interactive refresh cannot race those tests.
 	fixture := t.TempDir()
-	writeFile(t, filepath.Join(fixture, "go.mod"), `module example.com/stave-pty
+	testutil.MustWriteFileWithModes(t, filepath.Join(fixture, "go.mod"), `module example.com/stave-pty
 
 go 1.22
 
@@ -306,8 +307,8 @@ require (
 	charm.land/bubbletea/v2 v2.0.0
 	github.com/pelletier/go-toml/v2 v2.0.0
 )
-`)
-	writeFile(t, filepath.Join(fixture, "main.go"), `package main
+`, 0o644, 0o755)
+	testutil.MustWriteFileWithModes(t, filepath.Join(fixture, "main.go"), `package main
 
 import (
 	tea "charm.land/bubbletea/v2"
@@ -318,7 +319,7 @@ func main() {
 	_ = tea.NewProgram
 	_ = toml.Unmarshal
 }
-`)
+`, 0o644, 0o755)
 	cmd := exec.Command(bin, "tui", "--repo", fixture, "--language", "go", "--top", "5", "--enable-feature", "stave-tui-preview")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=", "CI=")

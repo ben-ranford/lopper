@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/version"
 )
 
@@ -60,22 +61,22 @@ func TestAnalyseBinaryCPPQualifiedHeaderProvenance(t *testing.T) {
 	t.Run("external lookalikes are reported", func(t *testing.T) {
 		repoPath := filepath.Join(workspaceRoot, "cpp-lookalikes")
 		externalIncludeRoot := filepath.Join(workspaceRoot, "vendor", "include")
-		writeFile(t, filepath.Join(repoPath, "compile_commands.json"), `[
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "compile_commands.json"), `[
   {"directory":"`+repoPath+`","file":"src/main.cpp","arguments":["c++","-I","`+externalIncludeRoot+`","-c","src/main.cpp"]}
-]`)
-		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <asm/vendor/sdk.hpp>
+]`, 0o644, 0o755)
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <asm/vendor/sdk.hpp>
 #include <asm-generic/vendor/sdk.hpp>
 #include <backward/hash_map>
 #include <parallel/base.h>
 int main() { return 0; }
-`)
+`, 0o644, 0o755)
 		for _, header := range []string{
 			"asm/vendor/sdk.hpp",
 			"asm-generic/vendor/sdk.hpp",
 			"backward/hash_map",
 			"parallel/base.h",
 		} {
-			writeFile(t, filepath.Join(externalIncludeRoot, filepath.FromSlash(header)), "// lookalike\n")
+			testutil.MustWriteFileWithModes(t, filepath.Join(externalIncludeRoot, filepath.FromSlash(header)), "// lookalike\n", 0o644, 0o755)
 		}
 
 		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
@@ -94,7 +95,7 @@ int main() { return 0; }
 
 	t.Run("canonical compiler headers stay suppressed", func(t *testing.T) {
 		repoPath := filepath.Join(workspaceRoot, "cpp-canonical")
-		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <asm/errno.h>
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <asm/errno.h>
 #include <asm-generic/errno.h>
 #include <asm-generic/bitops/atomic.h>
 #include <backward/hash_map>
@@ -107,7 +108,7 @@ int main() { return 0; }
 #include <tr1/wchar.h>
 #include <tr1/wctype.h>
 int main() { return 0; }
-`)
+`, 0o644, 0o755)
 
 		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
 			"analyse", "--top", "10",
@@ -129,15 +130,15 @@ int main() { return 0; }
 		repoPath := filepath.Join(workspaceRoot, "cpp-dash-i-system-root")
 		compilerDefaultRoot := filepath.Join(workspaceRoot, "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
 		userRoot := filepath.Join(workspaceRoot, "acme-sdk", "include")
-		writeFile(t, filepath.Join(compilerDefaultRoot, "linux", "if.h"), "// compiler default header\n")
-		writeFile(t, filepath.Join(userRoot, "sys", "types.h"), "// user supplied lookalike\n")
-		writeFile(t, filepath.Join(repoPath, "compile_commands.json"), `[
+		testutil.MustWriteFileWithModes(t, filepath.Join(compilerDefaultRoot, "linux", "if.h"), "// compiler default header\n", 0o644, 0o755)
+		testutil.MustWriteFileWithModes(t, filepath.Join(userRoot, "sys", "types.h"), "// user supplied lookalike\n", 0o644, 0o755)
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "compile_commands.json"), `[
   {"directory":"`+repoPath+`","file":"src/main.cpp","arguments":["c++","-I","`+compilerDefaultRoot+`","-I","`+userRoot+`","-c","src/main.cpp"]}
-]`)
-		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <linux/if.h>
+]`, 0o644, 0o755)
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <linux/if.h>
 #include <sys/types.h>
 int main() { return 0; }
-`)
+`, 0o644, 0o755)
 
 		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
 			"analyse", "--top", "10",
@@ -153,11 +154,11 @@ int main() { return 0; }
 
 	t.Run("declared extension lookalikes without provenance are reported", func(t *testing.T) {
 		repoPath := filepath.Join(workspaceRoot, "cpp-declared-lookalikes")
-		writeFile(t, filepath.Join(repoPath, "vcpkg.json"), `{"name":"fixture","version-string":"1.0.0","dependencies":["parallel"]}`)
-		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <parallel/base.h>
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "vcpkg.json"), `{"name":"fixture","version-string":"1.0.0","dependencies":["parallel"]}`, 0o644, 0o755)
+		testutil.MustWriteFileWithModes(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <parallel/base.h>
 #include <acme/base.h>
 int main() { return 0; }
-`)
+`, 0o644, 0o755)
 
 		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
 			"analyse", "--top", "10",
@@ -294,16 +295,6 @@ func copyDir(t *testing.T, src string, dst string) {
 		return os.WriteFile(targetPath, content, 0o644)
 	}); err != nil {
 		t.Fatalf("copy fixture repo: %v", err)
-	}
-}
-
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
 	}
 }
 

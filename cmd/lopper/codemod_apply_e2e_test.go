@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	e2eLodashPackageJSON = "{\n  \"main\": \"index.js\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./map\": \"./map.js\"\n  }\n}\n"
 	e2eMapSource         = "import { map } from \"lodash\";\nmap([1], (x) => x)\n"
 	e2ePythonSource      = "import requests\r\nprint('ok')\n"
 	e2ePythonCodemodFlag = "python-codemod-suggestions"
@@ -253,24 +252,7 @@ func TestRunAnalysePHPTraitUseAfterSameLineHeredocE2E(t *testing.T) {
 func setupGitLodashFixture(t *testing.T, source string) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
-	sourcePath := filepath.Join(repo, "index.js")
-	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-
-	dependencyRoot := filepath.Join(repo, "node_modules", "lodash")
-	if err := os.MkdirAll(dependencyRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dependency root: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dependencyRoot, "package.json"), []byte(e2eLodashPackageJSON), 0o644); err != nil {
-		t.Fatalf("write dependency package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dependencyRoot, "index.js"), []byte("export { map } from './map.js'\n"), 0o644); err != nil {
-		t.Fatalf("write dependency entrypoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dependencyRoot, "map.js"), []byte("export default function map() {}\n"), 0o644); err != nil {
-		t.Fatalf("write dependency map.js: %v", err)
-	}
+	sourcePath := testutil.WriteLodashMapFixture(t, repo, source)
 
 	testutil.RunGit(t, repo, "init")
 	testutil.RunGit(t, repo, "config", "user.email", "codex@example.com")
@@ -330,9 +312,7 @@ func setupPythonFixture(t *testing.T, gitRepo bool) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "main.py")
-	if err := os.WriteFile(sourcePath, []byte(e2ePythonSource), 0o644); err != nil {
-		t.Fatalf("write python source: %v", err)
-	}
+	testutil.MustWriteFileMode(t, sourcePath, e2ePythonSource, 0o644)
 	if !gitRepo {
 		return repo, sourcePath
 	}

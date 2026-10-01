@@ -183,3 +183,7 @@ See [CI duplication checks](docs/ci-usage.md) for base selection and supported p
 
 Collection normalization contracts and canonical owners are documented in
 [Collection helper contracts](docs/collection-helpers.md).
+
+When reusing repository fixtures or Git setup in tests, follow the
+[test fixture helper contracts](docs/test-fixture-helpers.md) and preserve each
+regression's permission, output, and failure boundaries.
