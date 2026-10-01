@@ -36,6 +36,14 @@ run_preflight_git() {
 	bash --noprofile --norc -p -c '
 state_dir=$1
 shift
+reader_group_is_running() {
+	# Keep command substitution out of the trapped supervisor: Bash 5.2 can
+	# misparse a signal trap while parsing $(...). Compare the complete job
+	# listing so empty, different, or multiple running jobs still fail closed.
+	jobs -pr >"$state_dir/running-jobs" || return 1
+	printf "%s\n" "$reader_group" >"$state_dir/expected-job" || return 1
+	cmp -s "$state_dir/running-jobs" "$state_dir/expected-job"
+}
 interrupted=
 supervisor_pid=$$
 trap "interrupted=1" HUP INT TERM
@@ -73,13 +81,13 @@ set +m
 } 2>"$state_dir/launch-error"
 exec 3>&-
 while [ ! -f "$state_dir/ready" ] && [ -z "$interrupted" ]; do
-	[ "$(jobs -pr)" = "$reader_group" ] || {
+	reader_group_is_running || {
 		cat "$state_dir/launch-error" >&2
 		exit 1
 	}
 	sleep 0.01
 done
-[ "$(jobs -pr)" = "$reader_group" ] || {
+reader_group_is_running || {
 	cat "$state_dir/launch-error" >&2
 	exit 1
 }
@@ -115,11 +123,11 @@ fi
 # Polling closes the signal-before-wait race and bounds interrupted waits.
 # Signal only the still-running anchored job owned by this supervisor.
 while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ]; do
-	[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+	reader_group_is_running || exit 1
 	sleep 0.01
 done
 trap ":" HUP INT TERM
-[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+reader_group_is_running || exit 1
 kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 status=124
 if [ -n "$interrupted" ] || [ -n "$startup_failed" ]; then
@@ -129,7 +137,7 @@ if [ -n "$interrupted" ] || [ -n "$startup_failed" ]; then
 else
 	read -r status <"$state_dir/result" || status=1
 fi
-[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+reader_group_is_running || exit 1
 kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 # Bash can report the deliberately killed job between kill and wait. Keep
 # that supervisor notification out of the reader diagnostic stream; the
