@@ -864,7 +864,7 @@ func testBuildConstraintMatchingAndExtraction(t *testing.T) {
 		t.Fatalf("expected go:build for current GOOS to match")
 	}
 
-	plusBuildOnly := []byte(strings.Join([]string{"// +build " + runtime.GOOS, packageMainLine, ""}, "\n"))
+	plusBuildOnly := []byte(strings.Join([]string{"// +build " + runtime.GOOS, "", packageMainLine, ""}, "\n"))
 
 	if !matchesActiveBuild(plusBuildOnly) {
 		t.Fatalf("expected +build for current GOOS to match")
@@ -1460,9 +1460,7 @@ func TestMiscCoverageBranches(t *testing.T) {
 	if isSupportedGoReleaseTag("go1.bad") {
 		t.Fatalf("expected malformed go version tag to be unsupported")
 	}
-	if matchesActiveBuild([]byte("// +build definitely_not_active\n" + packageMainLine + "\n")) {
-		t.Fatalf("expected inactive plus-build expression to evaluate false")
-	}
+	// Legacy build constraints are covered with valid header separation in build_tags_header_test.go.
 
 	applyImportMetadata([]importMetadata{{Dependency: ""}}, &scanResult{
 		BlankImportsByDependency:      map[string]int{},
@@ -2033,6 +2031,7 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 }
 
 func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
+
 	for name, fixture := range map[string]struct {
 		content         string
 		wantTrustedPath bool
@@ -2058,11 +2057,8 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 			if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
 				t.Fatalf("analyse oversized go.mod fixture: %v", err)
 			}
-			if fixture.wantTrustedPath {
-				requireGoModuleMetadataPath(t, repo, "example.com/root")
-				return
-			}
-			requireGoModuleMetadataPath(t, repo, "")
+			wantPath := map[bool]string{true: "example.com/root"}[fixture.wantTrustedPath]
+			requireGoModuleMetadataPath(t, repo, wantPath)
 		})
 	}
 
