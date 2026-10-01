@@ -1,25 +1,25 @@
 package kotlinandroid
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 var gradleLockCoordinatePattern = regexp.MustCompile(`^\s*([^:#=\s]+):([^:#=\s]+):([^=\s]+)(?:\s*=.*)?$`)
 
 func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []string) {
-	parser := func(files []discoveredGradleFile) ([]dependencyDescriptor, []string) {
-		return parseGradleLockfileFiles(files), nil
+	var descriptors []dependencyDescriptor
+	discovery, walkErr := streamGradleLockfiles(repoPath, func(_, content string) {
+		descriptors = append(descriptors, detachGradleDescriptors(parseGradleLockfileContent(content))...)
+	})
+	warnings := discovery.Warnings
+	if walkErr != nil {
+		warnings = append(warnings, fmt.Sprintf("unable to scan lockfiles: %v", walkErr))
 	}
-	return collectGradleFileDescriptorsWithWarnings(repoPath, discoverGradleLockfiles, parser, "lockfiles")
-}
-
-func parseGradleLockfileFiles(files []discoveredGradleFile) []dependencyDescriptor {
-	descriptors := make([]dependencyDescriptor, 0)
-	for _, file := range files {
-		descriptors = append(descriptors, parseGradleLockfileContent(file.Content)...)
-	}
-	return dedupeDescriptors(descriptors)
+	return dedupeDescriptors(descriptors), discovery.Matched, shared.DedupeWarnings(warnings)
 }
 
 func parseGradleLockfileContent(content string) []dependencyDescriptor {
@@ -48,4 +48,12 @@ func parseGradleLockfileContent(content string) []dependencyDescriptor {
 		})
 	}
 	return descriptors
+}
+
+func parseGradleLockfileFiles(files []discoveredGradleFile) []dependencyDescriptor {
+	var descriptors []dependencyDescriptor
+	for _, file := range files {
+		descriptors = append(descriptors, detachGradleDescriptors(parseGradleLockfileContent(file.Content))...)
+	}
+	return dedupeDescriptors(descriptors)
 }
