@@ -19,6 +19,7 @@ import (
 )
 
 func TestHooksPreflightTimesOutOnBlockingGitConfigWithoutMutation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(*testing.T, string) []string
@@ -38,10 +39,12 @@ func TestHooksPreflightTimesOutOnBlockingGitConfigWithoutMutation(t *testing.T) 
 }
 
 func TestHooksUninstallTimesOutOnBlockingMutation(t *testing.T) {
+	t.Parallel()
 	assertHookMutationTimeout(t, "hooks-uninstall")
 }
 
 func TestHooksInstallTimesOutOnBlockingActivation(t *testing.T) {
+	t.Parallel()
 	assertHookMutationTimeout(t, "hooks-install")
 }
 
@@ -112,8 +115,12 @@ func observePreflightFault(t *testing.T, marker, description string) {
 }
 
 func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
+	t.Parallel()
 	for _, previousPath := range []string{"absent", "", ".githooks"} {
-		t.Run("previous-path="+previousPath, func(t *testing.T) { assertPostWriteTimeoutRollsBackState(t, previousPath) })
+		t.Run("previous-path="+previousPath, func(t *testing.T) {
+			t.Parallel()
+			assertPostWriteTimeoutRollsBackState(t, previousPath)
+		})
 	}
 }
 
@@ -183,6 +190,7 @@ func assertPreservedEntriesLifecycle(t *testing.T, previousPath string) {
 }
 
 func TestHooksInstallBoundsRollbackWithBlockingConfig(t *testing.T) {
+	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) {
 			t.Parallel()
@@ -210,6 +218,7 @@ func TestHooksInstallBoundsRollbackWithBlockingConfig(t *testing.T) {
 }
 
 func TestHooksInstallRollbackFailureRetainsUsableHook(t *testing.T) {
+	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) {
 			t.Parallel()
@@ -571,6 +580,7 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 }
 
 func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
+	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
 		t.Run("previous-path="+previousPath, func(t *testing.T) {
 			t.Parallel()

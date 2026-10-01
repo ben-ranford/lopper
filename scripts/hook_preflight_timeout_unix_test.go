@@ -16,6 +16,7 @@ import (
 )
 
 func TestHookPreflightKillsTermIgnoringReaderTree(t *testing.T) {
+	t.Parallel()
 	assertPreflightReaderTimeout(t, `#!/bin/sh
 trap '' TERM
 printf '%s\n' "$$" >> "$1"
@@ -25,6 +26,7 @@ wait
 }
 
 func TestHookPreflightKillsChildSpawnedDuringTermination(t *testing.T) {
+	t.Parallel()
 	assertPreflightReaderTimeout(t, `#!/bin/sh
 trap 'sleep 60 & printf "%s\n" "$!" >> "$1"; exit' TERM
 printf '%s\n' "$$" >> "$1"
