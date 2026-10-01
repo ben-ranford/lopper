@@ -115,7 +115,7 @@ func scanSources(root rootFS, stdout io.Writer) (int, error) {
 }
 
 func skipDirectory(path, name string) bool {
-	return path != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "testdata")
+	return path != "." && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "vendor" || name == "node_modules" || name == "testdata")
 }
 
 func scanPackageSources(sources map[string][]byte, stdout io.Writer) (int, error) {
