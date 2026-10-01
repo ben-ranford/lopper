@@ -53,6 +53,10 @@ func NewReport(rawRepoPath string, now func() time.Time) (string, report.Report,
 	}, nil
 }
 
+// WalkRepoFiles is an error-only compatibility helper for detection and unlimited
+// walks (maxFiles <= 0). It does not expose truncation status. Bounded
+// report-producing callers must use WalkRepoFilesWithStatus and propagate its
+// truncation status into visible partial-result warnings.
 func WalkRepoFiles(ctx context.Context, repoPath string, maxFiles int, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) error {
 	_, err := WalkRepoFilesWithStatus(ctx, repoPath, maxFiles, skipDir, visit)
 	return err
