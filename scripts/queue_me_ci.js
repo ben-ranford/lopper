@@ -89,12 +89,12 @@ function appendPage(data, key, collected, total, seen) {
   return data.total_count;
 }
 
-async function inventory(api, endpoint, parameters, key, collected = [], seen = new Set(), total) {
+async function inventory(api, endpoint, parameters, key, total, collected = [], seen = new Set()) {
   const page = collected.length / PAGE_SIZE + 1;
   const data = await api(endpoint, { ...parameters, per_page: PAGE_SIZE, page }, true);
   const expected = appendPage(data, key, collected, total, seen);
   if (collected.length === expected) return collected;
-  return inventory(api, endpoint, parameters, key, collected, seen, expected);
+  return inventory(api, endpoint, parameters, key, expected, collected, seen);
 }
 
 function assertRunEnvelope(run, workflow, input) {
@@ -155,7 +155,7 @@ async function latestRun(api, workflow, input, pull) {
     if (matching.length || (run.pull_requests.length === 0 && matchingHead(run, pull))) candidates.push(run);
   }
   requireEvidence(candidates.length > 0, `missing ${workflow.name} run associated with this pull request.`);
-  const latest = candidates.reduce((selected, run) => run.run_number > selected.run_number ? run : selected);
+  const latest = candidates.reduce((selected, run) => run.run_number > selected.run_number ? run : selected, candidates[0]);
   assertSuccessfulRun(latest, workflow, input, pull);
   return latest;
 }
