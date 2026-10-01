@@ -28,7 +28,7 @@ func buildTopGoReports(topN int, dependencies []string, scan scanResult, weights
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, goFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	dep := shared.BuildDependencyReportFromStats(dependency, "go", stats)
 	dep.Provenance = buildGoDependencyProvenance(scan.DependencyProvenanceByDep[dependency])
 
@@ -87,7 +87,7 @@ func buildGoDependencyProvenance(info goDependencyProvenance) *report.Dependency
 	return &report.DependencyProvenance{
 		Source:     source,
 		Confidence: confidence,
-		Signals:    uniqueStrings(signals),
+		Signals:    shared.UniqueTrimmedStrings(signals),
 	}
 }
 
@@ -135,8 +135,4 @@ func appendDotImportRecommendation(recs []report.Recommendation, dep report.Depe
 		Message:   "Dot imports were detected; prefer package-qualified usage for clarity.",
 		Rationale: "Qualified imports preserve namespace clarity and improve static analysis precision.",
 	})
-}
-
-func goFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }

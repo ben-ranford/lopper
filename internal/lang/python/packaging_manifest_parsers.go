@@ -14,6 +14,10 @@ import (
 )
 
 func collectManifestDependencies(repoPath, dir string, files map[string]struct{}) (map[string]struct{}, []string, error) {
+	return collectManifestDependenciesWithCatalog(repoPath, dir, files, nil)
+}
+
+func collectManifestDependenciesWithCatalog(repoPath, dir string, files map[string]struct{}, catalog *packagingCatalog) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	warnings := make([]string, 0)
 
@@ -28,7 +32,11 @@ func collectManifestDependencies(repoPath, dir string, files map[string]struct{}
 		if !hasFile(files, source.name) {
 			continue
 		}
-		if err := appendParsedDependencies(repoPath, filepath.Join(dir, source.name), source.parser, dependencies, &warnings); err != nil {
+		parser := source.parser
+		if catalog != nil {
+			parser = catalog.parse
+		}
+		if err := appendParsedDependencies(repoPath, filepath.Join(dir, source.name), parser, dependencies, &warnings); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -52,6 +60,10 @@ func parsePyprojectDependencies(repoPath, path string) (map[string]struct{}, []s
 		return make(map[string]struct{}), warnings, err
 	}
 
+	return parsePyprojectDependenciesDocument(repoPath, path, document, warnings)
+}
+
+func parsePyprojectDependenciesDocument(repoPath, path string, document map[string]any, warnings []string) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	pathLabel := relativePackagingPath(repoPath, path)
 
@@ -86,6 +98,10 @@ func parsePipfileDependencies(repoPath, path string) (map[string]struct{}, []str
 		return make(map[string]struct{}), warnings, err
 	}
 
+	return parsePipfileDependenciesDocument(repoPath, path, document, warnings)
+}
+
+func parsePipfileDependenciesDocument(repoPath, path string, document map[string]any, warnings []string) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	pathLabel := relativePackagingPath(repoPath, path)
 	addDependencyKeys(dependencies, nestedMap(document, "packages"), pathLabel+" [packages]")
@@ -107,6 +123,10 @@ func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, 
 		return nil, nil, fmt.Errorf("read %s: %w", pathLabel, err)
 	}
 
+	return parseRequirementsContent(pathLabel, content)
+}
+
+func parseRequirementsContent(pathLabel string, content []byte) (map[string]struct{}, []string, error) {
 	dependencies := make(map[string]struct{})
 	warnings := make([]string, 0)
 	skipped := 0

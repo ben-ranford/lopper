@@ -109,8 +109,8 @@ func (s *statsAccumulator) build() DependencyStats {
 	totalCount := len(s.allSymbols)
 	usedPercent := calculateUsedPercent(usedCount, totalCount)
 	topSymbols := buildTopSymbols(s.symbolCounts)
-	used := flattenImports(s.usedImports)
-	unused := dedupeUnused(flattenImports(s.unusedImports), used)
+	used := SortedImportUses(s.usedImports)
+	unused := dedupeUnused(SortedImportUses(s.unusedImports), used)
 	return DependencyStats{
 		HasImports:      totalCount > 0,
 		UsedCount:       usedCount,
@@ -163,6 +163,14 @@ func ListDependencies(files []FileUsage, normalize func(string) string) []string
 	}
 	sort.Strings(items)
 	return items
+}
+
+// BuildTopReportsFromDependencySets ranks the exact union of dependency sets,
+// passing the same scan to each adapter report builder.
+func BuildTopReportsFromDependencySets[S any](topN int, scan S, buildReport func(string, S) (report.DependencyReport, []string), weights report.RemovalCandidateWeights, sets ...map[string]struct{}) ([]report.DependencyReport, []string) {
+	return BuildTopReports(topN, SortedDependencyUnion(sets...), func(dependency string) (report.DependencyReport, []string) {
+		return buildReport(dependency, scan)
+	}, weights)
 }
 
 func BuildTopReports(topN int, dependencies []string, buildReport func(string) (report.DependencyReport, []string), weights ...report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
@@ -229,7 +237,9 @@ func addImport(dest map[string]*report.ImportUse, entry report.ImportUse) {
 	dest[key] = &copyEntry
 }
 
-func flattenImports(source map[string]*report.ImportUse) []report.ImportUse {
+// SortedImportUses copies map entries into an allocated slice ordered by module,
+// then name. Values must be non-nil; nested slices retain their backing storage.
+func SortedImportUses(source map[string]*report.ImportUse) []report.ImportUse {
 	items := make([]report.ImportUse, 0, len(source))
 	for _, entry := range source {
 		items = append(items, *entry)

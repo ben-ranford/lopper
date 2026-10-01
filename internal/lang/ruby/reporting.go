@@ -11,11 +11,7 @@ func buildRequestedRubyDependencies(req language.Request, scan scanResult) ([]re
 }
 
 func buildTopRubyDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
-	buildReport := func(dependency string) (report.DependencyReport, []string) {
-		return buildDependencyReport(dependency, scan)
-	}
-	return shared.BuildTopReports(topN, dependencies, buildReport, weights)
+	return shared.BuildTopReportsFromDependencySets(topN, scan, buildDependencyReport, weights, scan.DeclaredDependencies, scan.ImportedDependencies)
 }
 
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
@@ -32,14 +28,4 @@ func collectRubyDependencyStats(dependency string, files []fileScan) shared.Depe
 	}
 	fileUsages := shared.MapFileUsages(files, importsOf, usageOf)
 	return shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
-}
-
-func sortedDependencyUnion(values ...map[string]struct{}) []string {
-	set := make(map[string]struct{})
-	for _, value := range values {
-		for dependency := range value {
-			set[dependency] = struct{}{}
-		}
-	}
-	return shared.SortedKeys(set)
 }

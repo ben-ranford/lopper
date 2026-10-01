@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -1121,21 +1122,6 @@ func TestGoRootAndDetectionHelpers(t *testing.T) {
 		t.Fatalf("expected updateGoDetection to match")
 	}
 
-	// walk entry helpers
-	visited := 0
-	roots2 := map[string]struct{}{}
-	detection := language.Detection{}
-	if err := os.MkdirAll(filepath.Join(repo, "vendor"), 0o755); err != nil {
-		t.Fatalf("mkdir vendor: %v", err)
-	}
-	if err := walkGoDetectionEntry(filepath.Join(repo, "vendor"), mustDirEntry(t, filepath.Join(repo, "vendor")), roots2, &detection, &visited, 5); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected skip dir from walk helper, got %v", err)
-	}
-	filePath := writeTempFile(t, repo, "tiny.go", packageMainLine)
-	visited = 6
-	if err := walkGoDetectionEntry(filePath, mustDirEntry(t, filePath), roots2, &detection, &visited, 5); !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected fs.SkipAll from max file bound, got %v", err)
-	}
 }
 
 func TestBuildRecommendationsMatrix(t *testing.T) {
@@ -1297,7 +1283,7 @@ func TestUtilityCoverageBranches(t *testing.T) {
 		t.Fatalf("unexpected normalized dependency ID")
 	}
 
-	values := uniqueStrings([]string{"a", "a", " ", "b"})
+	values := shared.UniqueTrimmedStrings([]string{"a", "a", " ", "b"})
 	if !slices.Equal(values, []string{"a", "b"}) {
 		t.Fatalf("unexpected unique values %#v", values)
 	}
@@ -2047,26 +2033,6 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 }
 
 func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
-	requireMetadataPath := func(t *testing.T, repo, wantPath string) {
-		t.Helper()
-		info, err := loadGoModuleInfo(repo)
-		if err != nil {
-			t.Fatalf("loadGoModuleInfo: %v", err)
-		}
-		if info.ModulePath != wantPath {
-			t.Fatalf("module path = %q, want %q", info.ModulePath, wantPath)
-		}
-		if wantPath == "" {
-			if len(info.LocalModulePaths) != 0 {
-				t.Fatalf("expected no trusted local module paths, got %#v", info.LocalModulePaths)
-			}
-			return
-		}
-		if !slices.Contains(info.LocalModulePaths, wantPath) {
-			t.Fatalf("expected trusted local module path %q in %#v", wantPath, info.LocalModulePaths)
-		}
-	}
-
 	for name, fixture := range map[string]struct {
 		content         string
 		wantTrustedPath bool
@@ -2093,10 +2059,10 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 				t.Fatalf("analyse oversized go.mod fixture: %v", err)
 			}
 			if fixture.wantTrustedPath {
-				requireMetadataPath(t, repo, "example.com/root")
+				requireGoModuleMetadataPath(t, repo, "example.com/root")
 				return
 			}
-			requireMetadataPath(t, repo, "")
+			requireGoModuleMetadataPath(t, repo, "")
 		})
 	}
 
@@ -2105,7 +2071,27 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
 		t.Fatalf("analyse scanner-cap fixture: %v", err)
 	}
-	requireMetadataPath(t, repo, "")
+	requireGoModuleMetadataPath(t, repo, "")
+}
+
+func requireGoModuleMetadataPath(t *testing.T, repo, wantPath string) {
+	t.Helper()
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != wantPath {
+		t.Fatalf("module path = %q, want %q", info.ModulePath, wantPath)
+	}
+	if wantPath == "" {
+		if len(info.LocalModulePaths) != 0 {
+			t.Fatalf("expected no trusted local module paths, got %#v", info.LocalModulePaths)
+		}
+		return
+	}
+	if !slices.Contains(info.LocalModulePaths, wantPath) {
+		t.Fatalf("expected trusted local module path %q in %#v", wantPath, info.LocalModulePaths)
+	}
 }
 
 func TestOversizedRootGoModRejectsModuleDirectiveInsideRequireBlock(t *testing.T) {

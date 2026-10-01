@@ -663,9 +663,6 @@ func TestStringAndPathHelperBranches(t *testing.T) {
 }
 
 func TestThresholdAndWarningBranches(t *testing.T) {
-	if recommendationPriorityRank("high") != 0 || recommendationPriorityRank("medium") != 1 || recommendationPriorityRank("low") != 2 {
-		t.Fatalf("unexpected recommendation priority ranks")
-	}
 
 	if got := resolveMinUsageRecommendationThreshold(nil); got != thresholds.Defaults().MinUsagePercentForRecommendations {
 		t.Fatalf("unexpected default min usage threshold: %d", got)

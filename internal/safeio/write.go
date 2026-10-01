@@ -90,10 +90,7 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 // root-relative file after parentReady validates state with the target parent
 // pinned, then runs preWrite immediately before the file mutation begins.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, preWrite func() error) error {
-	options := checkedWriteToTargetParentOptions()
-	options.preWrite = preWrite
-	options.postWrite = preWrite
-	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, repeatedWriteCheckOptions(beforeFileMutation, preWrite))
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPublishCheck atomically writes a
@@ -101,10 +98,7 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 // pinned. It runs publishCheck immediately before publishing the target and
 // again after the target has been committed.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, publishCheck func() error) error {
-	options := checkedWriteToTargetParentOptions()
-	options.commitReady = publishCheck
-	options.postWrite = publishCheck
-	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, repeatedWriteCheckOptions(beforeFilePublish, publishCheck))
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck
@@ -115,6 +109,27 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPinnedParentPubl
 	options := checkedWriteToTargetParentOptions()
 	options.publishParent = publishCheck
 	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
+}
+
+type writeCheckStage uint8
+
+const (
+	beforeFileMutation writeCheckStage = iota
+	beforeFilePublish
+)
+
+// repeatedWriteCheckOptions runs check at the selected boundary and after the
+// write. The two boundaries remain distinct: publication checks run only after
+// the temporary file is ready, while mutation checks run before creating it.
+func repeatedWriteCheckOptions(stage writeCheckStage, check func() error) writeToTargetParentOptions {
+	options := checkedWriteToTargetParentOptions()
+	options.postWrite = check
+	if stage == beforeFilePublish {
+		options.commitReady = check
+	} else {
+		options.preWrite = check
+	}
+	return options
 }
 
 func checkedWriteToTargetParentOptions() writeToTargetParentOptions {

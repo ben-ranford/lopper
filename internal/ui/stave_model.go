@@ -48,7 +48,7 @@ func (m staveSummaryModel) MarshalJSON() ([]byte, error) { //nostyle:recvtype --
 	i := m.interaction
 	var view *report.Report
 	if m.view != nil {
-		v := report.Report{Dependencies: summaryViewDependenciesToReport(m.view.Dependencies), Warnings: append([]string(nil), m.view.Warnings...), UsageUncertainty: m.view.UsageUncertainty, Scope: m.view.Scope, Cache: m.view.Cache, EffectiveThresholds: m.view.EffectiveThresholds, EffectivePolicy: m.view.EffectivePolicy, BaselineComparison: m.view.BaselineComparison}
+		v := summaryViewToReport(*m.view)
 		view = &v
 	}
 	return json.Marshal(struct {
@@ -150,7 +150,7 @@ func hashStaveSummaryModel(m staveSummaryModel) ([32]byte, error) {
 	}
 	if m.view != nil {
 		projection.HasView = true
-		projection.View = report.Report{Dependencies: summaryViewDependenciesToReport(m.view.Dependencies), Warnings: append([]string(nil), m.view.Warnings...), UsageUncertainty: m.view.UsageUncertainty, Scope: m.view.Scope, Cache: m.view.Cache, EffectiveThresholds: m.view.EffectiveThresholds, EffectivePolicy: m.view.EffectivePolicy, BaselineComparison: m.view.BaselineComparison}
+		projection.View = summaryViewToReport(*m.view)
 	}
 	projection.Summary.Filter, projection.Summary.SortMode = i.summary.filter, string(i.summary.sortMode)
 	projection.Summary.Page, projection.Summary.PageSize = i.summary.page, i.summary.pageSize

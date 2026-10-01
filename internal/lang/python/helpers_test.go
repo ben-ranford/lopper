@@ -2,13 +2,12 @@ package python
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -243,7 +242,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 	pyPath := filepath.Join(repo, "mod.py")
 	testutil.MustWriteFile(t, pyPath, "import requests\n")
 
-	content, rel, err := readPythonFile(repo, pyPath)
+	content, rel, err := shared.ReadSourceFile(repo, pyPath)
 	if err != nil {
 		t.Fatalf("read python file: %v", err)
 	}
@@ -251,7 +250,7 @@ func TestPythonReadAndParseEdgeBranches(t *testing.T) {
 		t.Fatalf("unexpected read result content=%q rel=%q", string(content), rel)
 	}
 
-	if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py")); err == nil {
 		t.Fatalf("expected missing file read error")
 	}
 
@@ -306,12 +305,4 @@ func TestPythonDetectAndWalkBranches(t *testing.T) {
 		t.Fatalf("expected matched detection capped at 95, got %#v", detection)
 	}
 
-	fileEntry := testutil.MustFirstFileEntry(t, repo)
-	visited := 1
-	roots := make(map[string]struct{})
-	detect := &language.Detection{}
-	err = walkPythonDetectionEntry(filepath.Join(repo, fileEntry.Name()), fileEntry, roots, detect, &visited, 1)
-	if !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
-	}
 }

@@ -180,3 +180,10 @@ Duplication comparisons fail if the intended target or scanner results are
 incomplete. Fetch the target branch and sufficient history, then run
 `make dup-check DUPLICATION_BASE=origin/<target>` for a local non-main comparison.
 See [CI duplication checks](docs/ci-usage.md) for base selection and supported paths.
+
+Collection normalization contracts and canonical owners are documented in
+[Collection helper contracts](docs/collection-helpers.md).
+
+When reusing repository fixtures or Git setup in tests, follow the
+[test fixture helper contracts](docs/test-fixture-helpers.md) and preserve each
+regression's permission, output, and failure boundaries.

@@ -16,7 +16,6 @@ import (
 	"github.com/ben-ranford/stave"
 	"github.com/ben-ranford/stave/action"
 	"github.com/ben-ranford/stave/event"
-	"github.com/ben-ranford/stave/layout"
 )
 
 type coverageProgramRunner struct {
@@ -208,8 +207,8 @@ func TestStaveModelHashAndEventBranches(t *testing.T) {
 }
 
 func TestStaveModelHashIncludesEveryValueField(t *testing.T) {
-	color := true
-	base := staveSummaryModel{opts: &Options{RepoPath: ".", Language: "go", Filter: "f", Sort: "name", BaselinePath: "base", BaselineStorePath: "store", BaselineKey: "key", TopN: 2, PageSize: 3, Width: 80, ASCII: true, UseStavePreview: true, Color: &color}, view: &summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha"}}, Warnings: []string{"warn"}}, interaction: staveSummaryInteraction{summary: summaryState{filter: "f", sortMode: sortByName, page: 2, pageSize: 3, showHelp: true, selectedDependency: "go:x"}, selectedRow: 1, focusPane: "detail", commandMode: true, filterBuffer: "filter f", viewport: layout.Size{Width: 80, Height: 24}, help: true, status: "ok", error: "err", pendingConfirm: "confirm", pendingCallID: "call", pendingActionID: "action", quit: true}}
+	base := stavePopulatedModelFixture("go:x")
+	base.view = &summaryReportView{Dependencies: []summaryDependencyView{{Language: "go", Name: "alpha"}}, Warnings: []string{"warn"}}
 	h, err := hashStaveSummaryModel(base)
 	if err != nil {
 		t.Fatal(err)

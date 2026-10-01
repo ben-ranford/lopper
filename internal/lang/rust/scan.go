@@ -89,7 +89,7 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 		completedRoots[filepath.Clean(sourceFallbackRoot)] = struct{}{}
 	}
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
-	result.Warnings = dedupeWarnings(result.Warnings)
+	result.Warnings = shared.UniqueTrimmedStrings(result.Warnings)
 	return result, nil
 }
 

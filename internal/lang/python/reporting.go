@@ -18,7 +18,7 @@ func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
+	dependencies := shared.SortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, language.Request{})
 	}
@@ -26,7 +26,7 @@ func buildTopPythonDependencies(topN int, scan scanResult, weights report.Remova
 }
 
 func buildDependencyReport(dependency string, scan scanResult, req language.Request) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, pythonFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))

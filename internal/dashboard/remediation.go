@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/collections"
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
@@ -549,20 +550,7 @@ func stableRemediationID(parts ...string) string {
 }
 
 func compactEvidence(values []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
+	return collections.UniqueTrimmedStrings(values)
 }
 
 func isWasteRecommendationCode(code string) bool {

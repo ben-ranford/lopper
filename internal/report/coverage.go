@@ -23,7 +23,7 @@ func StableCoverageGaps(gaps []CoverageGap) []CoverageGap {
 		normalized := normalizeCoverageGap(gap)
 		identity := coverageGapIdentity(normalized)
 		if existing, ok := mergedByIdentity[identity]; ok {
-			existing.Evidence = sortedUniqueStrings(append(existing.Evidence, normalized.Evidence...))
+			existing.Evidence = SortedUniqueTrimmedStrings(append(existing.Evidence, normalized.Evidence...))
 			mergedByIdentity[identity] = existing
 			continue
 		}
@@ -70,7 +70,7 @@ func normalizeCoverageGap(gap CoverageGap) CoverageGap {
 		Code:     strings.TrimSpace(gap.Code),
 		Language: strings.TrimSpace(gap.Language),
 		Path:     normalizeCoverageGapPath(gap.Path),
-		Evidence: sortedUniqueStrings(gap.Evidence),
+		Evidence: SortedUniqueTrimmedStrings(gap.Evidence),
 	}
 }
 

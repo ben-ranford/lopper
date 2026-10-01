@@ -2,7 +2,6 @@ package golang
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,37 +20,15 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	const maxFiles = 1024
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return walkGoDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
+	err := shared.WalkRepoFiles(ctx, repoPath, 1024, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+		updateGoDetection(path, entry, roots, &detection)
+		return nil
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err != nil {
 		return language.Detection{}, err
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
-}
-
-func walkGoDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
-	if entry.IsDir() {
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-	(*visited)++
-	if *visited > maxFiles {
-		return fs.SkipAll
-	}
-	updateGoDetection(path, entry, roots, detection)
-	return nil
 }
 
 func manifestPathExists(path string) (bool, error) {

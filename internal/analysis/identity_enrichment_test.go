@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"encoding/xml"
 	"os"
 	"path/filepath"
@@ -1274,6 +1275,20 @@ func TestCollectJSLockfileIdentityEvidenceWrapperUsesDiscoveredPaths(t *testing.
 	assertNoIdentityEvidence(t, index, identityKey("js-ts", "ignored-dot-cache"))
 }
 
+func TestCollectJSLockfileIdentityEvidenceStopsAfterContextCancellation(t *testing.T) {
+	repoPath := t.TempDir()
+	firstPath := filepath.Join(repoPath, "package-lock.json")
+	secondPath := filepath.Join(repoPath, "apps", "web", "package-lock.json")
+	testutil.MustWriteFile(t, firstPath, `{"dependencies":{"first":{"version":"1.0.0"}}}`)
+	testutil.MustWriteFile(t, secondPath, `{"dependencies":{"second":{"version":"2.0.0"}}}`)
+
+	index := identityIndex{}
+	collectJSLockfileIdentityEvidenceFromPathsWithContext(&catalogCancelContext{remaining: 1}, repoPath, index, []string{firstPath, secondPath}, newIdentityWarningCollector(repoPath))
+
+	assertSingleIdentityEvidence(t, index, identityKey("js-ts", "first"), "1.0.0", "package-lock.json")
+	assertNoIdentityEvidence(t, index, identityKey("js-ts", "second"))
+}
+
 func TestCollectJSIdentityEvidenceAggregatesRootAndNestedSourcesWithoutMasking(t *testing.T) {
 	repoPath := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"1.3.0"}`)
@@ -1420,10 +1435,10 @@ func TestCollectGradleIdentityEvidenceFromPathsScopesLocksToOwningProjectAndIgno
 	testutil.MustWriteFile(t, otherProjectBuild, `dependencies { implementation "com.other:other-lib:3.0.0" }`)
 
 	indexA := identityIndex{}
-	collectGradleIdentityEvidenceFromPaths(repoPath, indexA, []string{otherProjectBuild, subprojectBuild, rootBuild}, []string{subprojectLockOnly, subprojectLock, rootLock}, nil)
+	collectGradleIdentityEvidenceFromPaths(context.Background(), repoPath, indexA, []string{otherProjectBuild, subprojectBuild, rootBuild}, []string{subprojectLockOnly, subprojectLock, rootLock}, nil)
 
 	indexB := identityIndex{}
-	collectGradleIdentityEvidenceFromPaths(repoPath, indexB, []string{rootBuild, subprojectBuild, otherProjectBuild}, []string{rootLock, subprojectLock, subprojectLockOnly}, nil)
+	collectGradleIdentityEvidenceFromPaths(context.Background(), repoPath, indexB, []string{rootBuild, subprojectBuild, otherProjectBuild}, []string{rootLock, subprojectLock, subprojectLockOnly}, nil)
 
 	if !reflect.DeepEqual(indexA, indexB) {
 		t.Fatalf("expected Gradle evidence to ignore lexical input order, got %#v vs %#v", indexA, indexB)

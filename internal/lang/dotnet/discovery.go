@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
@@ -435,7 +436,7 @@ func (d *sourceDiscoverer) discoverFile(path string) error {
 	if !isSourceFile(path) || isGeneratedSource(path) {
 		return nil
 	}
-	content, relativePath, err := readSourceFile(d.repoPath, path)
+	content, relativePath, err := shared.ReadSourceFile(d.repoPath, path)
 	if err != nil {
 		return err
 	}
@@ -594,18 +595,6 @@ func parseManifestInclude(token xml.Token, elementName string) string {
 		}
 	}
 	return ""
-}
-
-func readSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, sourcePath)
-	if err != nil {
-		return nil, "", err
-	}
-	relativePath, err := filepath.Rel(repoPath, sourcePath)
-	if err != nil {
-		relativePath = sourcePath
-	}
-	return content, relativePath, nil
 }
 
 func addDependencies(set map[string]struct{}, dependencies []string) {

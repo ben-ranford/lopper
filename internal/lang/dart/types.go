@@ -91,11 +91,7 @@ type pubspecLockPackage struct {
 
 type importBinding = shared.ImportRecord
 
-type fileScan struct {
-	Path    string
-	Imports []importBinding
-	Usage   map[string]int
-}
+type fileScan = shared.ScannedFile
 
 type scanResult struct {
 	Files                   []fileScan

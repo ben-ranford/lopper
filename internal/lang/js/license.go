@@ -138,20 +138,7 @@ func normalizeSPDXExpression(raw string) string {
 }
 
 func normalizeSPDXToken(value string) string {
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r - 'a' + 'A')
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-', r == '.', r == '+':
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return report.NormalizeSPDXID(value)
 }
 
 type licenseFileProbe struct {

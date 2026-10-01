@@ -113,22 +113,7 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsInvalidTargets(t *t
 	})
 
 	t.Run("unsearchable parent", func(t *testing.T) {
-		if syscall.Geteuid() == 0 {
-			t.Skip("effective privileges bypass parent permission checks")
-		}
-		parent := filepath.Join(t.TempDir(), "unsearchable")
-		if err := os.Mkdir(parent, 0o666); err != nil {
-			t.Fatalf("mkdir unsearchable parent: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
-				t.Errorf("restore unsearchable parent permissions: %v", err)
-			}
-		})
-		err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(filepath.Join(parent, writeTestFileName), []byte("after"), 0o600)
-		if !errors.Is(err, os.ErrPermission) {
-			t.Fatalf("expected unsearchable parent permission error, got %v", err)
-		}
+		assertCanonicalWriterRejectsUnsearchableParent(t)
 	})
 
 	t.Run("invalid directory path", func(t *testing.T) {
@@ -1007,11 +992,7 @@ func TestDescriptorPathHelpersRejectInvalidDescriptorAndTempNames(t *testing.T) 
 	})
 	randomTempNameFn = func() (string, error) { return "", errors.New("boom") }
 	if name, file, err := createDescriptorTempFile(parentFD, 0o600); err == nil {
-		if file != nil {
-			if closeErr := file.Close(); closeErr != nil {
-				t.Fatalf("close unexpected random-name temp file: %v", closeErr)
-			}
-		}
+		closeUnexpectedChildDescriptor(t, file)
 		t.Fatalf("expected random name error, got name=%q", name)
 	}
 
@@ -1021,19 +1002,11 @@ func TestDescriptorPathHelpersRejectInvalidDescriptorAndTempNames(t *testing.T) 
 	}
 	randomTempNameFn = func() (string, error) { return collidingName, nil }
 	if name, file, err := createDescriptorTempFile(parentFD, 0o600); err == nil || !strings.Contains(err.Error(), "too many collisions") {
-		if file != nil {
-			if closeErr := file.Close(); closeErr != nil {
-				t.Fatalf("close unexpected colliding temp file: %v", closeErr)
-			}
-		}
+		closeUnexpectedChildDescriptor(t, file)
 		t.Fatalf("expected collision exhaustion, got name=%q err=%v", name, err)
 	}
 	if name, file, err := createDescriptorTempFile(-1, 0o600); err == nil {
-		if file != nil {
-			if closeErr := file.Close(); closeErr != nil {
-				t.Fatalf("close unexpected invalid-descriptor temp file: %v", closeErr)
-			}
-		}
+		closeUnexpectedChildDescriptor(t, file)
 		t.Fatalf("expected invalid descriptor temp creation to fail, got name=%q", name)
 	}
 }
@@ -1456,7 +1429,7 @@ func TestSafeIOHelperCoverageBranches(t *testing.T) {
 		t.Fatalf("unexpected split pinned path: clean=%q parts=%v", cleanName, parts)
 	}
 
-	if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
+	if !isPureSentinelError(errors.Join(nil, os.ErrNotExist), os.ErrNotExist) {
 		t.Fatal("expected nil joined cause to be ignored for pure sentinel matching")
 	}
 }
@@ -1510,4 +1483,24 @@ func withDescriptorOperationHooks(t *testing.T, hooks descriptorOperationHooks) 
 		descriptorFileStatFn = originalStat
 		descriptorFileCloseFn = originalClose
 	})
+}
+
+func assertCanonicalWriterRejectsUnsearchableParent(t *testing.T) {
+	t.Helper()
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+	parent := filepath.Join(t.TempDir(), "unsearchable")
+	if err := os.Mkdir(parent, 0o666); err != nil {
+		t.Fatalf("mkdir unsearchable parent: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore unsearchable parent permissions: %v", err)
+		}
+	})
+	err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(filepath.Join(parent, writeTestFileName), []byte("after"), 0o600)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected unsearchable parent permission error, got %v", err)
+	}
 }

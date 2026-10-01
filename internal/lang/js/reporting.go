@@ -130,15 +130,15 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 		counts:                  usage.Counts,
 		usedImports:             usedImportList,
 		unusedImports:           unusedImportList,
-		unfilteredUnusedImports: flattenImportUses(usage.UnusedImports),
+		unfilteredUnusedImports: shared.SortedImportUses(usage.UnusedImports),
 		warnings:                warnings,
 	}
 }
 
 // finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
 func finalizeImportUsageLists(usedImports, unusedImports map[string]*report.ImportUse) ([]report.ImportUse, []report.ImportUse) {
-	usedImportList := flattenImportUses(usedImports)
-	unusedImportList := flattenImportUses(unusedImports)
+	usedImportList := shared.SortedImportUses(usedImports)
+	unusedImportList := shared.SortedImportUses(unusedImports)
 	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)
 }
 
@@ -378,20 +378,6 @@ func addImportUse(dest map[string]*report.ImportUse, entry report.ImportUse) {
 		}
 		current.Provenance = append(current.Provenance, item)
 	}
-}
-
-func flattenImportUses(source map[string]*report.ImportUse) []report.ImportUse {
-	items := make([]report.ImportUse, 0, len(source))
-	for _, entry := range source {
-		items = append(items, *entry)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Module == items[j].Module {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Module < items[j].Module
-	})
-	return items
 }
 
 func removeOverlappingUnusedImports(unused, used []report.ImportUse) []report.ImportUse {

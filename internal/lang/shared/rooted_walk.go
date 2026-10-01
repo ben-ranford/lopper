@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -336,29 +335,7 @@ func (w *rootedRepoWalker) probeDirectoryLimit(ctx context.Context, path string,
 }
 
 func openPinnedChildRoot(root safeio.Root, name, path string) (safeio.Root, error) {
-	info, err := root.Lstat(name)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("root contains symlink: %s", path)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("root is not a directory: %s", path)
-	}
-
-	child, err := root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	openedInfo, err := child.Lstat(".")
-	if err != nil {
-		return nil, errors.Join(err, child.Close())
-	}
-	if !os.SameFile(info, openedInfo) {
-		return nil, errors.Join(fmt.Errorf("root changed while opening: %s", path), child.Close())
-	}
-	return child, nil
+	return safeio.OpenPinnedChildRoot(root, name, path, "root changed while opening")
 }
 
 func newRootedWalkTraversalLimitError(path string, limit int) error {

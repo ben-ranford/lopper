@@ -81,7 +81,7 @@ func testJSDetectHandlesEOFCapAndSkippedDirs(t *testing.T) {
 		t.Fatalf("write skipped file: %v", err)
 	}
 	detection = language.Detection{}
-	if err := scanFilesForJSDetection(skipRepo, &detection, map[string]struct{}{}); err != nil {
+	if err := scanFilesForJSDetection(context.Background(), skipRepo, &detection, map[string]struct{}{}); err != nil {
 		t.Fatalf("scan skipped repo: %v", err)
 	}
 	if detection.Matched {

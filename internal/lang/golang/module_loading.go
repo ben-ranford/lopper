@@ -1011,8 +1011,8 @@ func finalizeGoModuleInfo(info *moduleInfo) error {
 		return errNilModuleInfo
 	}
 
-	info.LocalModulePaths = uniqueStrings(info.LocalModulePaths)
-	info.DeclaredDependencies = uniqueStrings(info.DeclaredDependencies)
+	info.LocalModulePaths = shared.UniqueTrimmedStrings(info.LocalModulePaths)
+	info.DeclaredDependencies = shared.UniqueTrimmedStrings(info.DeclaredDependencies)
 	sort.Strings(info.LocalModulePaths)
 	sort.Strings(info.DeclaredDependencies)
 	info.VendoringWarnings = append(info.VendoringWarnings, oversizedModuleWarnings(info.OversizedModuleDirs)...)

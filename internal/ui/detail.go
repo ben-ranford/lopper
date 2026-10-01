@@ -268,27 +268,23 @@ func printCodemodMode(out io.Writer, mode string) error {
 }
 
 func printCodemodSuggestions(out io.Writer, suggestions []detailCodemodSuggestionView) error {
-	lines := make([]string, 0, len(suggestions))
-	for _, suggestion := range suggestions {
-		lines = append(lines, fmt.Sprintf("%s:%d %s -> %s", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule))
-	}
-	return printCodemodLineCollection(out, "suggestions", lines)
+	return printCodemodLineCollection(out, "suggestions", suggestions, func(suggestion detailCodemodSuggestionView) string {
+		return fmt.Sprintf("%s:%d %s -> %s", suggestion.File, suggestion.Line, suggestion.FromModule, suggestion.ToModule)
+	})
 }
 
 func printCodemodSkips(out io.Writer, skips []detailCodemodSkipView) error {
-	lines := make([]string, 0, len(skips))
-	for _, skip := range skips {
-		lines = append(lines, fmt.Sprintf("%s:%d [%s] %s", skip.File, skip.Line, skip.ReasonCode, skip.Message))
-	}
-	return printCodemodLineCollection(out, "skips", lines)
+	return printCodemodLineCollection(out, "skips", skips, func(skip detailCodemodSkipView) string {
+		return fmt.Sprintf("%s:%d [%s] %s", skip.File, skip.Line, skip.ReasonCode, skip.Message)
+	})
 }
 
-func printCodemodLineCollection(out io.Writer, label string, lines []string) error {
-	if err := writef(out, "  - %s: %d\n", label, len(lines)); err != nil {
+func printCodemodLineCollection[T any](out io.Writer, label string, items []T, format func(T) string) error {
+	if err := writef(out, "  - %s: %d\n", label, len(items)); err != nil {
 		return err
 	}
-	for _, line := range lines {
-		if err := writef(out, "    - %s\n", line); err != nil {
+	for _, elem := range items {
+		if err := writef(out, "    - %s\n", format(elem)); err != nil {
 			return err
 		}
 	}

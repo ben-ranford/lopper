@@ -258,11 +258,11 @@ func TestResolveCodemodFilePath(t *testing.T) {
 }
 
 func TestUniqueSortedStrings(t *testing.T) {
-	values := uniqueSortedStrings([]string{"beta", "alpha", "beta", "", " alpha "})
+	values := report.SortedUniqueTrimmedStrings([]string{"beta", "alpha", "beta", "", " alpha "})
 	if !reflect.DeepEqual(values, []string{"alpha", "beta"}) {
 		t.Fatalf("unexpected unique sorted values: %#v", values)
 	}
-	if len(uniqueSortedStrings(nil)) != 0 {
+	if len(report.SortedUniqueTrimmedStrings(nil)) != 0 {
 		t.Fatal("expected empty unique-sorted result for nil input")
 	}
 }

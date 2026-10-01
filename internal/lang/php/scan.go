@@ -25,9 +25,7 @@ type scanResult struct {
 }
 
 type fileScan struct {
-	Path    string
-	Imports []importBinding
-	Usage   map[string]int
+	shared.ScannedFile
 	Dynamic bool
 }
 
@@ -192,9 +190,11 @@ func (c *scanCoordinator) scanFile(path string) error {
 		c.result.UsageIncomplete = true
 	}
 	c.result.Files = append(c.result.Files, fileScan{
-		Path:    relPath,
-		Imports: parsed.imports,
-		Usage:   usage,
+		ScannedFile: shared.ScannedFile{
+			Path:    relPath,
+			Imports: parsed.imports,
+			Usage:   usage,
+		},
 		Dynamic: dynamic,
 	})
 	return nil
@@ -291,8 +291,4 @@ func readPHPFile(repoPath, path string) ([]byte, string, error) {
 func hasComposerManifest(path string) bool {
 	_, err := os.Stat(filepath.Join(path, composerJSONName))
 	return err == nil
-}
-
-func phpFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }

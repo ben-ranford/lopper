@@ -77,20 +77,7 @@ func TestOpenPinnedDirectoryRejectsNonReadDirFileAndJoinsCloseErrors(t *testing.
 		},
 		close: func() error { return rootCloseErr },
 	}
-	root := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != "nested" {
-				t.Fatalf("unexpected root lstat %q", name)
-			}
-			return dirInfo, nil
-		},
-		openRoot: func(name string) (Root, error) {
-			if name != "nested" {
-				t.Fatalf("unexpected root openRoot %q", name)
-			}
-			return childRoot, nil
-		},
-	}
+	root := newPinnedParentFixture(t, "nested", dirInfo, childRoot)
 
 	dir, err := OpenPinnedDirectory(root, filepath.Join("nested", "leaf"))
 	if dir != nil {
@@ -369,7 +356,7 @@ func TestOpenRootExistingAncestorNoFollowWithReturnsMissingSuffix(t *testing.T) 
 		return nil, "", nil
 	}
 
-	opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith(targetPath, absFn, filepath.Rel, openRootFn, openChildFn)
+	opened, ancestorPath, missingParts, err := openRootPathWith(targetPath, absFn, filepath.Rel, openRootFn, openChildFn, allowMissingRootSuffix)
 	if err != nil {
 		t.Fatalf("open existing ancestor with missing suffix: %v", err)
 	}
@@ -404,7 +391,7 @@ func TestOpenRootExistingAncestorNoFollowWithJoinsLookupAndCloseErrors(t *testin
 		return nil, "", nil
 	}
 
-	opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith(targetPath, absFn, filepath.Rel, openRootFn, openChildFn)
+	opened, ancestorPath, missingParts, err := openRootPathWith(targetPath, absFn, filepath.Rel, openRootFn, openChildFn, allowMissingRootSuffix)
 	if opened != nil || ancestorPath != "" || len(missingParts) != 0 {
 		t.Fatalf("expected failed ancestor lookup to return no state, got root=%#v path=%q missing=%#v", opened, ancestorPath, missingParts)
 	}
@@ -530,7 +517,7 @@ func TestOpenRootExistingAncestorNoFollowWithReturnsVolumeRootForExactMatch(t *t
 		return nil, "", nil
 	}
 
-	opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith("/", absFn, filepath.Rel, openRootFn, openChildFn)
+	opened, ancestorPath, missingParts, err := openRootPathWith("/", absFn, filepath.Rel, openRootFn, openChildFn, allowMissingRootSuffix)
 	if err != nil {
 		t.Fatalf("open exact existing ancestor: %v", err)
 	}
@@ -564,7 +551,7 @@ func TestOpenRootExistingAncestorNoFollowWithSkipsDotSegments(t *testing.T) {
 		}, requestedPath, nil
 	}
 
-	opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith("/repo/child", absFn, relFn, openRootFn, openChildFn)
+	opened, ancestorPath, missingParts, err := openRootPathWith("/repo/child", absFn, relFn, openRootFn, openChildFn, allowMissingRootSuffix)
 	if err != nil {
 		t.Fatalf("open existing ancestor with dot segments: %v", err)
 	}
@@ -587,7 +574,7 @@ func TestOpenRootExistingAncestorNoFollowWithJoinsCurrentAndNextCloseErrors(t *t
 	openRootFn := func(string) (Root, error) { return root, nil }
 	openChildFn := func(Root, string, string) (Root, string, error) { return next, "/repo", nil }
 
-	opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith("/repo", absFn, relFn, openRootFn, openChildFn)
+	opened, ancestorPath, missingParts, err := openRootPathWith("/repo", absFn, relFn, openRootFn, openChildFn, allowMissingRootSuffix)
 	if opened != nil || ancestorPath != "" || len(missingParts) != 0 {
 		t.Fatalf("expected failed ancestor close to return no state, got root=%#v path=%q missing=%#v", opened, ancestorPath, missingParts)
 	}
@@ -724,7 +711,7 @@ func TestOpenRootExistingAncestorNoFollowWithPropagatesSetupErrors(t *testing.T)
 				t.Fatal("child open must not run after ancestor setup failure")
 				return nil, "", nil
 			}
-			opened, ancestorPath, missingParts, err := openRootExistingAncestorNoFollowWith("repo", tc.absFn, tc.relFn, tc.openRootFn, openChildFn)
+			opened, ancestorPath, missingParts, err := openRootPathWith("repo", tc.absFn, tc.relFn, tc.openRootFn, openChildFn, allowMissingRootSuffix)
 			if opened != nil || ancestorPath != "" || len(missingParts) != 0 {
 				t.Fatalf("expected setup failure to return no ancestor state, got root=%#v path=%q missing=%#v", opened, ancestorPath, missingParts)
 			}

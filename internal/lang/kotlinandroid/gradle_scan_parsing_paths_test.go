@@ -44,8 +44,7 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 	}
 
 	scan := scanResult{
-		Files: []fileScan{{
-			Path: testMainSourceFileName,
+		Files: []fileScan{{ScannedFile: shared.ScannedFile{Path: testMainSourceFileName,
 			Imports: []importBinding{{
 				Dependency: "dep",
 				Module:     "x.dep",
@@ -53,7 +52,7 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 				Local:      "*",
 				Wildcard:   true,
 			}},
-			Usage: map[string]int{"*": 1},
+			Usage: map[string]int{"*": 1}},
 		}},
 		AmbiguousDependencies:  map[string]struct{}{"dep": {}},
 		UndeclaredDependencies: map[string]struct{}{"dep": {}},
@@ -123,49 +122,6 @@ func TestDetectAndWalkBranchGuards(t *testing.T) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
 
-	testutil.MustWriteFile(t, filepath.Join(repo, testMainSourceFileName), "package demo\n")
-	if err := os.Mkdir(filepath.Join(repo, testGradleDirectoryName), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", testGradleDirectoryName, err)
-	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	var mainEntry fs.DirEntry
-	var gradleDirEntry fs.DirEntry
-	for _, entry := range entries {
-		switch entry.Name() {
-		case testMainSourceFileName:
-			mainEntry = entry
-		case testGradleDirectoryName:
-			gradleDirEntry = entry
-		}
-	}
-	if mainEntry == nil || gradleDirEntry == nil {
-		t.Fatalf("expected test entries, got %#v", entries)
-	}
-
-	roots := map[string]struct{}{}
-	detection := language.Detection{}
-	visited := 0
-	androidSpecific := false
-	state := detectionWalkState{
-		repoPath:              repo,
-		roots:                 roots,
-		detection:             &detection,
-		visited:               &visited,
-		maxFiles:              5,
-		androidSpecificSignal: &androidSpecific,
-	}
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testGradleDirectoryName), gradleDirEntry, state); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected SkipDir for skipped directory, got %v", err)
-	}
-
-	visited = 5
-	state.maxFiles = 1
-	if err := walkKotlinAndroidDetectionEntry(filepath.Join(repo, testMainSourceFileName), mainEntry, state); !errors.Is(err, fs.SkipAll) {
-		t.Fatalf("expected SkipAll when file cap is exceeded, got %v", err)
-	}
 }
 
 func TestModuleRootAndPathHelpers(t *testing.T) {
@@ -327,9 +283,9 @@ func TestLookupBuilderBranches(t *testing.T) {
 		t.Fatalf("expected ambiguity metadata after conflicting lookup values")
 	}
 
-	values := uniqueSortedStrings([]string{"", " dep-b ", "dep-a", "dep-a"})
+	values := sortedUniqueTrimmedStringsNonNil([]string{"", " dep-b ", "dep-a", "dep-a"})
 	if strings.Join(values, ",") != "dep-a,dep-b" {
-		t.Fatalf("unexpected uniqueSortedStrings output: %#v", values)
+		t.Fatalf("unexpected sortedUniqueTrimmedStringsNonNil output: %#v", values)
 	}
 	if prefixes, aliases := groupLookupStrategy("", ""); len(prefixes) != 0 || len(aliases) != 0 {
 		t.Fatalf("expected empty lookups for empty group")

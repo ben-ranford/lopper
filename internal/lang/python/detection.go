@@ -2,7 +2,6 @@ package python
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -12,7 +11,6 @@ import (
 )
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (language.Detection, error) {
-	_ = ctx
 	repoPath = shared.DefaultRepoPath(repoPath)
 
 	detection := language.Detection{}
@@ -22,43 +20,16 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		return language.Detection{}, err
 	}
 
-	const maxFiles = 512
-	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		return walkPythonDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
+	err := shared.WalkRepoFiles(ctx, repoPath, 512, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+		updateDetectionFromPythonFile(path, entry, roots, &detection)
+		return nil
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err != nil {
 		return language.Detection{}, err
 	}
 
 	detection = shared.FinalizeDetection(repoPath, detection, roots)
 	return detection, nil
-}
-
-func walkPythonDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
-	if pythonDetectionSkipsDir(entry) {
-		return filepath.SkipDir
-	}
-	if entry.IsDir() {
-		return nil
-	}
-	if pythonDetectionExceedsLimit(visited, maxFiles) {
-		return fs.SkipAll
-	}
-	updateDetectionFromPythonFile(path, entry, roots, detection)
-	return nil
-}
-
-func pythonDetectionSkipsDir(entry fs.DirEntry) bool {
-	return entry.IsDir() && shouldSkipDir(entry.Name())
-}
-
-func pythonDetectionExceedsLimit(visited *int, maxFiles int) bool {
-	(*visited)++
-	return *visited > maxFiles
 }
 
 func applyPythonRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {

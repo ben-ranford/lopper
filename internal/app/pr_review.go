@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/collections"
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/report/pep440"
@@ -498,7 +499,7 @@ func collectPRReviewWarnings(input prReviewArtifactInput) []string {
 			warnings = append(warnings, fmt.Sprintf("head %s: %s", shortPRReviewRevision(input.headSHA), trimmed))
 		}
 	}
-	return uniqueSortedStrings(warnings)
+	return report.SortedUniqueTrimmedStrings(warnings)
 }
 
 func shortPRReviewRevision(sha string) string {
@@ -1014,20 +1015,7 @@ func dependencyIdentityEvidence(dep report.DependencyReport) []string {
 }
 
 func compactPRReviewEvidence(values []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
+	return collections.UniqueTrimmedStrings(values)
 }
 
 func sortPRReviewRows(rows []prReviewRow) {

@@ -14,18 +14,12 @@ func buildTopKotlinAndroidDependencies(topN int, scan scanResult, weights report
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan)
 	}
-	dependencies := shared.ListDependencies(kotlinAndroidFileUsages(scan), normalizeDependencyID)
+	dependencies := shared.ListDependencies(shared.FileUsages(scan.Files), normalizeDependencyID)
 	return shared.BuildTopReports(topN, dependencies, reportBuilder, weights)
 }
 
-func kotlinAndroidFileUsages(scan scanResult) []shared.FileUsage {
-	importsOf := func(file fileScan) []shared.ImportRecord { return file.Imports }
-	usageOf := func(file fileScan) map[string]int { return file.Usage }
-	return shared.MapFileUsages(scan.Files, importsOf, usageOf)
-}
-
 func buildDependencyReport(dependency string, scan scanResult) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, kotlinAndroidFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	dep := shared.BuildDependencyReportFromStats(dependency, "kotlin-android", stats)
 	dep.RiskCues = kotlinAndroidRiskCues(dependency, scan, stats)
 	warnings := kotlinAndroidDependencyWarnings(dependency, stats)

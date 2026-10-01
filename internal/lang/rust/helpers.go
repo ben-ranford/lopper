@@ -39,40 +39,6 @@ func uniquePaths(values []string) []string {
 	return result
 }
 
-func dedupeWarnings(warnings []string) []string {
-	seen := make(map[string]struct{}, len(warnings))
-	result := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		warning = strings.TrimSpace(warning)
-		if warning == "" {
-			continue
-		}
-		if _, ok := seen[warning]; ok {
-			continue
-		}
-		seen[warning] = struct{}{}
-		result = append(result, warning)
-	}
-	return result
-}
-
-func dedupeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
-}
-
 func isSubPath(root, candidate string) bool {
 	rootAbs, rootErr := filepath.Abs(root)
 	candidateAbs, candidateErr := filepath.Abs(candidate)

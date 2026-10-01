@@ -66,16 +66,7 @@ func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool)
 }
 
 func prependUniquePolicySource(source string, sources []string) []string {
-	out := []string{source}
-	seen := map[string]struct{}{source: {}}
-	for _, item := range sources {
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		out = append(out, item)
-	}
-	return out
+	return thresholds.PrependPolicySource(source, sources)
 }
 
 func resolveAnalyseFeatures(visited map[string]bool, values analyseFlagValues, configFeatures thresholds.FeatureConfig) (featureflags.Set, error) {

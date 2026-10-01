@@ -12,7 +12,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -38,11 +37,19 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	}
 
 	excludedPaths := shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
-	scanResult, err := scanRepoWithExcludedPaths(ctx, repoPath, excludedPaths)
+	var catalog *packagingCatalog
+	if req.Features.Enabled(report.DependencyIdentityPreviewFeature) {
+		catalog = newPackagingCatalog()
+	}
+	scanResult, err := scanRepoWithCatalog(ctx, repoPath, excludedPaths, catalog)
 	if err != nil {
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
+	if catalog != nil {
+		result.PythonManifests = catalog.snapshot()
+		result.PythonManifestCatalog = true
+	}
 
 	analysisReq := req
 	analysisReq.RepoPath = repoPath
@@ -68,11 +75,7 @@ type pendingFromImport struct {
 	parenDepth  int
 }
 
-type fileScan struct {
-	Path    string
-	Imports []importBinding
-	Usage   map[string]int
-}
+type fileScan = shared.ScannedFile
 
 type scanResult struct {
 	Files                []fileScan
@@ -86,6 +89,10 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 }
 
 func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (scanResult, error) {
+	return scanRepoWithCatalog(ctx, repoPath, excludedPaths, nil)
+}
+
+func scanRepoWithCatalog(ctx context.Context, repoPath string, excludedPaths map[string]struct{}, catalog *packagingCatalog) (scanResult, error) {
 	result := scanResult{
 		DeclaredDependencies: make(map[string]struct{}),
 		ImportedDependencies: make(map[string]struct{}),
@@ -93,7 +100,7 @@ func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPat
 	if repoPath == "" {
 		return result, fmt.Errorf("repo path is empty")
 	}
-	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath, excludedPaths)
+	declaredDependencies, warnings, err := collectDeclaredDependenciesWithCatalog(ctx, repoPath, excludedPaths, catalog)
 	if err != nil {
 		return result, err
 	}
@@ -138,7 +145,7 @@ func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result
 	if err != nil {
 		return err
 	}
-	content, relativePath, err := readPythonFile(repoPath, cleanPath)
+	content, relativePath, err := shared.ReadSourceFile(repoPath, cleanPath)
 	if err != nil {
 		return err
 	}
@@ -161,18 +168,6 @@ func enforceRepoBoundary(repoPath, path string) (string, error) {
 		return cleanPath, nil
 	}
 	return "", fmt.Errorf("refusing to read path outside repo: %s", path)
-}
-
-func readPythonFile(repoPath, cleanPath string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, cleanPath)
-	if err != nil {
-		return nil, "", err
-	}
-	relativePath, err := filepath.Rel(repoPath, cleanPath)
-	if err != nil {
-		relativePath = cleanPath
-	}
-	return content, relativePath, nil
 }
 
 var (
@@ -905,10 +900,6 @@ func shouldSkipDir(name string) bool {
 // ShouldSkipDirectory reports whether Python discovery ignores a directory.
 func ShouldSkipDirectory(name string) bool {
 	return shared.ShouldSkipDir(name, pythonSkippedDirs)
-}
-
-func pythonFileUsages(scan scanResult) []shared.FileUsage {
-	return shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 }
 
 var pythonStdlib = map[string]bool{

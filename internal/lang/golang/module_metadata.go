@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"golang.org/x/mod/modfile"
 )
@@ -229,7 +230,7 @@ func (m *nestedModuleMetadata) addReplacements(moduleReplacements map[string]str
 }
 
 func (m *nestedModuleMetadata) result() ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
-	return uniqueStrings(m.modules), uniqueStrings(m.dependencies), m.replacements, m.oversizedDirs, m.trustedDirs, nil
+	return shared.UniqueTrimmedStrings(m.modules), shared.UniqueTrimmedStrings(m.dependencies), m.replacements, m.oversizedDirs, m.trustedDirs, nil
 }
 
 func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
@@ -483,7 +484,7 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 		}
 		modulePaths = append(modulePaths, modulePath)
 	}
-	return uniqueStrings(modulePaths), nil
+	return shared.UniqueTrimmedStrings(modulePaths), nil
 }
 
 func readGoWorkUseEntries(repoPath string) ([]string, error) {
@@ -521,7 +522,7 @@ func parseGoWorkUseEntries(content []byte) []string {
 			entries = append(entries, normalizeGoWorkPath(strings.TrimPrefix(line, "use ")))
 		}
 	}
-	return uniqueStrings(entries)
+	return shared.UniqueTrimmedStrings(entries)
 }
 
 func normalizeGoWorkPath(value string) string {
@@ -774,23 +775,6 @@ func resolveRepoBoundedPath(repoPath, value string) (string, bool) {
 		return "", false
 	}
 	return resolvedAbs, true
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		normalized := strings.TrimSpace(value)
-		if normalized == "" {
-			continue
-		}
-		if _, ok := seen[normalized]; ok {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		result = append(result, normalized)
-	}
-	return result
 }
 
 func stripInlineComment(line string) string {

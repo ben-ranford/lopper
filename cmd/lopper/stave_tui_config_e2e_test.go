@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/testutil"
+
 	"github.com/creack/pty"
 )
 
@@ -106,9 +108,9 @@ const staveFixtureConfig = "features:\n  enable: [stave-tui-preview]\n"
 func newStaveConfigFixture(t *testing.T) string {
 	t.Helper()
 	fixture := t.TempDir()
-	writeFile(t, filepath.Join(fixture, "package.json"), `{"name":"tui-config-fixture","dependencies":{"example-dep":"1.0.0"}}`)
-	writeFile(t, filepath.Join(fixture, "index.js"), "import dependency from 'example-dep';\ndependency();\n")
-	writeFile(t, filepath.Join(fixture, ".lopper.yml"), staveFixtureConfig)
+	testutil.MustWriteFileWithModes(t, filepath.Join(fixture, "package.json"), `{"name":"tui-config-fixture","dependencies":{"example-dep":"1.0.0"}}`, 0o644, 0o755)
+	testutil.MustWriteFileWithModes(t, filepath.Join(fixture, "index.js"), "import dependency from 'example-dep';\ndependency();\n", 0o644, 0o755)
+	testutil.MustWriteFileWithModes(t, filepath.Join(fixture, ".lopper.yml"), staveFixtureConfig, 0o644, 0o755)
 	return fixture
 }
 

@@ -24,7 +24,14 @@ func MustWriteFile(t *testing.T, path string, content string) {
 
 func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMode) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	MustWriteFileWithModes(t, path, content, perm, 0o750)
+}
+
+// MustWriteFileWithModes preserves fixtures with explicit parent-directory modes.
+// Like os.WriteFile/MkdirAll, existing permissions are not changed.
+func MustWriteFileWithModes(t *testing.T, path, content string, perm, dirPerm os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
 	}
 	if err := os.WriteFile(path, []byte(content), perm); err != nil {

@@ -145,9 +145,9 @@ func newPendingMergeBenchGateRepo(t *testing.T) (repo string, benchVars map[stri
 
 	repo, benchVars = newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkPendingMerge"))
-	runGitCommand(t, repo, "add", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio", "internal/errutil")
 	runGitCommand(t, repo, "commit", "-m", "add benchmark inputs")
 
 	runGitCommand(t, repo, "checkout", "-b", "nonmatching-base")

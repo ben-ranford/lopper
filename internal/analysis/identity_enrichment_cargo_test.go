@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -371,7 +372,7 @@ func TestCargoIdentityCollectorsSkipUnlockedManifestAndBlankLockVersion(t *testi
 	warnings := newIdentityWarningCollector(repoPath)
 	index := identityIndex{}
 
-	collectCargoIdentityEvidenceFromSnapshot(repoPath, index, identityManifestSnapshot{cargoManifestFiles: []string{manifestPath}}, warnings)
+	collectCargoIdentityEvidenceFromSnapshot(context.Background(), repoPath, index, identityManifestSnapshot{cargoManifestFiles: []string{manifestPath}}, warnings)
 	if len(index) != 0 || len(warnings.list()) != 0 {
 		t.Fatalf("expected unlocked Cargo manifest to remain silent and unresolved, got index=%#v warnings=%#v", index, warnings.list())
 	}

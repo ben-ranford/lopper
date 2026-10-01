@@ -147,28 +147,26 @@ type codemodApplyPayload struct {
 	Error          *structuredToolError        `json:"error,omitempty"`
 }
 
-type baselineSavePayload struct {
+type snapshotSavePayload struct {
 	SchemaVersion     string               `json:"schemaVersion"`
 	Summary           string               `json:"summary"`
 	RepoPath          string               `json:"repoPath"`
 	BaselineStorePath string               `json:"baselineStorePath"`
 	BaselineKey       string               `json:"baselineKey"`
 	SnapshotPath      string               `json:"snapshotPath"`
-	ReportSummary     *report.Summary      `json:"reportSummary,omitempty"`
-	Report            report.Report        `json:"report"`
 	Error             *structuredToolError `json:"error,omitempty"`
 }
 
+type baselineSavePayload struct {
+	snapshotSavePayload
+	ReportSummary *report.Summary `json:"reportSummary,omitempty"`
+	Report        report.Report   `json:"report"`
+}
+
 type dashboardBaselineSavePayload struct {
-	SchemaVersion     string               `json:"schemaVersion"`
-	Summary           string               `json:"summary"`
-	RepoPath          string               `json:"repoPath"`
-	BaselineStorePath string               `json:"baselineStorePath"`
-	BaselineKey       string               `json:"baselineKey"`
-	SnapshotPath      string               `json:"snapshotPath"`
-	DashboardSummary  dashboard.Summary    `json:"dashboardSummary"`
-	Report            dashboard.Report     `json:"report"`
-	Error             *structuredToolError `json:"error,omitempty"`
+	snapshotSavePayload
+	DashboardSummary dashboard.Summary `json:"dashboardSummary"`
+	Report           dashboard.Report  `json:"report"`
 }
 
 func (s *Server) mutationToolsEnabled() bool {
@@ -316,16 +314,7 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
-	scopeMode, err := parseScopeMode(args.ScopeMode)
-	if err != nil {
-		return AnalysisMutationRequest{}, err
-	}
-	analysisArgs := analysisArgsFromMutation(args)
-	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholds(repoPath, analysisArgs)
-	if err != nil {
-		return AnalysisMutationRequest{}, err
-	}
-	features, err := s.resolveFeatures(loadResult.Features, args.EnableFeatures, args.DisableFeatures)
+	prepared, err := s.resolveAnalysisOptions(repoPath, dependency, topN, analysisArgsFromMutation(args))
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
@@ -337,20 +326,20 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 		RepoPath:         repoPath,
 		Dependency:       dependency,
 		TopN:             topN,
-		ScopeMode:        scopeMode,
-		Language:         languageOrDefault(args.Language),
-		ConfigPath:       strings.TrimSpace(loadResult.ConfigPath),
-		IncludePatterns:  mergeStringOptions(loadResult.Scope.Include, args.Include),
-		ExcludePatterns:  mergeStringOptions(loadResult.Scope.Exclude, args.Exclude),
+		ScopeMode:        prepared.scopeMode,
+		Language:         prepared.language,
+		ConfigPath:       prepared.configPath,
+		IncludePatterns:  prepared.includePatterns,
+		ExcludePatterns:  prepared.excludePatterns,
 		CacheEnabled:     cacheEnabled(args.CacheEnabled),
 		CachePath:        strings.TrimSpace(args.CachePath),
 		CacheReadOnly:    args.CacheReadOnly,
-		RuntimeProfile:   runtimeProfileOrDefault(args.RuntimeProfile),
-		RuntimeTracePath: strings.TrimSpace(args.RuntimeTracePath),
-		Features:         features,
-		Thresholds:       thresholdsValue,
-		PolicySources:    policySources,
-		PolicyTrace:      policyTrace,
+		RuntimeProfile:   prepared.runtimeProfile,
+		RuntimeTracePath: prepared.runtimeTracePath,
+		Features:         prepared.featureSet,
+		Thresholds:       prepared.thresholds,
+		PolicySources:    prepared.policySources,
+		PolicyTrace:      prepared.policyTrace,
 	}, nil
 }
 
@@ -630,33 +619,31 @@ func summarizeCodemodApply(dependency string, apply *report.CodemodApplyReport, 
 }
 
 func shapeBaselineSavePayload(req AnalysisMutationRequest, reportData report.Report, savedPath string, err error) baselineSavePayload {
-	payload := baselineSavePayload{
-		SchemaVersion:     report.SchemaVersion,
-		Summary:           summarizeSnapshotSave("baseline", req.BaselineKey, savedPath, err),
-		RepoPath:          req.RepoPath,
-		BaselineStorePath: req.BaselineStorePath,
-		BaselineKey:       req.BaselineKey,
-		SnapshotPath:      savedPath,
-		ReportSummary:     reportData.Summary,
-		Report:            reportData,
+	return baselineSavePayload{
+		snapshotSavePayload: shapeSnapshotSavePayload(report.SchemaVersion, "baseline", req.RepoPath, req.BaselineStorePath, req.BaselineKey, savedPath, err),
+		ReportSummary:       reportData.Summary,
+		Report:              reportData,
 	}
-	payload.Error = structuredError(err)
-	return payload
 }
 
 func shapeDashboardBaselineSavePayload(req DashboardMutationRequest, reportData dashboard.Report, savedPath string, err error) dashboardBaselineSavePayload {
-	payload := dashboardBaselineSavePayload{
-		SchemaVersion:     dashboard.BaselineSnapshotSchemaVersion,
-		Summary:           summarizeSnapshotSave("dashboard baseline", req.BaselineKey, savedPath, err),
-		RepoPath:          req.RepoPath,
-		BaselineStorePath: req.BaselineStorePath,
-		BaselineKey:       req.BaselineKey,
-		SnapshotPath:      savedPath,
-		DashboardSummary:  reportData.Summary,
-		Report:            reportData,
+	return dashboardBaselineSavePayload{
+		snapshotSavePayload: shapeSnapshotSavePayload(dashboard.BaselineSnapshotSchemaVersion, "dashboard baseline", req.RepoPath, req.BaselineStorePath, req.BaselineKey, savedPath, err),
+		DashboardSummary:    reportData.Summary,
+		Report:              reportData,
 	}
-	payload.Error = structuredError(err)
-	return payload
+}
+
+func shapeSnapshotSavePayload(schemaVersion, kind, repoPath, storePath, key, savedPath string, err error) snapshotSavePayload {
+	return snapshotSavePayload{
+		SchemaVersion:     schemaVersion,
+		Summary:           summarizeSnapshotSave(kind, key, savedPath, err),
+		RepoPath:          repoPath,
+		BaselineStorePath: storePath,
+		BaselineKey:       key,
+		SnapshotPath:      savedPath,
+		Error:             structuredError(err),
+	}
 }
 
 func summarizeSnapshotSave(kind, key, savedPath string, err error) string {

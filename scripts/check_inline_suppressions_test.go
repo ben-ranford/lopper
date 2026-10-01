@@ -73,7 +73,7 @@ func TestInlineSuppressionCheckRejectsStagedMarkers(t *testing.T) {
 
 			repoDir := newInlineSuppressionRepo(t)
 			writeFile(t, filepath.Join(repoDir, tc.path), tc.content)
-			runCommand(t, repoDir, "git", "add", tc.path)
+			testutil.RunGit(t, repoDir, "add", tc.path)
 
 			output, err := runSuppressionCheck(repoDir)
 			if err == nil {
@@ -97,8 +97,8 @@ func TestInlineSuppressionCheckRejectsWorkingTreeMarkers(t *testing.T) {
 
 	repoDir := newInlineSuppressionRepo(t)
 	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithoutComment())
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "add source file")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "add source file")
 
 	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithComment("nolint:staticcheck"))
 
@@ -117,7 +117,7 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerWithoutGitHubCredentials(t *t
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"GH_BIN="+filepath.Join(repoDir, "missing-gh"),
@@ -155,7 +155,7 @@ func assertSuppressionDetectedForFilename(t *testing.T, filename string) {
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, filename), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", filename)
+	testutil.RunGit(t, repoDir, "add", filename)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -188,7 +188,7 @@ func assertSuppressionDetectedForLine(t *testing.T, line string) suppressionReco
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	content := "package main\n\nfunc main() {\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -221,11 +221,11 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T)
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, "old.go"), mainGoWithoutComment())
-	runCommand(t, repoDir, "git", "add", "old.go")
-	runCommand(t, repoDir, "git", "commit", "-m", "add old source")
-	runCommand(t, repoDir, "git", "mv", "old.go", "renamed.go")
+	testutil.RunGit(t, repoDir, "add", "old.go")
+	testutil.RunGit(t, repoDir, "commit", "-m", "add old source")
+	testutil.RunGit(t, repoDir, "mv", "old.go", "renamed.go")
 	writeFile(t, filepath.Join(repoDir, "renamed.go"), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", "renamed.go")
+	testutil.RunGit(t, repoDir, "add", "renamed.go")
 
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
@@ -256,7 +256,7 @@ func runTrackedSuppressionCheck(t *testing.T, content string, extraEnv []string,
 	repoDir := newInlineSuppressionRepo(t)
 	ghPath, logPath := newMockGH(t)
 	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	env := append([]string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track"}, extraEnv...)
 	output, err := runSuppressionCheckWithEnv(repoDir, env...)
@@ -310,7 +310,7 @@ func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing
 	content := "package main\n\nfunc main() {\n\towner := service //" + marker +
 		" // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"GH_BIN="+ghPath,
@@ -352,7 +352,7 @@ func TestInlineSuppressionCheckFailsClosedWhenTrackingIssueCannotBeCreated(t *te
 	repoDir := newInlineSuppressionRepo(t)
 	ghPath, _ := newMockGH(t)
 	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"GH_BIN="+ghPath,
@@ -390,7 +390,7 @@ func TestInlineSuppressionCheckTracksDuplicateSuppressionsSeparately(t *testing.
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	source := "package main\n\nfunc main() {\n\t_ = 1 //" + "nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n\t_ = 1 //" + "nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -435,23 +435,23 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 
 	base := "package main\n\nfunc main() {\n\tx := 1\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), base)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "base")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
-	runCommand(t, repoDir, "git", "checkout", "-b", "pr")
+	testutil.RunGit(t, repoDir, "checkout", "-b", "pr")
 	prContent := "package main\n\nfunc main() {\n\tx := 1\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), prContent)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "pr adds its own suppression")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "pr adds its own suppression")
 
-	runCommand(t, repoDir, "git", "checkout", "main")
+	testutil.RunGit(t, repoDir, "checkout", "main")
 	mainContent := "package main\n\nfunc main() {\n" + line + "\n\tx := 1\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), mainContent)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "main independently adds an identical suppression")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "main independently adds an identical suppression")
 
-	runCommand(t, repoDir, "git", "merge", "--no-edit", "pr")
+	testutil.RunGit(t, repoDir, "merge", "--no-edit", "pr")
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	output, err := runSuppressionCheckWithEnv(repoDir,
@@ -496,26 +496,26 @@ func TestInlineSuppressionCheckIgnoresOrdinaryLocalMergeCommits(t *testing.T) {
 	// outright under pipefail instead of falling back to the working tree.
 	repoDir := newInlineSuppressionRepo(t)
 	writeFile(t, filepath.Join(repoDir, mainGoPath), "package main\n\nfunc main() {\n\tx := 1\n}\n")
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "base")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "base")
 	baseSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
-	runCommand(t, repoDir, "git", "checkout", "-b", "topic")
+	testutil.RunGit(t, repoDir, "checkout", "-b", "topic")
 	marker := "nolint:staticcheck"
 	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
 	topicContent := "package main\n\nfunc topic() {\n" + line + "\n}\n"
 	topicPath := "topic.go"
 	writeFile(t, filepath.Join(repoDir, topicPath), topicContent)
-	runCommand(t, repoDir, "git", "add", topicPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "topic adds its own suppression in a topic-only file")
+	testutil.RunGit(t, repoDir, "add", topicPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "topic adds its own suppression in a topic-only file")
 
-	runCommand(t, repoDir, "git", "checkout", "main")
+	testutil.RunGit(t, repoDir, "checkout", "main")
 	writeFile(t, filepath.Join(repoDir, mainGoPath), "package main\n\nfunc main() {\n\tx := 2\n}\n")
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "main advances independently")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "main advances independently")
 
-	runCommand(t, repoDir, "git", "checkout", "topic")
-	runCommand(t, repoDir, "git", "merge", "--no-edit", "main")
+	testutil.RunGit(t, repoDir, "checkout", "topic")
+	testutil.RunGit(t, repoDir, "merge", "--no-edit", "main")
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	// Deliberately not setting GITHUB_EVENT_NAME, simulating a local run.
@@ -557,12 +557,12 @@ func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *test
 	// in this zero-context diff, or the two fingerprints would disagree.
 	baseline := "package main\n\nfunc main() {\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), baseline)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "pre-existing suppression")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "pre-existing suppression")
 
 	withSecond := "package main\n\nfunc main() {\n" + line + "\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), withSecond)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -602,7 +602,7 @@ func TestInlineSuppressionCheckSurvivesOccurrenceCountingInALargeFile(t *testing
 		builder.WriteString("// filler line to force a large enough file to fill the pipe buffer\n")
 	}
 	writeFile(t, filepath.Join(repoDir, mainGoPath), builder.String())
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -635,12 +635,12 @@ func TestInlineSuppressionCheckReadsStagedOccurrencesFromTheIndex(t *testing.T) 
 	// and must be assigned occurrence 2.
 	baseline := "package main\n\nfunc main() {\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), baseline)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "pre-existing suppression")
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "pre-existing suppression")
 
 	staged := "package main\n\nfunc main() {\n" + line + "\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), staged)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	// Then edit the working tree only (no re-staging) so the committed,
 	// pre-existing first occurrence no longer matches there. If occurrence
@@ -683,7 +683,7 @@ func TestInlineSuppressionCheckAllowsDocumentationMentions(t *testing.T) {
 	repoDir := newInlineSuppressionRepo(t)
 	docContent := "# Policy\n\nDo not add `" + "//" + "nolint` or `" + "//" + "nosec` markers in source files.\n"
 	writeFile(t, filepath.Join(repoDir, "docs", "policy.md"), docContent)
-	runCommand(t, repoDir, "git", "add", "docs/policy.md")
+	testutil.RunGit(t, repoDir, "add", "docs/policy.md")
 
 	output, err := runSuppressionCheck(repoDir)
 	if err != nil {
@@ -722,7 +722,7 @@ func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *tes
 	line := "\t_ = \"done\" //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
 	source := "package main\n\nfunc main() {\n" + line + "\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -742,7 +742,7 @@ func assertSuppressionDetectedForNarrowSingleQuoteSource(t *testing.T, path stri
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	source := wrapperStart + "\n" + line + "\n" + wrapperEnd + "\n"
 	writeFile(t, filepath.Join(repoDir, path), source)
-	runCommand(t, repoDir, "git", "add", path)
+	testutil.RunGit(t, repoDir, "add", path)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -804,7 +804,7 @@ func TestInlineSuppressionCheckDetectsMarkerAfterAMultilineTemplateLiteral(t *te
 		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
 	jsPath := "main.js"
 	writeFile(t, filepath.Join(repoDir, jsPath), source)
-	runCommand(t, repoDir, "git", "add", jsPath)
+	testutil.RunGit(t, repoDir, "add", jsPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -832,8 +832,8 @@ func TestInlineSuppressionCheckSeedsQuoteStateAcrossADiffContextGap(t *testing.T
 	jsPath := "tpl.js"
 	base := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`;\n"
 	writeFile(t, filepath.Join(repoDir, jsPath), base)
-	runCommand(t, repoDir, "git", "add", jsPath)
-	runCommand(t, repoDir, "git", "commit", "-m", "add template literal")
+	testutil.RunGit(t, repoDir, "add", jsPath)
+	testutil.RunGit(t, repoDir, "commit", "-m", "add template literal")
 
 	changed := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`; //" +
 		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
@@ -855,7 +855,7 @@ func assertSuppressionCheckPassesForSourceNamed(t *testing.T, filename string, s
 
 	repoDir := newInlineSuppressionRepo(t)
 	writeFile(t, filepath.Join(repoDir, filename), source)
-	runCommand(t, repoDir, "git", "add", filename)
+	testutil.RunGit(t, repoDir, "add", filename)
 
 	output, err := runSuppressionCheck(repoDir)
 	if err != nil {
@@ -885,7 +885,7 @@ func assertSuppressionDetectedForFileAndLine(t *testing.T, filename string, line
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, filename), line)
-	runCommand(t, repoDir, "git", "add", filename)
+	testutil.RunGit(t, repoDir, "add", filename)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -904,10 +904,10 @@ func assertSuppressionDetectedWithContext(t *testing.T, filename, before, after,
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, filename), before)
-	runCommand(t, repoDir, "git", "add", filename)
-	runCommand(t, repoDir, "git", "commit", "-m", "add context source")
+	testutil.RunGit(t, repoDir, "add", filename)
+	testutil.RunGit(t, repoDir, "commit", "-m", "add context source")
 	writeFile(t, filepath.Join(repoDir, filename), after)
-	runCommand(t, repoDir, "git", "add", filename)
+	testutil.RunGit(t, repoDir, "add", filename)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -963,7 +963,7 @@ func TestInlineSuppressionCheckNormalizesCRLFLineEndings(t *testing.T) {
 	line := "value := unsafe() //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
 	source := "package main\r\n\r\nfunc main() {\r\n\t" + line + "\r\n}\r\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -993,7 +993,7 @@ func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrop
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -1068,14 +1068,14 @@ func TestInlineSuppressionCheckDetectsCaseVariantGoColonMarkers(t *testing.T) {
 			t.Parallel()
 			repoDir := newInlineSuppressionRepo(t)
 			writeFile(t, filepath.Join(repoDir, "retry.go"), source+"\n")
-			runCommand(t, repoDir, "git", "add", "retry.go")
+			testutil.RunGit(t, repoDir, "add", "retry.go")
 			out, err := runSuppressionCheck(repoDir)
 			if err == nil || !strings.Contains(out, "Missing inline suppression tracking metadata") {
 				t.Fatalf("expected missing-metadata rejection, got %v: %s", err, out)
 			}
 			line := source + " rationale=temporary scanner false positive; owner=@security; remove-when=analyzer fixed"
 			writeFile(t, filepath.Join(repoDir, "retry.go"), line+"\n")
-			runCommand(t, repoDir, "git", "add", "retry.go")
+			testutil.RunGit(t, repoDir, "add", "retry.go")
 			outputPath := filepath.Join(repoDir, "records.json")
 			out, err = runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 			if err != nil {
@@ -1138,7 +1138,7 @@ func TestInlineSuppressionCheckDoesNotCarryShellMarkerIntoGoFile(t *testing.T) {
 	marker := "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
 	writeFile(t, filepath.Join(repoDir, "a.sh"), "#"+marker+"\n")
 	writeFile(t, filepath.Join(repoDir, "z.go"), "package p\nvar text = \"//"+marker+"\"\n")
-	runCommand(t, repoDir, "git", "add", "a.sh", "z.go")
+	testutil.RunGit(t, repoDir, "add", "a.sh", "z.go")
 	outputPath := filepath.Join(repoDir, "records.json")
 	out, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -1256,10 +1256,10 @@ func TestInlineSuppressionCheckIgnoresShellClosingParenHash(t *testing.T) {
 			outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 			line := tc.target + "nolint rationale=temporary parser false positive; owner=@security; remove-when=parser fixed"
 			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+tc.target+"old\n"+tc.suffix)
-			runCommand(t, repoDir, "git", "add", "build.sh")
-			runCommand(t, repoDir, "git", "commit", "-m", "add shell source")
+			testutil.RunGit(t, repoDir, "add", "build.sh")
+			testutil.RunGit(t, repoDir, "commit", "-m", "add shell source")
 			writeFile(t, filepath.Join(repoDir, "build.sh"), tc.prefix+line+"\n"+tc.suffix)
-			runCommand(t, repoDir, "git", "add", "build.sh")
+			testutil.RunGit(t, repoDir, "add", "build.sh")
 			output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 			if err != nil {
 				t.Fatalf("shell check failed: %v\n%s", err, output)
@@ -1297,7 +1297,7 @@ func TestInlineSuppressionCheckIgnoresPythonFloorDivisionAsACommentPrefix(t *tes
 	source := "value = numerator " + "/" + "/ noqa denominator\n"
 	repoDir := newInlineSuppressionRepo(t)
 	writeFile(t, filepath.Join(repoDir, "calc.py"), source)
-	runCommand(t, repoDir, "git", "add", "calc.py")
+	testutil.RunGit(t, repoDir, "add", "calc.py")
 
 	output, err := runSuppressionCheck(repoDir)
 	if err != nil {
@@ -1315,7 +1315,7 @@ func TestInlineSuppressionCheckDetectsGenuineHashMarkerInAPythonFile(t *testing.
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	line := "value = numerator " + "/" + "/ denominator  # noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
 	writeFile(t, filepath.Join(repoDir, "calc.py"), line)
-	runCommand(t, repoDir, "git", "add", "calc.py")
+	testutil.RunGit(t, repoDir, "add", "calc.py")
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -1366,7 +1366,7 @@ func detectSuppressionFingerprint(t *testing.T, source string) string {
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
+	testutil.RunGit(t, repoDir, "add", mainGoPath)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
@@ -1413,11 +1413,11 @@ func newInlineSuppressionRepo(t *testing.T) string {
 	}
 	writeFileMode(t, filepath.Join(scriptDir, "check-inline-suppressions.sh"), string(scriptData), 0o755)
 
-	runCommand(t, repoDir, "git", "init", "-b", "main")
-	runCommand(t, repoDir, "git", "config", "user.name", "Test User")
-	runCommand(t, repoDir, "git", "config", "user.email", "test@example.com")
-	runCommand(t, repoDir, "git", "add", "scripts/check-inline-suppressions.sh")
-	runCommand(t, repoDir, "git", "commit", "-m", "baseline")
+	testutil.RunGit(t, repoDir, "init", "-b", "main")
+	testutil.RunGit(t, repoDir, "config", "user.name", "Test User")
+	testutil.RunGit(t, repoDir, "config", "user.email", "test@example.com")
+	testutil.RunGit(t, repoDir, "add", "scripts/check-inline-suppressions.sh")
+	testutil.RunGit(t, repoDir, "commit", "-m", "baseline")
 
 	return repoDir
 }
@@ -1436,11 +1436,6 @@ func runSuppressionCheckWithEnv(repoDir string, env ...string) (string, error) {
 
 func runCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
-
-	if name == "git" {
-		testutil.RunGit(t, dir, args...)
-		return ""
-	}
 
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir

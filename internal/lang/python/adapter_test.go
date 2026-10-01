@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -48,20 +49,32 @@ func TestAdapterAnalyseHonoursExcludedPathsDuringScan(t *testing.T) {
 	excludedDir := filepath.Join(repo, ".artifacts")
 	testutil.MustWriteFile(t, filepath.Join(excludedDir, "trace_helper.py"), "import requests\nrequests.get('x')\n")
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:      repo,
-		Dependency:    "requests",
-		ExcludedPaths: []string{excludedDir},
-	})
-	if err != nil {
-		t.Fatalf("analyse: %v", err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 0 {
-		t.Fatalf("expected excluded directory's import to be skipped, got used count %d", dep.UsedExportsCount)
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		files []string
+	}{
+		{"directory", []string{excludedDir}, nil},
+		{"file", nil, []string{filepath.Join(excludedDir, "trace_helper.py")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+				RepoPath:      repo,
+				Dependency:    "requests",
+				ExcludedPaths: tc.paths,
+				ExcludedFiles: tc.files,
+			})
+			if err != nil {
+				t.Fatalf("analyse: %v", err)
+			}
+			if len(reportData.Dependencies) != 1 {
+				t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+			}
+			dep := reportData.Dependencies[0]
+			if dep.UsedExportsCount != 0 {
+				t.Fatalf("expected excluded directory's import to be skipped, got used count %d", dep.UsedExportsCount)
+			}
+		})
 	}
 }
 
@@ -981,7 +994,7 @@ func TestImportParsersSkipLocalAndStdlibImports(t *testing.T) {
 		t.Fatalf("expected no bindings for local module import, got %#v", bindings)
 	}
 
-	if _, _, err := readPythonFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py")); err == nil {
 		t.Fatal("expected read error for missing python file")
 	}
 }
@@ -992,7 +1005,7 @@ func TestReadPythonFileFallsBackWhenRelativePathComputationFails(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 
-	content, relativePath, err := readPythonFile(repoPath, "adapter.go")
+	content, relativePath, err := shared.ReadSourceFile(repoPath, "adapter.go")
 	if err != nil {
 		t.Fatalf("read python file: %v", err)
 	}
