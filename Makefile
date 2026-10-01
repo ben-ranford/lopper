@@ -491,7 +491,7 @@ hooks-uninstall:
 		managed_dir="$$common_dir/lopper-hooks"; \
 		config_error="$$(mktemp)"; \
 		read_preflight_git git config --local --get core.hooksPath 2>"$$config_error" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; }; configured_path="$$preflight_git_output"; \
-		case "$$configured_path" in "$$managed_dir"|.githooks) for managed_value in "$$managed_dir" .githooks ""; do run_preflight_git git config --local --fixed-value --unset-all core.hooksPath "$$managed_value" || { status=$$?; [ "$$status" -eq 5 ] || exit "$$status"; }; done ;; esac; \
+		case "$$configured_path" in "$$managed_dir"|.githooks) for managed_value in "$$managed_dir" .githooks; do run_preflight_git git config --local --fixed-value --unset-all core.hooksPath "$$managed_value" || { status=$$?; [ "$$status" -eq 5 ] || exit "$$status"; }; done ;; esac; \
 		echo "Removed managed core.hooksPath hook configuration"; \
 		sh scripts/cleanup-hook-snapshot.sh --managed-dir "$$managed_dir" --common-dir "$$common_dir" --git-dir "$$git_dir"
 

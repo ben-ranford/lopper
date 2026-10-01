@@ -285,6 +285,19 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallPreservesExplicitEmptyHooksPath(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	testutil.RunGit(t, repoDir, "config", "--local", "--add", "core.hooksPath", "")
+	runCommand(t, repoDir, "make", "hooks-install")
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+
+	got, err := hookCommand(repoDir, "git", "config", "--local", "--null", "--get-all", "core.hooksPath")
+	if err != nil || got != "\x00" {
+		t.Fatalf("explicit empty hooksPath was not preserved: %v, %q", err, got)
+	}
+}
+
 func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "legacy-hook-ran")
