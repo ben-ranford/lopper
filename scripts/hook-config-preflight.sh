@@ -6,6 +6,10 @@ preflight_state_dir=
 preflight_output_file=
 
 cleanup_preflight_git() {
+	# The caller may be running this from its EXIT trap after cancellation.
+	# Ignore follow-up signals while teardown waits for owned children and
+	# removes their state, or a second interrupt can abandon the temp directory.
+	trap '' HUP INT TERM
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
 		wait "$preflight_watchdog_pid" 2>/dev/null || :
