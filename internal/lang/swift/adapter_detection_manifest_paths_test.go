@@ -337,33 +337,46 @@ func TestSwiftResolvedPackageFallbacks(t *testing.T) {
 }
 
 func TestSwiftDetectionAndScannerFallbackBranches(t *testing.T) {
-	t.Run("context error accepts nil", func(t *testing.T) {
-		testSwiftContextErrorAcceptsNil(t)
-	})
-
-	t.Run("detect swift entry handles build skip and manifest roots", func(t *testing.T) {
-		testSwiftDetectEntryFallbacks(t)
-	})
-
-	t.Run("scanner finalization reports fallback warnings", func(t *testing.T) {
-		testSwiftScannerFinalizationFallbackWarnings(t)
-	})
-
-	t.Run("resolved pins and ignored symbols fall back to empty values", func(t *testing.T) {
-		testSwiftResolvedPinAndIgnoredSymbolFallbacks(t)
-	})
+	t.Run("context error handles nil and cancellation", testSwiftContextErrors)
+	t.Run("detect swift entry handles build skip and manifest roots", testSwiftDetectEntryFallbacks)
+	t.Run("scanner finalization reports fallback warnings", testSwiftScannerFinalizationFallbackWarnings)
+	t.Run("resolved pins and ignored symbols fall back to empty values", testSwiftResolvedPinAndIgnoredSymbolFallbacks)
 }
 
-func testSwiftContextErrorAcceptsNil(t *testing.T) {
+func testSwiftContextErrors(t *testing.T) {
 	t.Helper()
 
-	//nolint:staticcheck // Deliberate nil context coverage.
-	if err := contextError(nil); err != nil {
-		t.Fatalf("expected nil context error, got %v", err)
+	for name, ctx := range map[string]context.Context{
+		"nil context":        nil,
+		"background context": context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := contextError(ctx); err != nil {
+				t.Fatalf("expected no context error, got %v", err)
+			}
+		})
 	}
+	t.Run("cancelled context", func(t *testing.T) {
+		if err := contextError(testutil.CanceledContext()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context canceled, got %v", err)
+		}
+	})
 }
 
 func testSwiftDetectEntryFallbacks(t *testing.T) {
+	t.Helper()
+
+	for name, ctx := range map[string]context.Context{
+		"nil context":        nil,
+		"background context": context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertSwiftDetectEntryFallbacks(ctx, t)
+		})
+	}
+}
+
+func assertSwiftDetectEntryFallbacks(ctx context.Context, t *testing.T) {
 	t.Helper()
 
 	repo, buildEntry, manifestEntry := mustReadSwiftDetectionEntries(t)
@@ -371,12 +384,10 @@ func testSwiftDetectEntryFallbacks(t *testing.T) {
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
 	visited := 0
-	//nolint:staticcheck // Deliberate nil context coverage.
-	if err := detectSwiftEntry(nil, filepath.Join(repo, swiftBuildDirName), buildEntry, &detection, roots, &visited); !errors.Is(err, filepath.SkipDir) {
+	if err := detectSwiftEntry(ctx, filepath.Join(repo, swiftBuildDirName), buildEntry, &detection, roots, &visited); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected skip dir for %s, got %v", swiftBuildDirName, err)
 	}
-	//nolint:staticcheck // Deliberate nil context coverage.
-	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); err != nil {
+	if err := detectSwiftEntry(ctx, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); err != nil {
 		t.Fatalf("expected manifest detection to succeed, got %v", err)
 	}
 	if !detection.Matched || len(roots) != 1 {
@@ -384,8 +395,7 @@ func testSwiftDetectEntryFallbacks(t *testing.T) {
 	}
 
 	visited = maxDetectFiles
-	//nolint:staticcheck // Deliberate nil context coverage.
-	if err := detectSwiftEntry(nil, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); !errors.Is(err, fs.SkipAll) {
+	if err := detectSwiftEntry(ctx, filepath.Join(repo, packageManifestName), manifestEntry, &detection, roots, &visited); !errors.Is(err, fs.SkipAll) {
 		t.Fatalf("expected max detect files to stop walk, got %v", err)
 	}
 }

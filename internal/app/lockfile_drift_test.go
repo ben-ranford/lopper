@@ -1633,33 +1633,41 @@ func TestScanLockfileDriftMissingRepoPath(t *testing.T) {
 	}
 }
 
-func TestGitHelperErrors(t *testing.T) {
-	repo := t.TempDir()
-	if _, err := gitUntrackedFiles(context.Background(), repo); err == nil {
-		t.Fatalf("expected untracked files command to fail outside git repo")
-	}
-	isWorktree, err := isGitWorktree(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("detect non-git worktree: %v", err)
-	}
-	if isWorktree {
-		t.Fatalf("expected non-git temp dir to not be worktree")
+func TestGitHelpersOutsideWorktree(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"nil context":        nil,
+		"background context": context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			if _, err := gitUntrackedFiles(ctx, repo); err == nil {
+				t.Fatal("expected untracked files command to fail outside git repo")
+			}
+			isWorktree, err := isGitWorktree(ctx, repo)
+			if err != nil {
+				t.Fatalf("detect non-git worktree: %v", err)
+			}
+			if isWorktree {
+				t.Fatal("expected non-git temp dir to not be worktree")
+			}
+		})
 	}
 }
 
-func TestGitHelperNilContextErrors(t *testing.T) {
+func TestGitHelpersCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	repo := t.TempDir()
-	//nolint:staticcheck // Deliberate nil context validation coverage.
-	if _, err := gitUntrackedFiles(nil, repo); err == nil {
-		t.Fatalf("expected untracked files command with nil context to fail outside git repo")
+	if _, err := gitUntrackedFiles(ctx, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected untracked files context canceled, got %v", err)
 	}
-	//nolint:staticcheck // Deliberate nil context validation coverage.
-	isWorktree, err := isGitWorktree(nil, repo)
-	if err != nil {
-		t.Fatalf("detect non-git worktree with nil context: %v", err)
+	isWorktree, err := isGitWorktree(ctx, repo)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected worktree context canceled, got %v", err)
 	}
 	if isWorktree {
-		t.Fatalf("expected non-git temp dir to not be worktree with nil context")
+		t.Fatal("expected canceled worktree detection to not report a worktree")
 	}
 }
 
