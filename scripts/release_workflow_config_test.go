@@ -6957,13 +6957,10 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		t.Fatalf("resolve go binary: %v", err)
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
-	cacheDir := filepath.Join(t.TempDir(), "gocache")
 	moduleCacheDir := currentGoModuleCache(t, goPath)
 	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
-	for _, dir := range []string{homeDir, cacheDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("create Go environment directory: %v", err)
-		}
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("create Go environment directory: %v", err)
 	}
 	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire "+currentGoModRequirement(t, "golang.org/x/sys")+"\n")
 	writeFile(t, filepath.Join(repo, "go.sum"), currentGoSumEntries(t, "golang.org/x/sys"))
@@ -6974,7 +6971,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"GO_BIN":       goPath,
 		"GO_TOOLCHAIN": "local",
 		"HOME":         homeDir,
-		"GOCACHE":      cacheDir,
+		"GOCACHE":      benchFixtureGoCache,
 		"GOMODCACHE":   moduleCacheDir,
 		"BENCH_COUNT":  "1",
 		"BENCH_TIME":   "1x",
