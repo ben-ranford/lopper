@@ -29,15 +29,20 @@ func TestScanRepoFixtures(t *testing.T) {
 				t.Fatalf("expected to find module %q", tc.module)
 			}
 			if tc.module == "lodash" {
-				usage := collectDependencyImportUsage(result, tc.module)
-				if len(usage.UsedExports) != 1 || usage.Counts["debounce"] != 1 {
-					t.Fatalf("expected one used debounce export: %+v", usage)
-				}
-				if len(usage.UsedImports) != 1 || len(usage.UnusedImports) != 0 {
-					t.Fatalf("expected one used lodash import: %+v", usage)
-				}
+				assertDebounceFixtureUsage(t, result)
 			}
 		})
+	}
+}
+
+func assertDebounceFixtureUsage(t *testing.T, result ScanResult) {
+	t.Helper()
+	usage := collectDependencyImportUsage(result, "lodash")
+	if len(usage.UsedExports) != 1 || usage.Counts["debounce"] != 1 {
+		t.Fatalf("expected one used debounce export: %+v", usage)
+	}
+	if len(usage.UsedImports) != 1 || len(usage.UnusedImports) != 0 {
+		t.Fatalf("expected one used lodash import: %+v", usage)
 	}
 }
 
