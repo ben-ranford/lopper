@@ -24,10 +24,28 @@ def is_source(name, data):
 
 
 def has_generated_go_header(path, data):
+    """Inspect leading Go comments, stopping at the first code token."""
     if path.suffix != '.go':
         return False
-    header = re.split(rb'(?m)^[ \t]*package[ \t]+', data, maxsplit=1)[0]
-    return re.search(rb'(?m)^// Code generated .* DO NOT EDIT\.\r?$', header) is not None
+    offset = 3 if data.startswith(b'\xef\xbb\xbf') else 0
+    generated = False
+    whitespace = re.compile(rb'[ \t\r\n]*')
+    while offset < len(data):
+        offset = whitespace.match(data, offset).end()
+        if data.startswith(b'//', offset):
+            end = data.find(b'\n', offset)
+            if end < 0:
+                end = len(data)
+            generated |= re.fullmatch(rb'// Code generated .* DO NOT EDIT\.\r?', data[offset:end]) is not None
+            offset = end + 1
+        elif data.startswith(b'/*', offset):
+            end = data.find(b'*/', offset + 2)
+            if end < 0:
+                return False
+            offset = end + 2
+        else:
+            break
+    return generated
 
 
 def classify(name, data):
