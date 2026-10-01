@@ -1348,12 +1348,10 @@ func newlyDeniedLicensesFromPairs(pairs []DependencyInstancePair) []DeniedLicens
 }
 
 func sortDeniedLicenseDeltas(items []DeniedLicenseDelta) {
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Language != items[j].Language {
-			return items[i].Language < items[j].Language
-		}
-		return items[i].Name < items[j].Name
-	})
+	SortByStringKeys(items,
+		func(item DeniedLicenseDelta) string { return item.Language },
+		func(item DeniedLicenseDelta) string { return item.Name },
+	)
 }
 
 func appendNewlyDeniedLicenseDeltas(items *[]DeniedLicenseDelta, pairs []DependencyInstancePair) {
@@ -1384,15 +1382,7 @@ func deniedLicenseSPDX(dep DependencyReport) string {
 }
 
 func newlyDeniedLicenses(currentByKey, baselineByKey map[string]DependencyReport) []DeniedLicenseDelta {
-	currentInstances := make(map[string][]DependencyReport, len(currentByKey))
-	for key, dep := range currentByKey {
-		currentInstances[key] = append(currentInstances[key], dep)
-	}
-	baselineInstances := make(map[string][]DependencyReport, len(baselineByKey))
-	for key, dep := range baselineByKey {
-		baselineInstances[key] = append(baselineInstances[key], dep)
-	}
-	return newlyDeniedLicensesByInstances(currentInstances, baselineInstances)
+	return newlyDeniedLicensesByInstances(singletonDependencyInstances(currentByKey), singletonDependencyInstances(baselineByKey))
 }
 
 func isDenied(dep DependencyReport) bool {
@@ -1491,15 +1481,7 @@ func vulnerabilityDeltaFromPair(pair DependencyInstancePair, finding Vulnerabili
 }
 
 func newlyReachableVulnerabilities(currentByKey, baselineByKey map[string]DependencyReport) []VulnerabilityDelta {
-	currentInstances := make(map[string][]DependencyReport, len(currentByKey))
-	for key, dep := range currentByKey {
-		currentInstances[key] = append(currentInstances[key], dep)
-	}
-	baselineInstances := make(map[string][]DependencyReport, len(baselineByKey))
-	for key, dep := range baselineByKey {
-		baselineInstances[key] = append(baselineInstances[key], dep)
-	}
-	return newlyReachableVulnerabilitiesByInstances(currentInstances, baselineInstances)
+	return newlyReachableVulnerabilitiesByInstances(singletonDependencyInstances(currentByKey), singletonDependencyInstances(baselineByKey))
 }
 
 func newReachableVulnerabilityFindings(current, baseline DependencyReport) []VulnerabilityFinding {
@@ -1522,4 +1504,14 @@ func newReachableVulnerabilityFindings(current, baseline DependencyReport) []Vul
 	}
 	sortVulnerabilityFindings(items)
 	return items
+}
+
+// singletonDependencyInstances adapts legacy one-dependency-per-key maps to the
+// instance-aware baseline comparison without changing their identity keys.
+func singletonDependencyInstances(dependencies map[string]DependencyReport) map[string][]DependencyReport {
+	instances := make(map[string][]DependencyReport, len(dependencies))
+	for key, dep := range dependencies {
+		instances[key] = []DependencyReport{dep}
+	}
+	return instances
 }
