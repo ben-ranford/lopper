@@ -29,13 +29,13 @@
       "estimatedUnusedBytes": 0,
       "topUsedSymbols": [
         {
-          "name": "map",
+          "name": "debounce",
           "count": 1
         }
       ],
       "usedImports": [
         {
-          "name": "map",
+          "name": "debounce",
           "module": "lodash",
           "locations": [
             {

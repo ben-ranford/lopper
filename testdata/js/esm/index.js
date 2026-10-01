@@ -1,2 +1,4 @@
-import { map } from "lodash"
-map([1], (x) => x)
+import { debounce } from "lodash"
+const emit = debounce(console.log, 10)
+emit("first")
+emit("last")
