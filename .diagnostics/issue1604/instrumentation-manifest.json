@@ -1,0 +1,30 @@
+{
+  "historical_merge": "41680ca9548f72e351c8ed88e98cc946347f45d4",
+  "tree": "287472eb510224761b0a39f3b8b96f91281a0294",
+  "parents": [
+    "064e08da4d538e211be963f4899b45fadb54bb09",
+    "bfc5066cbd5f3753ee5e4e87abe39d6d9bab61b3"
+  ],
+  "original_script_sha256": "ad0208700ded51c46b65bb803f6bd6c5370426aa9e4c25cf851191b9d62d8225",
+  "original_script_unchanged": true,
+  "original_command_unchanged": true,
+  "original_timeout": "10 * time.Second",
+  "original_timeout_unchanged": true,
+  "original_descendant_assertions_unchanged": true,
+  "patch_sha256": "01a0ccd564a4666d0c45fbce4b3b568a819907b6a963885af203fabb33b5ef50",
+  "files": [
+    "internal/runtime/capture_process_windows.go",
+    "internal/runtime/capture_process_windows_test.go",
+    "internal/runtime/windows_startup_investigation_test.go"
+  ],
+  "windows_amd64_cross_compile": "PASS",
+  "windows_amd64_vet": "PASS",
+  "native_execution": "NOT RUN",
+  "hypothesis_only": "First enumerated process thread may differ from primary thread; ResumeThread previous suspend count was discarded. No causal conclusion without native reproduction.",
+  "no_runtime_production_publication": true,
+  "binary_sha256": "a7a2cd06338299c51607a4afb08e2fe5bf11c7b08279febea221da197b6db625",
+  "final_validation_at": "2026-10-01T04:23:50.292313+00:00",
+  "enumeration_errors_retained": true,
+  "start_errors_captured_after_internal_cleanup": true,
+  "final_stdout_stderr_snapshot_after_wait": true
+}

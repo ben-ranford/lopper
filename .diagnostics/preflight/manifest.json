@@ -1,0 +1,11 @@
+{
+  "source_commit": "545770812c52b99789c7d486f9b53f73c17ab122",
+  "source_tree": "d3b513562e3f3e312ad741dc7edd66366bb76c91",
+  "helper_path": "scripts/hook-config-preflight.sh",
+  "helper_sha256": "5173e960fdd37fbe675cd05b556b6da30d72c6d1f775e0caeb4431577740abff",
+  "probe_sha256": "a195a4b0becafea1b5d28c3d565ade1f73a4ff8961374736f959f490d9a7eb80",
+  "scope": "Supplemental native Git Bash diagnostics only; not a replacement for final-head PR CI or review.",
+  "job_timeout_minutes": 5,
+  "case_TERM_guard_seconds": 18,
+  "case_KILL_guard_seconds": 21
+}

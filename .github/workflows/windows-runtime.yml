@@ -2,6 +2,17 @@ name: windows runtime
 
 on:
   workflow_dispatch:
+    inputs:
+      historical_marker_diagnostic:
+        description: Run the bounded isolated original issue1604 fixture investigation
+        type: boolean
+        required: false
+        default: false
+      preflight_termination_diagnostic:
+        description: Run bounded Git Bash process cleanup proof for exact repaired source
+        type: boolean
+        required: false
+        default: false
   pull_request:
     types:
       - opened
@@ -32,3 +43,88 @@ jobs:
       - name: Test Windows runtime cancellation
         shell: pwsh
         run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant|TestWindowsJobCleanupWaitsForDescendants|TestWindowsJobCleanupIsConcurrentAndRepeatable|TestWindowsJobRepeatedStartPreservesCommand|TestWindowsJobCancellationRacesCleanup|TestWindowsJobPreCanceledStartReleasesCommand)$' -v -count=50 -timeout 2m
+
+  historical-marker-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.historical_marker_diagnostic
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout diagnostic assets
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          path: diagnostic-assets
+      - name: Checkout exact historical tested merge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 41680ca9548f72e351c8ed88e98cc946347f45d4
+          persist-credentials: false
+          path: historical-runtime
+      - name: Setup historical Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: historical-runtime/go.mod
+      - name: Run bounded original-fixture investigation
+        shell: pwsh
+        run: ./diagnostic-assets/.diagnostics/issue1604/run-historical.ps1
+      - name: Retain all original-fixture diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue1604-historical-marker-${{ github.run_id }}-${{ github.run_attempt }}
+          path: issue1604-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  preflight-termination-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.preflight_termination_diagnostic
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout reviewed diagnostic assets
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          path: diagnostic-assets
+      - name: Checkout exact repaired preflight source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 545770812c52b99789c7d486f9b53f73c17ab122
+          persist-credentials: false
+          path: preflight-source
+      - name: Verify and exercise native Git Bash cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+          evidence="$workspace/preflight-evidence"
+          mkdir -p "$evidence"
+          expected=545770812c52b99789c7d486f9b53f73c17ab122
+          actual="$(git -C "$workspace/preflight-source" rev-parse HEAD)"
+          test "$actual" = "$expected"
+          # Read immutable Git bytes so Windows checkout line endings cannot change the probe.
+          git -C "$workspace/preflight-source" show "$expected:scripts/hook-config-preflight.sh" > "$evidence/hook-config-preflight.sh"
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/preflight-native-probe.sh > "$evidence/preflight-native-probe.sh"
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/manifest.json > "$evidence/source-manifest.json"
+          helper_hash="$(sha256sum "$evidence/hook-config-preflight.sh" | cut -d ' ' -f 1)"
+          probe_hash="$(sha256sum "$evidence/preflight-native-probe.sh" | cut -d ' ' -f 1)"
+          test "$helper_hash" = 5173e960fdd37fbe675cd05b556b6da30d72c6d1f775e0caeb4431577740abff
+          test "$probe_hash" = a195a4b0becafea1b5d28c3d565ade1f73a4ff8961374736f959f490d9a7eb80
+          set +e
+          bash "$evidence/preflight-native-probe.sh" "$evidence/hook-config-preflight.sh" 2>&1 | tee "$evidence/probe.log"
+          probe_status=${PIPESTATUS[0]}
+          set -e
+          printf '{"source_sha":"%s","helper_sha256":"%s","probe_sha256":"%s","exit_code":%s}\n' "$actual" "$helper_hash" "$probe_hash" "$probe_status" > "$evidence/result.json"
+          exit "$probe_status"
+      - name: Retain supplemental preflight evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preflight-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: preflight-evidence/
+          if-no-files-found: error
+          retention-days: 30
