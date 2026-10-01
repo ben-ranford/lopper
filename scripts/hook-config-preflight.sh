@@ -65,16 +65,20 @@ run_preflight_git() {
 		status=$?
 		preflight_state_dir=
 		preflight_defer_signals=0
-		preflight_signal_status=$preflight_pending_signal
-		[ -z "$preflight_pending_signal" ] || preflight_handle_signal
+		if [ -n "$preflight_pending_signal" ]; then
+			preflight_signal_status=$preflight_pending_signal
+			preflight_handle_signal
+		fi
 		return "$status"
 	}
 	mkdir "$preflight_state_dir/active" || {
 		rmdir "$preflight_state_dir"
 		preflight_state_dir=
 		preflight_defer_signals=0
-		preflight_signal_status=$preflight_pending_signal
-		[ -z "$preflight_pending_signal" ] || preflight_handle_signal
+		if [ -n "$preflight_pending_signal" ]; then
+			preflight_signal_status=$preflight_pending_signal
+			preflight_handle_signal
+		fi
 		return 1
 	}
 	# A separate Bash job owns its process group even when a reader exits from
@@ -225,8 +229,10 @@ exit "$status"
 		fi
 	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
 	preflight_defer_signals=0
-	preflight_signal_status=$preflight_pending_signal
-	[ -z "$preflight_pending_signal" ] || preflight_handle_signal
+	if [ -n "$preflight_pending_signal" ]; then
+		preflight_signal_status=$preflight_pending_signal
+		preflight_handle_signal
+	fi
 	status=0
 	preflight_wait_pid=$preflight_runner_pid
 	wait_preflight_child || status=$?
