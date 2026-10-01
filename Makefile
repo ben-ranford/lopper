@@ -32,9 +32,11 @@ GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/
 ACTIONLINT_VERSION ?= v1.7.12
 GOVULNCHECK_VERSION ?= v1.7.1-0.20260819171436-ff4f1c5e865b
 DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
+DUPLICATION_PYTHON ?= python3
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
 DUPLICATION_BASE ?=
+DUPLICATION_BASELINE ?= .github/duplication-baseline.json
 SUPPRESSION_BASE ?= origin/main
 BENCH_COUNT ?= 3
 BENCH_TIME ?= 200ms
@@ -116,8 +118,9 @@ feature-flag-graduate:
 feature-flag-check:
 	$(GO_CMD) run ./tools/featureflag validate
 
+# A captured CI launcher must not delegate to a toolchain wrapper from PATH.
 dup-check:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) python3 -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)"
+	GOTOOLCHAIN=$(if $(LOPPER_DUPLICATION_GO),local,$(GO_TOOLCHAIN)) "$(DUPLICATION_PYTHON)" -E -S -B scripts/check_duplication.py --base "$(DUPLICATION_BASE)" --go "$(GO)" --version "$(DUPL_VERSION)" --threshold "$(DUPLICATION_TOKEN_THRESHOLD)" --max "$(DUPLICATION_MAX)" --baseline "$(DUPLICATION_BASELINE)"
 
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh

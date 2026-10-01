@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import json
 import math
 import os
 from pathlib import Path
@@ -12,12 +13,20 @@ import subprocess
 import sys
 import tempfile
 
+import duplication_policy as policy
+
 
 class AnalysisError(Exception):
     """The requested comparison did not complete."""
 
 
+CANONICAL_BASELINE = ".github/duplication-baseline.json"
+
+
 def checked(command, repo, *, environment=None, input_text=None):
+    if command[0] == "git":
+        command = [policy.git_executable(), *command[1:]]
+        environment = policy.git_environment(os.environ if environment is None else environment)
     # Decode explicitly so subprocess does not translate bare CR into LF and
     # change Go source positions or manufacture diff hunk boundaries.
     result = subprocess.run(command, cwd=repo, env=environment,
@@ -46,7 +55,8 @@ def comparison_base(repo, requested, environment):
         base = f"refs/remotes/origin/{base}"
     try:
         commit = checked(["git", "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"], repo).stdout.strip()
-        merge_base = checked(["git", "merge-base", "--", commit, "HEAD"], repo).stdout.strip()
+        head = environment.get("LOPPER_DUPLICATION_REVISION", "HEAD")
+        merge_base = checked(["git", "merge-base", "--", commit, head], repo).stdout.strip()
     except AnalysisError as error:
         raise AnalysisError(
             f"Cannot compare requested base {base!r}. Fetch the target and its history "
@@ -55,7 +65,7 @@ def comparison_base(repo, requested, environment):
         ) from error
     if not re.fullmatch(r"[0-9a-f]{40,64}", merge_base):
         raise AnalysisError("Git returned an invalid merge base")
-    return base, merge_base
+    return base, commit, merge_base
 
 
 def supported_path(raw, repo):
@@ -81,7 +91,7 @@ def supported_path(raw, repo):
 
 
 def added_lines(repo, merge_base):
-    output = checked(["git", "diff", "--find-renames", "-l0", "--name-status", "-z", "--diff-filter=ACMRT", merge_base, "HEAD", "--", "*.go", ":(exclude)**/goleak_test.go"], repo).stdout
+    output = checked(["git", "diff", "--find-renames", "-l0", "--name-status", "-z", "--diff-filter=ACMRT", merge_base, "HEAD", "--", "*.go"], repo).stdout
     if output and not output.endswith("\0"):
         raise AnalysisError("Truncated changed-file list from Git")
     added = set()
@@ -164,18 +174,20 @@ def parse_location(location, repo, line_counts):
     return finding_location(raw, start, end, repo, line_counts)
 
 
-def parse_findings(output, repo):
+def parse_findings(output, repo, *, records=None):
     if output and not output.endswith("\n"):
         raise AnalysisError("Truncated detector output (missing final newline)")
     sources, destinations, duplicated = set(), set(), set()
     line_counts = {}
     for record in output.split("\n")[:-1]:
-        records = record.split(": duplicate of ")
-        if len(records) != 2:
+        endpoints = record.split(": duplicate of ")
+        if len(endpoints) != 2:
             raise AnalysisError(f"Malformed detector record: {record!r}")
-        locations = [parse_location(location, repo, line_counts) for location in records]
+        locations = [parse_location(location, repo, line_counts) for location in endpoints]
         if locations[0] == locations[1]:
             raise AnalysisError(f"Detector reported a self-duplicate: {record!r}")
+        if records is not None:
+            records.append(tuple(locations))
         sources.add(locations[0])
         destinations.add(locations[1])
         path, start, end = locations[0]
@@ -187,14 +199,21 @@ def parse_findings(output, repo):
     return duplicated
 
 
-def scan(repo, go_command, version, threshold):
+def scan(repo, go_command, version, threshold, *, records=None):
     if not re.fullmatch(r"[0-9a-f]{40}", version):
         raise AnalysisError("Detector version must be pinned to a full lowercase commit SHA")
     go_executable = shutil.which(go_command)
     if not go_executable or Path(go_executable).name not in ("go", "go.exe"):
         raise AnalysisError("Go command must name a Go executable, without embedded arguments")
     with tempfile.TemporaryDirectory(prefix="lopper-dupl-") as directory:
-        environment = dict(os.environ, GOBIN=directory)
+        # A fresh cache and authenticated public proxy prevent inherited tooling
+        # settings or cached module contents from substituting the pinned detector.
+        environment = dict(os.environ, GOBIN=directory, GOFLAGS="", GOENV="off", GOAUTH="off",
+                           GOPROXY="https://proxy.golang.org", GOSUMDB="sum.golang.org",
+                           GOPRIVATE="", GONOPROXY="", GONOSUMDB="", GOINSECURE="",
+                           GOMODCACHE=str(Path(directory) / "modules"))
+        environment.pop("GOROOT", None)
+        environment.pop("GOCACHEPROG", None)
         checked([go_executable, "install", "--", f"github.com/mibk/dupl@{version}"], repo, environment=environment)
         executable = Path(directory) / ("dupl.exe" if os.name == "nt" else "dupl")
         result = checked([str(executable), "-t", str(threshold), "-plumbing", "."], repo)
@@ -202,7 +221,96 @@ def scan(repo, go_command, version, threshold):
         # partially parsed input as a successful no-match scan.
         if result.stderr.strip():
             raise AnalysisError(f"Detector diagnostics indicate incomplete analysis: {result.stderr.strip()}")
-        return parse_findings(result.stdout, repo)
+        return parse_findings(result.stdout, repo, records=records)
+
+
+def occurrence_gate(repo, policy_base, args):
+    if "LOPPER_DUPLICATION_REVISION" not in os.environ:
+        return occurrence_gate_checkout(repo, policy_base, args)
+    with policy.isolated_checkout(repo, os.environ["LOPPER_DUPLICATION_REVISION"]) as checkout:
+        result = occurrence_gate_checkout(checkout, policy_base, args)
+        if args.report:
+            source = repository_path(checkout, args.report, "Report")
+            destination = repository_path(repo, args.report, "Report")
+            shutil.copyfile(source, destination)
+        return result
+
+
+def occurrence_gate_checkout(repo, policy_base, args):
+    if args.baseline is not None:
+        validate_occurrence_settings(repo, policy_base, args)
+    # CI captures this before tooling installation can prepend untrusted wrappers.
+    go = os.environ.get("LOPPER_DUPLICATION_GO", args.go)
+    if "LOPPER_DUPLICATION_GO" in os.environ and not Path(go).is_absolute():
+        raise AnalysisError("Trusted Go executable must be an absolute path")
+    records = []
+    scan(repo, go, args.version, args.threshold, records=records)
+    functions = policy.function_index(repo, go, records)
+    pairs = policy.clone_pairs(records, functions)
+    if args.baseline is None:
+        return 0
+    baseline_path = CANONICAL_BASELINE
+    baseline_file = repo / baseline_path
+    if baseline_file.is_symlink():
+        raise AnalysisError("Baseline policy file must not be a symlink")
+    proposed = json.loads(baseline_file.read_text())
+    # Both protected and candidate policies must prohibit every allowance.
+    target_entry = checked(["git", "ls-tree", "-z", policy_base, "--", baseline_path], repo).stdout
+    if target_entry:
+        approved = json.loads(checked(["git", "show", f"{policy_base}:{baseline_path}"], repo).stdout)
+        policy.validate_reduction(approved, proposed)
+    else:
+        policy.validate_initial_baseline(pairs, proposed)
+        print("Initial empty policy installed; every production clone pair remains blocking")
+    report = policy.evaluate(pairs, proposed)
+    if args.report:
+        report_path = repository_path(repo, args.report, "Report")
+        report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+    print(policy.render(report))
+    return int(bool(report['findings']))
+
+
+def protected_make_variable(repo, reference, name):
+    makefile = checked(["git", "show", f"{reference}:Makefile"], repo).stdout
+    pattern = re.compile(rf"^[ \t]*{re.escape(name)}[ \t]*(?:\?=|:=|=)[ \t]*([^\s#]+)[ \t]*(?:#.*)?$", re.MULTILINE)
+    values = pattern.findall(makefile)
+    if len(values) != 1:
+        raise AnalysisError(f"Protected Makefile must define {name} exactly once")
+    return values[0]
+
+
+def validate_occurrence_settings(repo, target_commit, args):
+    if args.baseline != CANONICAL_BASELINE:
+        raise AnalysisError(f"Occurrence enforcement must use the protected baseline path {CANONICAL_BASELINE!r}")
+    protected_go = protected_make_variable(repo, target_commit, "GO")
+    protected_version = protected_make_variable(repo, target_commit, "DUPL_VERSION")
+    protected_threshold = protected_make_variable(repo, target_commit, "DUPLICATION_TOKEN_THRESHOLD")
+    try:
+        protected_threshold = int(protected_threshold)
+    except ValueError as error:
+        raise AnalysisError("Protected duplication token threshold must be an integer") from error
+    if args.go != protected_go:
+        raise AnalysisError("Go command must match the protected target Makefile")
+    if args.version != protected_version:
+        raise AnalysisError("Detector version must match the protected target Makefile")
+    if args.threshold != protected_threshold:
+        raise AnalysisError("Detector threshold must match the protected target Makefile")
+
+
+def repository_path(repo, value, label):
+    candidate = Path(value)
+    root = repo.resolve()
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise AnalysisError(f"{label} path must stay within the repository")
+    try:
+        resolved = (root / candidate).resolve()
+    except (OSError, RuntimeError) as error:
+        raise AnalysisError(f"{label} path could not be safely resolved") from error
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise AnalysisError(f"{label} path must stay within the repository") from error
+    return resolved
 
 
 def main(argv=None):
@@ -212,12 +320,19 @@ def main(argv=None):
     parser.add_argument("--version", required=True)
     parser.add_argument("--threshold", type=int, default=55)
     parser.add_argument("--max", type=float, default=3)
+    parser.add_argument("--baseline", help="Empty policy path; enables zero-production-pair enforcement")
+    parser.add_argument("--report", help="Write deterministic occurrence report JSON")
+    parser.add_argument("--propose-baseline", help="Unsupported: production clone allowances are prohibited")
     args = parser.parse_args(argv)
     try:
+        if args.propose_baseline is not None:
+            raise AnalysisError("Baseline proposals are disabled; remove every production clone pair")
         if args.threshold < 1 or not math.isfinite(args.max) or not 0 <= args.max <= 100:
             raise AnalysisError("Threshold must be positive and maximum percentage must be finite within 0..100")
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
-        base, merge_base = comparison_base(repo, args.base, os.environ)
+        base, policy_base, merge_base = comparison_base(repo, args.base, os.environ)
+        if args.baseline is not None:
+            return occurrence_gate(repo, policy_base, args)
         added = added_lines(repo, merge_base)
         if not added:
             print(f"New-code duplication: no changed Go lines (base: {base}, merge base: {merge_base}); detector not required")
@@ -230,7 +345,7 @@ def main(argv=None):
             print("Duplication gate failed: new-code duplication exceeds the configured maximum", file=sys.stderr)
             return 1
         return 0
-    except (AnalysisError, OSError, UnicodeError) as error:
+    except (AnalysisError, OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Duplication analysis failed: {error}", file=sys.stderr)
         return 2
 
