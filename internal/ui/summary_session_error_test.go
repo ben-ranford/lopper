@@ -59,6 +59,7 @@ func checkSummarySessionOutputFailure(t *testing.T, phase string) {
 	output := &summarySessionFailedOutput{ready: make(chan struct{}), phase: phase, err: want}
 	summary := NewSummary(output, terminal, &stubAnalyzer{}, report.NewFormatter())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	done := make(chan error, 1)
 	exited := make(chan struct{})
 	t.Cleanup(func() {
