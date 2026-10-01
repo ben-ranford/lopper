@@ -87,6 +87,20 @@ check_reference() {
  fi
 }
 
+check_scoped_reference() {
+	[ "$#" -eq 3 ] || return 255
+	case "$2" in
+		system|global)
+			# These values also apply outside this repository's worktree inventory.
+			# A relative path may reach this snapshot from another repository root.
+			absolute_path "$3" || return 255
+			;;
+		local|worktree) ;;
+		*) return 255 ;;
+	esac
+	check_reference "$1" "$3"
+}
+
 hook_working_directory() {
  bare=$(run_preflight_git git rev-parse --is-bare-repository) || return 255
  case "$bare" in
@@ -119,11 +133,28 @@ check_worktree() {
  esac
 }
 
+inspect_conditional_references() {
+	status=0
+	# A system/global condition may match an unrelated repository, whose hook
+	# path we cannot audit from this inventory. Local/worktree conditions remain
+	# safe to evaluate through Git in each owning worktree's context.
+	run_preflight_git git -c core.fsmonitor=false config --null --show-scope --name-only --get-regexp '^includeif\..*\.path$' >"$1" || status=$?
+	case "$status" in
+		0) ;;
+		1) return 0 ;;
+		*) return 255 ;;
+	esac
+	xargs -0 -n 2 sh "$script" conditional-scope <"$1" || return 255
+}
+
 inspect_worktree_hooks() {
 	managed_dir=$1
 	reference_file=$2
+	inspect_conditional_references "$reference_file" || return 255
 	status=0
-	run_preflight_git git -c core.fsmonitor=false config --path --null --get core.hooksPath >"$reference_file" || status=$?
+	# A higher-precedence value can hide a durable reference that remains in use
+	# elsewhere. Keep Git's conditional-include context and inspect every value.
+	run_preflight_git git -c core.fsmonitor=false config --path --null --show-scope --get-all core.hooksPath >"$reference_file" || status=$?
 	case "$status" in
 		0) ;;
 		1)
@@ -141,9 +172,18 @@ inspect_worktree_hooks() {
 	hook_root=$(hook_working_directory && printf x) || return 255
 	hook_root=${hook_root%x}; hook_root=${hook_root%?}
 	cd "$hook_root" || return 255
-	xargs -0 -n 1 sh "$script" reference "$managed_dir" <"$reference_file" || return 255
+	xargs -0 -n 2 sh "$script" scoped-reference "$managed_dir" <"$reference_file" || return 255
 }
 
+if [ "${1-}" = conditional-scope ]; then
+	[ "$#" -eq 3 ] || exit 255
+	case "$2" in local|worktree) exit 0 ;; *) exit 255 ;; esac
+fi
+if [ "${1-}" = scoped-reference ]; then
+	shift
+	check_scoped_reference "$@"
+	exit
+fi
 if [ "${1-}" = reference ]; then
 	shift
 	check_reference "$@"

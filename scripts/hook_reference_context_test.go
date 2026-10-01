@@ -73,8 +73,7 @@ func configureHookReference(t *testing.T, linked, managed string, tc hookReferen
 	if tc.conditional {
 		configureConditionalHookReference(t, linked, hookPath, tc)
 	} else {
-		runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", managed)
-		runCommand(t, linked, "git", "config", "--worktree", "--add", "core.hooksPath", hookPath)
+		runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", hookPath)
 	}
 }
 
