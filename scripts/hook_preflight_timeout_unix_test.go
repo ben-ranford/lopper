@@ -33,7 +33,22 @@ wait
 `)
 }
 
+func TestHookPreflightPropagatesReaderParentInterrupt(t *testing.T) {
+	assertPreflightReaderTermination(t, `#!/bin/sh
+printf '%s\n' "$$" >> "$1"
+sleep 60 & printf '%s\n' "$!" >> "$1"
+sleep 60 & printf '%s\n' "$!" >> "$1"
+kill -TERM "$PPID"
+wait
+`, 5*time.Second, false)
+}
+
 func assertPreflightReaderTimeout(t *testing.T, source string) {
+	t.Helper()
+	assertPreflightReaderTermination(t, source, 15*time.Second, true)
+}
+
+func assertPreflightReaderTermination(t *testing.T, source string, timeout time.Duration, expectDiagnostic bool) {
 	t.Helper()
 	tmp := t.TempDir()
 	pidsFile := filepath.Join(tmp, "reader-pids")
@@ -44,7 +59,7 @@ func assertPreflightReaderTimeout(t *testing.T, source string) {
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", `. ./hook-config-preflight.sh
 trap cleanup_preflight_git EXIT
@@ -56,7 +71,7 @@ run_preflight_git "$1" "$2"
 	cmd.WaitDelay = time.Second
 	output, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
-	if ctx.Err() != nil || !errors.As(err, &exitErr) || exitErr.ExitCode() != 124 || !strings.Contains(string(output), "Timed out while reading Git preflight configuration") {
+	if ctx.Err() != nil || !errors.As(err, &exitErr) || exitErr.ExitCode() != 124 || expectDiagnostic && !strings.Contains(string(output), "Timed out while reading Git preflight configuration") {
 		t.Fatalf("reader timeout was not bounded: %v (context: %v)\n%s", err, ctx.Err(), output)
 	}
 	assertPreflightReaderTreeStopped(t, pidsFile)

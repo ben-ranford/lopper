@@ -37,18 +37,21 @@ run_preflight_git() {
 state_dir=$1
 shift
 interrupted=
+supervisor_pid=$$
 trap "interrupted=1" HUP INT TERM
 set -m
 (
 	set +m
-	# Catch rather than ignore TERM so the reader keeps its normal disposition.
-	trap ":" HUP INT TERM
+	# Forward direct anchor interruption to the supervisor as cancellation.
+	# Catching signals also preserves normal signal handling in the reader.
+	reader_interrupted=
+	trap "reader_interrupted=1; kill -TERM \"\$supervisor_pid\" 2>/dev/null || :" HUP INT TERM
 	"$@" </dev/null & reader_pid=$!
 	reader_status=0
 	wait "$reader_pid" || reader_status=$?
 	# Keep the group leader alive, without forking during the final group kill.
 	(trap "" HUP INT TERM; exec sleep 60) & hold_pid=$!
-	if rmdir "$state_dir/active" 2>/dev/null; then
+	if [ -z "$reader_interrupted" ] && rmdir "$state_dir/active" 2>/dev/null; then
 		printf "%s\n" "$reader_status" >"$state_dir/pending"
 		mv "$state_dir/pending" "$state_dir/result"
 	fi
