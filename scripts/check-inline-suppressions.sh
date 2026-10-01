@@ -238,15 +238,28 @@ write_tracking_body() {
 gh_issue_list() {
 	local repo="$1"
 	local fingerprint="$2"
+	local creator="github-actions[bot]"
+	if [[ "${CI:-}" != "true" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+		local host
+		if [[ -n "$repo" ]]; then
+			host="$("$gh_bin" repo view "$repo" --json url --jq '.url | split("/")[2]')" || return 1
+		else
+			host="$("$gh_bin" repo view --json url --jq '.url | split("/")[2]')" || return 1
+		fi
+		[[ -n "$host" ]] || return 1
+		creator="$("$gh_bin" api user --hostname "$host" --jq .login)" || return 1
+		# Only use the authenticated account, never caller-supplied issue authors.
+		[[ "$creator" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || return 1
+	fi
 	# Fingerprints are SHA-256 hex digests, so this marker is safe to inline into the jq string literal below.
 	local marker="<!-- lopper-inline-suppression:${fingerprint} -->"
-	local jq_filter="[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
+	local jq_filter="[.[] | select(.author.login == \"${creator}\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
 
 	if [[ -n "$repo" ]]; then
-		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:${creator}" --json number,author,body --jq "$jq_filter"
 		return
 	fi
-	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:${creator}" --json number,author,body --jq "$jq_filter"
 }
 
 gh_issue_comment() {
