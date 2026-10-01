@@ -87,7 +87,7 @@ func buildGoDependencyProvenance(info goDependencyProvenance) *report.Dependency
 	return &report.DependencyProvenance{
 		Source:     source,
 		Confidence: confidence,
-		Signals:    uniqueStrings(signals),
+		Signals:    shared.UniqueTrimmedStrings(signals),
 	}
 }
 

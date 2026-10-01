@@ -80,7 +80,7 @@ func testJSFlattenImportUsesMergesLocationsAndProvenance(t *testing.T) {
 		Provenance: []string{pkgLodashProvenance, pkgLodashProvenance},
 	})
 
-	flattened := flattenImportUses(imports)
+	flattened := shared.SortedImportUses(imports)
 	if len(flattened) != 1 || len(flattened[0].Locations) != 3 {
 		t.Fatalf("expected merged import locations, got %#v", flattened)
 	}

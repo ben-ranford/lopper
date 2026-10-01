@@ -36,7 +36,7 @@ func TestSharedAdditionalHelperBranches(t *testing.T) {
 		t.Fatalf("unexpected warnings for empty dependency list: %#v", warnings)
 	}
 
-	items := flattenImports(map[string]*report.ImportUse{
+	items := SortedImportUses(map[string]*report.ImportUse{
 		"pkg:z":   {Module: "pkg", Name: "z"},
 		"pkg:a":   {Module: "pkg", Name: "a"},
 		"alpha:b": {Module: "alpha", Name: "b"},
@@ -45,7 +45,7 @@ func TestSharedAdditionalHelperBranches(t *testing.T) {
 		return item.Module + ":" + item.Name
 	})
 	if !slices.Equal(gotOrder, []string{"alpha:b", "pkg:a", "pkg:z"}) {
-		t.Fatalf("unexpected flattenImports ordering: %#v", gotOrder)
+		t.Fatalf("unexpected SortedImportUses ordering: %#v", gotOrder)
 	}
 
 	filtered := dedupeUnused([]report.ImportUse{{Module: "pkg", Name: "a"}, {Module: "pkg", Name: "b"}}, []report.ImportUse{{Module: "pkg", Name: "a"}})

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/thresholds"
@@ -366,10 +367,10 @@ func TestLowerLevelHelpers(t *testing.T) {
 	if got := uniquePaths([]string{" a ", "b", "a"}); len(got) != 2 {
 		t.Fatalf("expected deduped paths, got %#v", got)
 	}
-	if got := dedupeWarnings([]string{" x ", "x", ""}); len(got) != 1 {
+	if got := shared.UniqueTrimmedStrings([]string{" x ", "x", ""}); len(got) != 1 {
 		t.Fatalf("expected deduped warnings, got %#v", got)
 	}
-	if got := dedupeStrings([]string{"a", "a", ""}); len(got) != 1 {
+	if got := shared.UniqueTrimmedStrings([]string{"a", "a", ""}); len(got) != 1 {
 		t.Fatalf("expected deduped strings, got %#v", got)
 	}
 

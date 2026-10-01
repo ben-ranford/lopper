@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -1282,7 +1283,7 @@ func TestUtilityCoverageBranches(t *testing.T) {
 		t.Fatalf("unexpected normalized dependency ID")
 	}
 
-	values := uniqueStrings([]string{"a", "a", " ", "b"})
+	values := shared.UniqueTrimmedStrings([]string{"a", "a", " ", "b"})
 	if !slices.Equal(values, []string{"a", "b"}) {
 		t.Fatalf("unexpected unique values %#v", values)
 	}
