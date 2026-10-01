@@ -150,11 +150,11 @@ def test_clones(files, dupl_version, threshold):
             return []
         # Separate tool installation chatter from analyzer diagnostics. dupl can
         # emit parse errors on stderr while returning success.
-        tool_directory = Path(directory, 'tool')
-        tool_directory.mkdir()
-        subprocess.run(['go', 'install', 'github.com/mibk/dupl@' + dupl_version],
-                       env={**os.environ, 'GOBIN': str(tool_directory)}, check=True)
-        result = subprocess.run([str(tool_directory / 'dupl'), '-t', str(threshold), '-plumbing', '-files'], input='\n'.join(paths) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        with tempfile.TemporaryDirectory(prefix='lopper-test-clone-tool-') as tool_directory:
+            tool_directory = Path(tool_directory).resolve()
+            subprocess.run(['go', 'install', 'github.com/mibk/dupl@' + dupl_version],
+                           env={**os.environ, 'GOBIN': str(tool_directory)}, check=True)
+            result = subprocess.run([str(tool_directory / 'dupl'), '-t', str(threshold), '-plumbing', '-files'], input='\n'.join(paths) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         if result.stderr.strip():
             raise RuntimeError('test clone analysis emitted diagnostics: ' + result.stderr.strip())
         contents = {name: data for name, _, data in files}

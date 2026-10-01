@@ -1,5 +1,7 @@
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import source_size_report as report
@@ -98,7 +100,7 @@ class SourceSizeReportTest(unittest.TestCase):
         def run(command, **kwargs):
             if command[0] == 'go':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
-            root = str(__import__('pathlib').Path(command[0]).parent.parent)
+            root = str(Path(kwargs['input'].splitlines()[0]).parent)
             output = (
                 f'{root}/b_test.go:5-6: duplicate of {root}/a_test.go:3-4\n'
                 f'{root}/a_test.go:3-4: duplicate of {root}/b_test.go:5-6\n'
@@ -124,6 +126,52 @@ class SourceSizeReportTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'expected identifier'):
                 report.test_clones(files, 'v1.0.0', 55)
         self.assertEqual(run.call_args.kwargs['stderr'], subprocess.PIPE)
+
+    def test_committed_test_directories_do_not_collide_with_clone_tool(self):
+        source = b'package example\nfunc TestParser(t *testing.T) {}\n'
+        real_run = subprocess.run
+        for name in ('tool', 'parser'):
+            with self.subTest(directory=name), tempfile.TemporaryDirectory() as repository:
+                repository = Path(repository)
+                paths = (f'{name}/parser_test.go', 'other/parser_test.go')
+                for path in paths:
+                    target = repository / path
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(source)
+                for arguments in (('init', '-q'), ('add', '.'),
+                                  ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
+                                   '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')):
+                    real_run(['git', *arguments], cwd=repository, check=True)
+                (repository / paths[0]).write_text('uncommitted content must not be analyzed')
+                installed = []
+
+                def git(*arguments):
+                    return subprocess.check_output(['git', *arguments], cwd=repository)
+
+                def run(command, **kwargs):
+                    if command[0] == 'git':
+                        kwargs.setdefault('cwd', repository)
+                        return real_run(command, **kwargs)
+                    if command[0] == 'go':
+                        self.assertEqual(command, ['go', 'install', 'github.com/mibk/dupl@v1.0.0'])
+                        installed.append(Path(kwargs['env']['GOBIN']))
+                        self.assertTrue(installed[0].is_dir())
+                        return subprocess.CompletedProcess(command, 0)
+                    self.assertEqual(command, [str(installed[0] / 'dupl'), '-t', '55', '-plumbing', '-files'])
+                    inputs = [Path(path) for path in kwargs['input'].splitlines()]
+                    self.assertEqual(len(inputs), 2)
+                    self.assertTrue(all(path.read_bytes() == source for path in inputs))
+                    self.assertTrue(all(installed[0] not in path.parents for path in inputs))
+                    output = (f'{inputs[0]}:1-2: duplicate of {inputs[1]}:1-2\n'
+                              f'{inputs[1]}:1-2: duplicate of {inputs[0]}:1-2\n')
+                    return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+
+                with patch.object(report, 'git', side_effect=git), patch.object(report.subprocess, 'run', side_effect=run):
+                    result = report.build_report('HEAD', 'HEAD', 'v1.0.0', 55)
+                self.assertEqual(result['test_duplication']['findings'][0]['finding'],
+                                 '\n'.join(f'{path}:1-2' for path in sorted(paths)))
+                self.assertEqual((repository / paths[0]).read_text(), 'uncommitted content must not be analyzed')
+                self.assertFalse(installed[0].exists())
 
     def test_support_sources_participate_in_clone_analysis(self):
         files = [('internal/testutil/fixture.go', b'100644', b'package testutil\n'),
