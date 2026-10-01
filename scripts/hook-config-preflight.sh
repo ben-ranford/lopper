@@ -5,56 +5,6 @@ preflight_watchdog_pid=
 preflight_state_dir=
 preflight_output_file=
 
-preflight_process_tree() {
-	preflight_tree_root=$1
-	# -ef also works with Git Bash ps, which lacks POSIX output selection.
-	ps -ef | awk -v root="$preflight_tree_root" '
-		NR == 1 {
-			for (i = 1; i <= NF; i++) {
-				if ($i == "PID") pid_column = i
-				if ($i == "PPID") parent_column = i
-			}
-			next
-		}
-		pid_column && parent_column {
-			# Git Bash may prefix a process row with a status flag.
-			offset = ($pid_column ~ /^[0-9]+$/) ? 0 : 1
-			pid = $(pid_column + offset)
-			parent = $(parent_column + offset)
-			if (pid ~ /^[0-9]+$/ && parent ~ /^[0-9]+$/) children[parent] = children[parent] " " pid
-		}
-		function visit(pid, descendants, count, i) {
-			count = split(children[pid], descendants, " ")
-			for (i = 1; i <= count; i++) if (descendants[i] != "") visit(descendants[i])
-			print pid
-		}
-		END { visit(root) }
-	'
-	return
-}
-
-signal_preflight_readers() {
-	reader_signal=$1
-	while IFS= read -r reader_pid; do
-		case "$reader_pid" in
-			''|0|*[!0-9]*) continue ;;
-			*) kill "-$reader_signal" "$reader_pid" 2>/dev/null || : ;;
-		esac
-	done
-	return 0
-}
-
-terminate_preflight_reader() (
-	# Keep the original descendants even if TERM makes their parent exit.
-	reader_pids=$(preflight_process_tree "$1")
-	printf '%s\n' "$reader_pids" | signal_preflight_readers TERM
-	sleep 1
-	# Include any descendants created during the bounded grace period.
-	updated_reader_pids=$(preflight_process_tree "$1")
-	printf '%s\n' "$reader_pids" "$updated_reader_pids" | signal_preflight_readers KILL
-	return 0
-)
-
 cleanup_preflight_git() {
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
@@ -80,34 +30,51 @@ run_preflight_git() {
 		preflight_state_dir=
 		return 1
 	}
-	(
-		git_pid=
-		hold_pid=
-		trap '
-			trap - EXIT HUP INT TERM
-			if [ -n "$git_pid" ]; then
-				terminate_preflight_reader "$git_pid"
-				wait "$git_pid" 2>/dev/null || :
-			fi
-			if [ -n "$hold_pid" ]; then
-				kill "$hold_pid" 2>/dev/null || :
-				wait "$hold_pid" 2>/dev/null || :
-			fi
-			exit 124
-		' HUP INT TERM
-		"$@" & git_pid=$!
-		status=0
-		wait "$git_pid" || status=$?
-		git_pid=
-		if rmdir "$preflight_state_dir/active" 2>/dev/null; then
-			exit "$status"
-		fi
-		while :; do
-			sleep 1 & hold_pid=$!
-			wait "$hold_pid" || :
-			hold_pid=
-		done
-	) & preflight_runner_pid=$!
+	# A separate Bash job owns its process group even when a reader exits from
+	# a TERM trap. Privileged mode prevents startup hooks or imported functions
+	# from changing the supervisor; reader arguments stay positional.
+	bash --noprofile --norc -p -c '
+state_dir=$1
+shift
+interrupted=
+trap "interrupted=1" HUP INT TERM
+set -m
+(
+	set +m
+	# Catch rather than ignore TERM so the reader keeps its normal disposition.
+	trap ":" HUP INT TERM
+	"$@" </dev/null & reader_pid=$!
+	reader_status=0
+	wait "$reader_pid" || reader_status=$?
+	# Keep the group leader alive, without forking during the final group kill.
+	(trap "" HUP INT TERM; exec sleep 60) & hold_pid=$!
+	if rmdir "$state_dir/active" 2>/dev/null; then
+		printf "%s\n" "$reader_status" >"$state_dir/pending"
+		mv "$state_dir/pending" "$state_dir/result"
+	fi
+	while kill -0 "$hold_pid" 2>/dev/null; do wait "$hold_pid" || :; done
+) & reader_group=$!
+set +m
+# Polling closes the signal-before-wait race and bounds interrupted waits.
+# Signal only the still-running anchored job owned by this supervisor.
+while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ]; do
+	[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+	sleep 0.01
+done
+trap ":" HUP INT TERM
+[ "$(jobs -pr)" = "$reader_group" ] || exit 1
+status=124
+if [ -n "$interrupted" ]; then
+	kill -TERM -- "-$reader_group" 2>/dev/null || :
+	sleep 1
+else
+	read -r status <"$state_dir/result" || status=1
+fi
+kill -KILL -- "-$reader_group" 2>/dev/null || :
+wait "$reader_group" 2>/dev/null || :
+exit "$status"
+' -- "$preflight_state_dir" "$@" &
+	preflight_runner_pid=$!
 	(
 		sleeper_pid=
 		trap '
