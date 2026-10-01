@@ -34,6 +34,7 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "missing owned group", noGroup: true, wantStatus: 1},
 		{name: "diagnostic without owned group", noGroup: true, notice: "expected", wantStatus: 1},
 		{name: "interrupted startup", interrupt: true, wantStatus: 124},
+		{name: "anchor exits before permit", notice: "exited", wantStatus: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertPreflightStartup(t, tc) })
 	}
@@ -141,6 +142,8 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 		if notice == "nul" {
 			injection += "\tprintf \"\\0\" >&2\n"
 		}
+	case "exited":
+		injection += "\texit 1\n"
 	case "unknown":
 		injection += "\tprintf \"unknown startup diagnostic\\n\" >&2\n"
 	case "other":
