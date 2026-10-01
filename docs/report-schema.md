@@ -140,7 +140,7 @@ CycloneDX characteristics:
   `package`, `severity`, optional `versionStatus` (`affected` or `unevaluable`),
   `fixedVersion`, `source`, reachability-weighted `priority`, numeric
   `priorityScore`, `reachable`, optional VEX `decision`, and evidence strings.
-- `dependencies[].riskCues`: heuristic risk signals.
+- `dependencies[].riskCues`: heuristic risk signals. Severity is `low`, `medium`, `high`, or `critical`. Reachability confidence ranks critical above high, with case and surrounding whitespace normalized for scoring. Both critical and high use a risk signal score of 40 (medium: 65; low: 85; no recognized cue: 100); critical emits the distinct `risk-critical` rationale. This leaves existing lower-severity scores and the confidence model unchanged.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used), including `modules`, `parentModules`, `entrypoints`, and `topSymbols` when available.
