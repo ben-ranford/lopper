@@ -54,7 +54,7 @@ assert_stopped() {
   fail "reader descendants survived:$active"
 }
 run_case() {
-  local case_name=$1 expected=$2 case_dir status started elapsed
+  local case_name=$1 expected=$2 mode=${3:-timeout} case_dir status started elapsed
   case_dir="$probe_root/$case_name"
   mkdir -p "$case_dir/state" || fail 'create fixture state'
   cat >"$case_dir/reader" || fail 'write fixture'
@@ -92,7 +92,12 @@ run_case() {
   [ ! -f "$case_dir/guard-expired" ] || fail "$case_name exceeded outer 18-second guard"
   [ "$status" = "$expected" ] || fail "$case_name status=$status expected=$expected: $(cat "$case_dir/output")"
   if [ "$expected" = 124 ]; then
-    grep -q '^Timed out while reading Git preflight configuration$' "$case_dir/output" || fail "$case_name lost timeout diagnostic"
+    if [ "$mode" = timeout ]; then
+      grep -q '^Timed out while reading Git preflight configuration$' "$case_dir/output" || fail "$case_name lost timeout diagnostic"
+    else
+      [ ! -s "$case_dir/output" ] || fail "$case_name changed interruption output: $(cat "$case_dir/output")"
+      [ "$elapsed" -lt 5 ] || fail "$case_name interruption took ${elapsed}s"
+    fi
   else
     printf '%s\nreader diagnostic\n' "literal \$(exit 88) 'argument'" >"$case_dir/expected"
     cmp -s "$case_dir/expected" "$case_dir/output" || fail "$case_name changed reader output: $(cat "$case_dir/output")"
@@ -135,5 +140,14 @@ sleep 60 & printf '%s\n' "$!" >> "$1"
 printf '%s\n' "$3"
 printf 'reader diagnostic\n' >&2
 exit 7
+READER
+run_case parent-interrupt 124 interrupt <<'READER'
+#!/bin/sh
+printf '%s\n' "$PPID" >> "$2"
+printf '%s\n' "$$" >> "$1"
+sleep 60 & printf '%s\n' "$!" >> "$1"
+sleep 60 & printf '%s\n' "$!" >> "$1"
+kill -TERM "$PPID"
+wait
 READER
 printf 'PASS native preflight probe\n'

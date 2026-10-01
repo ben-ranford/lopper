@@ -90,12 +90,6 @@ jobs:
         with:
           persist-credentials: false
           path: diagnostic-assets
-      - name: Checkout exact repaired preflight source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 545770812c52b99789c7d486f9b53f73c17ab122
-          persist-credentials: false
-          path: preflight-source
       - name: Verify and exercise native Git Bash cleanup
         shell: bash
         run: |
@@ -103,22 +97,22 @@ jobs:
           workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
           evidence="$workspace/preflight-evidence"
           mkdir -p "$evidence"
-          expected=545770812c52b99789c7d486f9b53f73c17ab122
-          actual="$(git -C "$workspace/preflight-source" rev-parse HEAD)"
-          test "$actual" = "$expected"
-          # Read immutable Git bytes so Windows checkout line endings cannot change the probe.
-          git -C "$workspace/preflight-source" show "$expected:scripts/hook-config-preflight.sh" > "$evidence/hook-config-preflight.sh"
+          source=669d29704c2c21512b99ad3657568486480596e4
+          diagnostic_sha="$(git -C "$workspace/diagnostic-assets" rev-parse HEAD)"
+          test "$diagnostic_sha" = "$GITHUB_SHA"
+          # Read immutable Git bytes so Windows checkout line endings cannot change either asset.
+          git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/hook-config-preflight.sh > "$evidence/hook-config-preflight.sh"
           git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/preflight-native-probe.sh > "$evidence/preflight-native-probe.sh"
           git -C "$workspace/diagnostic-assets" show HEAD:.diagnostics/preflight/manifest.json > "$evidence/source-manifest.json"
           helper_hash="$(sha256sum "$evidence/hook-config-preflight.sh" | cut -d ' ' -f 1)"
           probe_hash="$(sha256sum "$evidence/preflight-native-probe.sh" | cut -d ' ' -f 1)"
-          test "$helper_hash" = 5173e960fdd37fbe675cd05b556b6da30d72c6d1f775e0caeb4431577740abff
-          test "$probe_hash" = a195a4b0becafea1b5d28c3d565ade1f73a4ff8961374736f959f490d9a7eb80
+          test "$helper_hash" = 81409fc5ba97555593214d9ed0527ffaf84654e51a3db220b31fab1565df4935
+          test "$probe_hash" = 52f751c556310f5b135ab3b06546b732ae91eca9660e2b2d243fd95e8a9b6ec2
           set +e
           bash "$evidence/preflight-native-probe.sh" "$evidence/hook-config-preflight.sh" 2>&1 | tee "$evidence/probe.log"
           probe_status=${PIPESTATUS[0]}
           set -e
-          printf '{"source_sha":"%s","helper_sha256":"%s","probe_sha256":"%s","exit_code":%s}\n' "$actual" "$helper_hash" "$probe_hash" "$probe_status" > "$evidence/result.json"
+          printf '{"source_sha":"%s","diagnostic_sha":"%s","helper_sha256":"%s","probe_sha256":"%s","exit_code":%s}\n' "$source" "$diagnostic_sha" "$helper_hash" "$probe_hash" "$probe_status" > "$evidence/result.json"
           exit "$probe_status"
       - name: Retain supplemental preflight evidence
         if: always()

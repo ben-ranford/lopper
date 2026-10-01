@@ -1,10 +1,19 @@
 {
-  "source_commit": "545770812c52b99789c7d486f9b53f73c17ab122",
-  "source_tree": "d3b513562e3f3e312ad741dc7edd66366bb76c91",
-  "helper_path": "scripts/hook-config-preflight.sh",
-  "helper_sha256": "5173e960fdd37fbe675cd05b556b6da30d72c6d1f775e0caeb4431577740abff",
-  "probe_sha256": "a195a4b0becafea1b5d28c3d565ade1f73a4ff8961374736f959f490d9a7eb80",
-  "scope": "Supplemental native Git Bash diagnostics only; not a replacement for final-head PR CI or review.",
+  "source_commit": "669d29704c2c21512b99ad3657568486480596e4",
+  "source_tree": "4ed2a33083159a7451272d8138d83403f6a071ca",
+  "source_helper_path": "scripts/hook-config-preflight.sh",
+  "source_helper_git_blob": "112a7e761764e9dddd1abb6c18141813572437cc",
+  "helper_path": ".diagnostics/preflight/hook-config-preflight.sh",
+  "helper_sha256": "81409fc5ba97555593214d9ed0527ffaf84654e51a3db220b31fab1565df4935",
+  "probe_sha256": "52f751c556310f5b135ab3b06546b732ae91eca9660e2b2d243fd95e8a9b6ec2",
+  "probe_source_adjustment": "Implementation owner removed one trailing space after final printf at line153; behavior unchanged. Prior probe SHA-256 b7febcf1e032d211e2bf773c8647ebfd404acd7099e5d61eae56f581705819e3.",
+  "scope": "Supplemental native Git Bash diagnostics only; not a replacement for final-head PR CI or review. The helper is an exact source Git blob packaged in this diagnostic commit.",
+  "cases": [
+    "term-spawn",
+    "term-ignore",
+    "normal-result",
+    "parent-interrupt"
+  ],
   "job_timeout_minutes": 5,
   "case_TERM_guard_seconds": 18,
   "case_KILL_guard_seconds": 21

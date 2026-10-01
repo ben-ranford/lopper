@@ -3,8 +3,9 @@
 This branch is for manual investigation only and must not be merged or released.
 Production source files and the existing 400-execution runtime job are unchanged.
 
-Dispatch existing `windows-runtime.yml` on this branch with both
-`historical_marker_diagnostic=true` and `preflight_termination_diagnostic=true`.
+Dispatch existing `windows-runtime.yml` on this branch with
+`historical_marker_diagnostic=false` and `preflight_termination_diagnostic=true`.
+The historical investigation is retained unchanged and is not requested for this run.
 Each supplemental job has read-only repository permissions, pinned actions and
 checkouts without persisted credentials. No repository secret is requested.
 
@@ -19,10 +20,13 @@ Pre-cancel process observations distinguish startup failures from cleanup result
 Instrumentation changes output handles and can affect scheduling; a passing batch
 or ResumeThread observation alone does not establish the historical cause.
 
-The preflight job uses exact repair 545770812c52b99789c7d486f9b53f73c17ab122 and
-verifies helper/probe hashes before execution. It tests TERM-spawned and TERM-ignored
-descendants, normal exit status 7 and exact output, literal arguments, startup-hook
-poisoning, removal of temporary state and survival of an unrelated sentinel.
+The preflight job uses the exact helper Git blob from repair
+669d29704c2c21512b99ad3657568486480596e4, packaged under `.diagnostics/preflight/`.
+It extracts helper/probe bytes from the dispatched Git commit and verifies both
+SHA-256 hashes before execution, independently of Windows checkout line endings.
+It tests TERM-spawned and TERM-ignored descendants, normal exit status 7 and exact
+output, direct parent interruption, literal arguments, startup-hook poisoning,
+removal of temporary state and survival of an unrelated sentinel.
 It has a five-minute job limit and per-case guards sending TERM at eighteen seconds
 and KILL to the same owned wrapper at twenty-one seconds if necessary.
 
