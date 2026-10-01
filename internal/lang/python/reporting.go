@@ -26,7 +26,7 @@ func buildTopPythonDependencies(topN int, scan scanResult, weights report.Remova
 }
 
 func buildDependencyReport(dependency string, scan scanResult, req language.Request) (report.DependencyReport, []string) {
-	stats := shared.BuildDependencyStats(dependency, pythonFileUsages(scan), normalizeDependencyID)
+	stats := shared.BuildDependencyStats(dependency, shared.FileUsages(scan.Files), normalizeDependencyID)
 	warnings := make([]string, 0)
 	if !stats.HasImports {
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))

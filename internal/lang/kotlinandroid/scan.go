@@ -17,10 +17,8 @@ import (
 type importBinding = shared.ImportRecord
 
 type fileScan struct {
-	Path    string
+	shared.ScannedFile
 	Package string
-	Imports []importBinding
-	Usage   map[string]int
 }
 
 type scanResult struct {
@@ -134,10 +132,12 @@ func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependenc
 	filePackage := parsePackage(content)
 	imports := parseImports(content, relativePath, filePackage, lookups, result)
 	result.Files = append(result.Files, fileScan{
-		Path:    relativePath,
+		ScannedFile: shared.ScannedFile{
+			Path:    relativePath,
+			Imports: imports,
+			Usage:   countUsage(content, imports),
+		},
 		Package: filePackage,
-		Imports: imports,
-		Usage:   countUsage(content, imports),
 	})
 	return nil
 }
