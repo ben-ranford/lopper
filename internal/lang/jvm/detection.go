@@ -301,29 +301,7 @@ func (w *jvmDetectionWalker) readDirectory(ctx context.Context, root jvmDetectio
 }
 
 func openJVMDetectionChildRoot(root jvmDetectionRoot, name, path string) (jvmDetectionRoot, error) {
-	info, err := root.Lstat(name)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("root contains symlink: %s", path)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("root is not a directory: %s", path)
-	}
-
-	child, err := root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	openedInfo, err := child.Lstat(".")
-	if err != nil {
-		return nil, errors.Join(err, child.Close())
-	}
-	if !os.SameFile(info, openedInfo) {
-		return nil, errors.Join(fmt.Errorf("path changed while opening: %s", path), child.Close())
-	}
-	return child, nil
+	return safeio.OpenPinnedChildRoot(root, name, path, "path changed while opening")
 }
 
 func (w *jvmDetectionWalker) readDirectoryEntries(ctx context.Context, path string, directory jvmDetectionDirectory) ([]fs.DirEntry, error) {

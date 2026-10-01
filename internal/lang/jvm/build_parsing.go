@@ -84,25 +84,7 @@ func collectDeclaredDependenciesWithinRoot(ctx context.Context, repoPath string,
 
 func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
-	buildParser := func(path, content string) ([]dependencyDescriptor, []string) {
-		switch strings.ToLower(filepath.Base(path)) {
-		case pomXMLName:
-			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
-		case buildGradleName, buildGradleKTSName:
-			descriptors := parseGradleDependencyContent(path, content)
-			catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
-			for _, descriptor := range catalogDescriptors {
-				descriptors = append(descriptors, dependencyDescriptor{
-					Name:     descriptor.Artifact,
-					Group:    descriptor.Group,
-					Artifact: descriptor.Artifact,
-				})
-			}
-			return dedupeAndSortDescriptors(descriptors), catalogWarnings
-		default:
-			return nil, nil
-		}
-	}
+	buildParser := buildDescriptorParser(repoPath, &catalogResolver)
 
 	descriptors, parseWarnings := parseBuildFilesWithWarnings(repoPath, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
@@ -114,7 +96,18 @@ func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, roo
 	if err != nil {
 		return nil, nil, err
 	}
-	buildParser := func(path, content string) ([]dependencyDescriptor, []string) {
+	buildParser := buildDescriptorParser(repoPath, &catalogResolver)
+
+	descriptors, parseWarnings, err := parseBuildFilesWithWarningsWithinRoot(ctx, repoPath, root, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, shared.DedupeWarnings(warnings), nil
+}
+
+func buildDescriptorParser(repoPath string, catalogResolver *shared.GradleCatalogResolver) func(string, string) ([]dependencyDescriptor, []string) {
+	return func(path, content string) ([]dependencyDescriptor, []string) {
 		switch strings.ToLower(filepath.Base(path)) {
 		case pomXMLName:
 			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
@@ -133,13 +126,6 @@ func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, roo
 			return nil, nil
 		}
 	}
-
-	descriptors, parseWarnings, err := parseBuildFilesWithWarningsWithinRoot(ctx, repoPath, root, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
-	if err != nil {
-		return nil, nil, err
-	}
-	warnings = append(warnings, parseWarnings...)
-	return descriptors, shared.DedupeWarnings(warnings), nil
 }
 
 func dedupeAndSortDescriptors(descriptors []dependencyDescriptor) []dependencyDescriptor {
