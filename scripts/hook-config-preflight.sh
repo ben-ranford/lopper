@@ -7,9 +7,9 @@ preflight_output_file=
 preflight_defer_signals=0
 preflight_pending_signal=
 preflight_signal_status=
+preflight_wait_pid=
 
 preflight_handle_signal() {
-	preflight_signal_status=$1
 	if [ "$preflight_defer_signals" -eq 1 ]; then
 		preflight_pending_signal=$preflight_signal_status
 		return 0
@@ -19,7 +19,6 @@ preflight_handle_signal() {
 }
 
 wait_preflight_child() {
-	preflight_wait_pid=$1
 	while :; do
 		preflight_wait_status=0
 		wait "$preflight_wait_pid" || preflight_wait_status=$?
@@ -39,12 +38,14 @@ cleanup_preflight_git() {
 	trap ':' HUP INT TERM
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
-		wait_preflight_child "$preflight_watchdog_pid" 2>/dev/null || :
+		preflight_wait_pid=$preflight_watchdog_pid
+		wait_preflight_child 2>/dev/null || :
 		preflight_watchdog_pid=
 	fi
 	if [ -n "$preflight_runner_pid" ]; then
 		kill -TERM "$preflight_runner_pid" 2>/dev/null || :
-		wait_preflight_child "$preflight_runner_pid" 2>/dev/null || :
+		preflight_wait_pid=$preflight_runner_pid
+		wait_preflight_child 2>/dev/null || :
 		preflight_runner_pid=
 	fi
 	rm -rf "$preflight_state_dir"
@@ -64,14 +65,16 @@ run_preflight_git() {
 		status=$?
 		preflight_state_dir=
 		preflight_defer_signals=0
-		[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
+		preflight_signal_status=$preflight_pending_signal
+		[ -z "$preflight_pending_signal" ] || preflight_handle_signal
 		return "$status"
 	}
 	mkdir "$preflight_state_dir/active" || {
 		rmdir "$preflight_state_dir"
 		preflight_state_dir=
 		preflight_defer_signals=0
-		[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
+		preflight_signal_status=$preflight_pending_signal
+		[ -z "$preflight_pending_signal" ] || preflight_handle_signal
 		return 1
 	}
 	# A separate Bash job owns its process group even when a reader exits from
@@ -222,12 +225,15 @@ exit "$status"
 		fi
 	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
 	preflight_defer_signals=0
-	[ -z "$preflight_pending_signal" ] || preflight_handle_signal "$preflight_pending_signal"
+	preflight_signal_status=$preflight_pending_signal
+	[ -z "$preflight_pending_signal" ] || preflight_handle_signal
 	status=0
-	wait_preflight_child "$preflight_runner_pid" || status=$?
+	preflight_wait_pid=$preflight_runner_pid
+	wait_preflight_child || status=$?
 	preflight_runner_pid=
 	kill "$preflight_watchdog_pid" 2>/dev/null || :
-	wait_preflight_child "$preflight_watchdog_pid" 2>/dev/null || :
+	preflight_wait_pid=$preflight_watchdog_pid
+	wait_preflight_child 2>/dev/null || :
 	preflight_watchdog_pid=
 	if [ -f "$preflight_state_dir/expired" ]; then
 		rm -rf "$preflight_state_dir"
