@@ -67,7 +67,7 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	if exit == "altgr" {
 		// Kitty's associated text encodes the same printable Ctrl+Alt event as AltGr.
 		input, want = "open \x1b[113;7;64uscope/pkg\r", `No data for dependency "@scope/pkg"`
-		ready = "No data for dependency"
+		ready = "scope/pkg\"\r\n"
 		exit = "q\r"
 	}
 	if _, err := master.Write([]byte(input)); err != nil {
