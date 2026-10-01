@@ -23,12 +23,15 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"check_suite:",
 		"status:",
 		"workflow_run:",
-		"workflows: [ci]",
+		"workflows: [ci, windows runtime]",
 		"github.event.pull_request.base.ref == 'main'",
 		"'queue_me_reviews.js'",
 		"'queue_me_sonar.js'",
 		"'queue_me_suppressions.js'",
 		"'inline_suppression_tracker.js'",
+		"'queue_me_ci.js'",
+		"'queue_me_ci_intent.js'",
+		"'queue_me_public_api.js'",
 		"push:",
 		"- main",
 		"- labeled",
@@ -87,6 +90,8 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"Queue identity audit failed",
 		"expectedHeadOid",
 		"verifyQueueEvidence",
+		"revalidateQueueEvidence",
+		"verifyQueueCI",
 		"mergeVerifiedQueuedPull",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
@@ -140,7 +145,9 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 	if err != nil {
 		t.Fatal("node is required to test the queue-me controller")
 	}
-	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js", "queue_me_sonar.test.js", "queue_me_suppressions.test.js")
+	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js",
+		"queue_me_sonar.test.js", "queue_me_suppressions.test.js", "queue_me_ci.test.js",
+		"queue_me_ci_intent.test.js", "queue_me_public_api.test.js")
 	command.Dir = repoPath(t, "scripts")
 	output, err := command.CombinedOutput()
 	if err != nil {

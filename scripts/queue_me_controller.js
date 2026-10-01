@@ -558,28 +558,51 @@ async function reconcileEventPull({
   );
 }
 
+async function verifyQueueCI(input) {
+  const { collectCIIntent } = require('./queue_me_ci_intent');
+  const { verifyCI } = require('./queue_me_ci');
+  const intent = await collectCIIntent(input);
+  const ci = await verifyCI({ ...input, ciNotBefore: intent.ciNotBefore });
+  const currentIntent = await collectCIIntent(input);
+  if (JSON.stringify(currentIntent) !== JSON.stringify(intent)) {
+    throw new Error('Queue or metadata intent changed while auditing CI; retry with fresh evidence.');
+  }
+  return { intent, ci };
+}
+
 async function verifyQueueEvidence(input) {
   const { verifySuppressions } = require('./queue_me_suppressions');
   const { verifyReviews } = require('./queue_me_reviews');
   const { verifySonar } = require('./queue_me_sonar');
+  const ci = await verifyQueueCI(input);
   const suppressions = await verifySuppressions(input);
   await verifyReviews(input);
   const sonar = await verifySonar(input);
   const reviews = await verifyReviews(input);
-  return { headSHA: input.headSHA, baseSHA: input.baseSHA, suppressions, sonar, reviews };
+  return { headSHA: input.headSHA, baseSHA: input.baseSHA, ci, suppressions, sonar, reviews };
+}
+
+async function revalidateQueueEvidence(input, evidence) {
+  const ci = await verifyQueueCI(input);
+  if (JSON.stringify(ci) !== JSON.stringify(evidence.ci)) {
+    throw new Error('CI run, attempt, jobs, source, or queue intent changed during the audit; retry with fresh evidence.');
+  }
+  const { verifyReviews } = require('./queue_me_reviews');
+  await verifyReviews(input);
 }
 
 async function mergeVerifiedQueuedPull({
   github, owner, repo, candidate, defaultBranch, defaultBranchSHA, update,
-  queueLabel, trustedPolicySHA, verifyEvidence,
+  queueLabel, trustedPolicySHA, verifyEvidence, revalidateEvidence,
 }) {
+  const input = {
+    github, owner, repo, pullNumber: candidate.number,
+    headSHA: update.headSHA, baseSHA: defaultBranchSHA,
+    baseRef: defaultBranch, trustedPolicySHA, queueLabel,
+  };
   let evidence;
   try {
-    evidence = await verifyEvidence({
-      github, owner, repo, pullNumber: candidate.number,
-      headSHA: update.headSHA, baseSHA: defaultBranchSHA,
-      baseRef: defaultBranch, trustedPolicySHA,
-    });
+    evidence = await verifyEvidence(input);
     if (evidence?.headSHA !== update.headSHA || evidence?.baseSHA !== defaultBranchSHA) {
       throw new Error('Queue evidence does not match the audited head and base.');
     }
@@ -590,6 +613,7 @@ async function mergeVerifiedQueuedPull({
     return;
   }
   try {
+    await revalidateEvidence(input, evidence);
     await revalidateBranchUpdate({
       github, owner, repo, pullNumber: candidate.number, defaultBranch,
       defaultBranchSHA, queueLabel, expectedHeadSHA: update.headSHA,
@@ -603,7 +627,7 @@ async function mergeVerifiedQueuedPull({
     if (state.state !== 'OPEN' || state.isDraft || state.autoMergeRequest) {
       throw new Error('Pull request eligibility changed while collecting queue evidence.');
     }
-    const auditSummary = `Head \`${shortSHA(update.headSHA)}\` contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit, exact-head Sonar, review-thread, and suppression audits.`;
+    const auditSummary = `Head \`${shortSHA(update.headSHA)}\` contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit, every intended CI/platform job, exact-head Sonar, review-thread, and suppression audits.`;
     if (state.mergeable !== 'MERGEABLE' || state.mergeStateStatus !== 'CLEAN') {
       await syncStatusComment(github, owner, repo, candidate.number,
         `## Queue status\n\n${auditSummary}\n\nWaiting for GitHub's existing repository requirements. Auto-merge remains disabled; every retry collects fresh evidence.`);
@@ -637,6 +661,7 @@ async function advanceQueuedPull({
   hasFollower,
   trustedPolicySHA,
   verifyEvidence,
+  revalidateEvidence,
 }) {
   if (candidate.draft) {
     await syncStatusComment(
@@ -729,6 +754,7 @@ async function advanceQueuedPull({
     queueLabel,
     trustedPolicySHA,
     verifyEvidence,
+    revalidateEvidence,
   });
   return false;
 }
@@ -753,6 +779,7 @@ async function runController({
   queueAppSlug = process.env.QUEUE_APP_SLUG,
   trustedPolicySHA = process.env.TRUSTED_CONTROLLER_REF,
   verifyEvidence = verifyQueueEvidence,
+  revalidateEvidence = revalidateQueueEvidence,
 }) {
   const queueLabel = process.env.QUEUE_LABEL || DEFAULT_QUEUE_LABEL;
   const { owner, repo } = context.repo;
@@ -818,6 +845,7 @@ async function runController({
       hasFollower: index + 1 < queued.length,
       trustedPolicySHA,
       verifyEvidence,
+      revalidateEvidence,
     });
     if (!shouldAdvance) {
       // Followers behind the selected (or paused-on-draft) candidate were

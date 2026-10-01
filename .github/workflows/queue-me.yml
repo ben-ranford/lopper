@@ -10,7 +10,7 @@ on:
     types: [completed]
   status:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, windows runtime]
     types: [completed]
   push:
     branches:
@@ -116,7 +116,8 @@ jobs:
             });
             const path = require('node:path');
             for (const name of ['queue_me_reviews.js', 'queue_me_sonar.js',
-              'queue_me_suppressions.js', 'inline_suppression_tracker.js']) {
+              'queue_me_suppressions.js', 'inline_suppression_tracker.js',
+              'queue_me_ci.js', 'queue_me_ci_intent.js', 'queue_me_public_api.js']) {
               const response = await github.rest.repos.getContent({
                 owner: context.repo.owner, repo: context.repo.repo,
                 path: `scripts/${name}`, ref: process.env.TRUSTED_CONTROLLER_REF,

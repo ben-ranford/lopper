@@ -154,6 +154,7 @@ function makeHarness(options = {}) {
     activities: [],
     armed: [],
     evidence: [],
+    revalidations: [],
     mergeExpectedHeads: [],
     armExpectedHeads: [],
     branchReads: [],
@@ -370,6 +371,11 @@ function makeHarness(options = {}) {
         if (options.armDuringEvidence) states.get(input.pullNumber).autoMergeRequest = {};
         if (options.evidenceError) throw options.evidenceError;
         return options.evidenceResult || { headSHA: input.headSHA, baseSHA: input.baseSHA };
+      },
+      revalidateEvidence: async (input, evidence) => {
+        calls.revalidations.push({ input, evidence });
+        assert.equal(calls.merged.includes(input.pullNumber), false);
+        if (options.revalidationError) throw options.revalidationError;
       },
     },
     calls,
@@ -833,7 +839,8 @@ test('controller stops later followers when a status request fails', async () =>
 
   await assert.rejects(runController(harness.args), failure);
 
-  assert.deepEqual(harness.calls.disabled, [20]);
+  // The global revocation sweep disarms every follower before status writes.
+  assert.deepEqual(harness.calls.disabled, [20, 30]);
   assert.equal(commentsFor(harness, 30), '');
 });
 
@@ -1641,6 +1648,37 @@ test('failed revocation stops the queue before any evidence or merge', async () 
   assert.deepEqual(h.calls.merged, []);
 });
 
+test('CLEAN cannot bypass a failed latest platform audit before merge', async (t) => {
+  for (const failure of [
+    'latest ci run 36795357847 failed os-smoke (macos-26)',
+    'new post-label CI generation is pending',
+    'runtime-cancellation job evidence is missing',
+    'queue intent changed while collecting CI evidence',
+  ]) {
+    await t.test(failure, async () => {
+      const h = makeHarness({ pulls: [makePull(1777)], armDuringEvidence: true,
+        revalidationError: new Error(failure) });
+      await assert.rejects(runController(h.args), error => error.message === failure);
+      assert.equal(h.calls.evidence.length, 1);
+      assert.equal(h.calls.revalidations.length, 1);
+      assert.deepEqual(h.calls.merged, []);
+      assert.deepEqual(h.calls.armed, []);
+      assert.equal(h.calls.disabled.at(-1), 1777);
+      assert.ok(commentsFor(h, 1777).includes(failure));
+    });
+  }
+});
+
+test('the final platform audit uses the same exact pair before the guarded merge', async () => {
+  const h = makeHarness({ pulls: [makePull(10)] });
+  await runController(h.args);
+  assert.equal(h.calls.revalidations.length, 1);
+  assert.equal(h.calls.revalidations[0].input, h.calls.evidence[0]);
+  assert.equal(h.calls.revalidations[0].input.queueLabel, 'queue-me');
+  assert.deepEqual(h.calls.merged, [10]);
+  assert.deepEqual(h.calls.mergeExpectedHeads, ['head-10']);
+});
+
 test('failed revocation still attempts every later retained request before aborting', async () => {
   const h = makeHarness({
     pulls: [makePull(10), makePull(20), makePull(30)],
@@ -1785,4 +1823,77 @@ test('unconfirmed revocation stops before evidence collection', async () => {
   const h = makeHarness({ pulls: [makePull(10)], initialStates: { 10: { autoMergeRequest: {} } }, disableResult: {} });
   await assert.rejects(runController(h.args), /did not confirm automatic merge revocation/);
   assert.deepEqual(h.calls.evidence, []);
+});
+
+function productionEvidenceHarness(t, options = {}) {
+  const h = makeHarness({ pulls: [makePull(1777)], initialStates: { 1777: { autoMergeRequest: {} } } });
+  delete h.args.verifyEvidence;
+  delete h.args.revalidateEvidence;
+  const order = [];
+  let ciReads = 0;
+  let intentReads = 0;
+  t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => {
+    order.push('intent');
+    intentReads += 1;
+    return { ciNotBefore: '2026-10-01T00:00:00Z', queueEventId: options.intentDrift === intentReads ? 'new' : 'original' };
+  });
+  t.mock.method(require('./queue_me_ci'), 'verifyCI', async (input) => {
+    order.push('ci');
+    ciReads += 1;
+    assert.equal(input.ciNotBefore, '2026-10-01T00:00:00Z');
+    assert.equal(input.pullNumber, 1777);
+    assert.equal(input.headSHA, 'head-1777');
+    assert.deepEqual(h.calls.merged, []);
+    if (options.ciFailure === ciReads) throw new Error('latest CI macOS job failed');
+    return { runId: options.runDrift === ciReads ? 200 : 100 };
+  });
+  for (const [file, method, stage] of [
+    ['./queue_me_suppressions', 'verifySuppressions', 'suppressions'],
+    ['./queue_me_reviews', 'verifyReviews', 'reviews'],
+    ['./queue_me_sonar', 'verifySonar', 'sonar'],
+  ]) {
+    t.mock.method(require(file), method, async () => {
+      order.push(stage);
+      assert.deepEqual(h.calls.merged, []);
+      return {};
+    });
+  }
+  return { ...h, order };
+}
+
+test('production defaults reject a failed latest CI even when GitHub reports CLEAN', async (t) => {
+  const h = productionEvidenceHarness(t, { ciFailure: 1 });
+  await runController(h.args);
+  assert.deepEqual(h.calls.merged, []);
+  assert.deepEqual(h.calls.disabled, [1777]);
+  assert.deepEqual(h.order, ['intent', 'ci']);
+  assert.match(commentsFor(h, 1777), /latest CI macOS job failed/);
+});
+
+test('production defaults repeat CI and bracket each audit with queue intent reads', async (t) => {
+  const h = productionEvidenceHarness(t);
+  await runController(h.args);
+  assert.deepEqual(h.order, ['intent', 'ci', 'intent', 'suppressions', 'reviews', 'sonar', 'reviews', 'intent', 'ci', 'intent', 'reviews']);
+  assert.deepEqual(h.calls.merged, [1777]);
+  assert.deepEqual(h.calls.mergeExpectedHeads, ['head-1777']);
+  assert.deepEqual(h.calls.armed, []);
+});
+
+test('production defaults reject changes during the final evidence audit', async (t) => {
+  for (const options of [{ ciFailure: 2 }, { runDrift: 2 }, { intentDrift: 4 }]) {
+    await t.test(JSON.stringify(options), async (child) => {
+      const h = productionEvidenceHarness(child, options);
+      await assert.rejects(runController(h.args), /latest CI macOS job failed|changed/);
+      assert.deepEqual(h.calls.merged, []);
+      assert.deepEqual(h.calls.disabled, [1777]);
+    });
+  }
+});
+
+test('production defaults detect intent changes during the initial CI audit', async (t) => {
+  const h = productionEvidenceHarness(t, { intentDrift: 2 });
+  await runController(h.args);
+  assert.deepEqual(h.calls.merged, []);
+  assert.deepEqual(h.order, ['intent', 'ci', 'intent']);
+  assert.match(commentsFor(h, 1777), /intent changed/);
 });
