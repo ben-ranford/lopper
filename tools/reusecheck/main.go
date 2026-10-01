@@ -96,6 +96,9 @@ func scanSources(root rootFS, stdout io.Writer) (int, error) {
 			}
 			return nil
 		}
+		if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
+			return nil
+		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
