@@ -4,6 +4,8 @@ import "github.com/ben-ranford/lopper/internal/report/model"
 
 const SchemaVersion = model.SchemaVersion
 
+type PythonManifestDocument = model.PythonManifestDocument
+
 type Report = model.Report
 type Result = model.Report
 type CoverageGap = model.CoverageGap
