@@ -96,6 +96,11 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	} else if _, err := master.Write([]byte(exit)); err != nil {
 		t.Fatal(err)
 	}
+	waitSummaryPTYResult(t, done, exit)
+}
+
+func waitSummaryPTYResult(t *testing.T, done <-chan error, exit string) {
+	t.Helper()
 	select {
 	case err := <-done:
 		if exit == "cancel" {
