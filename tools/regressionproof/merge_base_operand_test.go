@@ -27,32 +27,37 @@ func testMergeBaseOperandBoundary(t *testing.T) {
 		{name: "full SHA", operand: repo.baseSHA},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			executor := &execRunner{}
-			calls := 0
-			var mergeBase string
-			r := &runner{execCommand: func(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
-				calls++
-				output, err := executor.Run(ctx, name, args, dir, env)
-				if calls == 1 {
-					mergeBase = strings.TrimSpace(string(output))
-				}
-				return output, err
-			}}
-			err := r.prove(context.Background(), repo.path, tc.operand, nil, io.Discard)
-			if tc.invalid {
-				var exitErr *exec.ExitError
-				if err == nil || !strings.HasPrefix(err.Error(), "resolve merge base:") || !errors.As(err, &exitErr) || calls != 1 {
-					t.Fatalf("option operand must fail at merge-base before later commands: calls=%d err=%v", calls, err)
-				}
-				return
-			}
-			if mergeBase != repo.baseSHA {
-				t.Fatalf("merge base = %q, want %q", mergeBase, repo.baseSHA)
-			}
-			if err == nil || !strings.HasPrefix(err.Error(), "regression proof requires at least one changed") || calls != 2 {
-				t.Fatalf("valid revision must reach changed-file selection without a worktree or Go command: calls=%d err=%v", calls, err)
-			}
+			checkMergeBaseOperand(t, repo, tc.operand, tc.invalid)
 		})
+	}
+}
+
+func checkMergeBaseOperand(t *testing.T, repo regressionProofRepo, operand string, invalid bool) {
+	t.Helper()
+	executor := &execRunner{}
+	calls := 0
+	var mergeBase string
+	r := &runner{execCommand: func(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
+		calls++
+		output, err := executor.Run(ctx, name, args, dir, env)
+		if calls == 1 {
+			mergeBase = strings.TrimSpace(string(output))
+		}
+		return output, err
+	}}
+	err := r.prove(context.Background(), repo.path, operand, nil, io.Discard)
+	if invalid {
+		var exitErr *exec.ExitError
+		if err == nil || !strings.HasPrefix(err.Error(), "resolve merge base:") || !errors.As(err, &exitErr) || calls != 1 {
+			t.Fatalf("option operand must fail at merge-base before later commands: calls=%d err=%v", calls, err)
+		}
+		return
+	}
+	if mergeBase != repo.baseSHA {
+		t.Fatalf("merge base = %q, want %q", mergeBase, repo.baseSHA)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "regression proof requires at least one changed") || calls != 2 {
+		t.Fatalf("valid revision must reach changed-file selection without a worktree or Go command: calls=%d err=%v", calls, err)
 	}
 }
 
