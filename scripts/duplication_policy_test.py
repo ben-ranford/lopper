@@ -134,6 +134,41 @@ class OccurrencePolicyTests(unittest.TestCase):
         self.assertEqual(len(current), 1)
         self.assertEqual(policy.evaluate(current, empty_policy())['findings'][0]['status'], 'violation')
 
+    def test_fixture_functions_do_not_create_production_pairs(self):
+        for fixture_dir in ('testdata', 'fixtures', 'test-fixtures', '__fixtures__'):
+            with self.subTest(directory=fixture_dir), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory)
+                paths = (f'nested/{fixture_dir}/first.go', f'nested/{fixture_dir}/second.go', 'source.go')
+                for name in paths:
+                    path = repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('package example\nfunc Copy() int { return 1 }\n')
+                endpoints = [(name, 2, 2) for name in paths]
+                for left, right in ((0, 1), (0, 2)):
+                    with self.subTest(endpoints=(left, right)):
+                        records = [(endpoints[left], endpoints[right]), (endpoints[right], endpoints[left])]
+                        indexed = policy.function_index(repo, 'go', records)
+                        current = policy.clone_pairs(records, indexed)
+                        self.assertEqual(policy.evaluate(current, empty_policy())['findings'], [])
+
+    def test_fixture_cycle_members_cannot_hide_real_production_clones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            paths = ('source.go', 'testdata/example.go', 'testdata_helpers/copy.go', 'fixtures/sample.go')
+            for name in paths:
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('package example\nfunc Copy() int { return 1 }\n')
+            endpoints = [(name, 2, 2) for name in paths]
+            records = list(zip(endpoints, endpoints[1:] + endpoints[:1]))
+            indexed = policy.function_index(repo, 'go', records)
+            self.assertEqual({entry['path'] for entry in indexed}, {'source.go', 'testdata_helpers/copy.go'})
+            current = policy.clone_pairs(records, indexed)
+            report = policy.evaluate(current, empty_policy())
+            self.assertEqual([entry['status'] for entry in report['findings']], ['violation'])
+            self.assertEqual({fn['path'] for fn in report['findings'][0]['functions']},
+                             {'source.go', 'testdata_helpers/copy.go'})
+
     def test_receiver_change_is_a_new_occurrence(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'receiver.go'

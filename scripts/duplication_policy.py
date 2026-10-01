@@ -5,11 +5,13 @@ import hashlib
 import itertools
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
 import tempfile
+
+FIXTURE_DIRS = frozenset(('testdata', 'fixtures', 'test-fixtures', '__fixtures__'))
 
 
 class PolicyError(ValueError):
@@ -65,8 +67,11 @@ def function_index(repo, go, records):
     executable = shutil.which(go)
     if not executable or os.path.basename(executable).lower() not in ('go', 'go.exe'):
         raise PolicyError('Go command must name a Go executable, without embedded arguments')
+    # Keep every detector edge for clone-group reconstruction, but only index
+    # production members; fixture endpoints cannot hide two production members.
     paths = sorted({path for record in records for path, _, _ in record
-                    if path.endswith('.go') and not path.endswith('_test.go')})
+                    if path.endswith('.go') and not path.endswith('_test.go')
+                    and not (set(PurePosixPath(path).parts[:-1]) & FIXTURE_DIRS)})
     # Build flags and persisted settings can replace indexer source via overlays.
     environment = dict(os.environ, GOFLAGS="", GOENV="off", GO111MODULE="off")
     environment.pop("GOROOT", None)

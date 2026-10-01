@@ -9,12 +9,11 @@ import subprocess
 import tempfile
 
 from check_duplication import parse_findings
-from duplication_policy import connected_groups
+from duplication_policy import FIXTURE_DIRS, connected_groups
 
 CATEGORIES = ('production', 'tests', 'fixtures', 'generated_dependencies', 'configuration_docs', 'lockfiles')
 SOURCE_SUFFIXES = frozenset('.go .py .js .jsx .ts .tsx .mjs .cjs .sh .bash .rb .c .h .cc .cpp .hpp .java .kt .kts .rs .cs .php .swift .dart .ex .exs .ps1 .vue .svelte .sql .scala .clj .lua .r .m .mm .fs .fsx .vb .psm1 .psd1 .cxx .hxx .hh .mts .cts .rake .gemspec .erl .hrl'.split())
 DEPENDENCY_DIRS = frozenset(('vendor', 'node_modules', 'dist', 'build', 'bin', 'out', 'coverage', '__pycache__', '.venv', 'target', 'generated', '.next', '.nuxt'))
-FIXTURE_DIRS = frozenset(('testdata', 'fixtures', 'test-fixtures', '__fixtures__'))
 TEST_DIRS = frozenset(('test', 'tests', '__tests__', 'testutil', 'testsupport'))
 LOCK_NAMES = frozenset(('go.sum', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'Gemfile.lock', 'Cargo.lock', 'composer.lock', 'poetry.lock', 'uv.lock', 'packages.lock.json', 'pubspec.lock', 'Package.resolved', 'bun.lock', 'bun.lockb', 'Pipfile.lock', 'mix.lock'))
 
