@@ -147,28 +147,26 @@ type codemodApplyPayload struct {
 	Error          *structuredToolError        `json:"error,omitempty"`
 }
 
-type baselineSavePayload struct {
+type snapshotSavePayload struct {
 	SchemaVersion     string               `json:"schemaVersion"`
 	Summary           string               `json:"summary"`
 	RepoPath          string               `json:"repoPath"`
 	BaselineStorePath string               `json:"baselineStorePath"`
 	BaselineKey       string               `json:"baselineKey"`
 	SnapshotPath      string               `json:"snapshotPath"`
-	ReportSummary     *report.Summary      `json:"reportSummary,omitempty"`
-	Report            report.Report        `json:"report"`
 	Error             *structuredToolError `json:"error,omitempty"`
 }
 
+type baselineSavePayload struct {
+	snapshotSavePayload
+	ReportSummary *report.Summary `json:"reportSummary,omitempty"`
+	Report        report.Report   `json:"report"`
+}
+
 type dashboardBaselineSavePayload struct {
-	SchemaVersion     string               `json:"schemaVersion"`
-	Summary           string               `json:"summary"`
-	RepoPath          string               `json:"repoPath"`
-	BaselineStorePath string               `json:"baselineStorePath"`
-	BaselineKey       string               `json:"baselineKey"`
-	SnapshotPath      string               `json:"snapshotPath"`
-	DashboardSummary  dashboard.Summary    `json:"dashboardSummary"`
-	Report            dashboard.Report     `json:"report"`
-	Error             *structuredToolError `json:"error,omitempty"`
+	snapshotSavePayload
+	DashboardSummary dashboard.Summary `json:"dashboardSummary"`
+	Report           dashboard.Report  `json:"report"`
 }
 
 func (s *Server) mutationToolsEnabled() bool {
@@ -621,33 +619,31 @@ func summarizeCodemodApply(dependency string, apply *report.CodemodApplyReport, 
 }
 
 func shapeBaselineSavePayload(req AnalysisMutationRequest, reportData report.Report, savedPath string, err error) baselineSavePayload {
-	payload := baselineSavePayload{
-		SchemaVersion:     report.SchemaVersion,
-		Summary:           summarizeSnapshotSave("baseline", req.BaselineKey, savedPath, err),
-		RepoPath:          req.RepoPath,
-		BaselineStorePath: req.BaselineStorePath,
-		BaselineKey:       req.BaselineKey,
-		SnapshotPath:      savedPath,
-		ReportSummary:     reportData.Summary,
-		Report:            reportData,
+	return baselineSavePayload{
+		snapshotSavePayload: shapeSnapshotSavePayload(report.SchemaVersion, "baseline", req.RepoPath, req.BaselineStorePath, req.BaselineKey, savedPath, err),
+		ReportSummary:       reportData.Summary,
+		Report:              reportData,
 	}
-	payload.Error = structuredError(err)
-	return payload
 }
 
 func shapeDashboardBaselineSavePayload(req DashboardMutationRequest, reportData dashboard.Report, savedPath string, err error) dashboardBaselineSavePayload {
-	payload := dashboardBaselineSavePayload{
-		SchemaVersion:     dashboard.BaselineSnapshotSchemaVersion,
-		Summary:           summarizeSnapshotSave("dashboard baseline", req.BaselineKey, savedPath, err),
-		RepoPath:          req.RepoPath,
-		BaselineStorePath: req.BaselineStorePath,
-		BaselineKey:       req.BaselineKey,
-		SnapshotPath:      savedPath,
-		DashboardSummary:  reportData.Summary,
-		Report:            reportData,
+	return dashboardBaselineSavePayload{
+		snapshotSavePayload: shapeSnapshotSavePayload(dashboard.BaselineSnapshotSchemaVersion, "dashboard baseline", req.RepoPath, req.BaselineStorePath, req.BaselineKey, savedPath, err),
+		DashboardSummary:    reportData.Summary,
+		Report:              reportData,
 	}
-	payload.Error = structuredError(err)
-	return payload
+}
+
+func shapeSnapshotSavePayload(schemaVersion, kind, repoPath, storePath, key, savedPath string, err error) snapshotSavePayload {
+	return snapshotSavePayload{
+		SchemaVersion:     schemaVersion,
+		Summary:           summarizeSnapshotSave(kind, key, savedPath, err),
+		RepoPath:          repoPath,
+		BaselineStorePath: storePath,
+		BaselineKey:       key,
+		SnapshotPath:      savedPath,
+		Error:             structuredError(err),
+	}
 }
 
 func summarizeSnapshotSave(kind, key, savedPath string, err error) string {
