@@ -8323,31 +8323,7 @@ func TestOpenStagingCopySourceLiveSourceValidationBranches(t *testing.T) {
 	})
 
 	t.Run("non seekable live source closes reopened mismatch", func(t *testing.T) {
-		closed := false
-		_, changedInfo := writePinnedTargetInfoPair(t)
-		liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
-		root := &fakeRoot{
-			open: func(name string) (File, error) {
-				if name != "source" {
-					t.Fatalf("unexpected reopen path: %s", name)
-				}
-				return &fakeFile{
-					stat: func() (fs.FileInfo, error) { return changedInfo, nil },
-					close: func() error {
-						closed = true
-						return nil
-					},
-				}, nil
-			},
-		}
-
-		_, _, err := openStagingCopySource(root, "source", expected, sourceChangedMsg, liveSource)
-		if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
-			t.Fatalf("expected reopened source mismatch, got %v", err)
-		}
-		if !closed {
-			t.Fatal("expected mismatched reopened source to close")
-		}
+		assertLiveSourceReopenMismatchCloses(t, expected)
 	})
 }
 
@@ -10915,7 +10891,7 @@ func TestFinalSafeIOPathUtilityBranches(t *testing.T) {
 	})
 
 	t.Run("joined sentinel ignores nil causes", func(t *testing.T) {
-		if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
+		if !isPureSentinelError(errors.Join(nil, os.ErrNotExist), os.ErrNotExist) {
 			t.Fatal("expected nil joined cause to be ignored")
 		}
 	})
@@ -11015,22 +10991,7 @@ func TestFinalSafeIOStateErrorBranches(t *testing.T) {
 	})
 
 	t.Run("failed restore disables stale quarantine cleanup", func(t *testing.T) {
-		restoreErr := errors.New("restore rejected")
-		state := &basicRootRenameState{
-			root:                   &fakeRoot{linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr }},
-			oldName:                "source",
-			expected:               sourceInfo,
-			message:                sourceChangedMsg,
-			quarantineRel:          "quarantine/entry",
-			cleanupDir:             true,
-			cleanupQuarantineEntry: true,
-		}
-		if err := state.restoreSourceAfterSnapshotFailure(errors.New("snapshot failed")); !errors.Is(err, restoreErr) {
-			t.Fatalf("expected restore failure, got %v", err)
-		}
-		if state.cleanupDir || state.cleanupQuarantineEntry {
-			t.Fatalf("failed restore retained cleanup state: dir=%t entry=%t", state.cleanupDir, state.cleanupQuarantineEntry)
-		}
+		assertFailedRestoreDisablesQuarantineCleanup(t, sourceInfo)
 	})
 
 	t.Run("post-rename stat failure retains the quarantine", func(t *testing.T) {
@@ -11301,10 +11262,7 @@ func TestCommitPreparedSourceValidatesTargetAfterUnconsumedRename(t *testing.T) 
 			lstat: lstatOriginalForNames(t, info, "temp", stagedRel, "target", cleanupRel, cleanupRel2, cleanupRel3),
 		},
 		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			cleanupName := newName == cleanupRel || newName == cleanupRel2 || newName == cleanupRel3
-			if (oldName != "temp" || newName != stagedRel) && (oldName != stagedRel || !cleanupName) {
-				t.Fatalf("unexpected staging link %q -> %q", oldName, newName)
-			}
+			requireStagingOrCleanupLink(t, oldName, newName, stagedRel, cleanupRel, cleanupRel2, cleanupRel3)
 			requireSameFileInfo(t, expected, info, oldName)
 			return nil
 		},
@@ -13499,4 +13457,64 @@ func assertRetainedAtomicStagingEntry(t *testing.T, rootDir, wantContent string)
 	if retained != 1 {
 		t.Fatalf("expected one retained atomic staging entry, got %d", retained)
 	}
+}
+
+func assertLiveSourceReopenMismatchCloses(t *testing.T, expected fs.FileInfo) {
+	t.Helper()
+	closed := false
+	_, changedInfo := writePinnedTargetInfoPair(t)
+	liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
+	root := &fakeRoot{
+		open: func(name string) (File, error) {
+			if name != "source" {
+				t.Fatalf("unexpected reopen path: %s", name)
+			}
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) { return changedInfo, nil },
+				close: func() error {
+					closed = true
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	_, _, err := openStagingCopySource(root, "source", expected, sourceChangedMsg, liveSource)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected reopened source mismatch, got %v", err)
+	}
+	if !closed {
+		t.Fatal("expected mismatched reopened source to close")
+	}
+}
+
+func assertFailedRestoreDisablesQuarantineCleanup(t *testing.T, sourceInfo fs.FileInfo) {
+	t.Helper()
+	restoreErr := errors.New("restore rejected")
+	state := &basicRootRenameState{
+		root:                   &fakeRoot{linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr }},
+		oldName:                "source",
+		expected:               sourceInfo,
+		message:                sourceChangedMsg,
+		quarantineRel:          "quarantine/entry",
+		cleanupDir:             true,
+		cleanupQuarantineEntry: true,
+	}
+	if err := state.restoreSourceAfterSnapshotFailure(errors.New("snapshot failed")); !errors.Is(err, restoreErr) {
+		t.Fatalf("expected restore failure, got %v", err)
+	}
+	if state.cleanupDir || state.cleanupQuarantineEntry {
+		t.Fatalf("failed restore retained cleanup state: dir=%t entry=%t", state.cleanupDir, state.cleanupQuarantineEntry)
+	}
+}
+
+func requireStagingOrCleanupLink(t *testing.T, oldName, newName, stagedRel string, cleanupNames ...string) {
+	t.Helper()
+	if oldName == "temp" && newName == stagedRel {
+		return
+	}
+	if oldName != stagedRel {
+		t.Fatalf("unexpected staging link %q -> %q", oldName, newName)
+	}
+	requireOneOfNames(t, newName, cleanupNames...)
 }

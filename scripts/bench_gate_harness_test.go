@@ -960,16 +960,7 @@ func (f *benchGateFixture) writeRepositoryHarness() {
 	f.copyFile("scripts/bench-gate.sh")
 	f.copyFile("tools/benchdelta/main.go")
 
-	safeioFiles, err := filepath.Glob(repoPath(f.t, "internal/safeio/*.go"))
-	if err != nil {
-		f.t.Fatalf("glob safeio files: %v", err)
-	}
-	for _, path := range safeioFiles {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		f.copyFile(filepath.ToSlash(strings.TrimPrefix(path, repoPath(f.t, "")+string(os.PathSeparator))))
-	}
+	copyBenchGateSafeioSources(f.t, f.root)
 }
 
 func (f *benchGateFixture) writeBenchmarkPackage(packageName string, files map[string]string) {

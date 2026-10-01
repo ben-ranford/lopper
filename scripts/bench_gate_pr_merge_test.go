@@ -12,10 +12,10 @@ func TestBenchGateUsesCheckedOutPRMergeBaseForStaleEventBase(t *testing.T) {
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	writeExecutableFile(t, filepath.Join(repo, "scripts", "bench-gate-pr-base.sh"), readConfig(t, "scripts/bench-gate-pr-base.sh"))
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n")
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go", "tools/benchdelta", "internal/safeio", "internal/errutil")
 	runGitCommand(t, repo, "commit", "-m", "event base")
 	eventBase := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
 
@@ -58,7 +58,7 @@ func TestBenchGateKeepsExplicitBaseForOrdinaryMergeCommit(t *testing.T) {
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	writeExecutableFile(t, filepath.Join(repo, "scripts", "bench-gate-pr-base.sh"), readConfig(t, "scripts/bench-gate-pr-base.sh"))
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	copyBenchGateSafeioSources(t, repo)
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
 	// init() is always a fingerprint root, unlike an ordinary unreferenced
 	// helper function: the harness fingerprint hashes only declarations
@@ -66,7 +66,7 @@ func TestBenchGateKeepsExplicitBaseForOrdinaryMergeCommit(t *testing.T) {
 	// benchmarkHarnessValue() that nothing calls would not move the
 	// fingerprint when its body changes below.
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc init() { benchmarkSink = make([]byte, 1) }\n")
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go", "tools/benchdelta", "internal/safeio", "internal/errutil")
 	runGitCommand(t, repo, "commit", "-m", "explicit base")
 	explicitBase := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
 

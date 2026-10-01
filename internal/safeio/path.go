@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/errutil"
 )
 
 var ErrPathEscapesRoot = errors.New("path escapes root")
@@ -141,44 +143,6 @@ func translateOpenNotExist(err error, targetPath string) error {
 	return err
 }
 
-type multiError interface {
-	error
-	Unwrap() []error
-}
-
 func isPureSentinelError(err error, sentinels ...error) bool {
-	if err == nil || len(sentinels) == 0 {
-		return false
-	}
-	var wrapped multiError
-	if errors.As(err, &wrapped) {
-		return arePureSentinelCauses(wrapped.Unwrap(), sentinels)
-	}
-	if cause := errors.Unwrap(err); cause != nil {
-		return isPureSentinelError(cause, sentinels...)
-	}
-	return matchesSentinel(err, sentinels)
-}
-
-func arePureSentinelCauses(causes, sentinels []error) bool {
-	found := false
-	for _, cause := range causes {
-		if cause == nil {
-			continue
-		}
-		found = true
-		if !isPureSentinelError(cause, sentinels...) {
-			return false
-		}
-	}
-	return found
-}
-
-func matchesSentinel(err error, sentinels []error) bool {
-	for _, sentinel := range sentinels {
-		if sentinel != nil && errors.Is(err, sentinel) {
-			return true
-		}
-	}
-	return false
+	return errutil.IsPureSentinelError(err, sentinels...)
 }
