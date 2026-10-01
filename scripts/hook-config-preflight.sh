@@ -17,16 +17,15 @@ preflight_handle_signal() {
 }
 
 wait_preflight_child() {
-	preflight_wait_pid=$1
 	while :; do
 		preflight_wait_status=0
-		wait "$preflight_wait_pid" || preflight_wait_status=$?
+		wait "$1" || preflight_wait_status=$?
 		# A missing child is already reaped. Do not mistake a reused PID for
 		# ownership of the process that wait was asked to reap.
 		[ "$preflight_wait_status" -ne 127 ] || break
 		# A trapped signal can interrupt wait without reaping a live child.
 		# Keep ownership until it exits so cleanup cannot strand its temp state.
-		kill -0 "$preflight_wait_pid" 2>/dev/null || break
+		kill -0 "$1" 2>/dev/null || break
 	done
 	return "$preflight_wait_status"
 }
