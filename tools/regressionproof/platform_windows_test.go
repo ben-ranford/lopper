@@ -13,6 +13,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
+func TestWindowsProofMergeBaseOperandBoundary(t *testing.T) {
+	testMergeBaseOperandBoundary(t)
+}
+
 func TestWindowsProofGitResolver(t *testing.T) {
 	regularInfo, directoryInfo := windowsProofResolverFileInfo(t)
 	for _, tt := range []struct {

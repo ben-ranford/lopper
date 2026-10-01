@@ -207,7 +207,7 @@ func readBody(bodyFile string, getenv func(string) string) (string, error) {
 }
 
 func (r *runner) prove(ctx context.Context, repoRoot, baseSHA string, declarations []prmetadata.RegressionDeclaration, stdout io.Writer) error {
-	mergeBase, err := r.gitOutput(ctx, repoRoot, "merge-base", baseSHA, "HEAD")
+	mergeBase, err := r.gitOutput(ctx, repoRoot, "merge-base", "--", baseSHA, "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve merge base: %w", err)
 	}
