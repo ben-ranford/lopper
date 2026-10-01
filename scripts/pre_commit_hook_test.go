@@ -512,8 +512,10 @@ func newHookFixture(t *testing.T) string {
 	installers, _, _ = strings.Cut(installers, "\nvscode-extension-install:")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
-	for _, name := range []string{"cleanup-hook-snapshot.sh", "hook-config-preflight.sh"} {
-		copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "scripts", name), filepath.Join(repoDir, "scripts", name), 0o644)
+	if strings.Contains(installers, "scripts/cleanup-hook-snapshot.sh") {
+		for _, name := range []string{"cleanup-hook-snapshot.sh", "hook-config-preflight.sh"} {
+			copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "scripts", name), filepath.Join(repoDir, "scripts", name), 0o644)
+		}
 	}
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
 	testutil.RunGit(t, repoDir, "add", ".")
