@@ -33,8 +33,21 @@ resize, shutdown, failed exits, and cleanup on
 timeouts using a small independent terminal child. These are scaffold contracts,
 not assertions that the current Lopper UI interprets CSI-u release events.
 
-The current summary UI accepts newline-delimited commands. Immediate arrow
-navigation and cursor editing belong to #1624; this scaffold deliberately does
-not change that input implementation. It supplies a real terminal for those
-future regression tests. Portable Go command tests remain usable on Windows;
-the PTY suite requires POSIX terminal APIs and runs in the Linux CI partition.
+The default summary UI accepts both piped newline-delimited commands and
+interactive terminal keys. At an empty prompt, left/right page immediately and
+clamp at the first/last page. Within a command they move the cursor; Home/End,
+Backspace and Delete edit Unicode text. Long commands scroll horizontally in
+the prompt instead of wrapping. Enter executes the command. Try typing
+`pag 2`, pressing left twice, inserting `e`, then pressing Enter. Ctrl-C, `q`
+plus Enter and Ctrl-D at an empty prompt exit and restore terminal settings.
+CSI and application-mode arrows are supported by the existing terminal decoder.
+Unknown and incomplete escape sequences are ignored without executing a command.
+
+Keyboard decoding and terminal restoration use the existing Bubble Tea backend
+on supported terminals. Piped streams retain the portable line-command path.
+The real PTY suite runs on macOS and Linux; Windows retains Go command/editor
+tests but cannot run this POSIX PTY harness.
+
+The opt-in Stave preview (`--enable-feature stave-tui-preview`) retains its
+separate navigation/command modes documented in `docs/stave-tui-preview.md`.
+This fix targets the default summary UI selected without that explicit opt-in.
