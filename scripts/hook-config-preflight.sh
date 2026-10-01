@@ -44,6 +44,13 @@ reader_group_is_running() {
 	printf "%s\n" "$reader_group" >"$state_dir/expected-job" || return 1
 	cmp -s "$state_dir/running-jobs" "$state_dir/expected-job"
 }
+reader_group_is_running_or_interrupted() {
+	reader_group_is_running && return 0
+	# TERM can stop external cmp while this probe runs. Retry only after the
+	# supervisor trap records cancellation, and require fresh ownership proof.
+	[ -n "$interrupted" ] || return 1
+	reader_group_is_running
+}
 interrupted=
 supervisor_pid=$$
 trap "interrupted=1" HUP INT TERM
@@ -81,13 +88,13 @@ set +m
 } 2>"$state_dir/launch-error"
 exec 3>&-
 while [ ! -f "$state_dir/ready" ] && [ -z "$interrupted" ]; do
-	reader_group_is_running || {
+	reader_group_is_running_or_interrupted || {
 		cat "$state_dir/launch-error" >&2
 		exit 1
 	}
 	sleep 0.01
 done
-reader_group_is_running || {
+reader_group_is_running_or_interrupted || {
 	cat "$state_dir/launch-error" >&2
 	exit 1
 }
@@ -123,11 +130,14 @@ fi
 # Polling closes the signal-before-wait race and bounds interrupted waits.
 # Signal only the still-running anchored job owned by this supervisor.
 while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ]; do
-	reader_group_is_running || exit 1
+	reader_group_is_running_or_interrupted || exit 1
 	sleep 0.01
 done
-trap ":" HUP INT TERM
-reader_group_is_running || exit 1
+# Keep recording cancellation through the final ownership probes. If TERM
+# interrupts cmp, the cleanup path retries ownership verification before it
+# signals the reader group.
+trap "interrupted=1" HUP INT TERM
+reader_group_is_running_or_interrupted || exit 1
 kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 status=124
 if [ -n "$interrupted" ] || [ -n "$startup_failed" ]; then
@@ -137,7 +147,7 @@ if [ -n "$interrupted" ] || [ -n "$startup_failed" ]; then
 else
 	read -r status <"$state_dir/result" || status=1
 fi
-reader_group_is_running || exit 1
+reader_group_is_running_or_interrupted || exit 1
 kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 # Bash can report the deliberately killed job between kill and wait. Keep
 # that supervisor notification out of the reader diagnostic stream; the

@@ -5,6 +5,7 @@ package scripts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,4 +193,196 @@ run_preflight_git "$1" "$2" "$3"
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("normal completion left state files: %v %v", entries, err)
 	}
+}
+
+func TestHookPreflightInterruptDuringOwnershipCmpCleansAnchor(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entered := filepath.Join(tmp, "cmp-entered")
+	anchorFile := filepath.Join(tmp, "anchor-pid")
+	runnerFile := filepath.Join(tmp, "runner-pid")
+	cmpPIDFile := filepath.Join(tmp, "cmp-pid")
+	installHookPreflightInterruptShims(t, binDir, entered, anchorFile, runnerFile, cmpPIDFile)
+	registerHookPreflightInterruptCleanup(t, stateDir, anchorFile)
+	cmd := exec.Command("sh", "-c", `. ./hook-config-preflight.sh
+trap cleanup_preflight_git EXIT
+run_preflight_git sh -c ':'`, "sh")
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "TMPDIR="+stateDir, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	outputFile, err := os.Create(filepath.Join(tmp, "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = outputFile, outputFile
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- errors.Join(cmd.Wait(), outputFile.Close()) }()
+	waitForHookPreflightCmp(t, entered, done, cmd, filepath.Join(tmp, "output"))
+	interruptHookPreflightPIDs(t, runnerFile, cmpPIDFile)
+	awaitHookPreflightCancellation(t, done, cmd)
+	assertHookPreflightStateRemoved(t, stateDir)
+	assertHookPreflightAnchorStopped(t, anchorFile)
+}
+
+func installHookPreflightInterruptShims(t *testing.T, binDir, entered, anchorFile, runnerFile, cmpPIDFile string) {
+	t.Helper()
+	cmpPath, err := exec.LookPath("cmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := fmt.Sprintf("#!/bin/sh\ncase \"$2\" in */running-jobs) if [ -f \"${2%%/running-jobs}/result\" ] && [ ! -f %s ]; then cat \"$2\" >%s; printf '%%s\\n' \"$$\" >%s; : >%s; exec sleep 60; fi ;; esac\nexec %s \"$@\"\n", shellQuote(entered), shellQuote(anchorFile), shellQuote(cmpPIDFile), shellQuote(entered), shellQuote(cmpPath))
+	writeFileMode(t, filepath.Join(binDir, "cmp"), shim, 0o755)
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bashShim := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$$\" >%s\nexec %s \"$@\"\n", shellQuote(runnerFile), shellQuote(bashPath))
+	writeFileMode(t, filepath.Join(binDir, "bash"), bashShim, 0o755)
+}
+
+func registerHookPreflightInterruptCleanup(t *testing.T, stateDir, anchorFile string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ownedJobFiles, err := filepath.Glob(filepath.Join(stateDir, "lopper-hooks-preflight.*", "running-jobs"))
+		if err != nil {
+			t.Errorf("find owned running-job files: %v", err)
+		}
+		expectedJobFiles, err := filepath.Glob(filepath.Join(stateDir, "lopper-hooks-preflight.*", "expected-job"))
+		if err != nil {
+			t.Errorf("find owned expected-job files: %v", err)
+		}
+		if len(expectedJobFiles) > 0 {
+			ownedJobFiles = append(ownedJobFiles, expectedJobFiles...)
+		}
+		ownedJobFiles = append(ownedJobFiles, anchorFile)
+		seen := make(map[int]bool)
+		for _, path := range ownedJobFiles {
+			data, err := os.ReadFile(path)
+			if err == nil {
+				killRecordedGroups(t, data, seen)
+			}
+		}
+	})
+}
+
+func killRecordedGroups(t *testing.T, data []byte, seen map[int]bool) {
+	t.Helper()
+	for _, value := range strings.Fields(string(data)) {
+		pid, err := strconv.Atoi(value)
+		if err != nil || pid <= 0 || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("clean up owned anchor process group %d: %v", pid, err)
+		}
+	}
+}
+
+func waitForHookPreflightCmp(t *testing.T, entered string, done <-chan error, cmd *exec.Cmd, outputPath string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(entered); err == nil {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("preflight exited before cmp blocked: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if _, err := os.Stat(entered); err == nil {
+		return
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("kill interrupted harness group: %v", err)
+	}
+	<-done
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Errorf("read harness output: %v", err)
+	}
+	t.Fatalf("ownership cmp did not block: %s", data)
+}
+
+func interruptHookPreflightPIDs(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read interrupted process PID from %s: %v", path, err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			t.Fatalf("invalid interrupted process PID in %s: %q", path, data)
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			t.Fatalf("interrupt process %d from %s: %v", pid, path, err)
+		}
+	}
+}
+
+func awaitHookPreflightCancellation(t *testing.T, done <-chan error, cmd *exec.Cmd) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("preflight succeeded after interruption during ownership cmp")
+		}
+	case <-time.After(5 * time.Second):
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill blocked harness: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("harness did not exit after kill")
+		}
+		t.Fatal("preflight did not exit after interruption")
+	}
+}
+
+func assertHookPreflightStateRemoved(t *testing.T, stateDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(stateDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("interrupted preflight left state: %v %v", entries, err)
+	}
+}
+
+func assertHookPreflightAnchorStopped(t *testing.T, anchorFile string) {
+	t.Helper()
+	anchor, err := os.ReadFile(anchorFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := strings.Fields(string(anchor))
+	if len(pids) != 1 {
+		t.Fatalf("owned job listing = %q, want exactly one anchor PID", anchor)
+	}
+	pid, err := strconv.Atoi(pids[0])
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid owned anchor PID %q: %v", pids[0], err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		} else if err != nil {
+			t.Fatalf("inspect owned anchor %d: %v", pid, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("owned anchor %d survived interruption", pid)
 }
