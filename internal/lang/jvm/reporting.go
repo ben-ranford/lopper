@@ -27,17 +27,7 @@ func buildDependencyReport(dependency string, scan scanResult) (report.Dependenc
 		warnings = append(warnings, "no imports found for dependency "+dependency)
 	}
 
-	dep := report.DependencyReport{
-		Language:             "jvm",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "jvm", stats)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "wildcard-import",

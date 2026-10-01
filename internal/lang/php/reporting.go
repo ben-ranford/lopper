@@ -71,17 +71,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsagePercent i
 		warnings = append(warnings, fmt.Sprintf("no imports found for dependency %q", dependency))
 	}
 
-	dep := report.DependencyReport{
-		Language:             "php",
-		Name:                 dependency,
-		UsedExportsCount:     stats.UsedCount,
-		TotalExportsCount:    stats.TotalCount,
-		UsedPercent:          stats.UsedPercent,
-		EstimatedUnusedBytes: 0,
-		TopUsedSymbols:       stats.TopSymbols,
-		UsedImports:          stats.UsedImports,
-		UnusedImports:        stats.UnusedImports,
-	}
+	dep := shared.BuildDependencyReportFromStats(dependency, "php", stats)
 	if scan.UsageIncomplete {
 		dep.UsageIncomplete = true
 		dep.SuppressedUnusedImports = dep.UnusedImports
