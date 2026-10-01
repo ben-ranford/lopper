@@ -462,7 +462,9 @@ func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
 			runCommand(t, repoDir, "git", append([]string{"--literal-pathspecs", "add", "--"}, files...)...)
 			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 			tempDir := t.TempDir()
-			output, err := hookCommandWithEnv(repoDir, []string{"TMPDIR=" + tempDir}, filepath.Join(hookDir, "pre-commit"))
+			hook := filepath.Join(hookDir, "pre-commit")
+			isolateHookTemporaryFiles(t, hook, tempDir)
+			output, err := hookCommand(repoDir, hook)
 			assertHookFormattingOutcome(t, files, fixture.failure, output, err)
 			entries, err := os.ReadDir(tempDir)
 			if err != nil || len(entries) != 0 {
@@ -471,6 +473,22 @@ func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
 			assertHookWorktreeCleaned(t, repoDir)
 		})
 	}
+}
+
+func isolateHookTemporaryFiles(t *testing.T, hook, directory string) {
+	t.Helper()
+	// Audit hook allocations without including caches created by host tool launchers.
+	allocator := filepath.Join(t.TempDir(), "mktemp")
+	writeFileMode(t, allocator, "#!/bin/sh\nTMPDIR="+shellQuote(directory)+" exec /usr/bin/mktemp \"$@\"\n", 0o755)
+	contents, err := os.ReadFile(hook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const assignment = "mktemp_bin=/usr/bin/mktemp\n"
+	if strings.Count(string(contents), assignment) != 1 {
+		t.Fatal("expected one hook temporary-file allocator")
+	}
+	writeFileMode(t, hook, strings.Replace(string(contents), assignment, "mktemp_bin="+shellQuote(allocator)+"\n", 1), 0o755)
 }
 
 func assertHookFormattingOutcome(t *testing.T, files []string, failure, output string, err error) {
