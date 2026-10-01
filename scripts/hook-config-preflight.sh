@@ -6,6 +6,9 @@ preflight_state_dir=
 preflight_output_file=
 
 cleanup_preflight_git() {
+	# Cancellation can trigger this EXIT cleanup while more signals are already
+	# queued. Handle follow-up signals so they cannot interrupt teardown.
+	trap ':' HUP INT TERM
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
 		wait "$preflight_watchdog_pid" 2>/dev/null || :
