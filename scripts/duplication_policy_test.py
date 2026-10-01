@@ -33,16 +33,19 @@ class OccurrencePolicyTests(unittest.TestCase):
         self.baseline = historical_policy(pairs(self.a, self.b))
 
     def test_historical_allowances_are_rejected_even_if_exact_and_unchanged(self):
+        current = pairs(self.a, self.b)
         with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-            policy.evaluate(pairs(self.a, self.b), self.baseline)
+            policy.evaluate(current, self.baseline)
 
     def test_initial_seed_cannot_authorize_existing_pairs(self):
+        current = pairs(self.a, self.b)
         with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-            policy.validate_initial_baseline(pairs(self.a, self.b), self.baseline)
+            policy.validate_initial_baseline(current, self.baseline)
 
     def test_approved_base_allowance_is_rejected_when_candidate_is_empty(self):
+        candidate = empty_policy()
         with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-            policy.validate_reduction(self.baseline, empty_policy())
+            policy.validate_reduction(self.baseline, candidate)
 
     def test_every_pair_blocks_without_percentage_dilution(self):
         current = pairs(self.a, self.b, self.c)
@@ -81,16 +84,19 @@ class OccurrencePolicyTests(unittest.TestCase):
             with self.subTest(proposed=proposed):
                 with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
                     policy.evaluate({}, proposed)
+                base = empty_policy()
                 with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-                    policy.validate_reduction(empty_policy(), proposed)
+                    policy.validate_reduction(base, proposed)
+                candidate = empty_policy()
                 with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-                    policy.validate_reduction(proposed, empty_policy())
+                    policy.validate_reduction(proposed, candidate)
                 with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
                     policy.validate_initial_baseline({}, proposed)
         approved_helper = copy.deepcopy(self.baseline)
         approved_helper['families'][0]['canonical_helper'] = policy.identity(self.a)
+        current = pairs(self.a, self.b)
         with self.assertRaisesRegex(policy.PolicyError, 'not permitted'):
-            policy.evaluate(pairs(self.a, self.b), approved_helper)
+            policy.evaluate(current, approved_helper)
 
     def test_malformed_policy_cannot_be_a_clean_scan(self):
         invalid = [None, {}, dict(empty_policy(), version=2), dict(empty_policy(), version=True),
