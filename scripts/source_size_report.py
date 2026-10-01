@@ -8,6 +8,9 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
 
+from check_duplication import parse_findings
+from duplication_policy import connected_groups
+
 CATEGORIES = ('production', 'tests', 'fixtures', 'generated_dependencies', 'configuration_docs', 'lockfiles')
 SOURCE_SUFFIXES = frozenset('.go .py .js .jsx .ts .tsx .mjs .cjs .sh .bash .rb .c .h .cc .cpp .hpp .java .kt .kts .rs .cs .php .swift .dart .ex .exs .ps1 .vue .svelte .sql .scala .clj .lua .r .m .mm .fs .fsx .vb .psm1 .psd1 .cxx .hxx .hh .mts .cts .rake .gemspec .erl .hrl'.split())
 DEPENDENCY_DIRS = frozenset(('vendor', 'node_modules', 'dist', 'build', 'bin', 'out', 'coverage', '__pycache__', '.venv', 'target', 'generated', '.next', '.nuxt'))
@@ -23,7 +26,7 @@ def is_source(name, data):
 def has_generated_go_header(path, data):
     if path.suffix != '.go':
         return False
-    header = re.split(rb'(?m)^package[ \t]+', data[:2048], maxsplit=1)[0]
+    header = re.split(rb'(?m)^[ \t]*package[ \t]+', data, maxsplit=1)[0]
     return re.search(rb'(?m)^// Code generated .* DO NOT EDIT\.\r?$', header) is not None
 
 
@@ -90,28 +93,25 @@ def counts(files):
     return totals
 
 
-def clone_context(finding, contents):
+def clone_context(locations, contents):
     """Label enclosing declarations heuristically; never prescribe extraction."""
-    locations = re.findall(r'(?:^|\n|duplicate of )(.+?):(\d+)-(\d+)', finding)
     contexts = []
     for name, start, _ in locations:
-        preceding = contents[name].decode('utf-8', 'replace').splitlines()[:int(start)]
+        preceding = contents[name].decode('utf-8', 'replace').splitlines()[:start]
         declarations = [match.group(1) for line in preceding
                         if (match := re.match(r'^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(', line))]
         function = declarations[-1] if declarations else ''
         kind = 'behavioral_case' if function.startswith(('Test', 'Benchmark', 'Fuzz', 'Example')) else 'helper_candidate'
         contexts.append({'path': name, 'function': function, 'kind': kind if function else 'unclassified'})
+    finding = '\n'.join(f'{name}:{start}-{end}' for name, start, end in locations)
     return {'finding': finding, 'contexts': contexts}
 
 
-def clone_groups(output):
-    """Keep each blank-line-delimited dupl plumbing group intact and stable."""
-    groups = []
-    for group in re.split(r'\n[ \t]*\n+', output.strip()):
-        locations = tuple(sorted(line.strip() for line in group.splitlines() if line.strip()))
-        if locations:
-            groups.append(locations)
-    return sorted(groups)
+def clone_groups(output, directory):
+    """Validate plumbing edges and return distinct, deterministic endpoints."""
+    records = []
+    parse_findings(output, Path(directory), records=records)
+    return [tuple(sorted(group)) for group in connected_groups(records)]
 
 
 def test_clones(files, dupl_version, threshold):
@@ -121,6 +121,7 @@ def test_clones(files, dupl_version, threshold):
     if threshold <= 0:
         raise ValueError('clone threshold must be a positive integer')
     with tempfile.TemporaryDirectory(prefix='lopper-test-clones-') as directory:
+        directory = Path(directory).resolve()
         paths = []
         for name, mode, data in files:
             if mode != b'120000' and name.endswith('.go') and classify(name, data) == 'tests':
@@ -140,8 +141,7 @@ def test_clones(files, dupl_version, threshold):
         if result.stderr.strip():
             raise RuntimeError('test clone analysis emitted diagnostics: ' + result.stderr.strip())
         contents = {name: data for name, _, data in files}
-        output = result.stdout.replace(directory + '/', '')
-        return [clone_context('\n'.join(group), contents) for group in clone_groups(output)]
+        return [clone_context(group, contents) for group in clone_groups(result.stdout, directory)]
 
 
 def build_report(base, head, dupl_version, threshold):
