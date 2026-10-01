@@ -94,7 +94,8 @@ func checkStaveConfigPTY(t *testing.T, bin string, rollback bool) {
 	if !strings.Contains(output, marker) {
 		t.Fatalf("missing renderer marker %q: %q", marker, output)
 	}
-	if _, err := terminal.Write([]byte("q\n")); err != nil {
+	// A terminal Enter key sends CR; LF is Ctrl-J once the renderer uses raw input.
+	if _, err := terminal.Write([]byte("q\r")); err != nil {
 		t.Fatal(err)
 	}
 	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
