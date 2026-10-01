@@ -10,7 +10,6 @@ checkout_root=$(pwd -P && printf '.') || exit 1
 checkout_root=${checkout_root%.}
 checkout_root=${checkout_root%$'\n'}
 mktemp_bin=/usr/bin/mktemp
-xargs_bin=/usr/bin/xargs
 inventory_file=$("$mktemp_bin") || exit 1
 trap '/bin/rm -f "$inventory_file"' EXIT
 trap 'exit 129' HUP
@@ -152,33 +151,36 @@ if ! "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.ho
 fi
 "$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --cached --name-only -z --no-ext-diff --no-textconv --diff-filter=ACMRT -- '*.go' >"$names_file"
 
-# shellcheck disable=SC2016
-if ! "$xargs_bin" -0 -n 1 /bin/sh -c '
-		file=${4-}
-		[ -n "$file" ] || exit 0
-		stage_file=$("$1") || exit 1
-		tmp=
-		cleanup() { /bin/rm -f "$stage_file" "$tmp"; }
-		trap cleanup EXIT
-		trap "exit 129" HUP
-		trap "exit 130" INT
-		trap "exit 143" TERM
-		"$2" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --literal-pathspecs ls-files --stage -- "$file" >"$stage_file" || exit 1
-		IFS=" " read -r mode _ <"$stage_file" || exit 1
-		case "$mode" in 100644|100755) ;; *) exit 0 ;; esac
-		tmp=$("$1") || exit 1
-		"$2" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null show ":./$file" >"$tmp" || exit 1
-		status=0
-		diff=$("$3" -d "$tmp") || status=$?
-		if [ -n "$diff" ]; then
-			echo "[pre-commit] staged Go file must be gofmt-formatted: $file" >&2
-			printf "%s\\n" "$diff" >&2
-			exit 1
-		fi
-		[ "$status" -eq 0 ] || { echo "[pre-commit] gofmt failed for $file" >&2; exit "$status"; }
-	' sh "$mktemp_bin" "$git_bin" "$gofmt_bin" <"$names_file"; then
-	exit 1
-fi
+# Keep each file's temporary files and traps isolated from the hook's cleanup.
+check_staged_go_file() (
+	file=$1
+	stage_file=$("$mktemp_bin") || exit 1
+	tmp=
+	trap '/bin/rm -f "$stage_file" "$tmp"' EXIT
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --literal-pathspecs ls-files --stage -- "$file" >"$stage_file" || exit 1
+	IFS=' ' read -r mode _ <"$stage_file" || exit 1
+	case "$mode" in 100644|100755) ;; *) exit 0 ;; esac
+	tmp=$("$mktemp_bin") || exit 1
+	"$git_bin" --no-pager -c core.bare=false -c core.fsmonitor=false -c core.hooksPath=/dev/null show ":./$file" >"$tmp" || exit 1
+	status=0
+	diff=$("$gofmt_bin" -d "$tmp") || status=$?
+	if [ -n "$diff" ]; then
+		echo "[pre-commit] staged Go file must be gofmt-formatted: $file" >&2
+		printf '%s\n' "$diff" >&2
+		exit 1
+	fi
+	[ "$status" -eq 0 ] || { echo "[pre-commit] gofmt failed for $file" >&2; exit "$status"; }
+)
+formatting_status=0
+while IFS= read -r -d '' file; do
+	check_staged_go_file "$file" </dev/null || formatting_status=$?
+	# Preserve xargs' stop-on-255 behavior while reporting other file failures.
+	[ "$formatting_status" -ne 255 ] || break
+done <"$names_file"
+[ "$formatting_status" -eq 0 ] || exit 1
 
 # Give HEAD-based gates the pending index, without advancing the branch or
 # including unstaged edits. commit-tree does not invoke commit hooks.

@@ -62,8 +62,7 @@ for artifact_destination in "$BENCH_BASE_OUTPUT" "$BENCH_HEAD_OUTPUT" "$MEMORY_B
 		exit 2;
 	fi;
 done
-# shellcheck disable=SC2046 # Each dirname is a single, intentionally unquoted path argument.
-mkdir -p $(dirname "$BENCH_BASE_OUTPUT") $(dirname "$BENCH_HEAD_OUTPUT") $(dirname "$MEMORY_BENCH_SUMMARY") $(dirname "$MEMORY_BENCH_STATUS");
+mkdir -p "$(dirname "$BENCH_BASE_OUTPUT")" "$(dirname "$BENCH_HEAD_OUTPUT")" "$(dirname "$MEMORY_BENCH_SUMMARY")" "$(dirname "$MEMORY_BENCH_STATUS")";
 write_memory_bench_status() {
 	status_code="$1";
 	printf "%s\n" "$status_code" > "$MEMORY_BENCH_STATUS";
@@ -104,7 +103,6 @@ run_configured_go_env() {
 		configured_go="$1"
 		# GO is a trusted Make command fragment. Parse it in a child shell so quoted
 		# executable paths and wrapper arguments survive the environment boundary.
-		# shellcheck disable=SC2086 # The configured command intentionally retains shell quoting.
 		eval "set -- $configured_go"
 		while [ "$#" -gt 0 ]; do
 			case "$1" in
@@ -376,9 +374,7 @@ base_output_tmp=$(mktemp);
 head_output_tmp=$(mktemp);
 bench_packages_tmp=$(mktemp);
 bench_definitions_tmp=$(mktemp);
-# shellcheck disable=SC2317,SC2329 # cleanup is invoked by trap.
-cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$base_tree" >/dev/null 2>&1 || true); rm -rf "$bench_dir"; rm -f "$base_output_tmp" "$head_output_tmp" "$bench_packages_tmp" "$bench_definitions_tmp"; };
-trap cleanup EXIT INT TERM;
+trap '(unset GIT_INDEX_FILE; git worktree remove --force "$base_tree" >/dev/null 2>&1 || true); rm -rf "$bench_dir"; rm -f "$base_output_tmp" "$head_output_tmp" "$bench_packages_tmp" "$bench_definitions_tmp"' EXIT INT TERM;
 benchmark_harness_selector_bin="$bench_dir/benchharness";
 benchmark_harness_selector_src="$bench_dir/benchharness.go";
 cat > "$benchmark_harness_selector_src" <<'GOEOF';
@@ -1245,8 +1241,11 @@ printf "Memory benchmark GO_BIN: %s\nMemory benchmark Go toolchain: %s\n" "$go_b
 if [ -z "$MEMORY_BENCH_PACKAGES" ]; then
 	fail_invalid_memory_gate "configured MEMORY_BENCH_PACKAGES must not be empty.";
 fi;
-# shellcheck disable=SC2086 # MEMORY_BENCH_PACKAGES is a space-delimited package list.
-if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark package resolution" list $MEMORY_BENCH_PACKAGES > "$bench_packages_tmp" 2>&1; then
+set --;
+for bench_package_target in $MEMORY_BENCH_PACKAGES; do
+	set -- "$@" "$bench_package_target";
+done;
+if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark package resolution" list "$@" > "$bench_packages_tmp" 2>&1; then
 	cat "$bench_packages_tmp";
 	fail_invalid_memory_gate "head benchmark package targets could not be resolved.";
 fi;
