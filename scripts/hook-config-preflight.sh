@@ -73,8 +73,13 @@ if [ -n "$interrupted" ]; then
 else
 	read -r status <"$state_dir/result" || status=1
 fi
-kill -KILL -- "-$reader_group" 2>/dev/null || :
-wait "$reader_group" 2>/dev/null || :
+# Bash can report the deliberately killed job between kill and wait. Keep
+# that supervisor notification out of the reader diagnostic stream; the
+# reader inherited its original stderr before this cleanup-only redirection.
+{
+	kill -KILL -- "-$reader_group" || :
+	wait "$reader_group" || :
+} 2>/dev/null
 exit "$status"
 ' -- "$preflight_state_dir" "$@" &
 	preflight_runner_pid=$!
