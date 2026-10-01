@@ -56,14 +56,24 @@ func assertHookMutationTimeout(t *testing.T, target string) {
 	}
 	shimDir := t.TempDir()
 	shimPath := filepath.Join(shimDir, "git")
+	marker := filepath.Join(t.TempDir(), "mutation-injected")
+	observePreflightFault(t, marker, "blocking configuration mutation")
+	mutationPattern := `"config --local core.hooksPath "*|"config --local --add core.hooksPath "*`
+	if target == "hooks-uninstall" {
+		mutationPattern = `"config --local --unset core.hooksPath"|"config --local --fixed-value --unset-all core.hooksPath "*`
+	}
 	writeFile(t, shimPath, fmt.Sprintf(`#!/bin/sh
+marker=%s
 case "$*" in
- "config --local --add core.hooksPath "*|"config --local --fixed-value --unset-all core.hooksPath "*)
-  mv .git/config .git/config.before-mutation || exit "$?"
-  mkfifo .git/config || exit "$?" ;;
+ %s)
+  if [ ! -f "$marker" ]; then
+   mv .git/config .git/config.before-mutation || exit "$?"
+   mkfifo .git/config || exit "$?"
+   printf '%%s\n' "$*" >"$marker" || exit "$?"
+  fi ;;
 esac
 exec %s "$@"
-`, shellQuote(realGit)))
+`, shellQuote(marker), mutationPattern, shellQuote(realGit)))
 	if err := os.Chmod(shimPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +90,25 @@ exec %s "$@"
 		assertPreflightFileEquals(t, fixture.managedHook, readPreflightFile(t, filepath.Join(fixture.repoDir, ".githooks", "pre-commit")))
 	}
 	assertNoPreflightTimeoutTemps(t, tmpDir)
+}
+
+func observePreflightFault(t *testing.T, marker, description string) {
+	t.Helper()
+	// A base operation can reach the test watchdog before the caller resumes.
+	// Retain evidence that the intended fault was injected on that path too.
+	t.Cleanup(func() {
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			t.Errorf("%s was not injected: %v", description, err)
+			return
+		}
+		operation := strings.TrimSpace(string(data))
+		if operation == "" {
+			t.Errorf("%s has no recorded operation", description)
+			return
+		}
+		t.Logf("preflight fault injected (%s): %s", description, operation)
+	})
 }
 
 func TestHooksInstallPostWriteTimeoutRollsBackState(t *testing.T) {
@@ -408,17 +437,29 @@ func TestHooksInstallFallbackActivationFailureRetainsHook(t *testing.T) {
 func TestHooksInstallFallbackCollisionPreservesConcurrentHook(t *testing.T) {
 	fixture := newPreflightTimeoutFixture(t, "hooks-install")
 	shimDir := t.TempDir()
-	shimPath := filepath.Join(shimDir, "ln")
-	writeFile(t, shimPath, "#!/bin/sh\nprintf '#!/bin/sh\\n# concurrent hook\\nexit 0\\n' >\"$2\"\nchmod 755 \"$2\"\nexit 1\n")
-	if err := os.Chmod(shimPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	marker := filepath.Join(t.TempDir(), "collision-injected")
+	observePreflightFault(t, marker, "concurrent hook publication")
+	// Assert state even when the base incorrectly reports successful publication.
+	t.Cleanup(func() { assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore) })
+	t.Cleanup(func() {
+		assertPreflightFileEquals(t, fixture.managedHook, []byte("#!/bin/sh\n# concurrent hook\nexit 0\n"))
+	})
+	writeFileMode(t, filepath.Join(shimDir, "ln"), "#!/bin/sh\nexit 1\n", 0o755)
+	writeFileMode(t, filepath.Join(shimDir, "mv"), fmt.Sprintf(`#!/bin/sh
+marker=%s
+destination=
+for argument do destination=$argument; done
+if [ "$destination" = %s ] && [ ! -f "$marker" ]; then
+ printf '#!/bin/sh\n# concurrent hook\nexit 0\n' >"$destination" || exit "$?"
+ chmod 755 "$destination" || exit "$?"
+ printf '%%s\n' "mv $*" >"$marker" || exit "$?"
+fi
+exec /bin/mv "$@"
+`, shellQuote(marker), shellQuote(fixture.managedHook)), 0o755)
 	output, err := runMakeWithPreflightTimeout(t, fixture.repoDir, "hooks-install", "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err == nil {
 		t.Fatalf("publication collision = %v\n%s", err, output)
 	}
-	assertPreflightFileEquals(t, fixture.configPath, fixture.configBefore)
-	assertPreflightFileEquals(t, fixture.managedHook, []byte("#!/bin/sh\n# concurrent hook\nexit 0\n"))
 }
 
 func TestHooksInstallFailedCopyPreservesConcurrentHook(t *testing.T) {
