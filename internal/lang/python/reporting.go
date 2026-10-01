@@ -18,7 +18,7 @@ func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]
 }
 
 func buildTopPythonDependencies(topN int, scan scanResult, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
-	dependencies := sortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
+	dependencies := shared.SortedDependencyUnion(scan.DeclaredDependencies, scan.ImportedDependencies)
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, language.Request{})
 	}

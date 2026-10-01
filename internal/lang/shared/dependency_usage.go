@@ -92,3 +92,16 @@ func DetectMatched(ctx context.Context, repoPath string, detectWithConfidence fu
 	}
 	return detection.Matched, nil
 }
+
+// SortedDependencyUnion returns the sorted union of dependency sets, preserving
+// exact keys (including whitespace and empty strings). It never mutates inputs
+// and returns nil when all input sets are empty.
+func SortedDependencyUnion(values ...map[string]struct{}) []string {
+	set := make(map[string]struct{})
+	for _, value := range values {
+		for dependency := range value {
+			set[dependency] = struct{}{}
+		}
+	}
+	return SortedKeys(set)
+}
