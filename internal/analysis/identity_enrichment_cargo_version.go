@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"cmp"
 	"strconv"
 	"strings"
 
@@ -132,13 +133,13 @@ func cargoRequirementClauseMatches(clause cargoRequirementClause, locked cargoPa
 	case cargoRequirementExact, cargoRequirementWildcard:
 		return cargoVersionsMatchExact(clause.version, locked)
 	case cargoRequirementGreater:
-		return cargoVersionGreaterThanPartial(clause.version, locked)
+		return compareCargoVersionToPartial(locked, clause.version) > 0
 	case cargoRequirementGreaterEqual:
-		return cargoVersionsMatchExact(clause.version, locked) || cargoVersionGreaterThanPartial(clause.version, locked)
+		return cargoVersionsMatchExact(clause.version, locked) || compareCargoVersionToPartial(locked, clause.version) > 0
 	case cargoRequirementLess:
-		return cargoVersionLessThanPartial(clause.version, locked)
+		return compareCargoVersionToPartial(locked, clause.version) < 0
 	case cargoRequirementLessEqual:
-		return cargoVersionsMatchExact(clause.version, locked) || cargoVersionLessThanPartial(clause.version, locked)
+		return cargoVersionsMatchExact(clause.version, locked) || compareCargoVersionToPartial(locked, clause.version) < 0
 	case cargoRequirementTilde:
 		return cargoVersionMatchesTilde(clause.version, locked)
 	case cargoRequirementCaret:
@@ -161,36 +162,23 @@ func cargoVersionsMatchExact(required, locked cargoPartialVersion) bool {
 	return semver.Prerelease(locked.normalized) == semver.Prerelease(required.normalized)
 }
 
-func cargoVersionGreaterThanPartial(required, locked cargoPartialVersion) bool {
+// compareCargoVersionToPartial orders a locked version against only the
+// components supplied by the requirement. Zero means those components match;
+// prerelease eligibility for partial requirements is checked separately.
+func compareCargoVersionToPartial(locked, required cargoPartialVersion) int {
 	if locked.major != required.major {
-		return locked.major > required.major
+		return cmp.Compare(locked.major, required.major)
 	}
 	if required.components < 2 {
-		return false
+		return 0
 	}
 	if locked.minor != required.minor {
-		return locked.minor > required.minor
+		return cmp.Compare(locked.minor, required.minor)
 	}
 	if required.components < 3 {
-		return false
+		return 0
 	}
-	return semver.Compare(locked.normalized, required.normalized) > 0
-}
-
-func cargoVersionLessThanPartial(required, locked cargoPartialVersion) bool {
-	if locked.major != required.major {
-		return locked.major < required.major
-	}
-	if required.components < 2 {
-		return false
-	}
-	if locked.minor != required.minor {
-		return locked.minor < required.minor
-	}
-	if required.components < 3 {
-		return false
-	}
-	return semver.Compare(locked.normalized, required.normalized) < 0
+	return semver.Compare(locked.normalized, required.normalized)
 }
 
 func cargoVersionMatchesTilde(required, locked cargoPartialVersion) bool {
