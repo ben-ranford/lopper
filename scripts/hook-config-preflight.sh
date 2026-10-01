@@ -5,18 +5,30 @@ preflight_watchdog_pid=
 preflight_state_dir=
 preflight_output_file=
 
+wait_preflight_child() {
+	preflight_wait_pid=$1
+	while :; do
+		preflight_wait_status=0
+		wait "$preflight_wait_pid" || preflight_wait_status=$?
+		# A trapped signal can interrupt wait without reaping a live child.
+		# Keep ownership until it exits so cleanup cannot strand its temp state.
+		kill -0 "$preflight_wait_pid" 2>/dev/null || break
+	done
+	return "$preflight_wait_status"
+}
+
 cleanup_preflight_git() {
 	# Cancellation can trigger this EXIT cleanup while more signals are already
 	# queued. Handle follow-up signals so they cannot interrupt teardown.
 	trap ':' HUP INT TERM
 	if [ -n "$preflight_watchdog_pid" ]; then
 		kill "$preflight_watchdog_pid" 2>/dev/null || :
-		wait "$preflight_watchdog_pid" 2>/dev/null || :
+		wait_preflight_child "$preflight_watchdog_pid" 2>/dev/null || :
 		preflight_watchdog_pid=
 	fi
 	if [ -n "$preflight_runner_pid" ]; then
 		kill -TERM "$preflight_runner_pid" 2>/dev/null || :
-		wait "$preflight_runner_pid" 2>/dev/null || :
+		wait_preflight_child "$preflight_runner_pid" 2>/dev/null || :
 		preflight_runner_pid=
 	fi
 	rm -rf "$preflight_state_dir"
@@ -181,10 +193,10 @@ exit "$status"
 		fi
 	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
 	status=0
-	wait "$preflight_runner_pid" || status=$?
+	wait_preflight_child "$preflight_runner_pid" || status=$?
 	preflight_runner_pid=
 	kill "$preflight_watchdog_pid" 2>/dev/null || :
-	wait "$preflight_watchdog_pid" 2>/dev/null || :
+	wait_preflight_child "$preflight_watchdog_pid" 2>/dev/null || :
 	preflight_watchdog_pid=
 	if [ -f "$preflight_state_dir/expired" ]; then
 		rm -rf "$preflight_state_dir"

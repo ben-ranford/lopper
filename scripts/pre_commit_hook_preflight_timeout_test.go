@@ -182,6 +182,13 @@ func assertPreservedEntriesLifecycle(t *testing.T, previousPath string) {
 	runCommand(t, fixture.repoDir, "make", "hooks-install")
 	assertPreflightFileEquals(t, fixture.configPath, installedConfig)
 	runCommand(t, fixture.repoDir, "make", "hooks-uninstall")
+	if previousPath == "" {
+		output, err := hookCommand(fixture.repoDir, "git", "config", "--local", "--null", "--get-all", "core.hooksPath")
+		if err != nil || output != "\x00" {
+			t.Fatalf("uninstall did not preserve the explicit empty hooksPath: %v, %q", err, output)
+		}
+		return
+	}
 	output, err := hookCommand(fixture.repoDir, "git", "config", "--local", "--get-all", "core.hooksPath")
 	var exitErr *exec.ExitError
 	if output != "" || !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
