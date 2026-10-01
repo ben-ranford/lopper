@@ -19,6 +19,10 @@ func TestSummaryTerminalArrowsWithoutEnter(t *testing.T) {
 	}
 }
 
+func TestSummaryTerminalAltGrScopedCommands(t *testing.T) {
+	runSummaryArrowPTY(t, "altgr")
+}
+
 func runSummaryArrowPTY(t *testing.T, exit string) {
 	t.Helper()
 	t.Setenv("TERM", "xterm-256color")
@@ -59,10 +63,20 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	s.Actions = runner
 	go func() { defer close(exited); done <- s.Start(ctx, Options{PageSize: 1}) }()
 	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 1/2") })
-	if _, err := master.Write([]byte("\x1b[C")); err != nil {
+	input, ready, want := "\x1b[C", "Page: 2/2", "Page: 2/2"
+	if exit == "altgr" {
+		// Kitty's associated text encodes the same printable Ctrl+Alt event as AltGr.
+		input, want = "open \x1b[113;7;64uscope/pkg\r", `No data for dependency "@scope/pkg"`
+		ready = "No data for dependency"
+		exit = "q\r"
+	}
+	if _, err := master.Write([]byte(input)); err != nil {
 		t.Fatal(err)
 	}
-	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 2/2") })
+	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, ready) })
+	if !strings.Contains(capture.String(), want) {
+		t.Fatalf("summary command did not preserve its input: want %q in %q", want, capture.String())
+	}
 	if exit == "queued" {
 		exit = "q\r" + strings.Repeat("x", 1024)
 	}

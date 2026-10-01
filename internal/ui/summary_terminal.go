@@ -166,9 +166,7 @@ func (m *summaryTerminal) key(key tea.KeyPressMsg) {
 	case "delete":
 		m.delete()
 	default:
-		if key.Mod == 0 || key.Mod == tea.ModShift {
-			m.insert(key.Text)
-		}
+		m.insert(key.Text)
 	}
 }
 
