@@ -89,16 +89,19 @@ check_reference() {
 
 check_scoped_reference() {
 	[ "$#" -eq 3 ] || return 255
-	case "$2" in
+	scoped_managed_dir=$1
+	reference_scope=$2
+	scoped_candidate=$3
+	case "$reference_scope" in
 		system|global)
 			# These values also apply outside this repository's worktree inventory.
 			# A relative path may reach this snapshot from another repository root.
-			absolute_path "$3" || return 255
+			absolute_path "$scoped_candidate" || return 255
 			;;
 		local|worktree) ;;
 		*) return 255 ;;
 	esac
-	check_reference "$1" "$3"
+	check_reference "$scoped_managed_dir" "$scoped_candidate"
 }
 
 hook_working_directory() {
@@ -134,17 +137,18 @@ check_worktree() {
 }
 
 inspect_conditional_references() {
+	conditional_reference_file=$1
 	status=0
 	# A system/global condition may match an unrelated repository, whose hook
 	# path we cannot audit from this inventory. Local/worktree conditions remain
 	# safe to evaluate through Git in each owning worktree's context.
-	run_preflight_git git -c core.fsmonitor=false config --null --show-scope --name-only --get-regexp '^includeif\..*\.path$' >"$1" || status=$?
+	run_preflight_git git -c core.fsmonitor=false config --null --show-scope --name-only --get-regexp '^includeif\..*\.path$' >"$conditional_reference_file" || status=$?
 	case "$status" in
 		0) ;;
 		1) return 0 ;;
 		*) return 255 ;;
 	esac
-	xargs -0 -n 2 sh "$script" conditional-scope <"$1" || return 255
+	xargs -0 -n 2 sh "$script" conditional-scope <"$conditional_reference_file" || return 255
 }
 
 inspect_worktree_hooks() {
