@@ -726,16 +726,7 @@ func hasMCPPolicyOverrides(args analysisToolArguments) bool {
 }
 
 func prependPolicySource(source string, sources []string) []string {
-	out := []string{source}
-	seen := map[string]struct{}{source: {}}
-	for _, item := range sources {
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		out = append(out, item)
-	}
-	return out
+	return thresholds.PrependPolicySource(source, sources)
 }
 
 func mergeMCPPolicyTrace(trace []report.PolicyMergeTrace, args analysisToolArguments) []report.PolicyMergeTrace {
