@@ -119,7 +119,10 @@ func (a *App) executeTUI(ctx context.Context, req Request) (string, error) {
 		}
 		return "", a.TUI.Snapshot(ctx, opts, req.TUI.SnapshotPath)
 	}
-	start, err := a.prepareTUI(ctx, req.TUI, &opts)
+	startup := uiPreferenceStartup{App: a}
+	// Terminal rendering can clear startup text; report preference notices after it exits.
+	defer startup.flushWarnings()
+	start, err := startup.prepareTUI(ctx, req.TUI, &opts)
 	if err != nil || !start {
 		return "", err
 	}

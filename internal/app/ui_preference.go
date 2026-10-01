@@ -11,7 +11,27 @@ import (
 	"github.com/ben-ranford/lopper/internal/uipreference"
 )
 
-func (a *App) prepareTUI(ctx context.Context, req TUIRequest, opts *ui.Options) (bool, error) {
+type uiPreferenceStartup struct {
+	*App
+	warnings []uiPreferenceWarning
+}
+
+type uiPreferenceWarning struct {
+	message string
+	err     error
+}
+
+func (a *uiPreferenceStartup) preferenceWarning(message string, err error) {
+	a.warnings = append(a.warnings, uiPreferenceWarning{message: message, err: err})
+}
+
+func (a *uiPreferenceStartup) flushWarnings() {
+	for _, warning := range a.warnings {
+		a.App.preferenceWarning(warning.message, warning.err)
+	}
+}
+
+func (a *uiPreferenceStartup) prepareTUI(ctx context.Context, req TUIRequest, opts *ui.Options) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -47,7 +67,7 @@ func (a *App) prepareTUI(ctx context.Context, req TUIRequest, opts *ui.Options) 
 	return a.inviteUI(ctx, store, opts)
 }
 
-func (a *App) manageUIPreference(ctx context.Context, store uipreference.Storage, req TUIRequest, opts *ui.Options) (bool, error) {
+func (a *uiPreferenceStartup) manageUIPreference(ctx context.Context, store uipreference.Storage, req TUIRequest, opts *ui.Options) (bool, error) {
 	if req.UIPreference == uipreference.Ask {
 		if err := store.Clear(); err != nil {
 			return false, fmt.Errorf("could not reset UI preference: %w", err)
@@ -69,7 +89,7 @@ func (a *App) manageUIPreference(ctx context.Context, store uipreference.Storage
 	return true, applyUIPreference(opts, req.UIPreference)
 }
 
-func (a *App) inviteUI(ctx context.Context, store uipreference.Storage, opts *ui.Options) (bool, error) {
+func (a *uiPreferenceStartup) inviteUI(ctx context.Context, store uipreference.Storage, opts *ui.Options) (bool, error) {
 	eligible := a.UIEligible
 	if eligible == nil {
 		eligible = func() bool { return ui.CanOfferPreference(a.In, a.Out) }
@@ -100,7 +120,7 @@ func (a *App) inviteUI(ctx context.Context, store uipreference.Storage, opts *ui
 	return true, applyUIPreference(opts, choice)
 }
 
-func (a *App) saveUIPreference(store uipreference.Storage, choice string) {
+func (a *uiPreferenceStartup) saveUIPreference(store uipreference.Storage, choice string) {
 	if err := store.Save(choice); err != nil {
 		a.preferenceWarning("UI choice applies this session but was not remembered", err)
 	}
