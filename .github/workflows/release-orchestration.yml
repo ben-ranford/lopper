@@ -2,6 +2,9 @@ name: release-orchestration
 
 on:
   workflow_call:
+    secrets:
+      SONAR_TOKEN:
+        required: false
     inputs:
       tag:
         required: true
@@ -29,6 +32,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/release-source-ci.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     with:
       source_sha: ${{ inputs.source_sha || github.sha }}
       build_channel: ${{ inputs.build_channel }}
