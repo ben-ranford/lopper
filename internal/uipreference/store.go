@@ -16,6 +16,8 @@ const (
 	Stave  = "stave"
 	Legacy = "legacy"
 	Ask    = "ask"
+
+	maxPreferenceSize = 4 << 10
 )
 
 type Storage interface {
@@ -74,7 +76,19 @@ func readPreference(path string) (_ []byte, result error) {
 		return nil, err
 	}
 	defer func() { result = errors.Join(result, root.Close()) }()
-	return root.ReadFile(filepath.Base(path))
+	file, err := root.Open(filepath.Base(path))
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxPreferenceSize+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, errors.Join(readErr, closeErr)
+	}
+	if len(data) > maxPreferenceSize {
+		return nil, fmt.Errorf("UI preference exceeds %d bytes", maxPreferenceSize)
+	}
+	return data, nil
 }
 
 func (s *Store) Save(choice string) error {
