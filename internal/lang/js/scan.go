@@ -66,10 +66,11 @@ var supportedExtensions = map[string]bool{
 }
 
 var skipDirectories = map[string]bool{
-	"out":      true,
-	"coverage": true,
-	".next":    true,
-	".turbo":   true,
+	".lopper-cache": true,
+	"out":           true,
+	"coverage":      true,
+	".next":         true,
+	".turbo":        true,
 }
 
 func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {

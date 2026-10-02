@@ -1079,15 +1079,30 @@ func findPHPRegionEnd(text string, offset int) (int, int) {
 		if isPHPRegionCloseTagAt(text, offset, state) {
 			return offset, offset + len("?>")
 		}
-		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
-			if nextOffset, ok := skipHeredocNowdocBody(text, offset); ok {
-				offset = nextOffset
-				continue
+		if next, closed := skipPHPRegionConstruct(text, offset, &state); next > offset {
+			if closed {
+				return next, next + len("?>")
 			}
+			offset = next
+			continue
 		}
 		offset = advancePHPCodeState(text, offset, &state)
 	}
 	return len(text), len(text)
+}
+
+func skipPHPRegionConstruct(text string, offset int, state *phpCodeState) (int, bool) {
+	if *state == phpStateDoubleQuote || *state == phpStateBacktick {
+		if next, _, closed := scanDynamicInterpolationAt(text, offset); next > offset {
+			return next, closed
+		}
+	}
+	if *state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
+		if next, _, closed := dynamicHeredocInterpolation(text, offset); next > offset {
+			return next, closed
+		}
+	}
+	return offset, false
 }
 
 func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
@@ -1097,39 +1112,17 @@ func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
 	return state == phpStateCode || state == phpStateLineComment
 }
 
-func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
-	lineEnd := nextPHPLineEnd(text, markerOffset)
-	label, ok := parseHeredocNowdocLabelAfterMarker(text[markerOffset+len("<<<") : lineEnd])
-	if !ok {
-		return 0, false
-	}
-	bodyStart := nextPHPLineStart(text, lineEnd)
-	terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
-	if !ok {
-		return len(text), true
-	}
-	return terminatorStart, true
-}
-
 func maskPHPHeredocNowdocBodies(text string) string {
 	var masked []byte
-	state := phpStateCode
-	for lineStart := 0; lineStart < len(text); {
-		lineEnd := nextPHPLineEnd(text, lineStart)
-		label, ok := heredocNowdocLabelWithState(text[lineStart:lineEnd], &state)
-		if !ok {
-			lineStart = nextPHPLineStart(text, lineEnd)
-			continue
+	for offset := 0; offset < len(text); {
+		markerOffset, _, found := findPHPHeredocNowdocOpener(text, offset)
+		if !found {
+			break
 		}
-		bodyStart := nextPHPLineStart(text, lineEnd)
-		terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
-		if !ok {
-			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
-			return string(masked)
-		}
+		bodyStart := nextPHPLineStart(text, nextPHPLineEnd(text, markerOffset))
+		terminatorStart, _, _ := dynamicHeredocInterpolation(text, markerOffset)
 		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, terminatorStart)
-		state = phpStateCode
-		lineStart = terminatorStart
+		offset = terminatorStart
 	}
 	if len(masked) == 0 {
 		return text
@@ -1147,21 +1140,28 @@ func withMaskedPHPHeredocRange(text string, masked []byte, start, end int) []byt
 }
 
 func heredocNowdocLabel(line string) (string, bool) {
-	state := phpStateCode
-	return heredocNowdocLabelWithState(line, &state)
+	_, label, ok := findPHPHeredocNowdocOpener(line, 0)
+	return label, ok
 }
 
-func heredocNowdocLabelWithState(line string, state *phpCodeState) (string, bool) {
-	for offset := 0; offset < len(line); {
-		if *state == phpStateCode && strings.HasPrefix(line[offset:], "<<<") {
-			return parseHeredocNowdocLabelAfterMarker(line[offset+len("<<<"):])
+func findPHPHeredocNowdocOpener(text string, offset int) (int, string, bool) {
+	state := phpStateCode
+	for offset < len(text) {
+		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
+			lineEnd := nextPHPLineEnd(text, offset)
+			if label, ok := parseHeredocNowdocLabelAfterMarker(text[offset+len("<<<") : lineEnd]); ok {
+				return offset, label, true
+			}
 		}
-		offset = advancePHPCodeState(line, offset, state)
+		if state == phpStateDoubleQuote || state == phpStateBacktick {
+			if next, _, _ := scanDynamicInterpolationAt(text, offset); next > offset {
+				offset = next
+				continue
+			}
+		}
+		offset = advancePHPCodeState(text, offset, &state)
 	}
-	if *state == phpStateLineComment {
-		*state = phpStateCode
-	}
-	return "", false
+	return 0, "", false
 }
 
 func advancePHPCodeState(text string, offset int, state *phpCodeState) int {
@@ -1325,15 +1325,18 @@ func isHeredocNowdocTerminatorKeywordOperator(rest string) bool {
 }
 
 func nextPHPLineEnd(text string, start int) int {
-	if next := strings.IndexByte(text[start:], '\n'); next >= 0 {
+	if next := strings.IndexAny(text[start:], "\r\n"); next >= 0 {
 		return start + next
 	}
 	return len(text)
 }
 
 func nextPHPLineStart(text string, lineEnd int) int {
+	if lineEnd < len(text) && text[lineEnd] == '\r' {
+		lineEnd++
+	}
 	if lineEnd < len(text) && text[lineEnd] == '\n' {
-		return lineEnd + 1
+		lineEnd++
 	}
 	return lineEnd
 }
@@ -1753,6 +1756,25 @@ func lastNamespaceSegment(module string) string {
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
-func hasDynamicPatterns(content []byte) bool {
-	return dynamicPattern.Match(content)
+func hasDynamicPatterns(content []byte, filePath string, allowShortOpenTags bool) bool {
+	text := string(content)
+	for offset := 0; offset < len(text); {
+		_, codeStart, ok := nextPHPOpenTag(text, offset, allowShortOpenTags)
+		if !ok {
+			break
+		}
+		codeEnd, next := findPHPRegionEnd(text, codeStart)
+		if hasDynamicPatternsInPHPRegion(text[codeStart:codeEnd], filePath) {
+			return true
+		}
+		offset = next
+	}
+	return false
+}
+
+func hasDynamicPatternsInPHPRegion(text, filePath string) bool {
+	phpMasked := maskPHPHeredocNowdocBodies(text)
+	phpMasked = maskPHPStringInterpolations(phpMasked)
+	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
+	return dynamicPattern.Match(sanitized) || hasPHPDynamicInterpolation(text)
 }

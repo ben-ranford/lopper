@@ -285,6 +285,19 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 	}
 }
 
+func TestHooksUninstallPreservesExplicitEmptyHooksPath(t *testing.T) {
+	repoDir := newHookFixture(t)
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+	testutil.RunGit(t, repoDir, "config", "--local", "--add", "core.hooksPath", "")
+	runCommand(t, repoDir, "make", "hooks-install")
+	runCommand(t, repoDir, "make", "hooks-uninstall")
+
+	got, err := hookCommand(repoDir, "git", "config", "--local", "--null", "--get-all", "core.hooksPath")
+	if err != nil || got != "\x00" {
+		t.Fatalf("explicit empty hooksPath was not preserved: %v, %q", err, got)
+	}
+}
+
 func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "legacy-hook-ran")
@@ -315,7 +328,12 @@ func TestHooksInstallRejectsNonExecutableManagedHook(t *testing.T) {
 		t.Fatalf("read retained managed hook path: %v", err)
 	}
 	managedHook := filepath.Join(strings.TrimSpace(hookDir), "pre-commit")
+	contents, readErr := os.ReadFile(managedHook)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
 	runCommand(t, repoDir, "make", "hooks-uninstall")
+	writeFileMode(t, managedHook, string(contents), 0o644)
 	if err := os.Chmod(managedHook, 0o644); err != nil {
 		t.Fatalf("make managed hook non-executable: %v", err)
 	}
@@ -457,7 +475,9 @@ func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
 			runCommand(t, repoDir, "git", append([]string{"--literal-pathspecs", "add", "--"}, files...)...)
 			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 			tempDir := t.TempDir()
-			output, err := hookCommandWithEnv(repoDir, []string{"TMPDIR=" + tempDir}, filepath.Join(hookDir, "pre-commit"))
+			hook := filepath.Join(hookDir, "pre-commit")
+			isolateHookTemporaryFiles(t, hook, tempDir)
+			output, err := hookCommand(repoDir, hook)
 			assertHookFormattingOutcome(t, files, fixture.failure, output, err)
 			entries, err := os.ReadDir(tempDir)
 			if err != nil || len(entries) != 0 {
@@ -466,6 +486,22 @@ func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
 			assertHookWorktreeCleaned(t, repoDir)
 		})
 	}
+}
+
+func isolateHookTemporaryFiles(t *testing.T, hook, directory string) {
+	t.Helper()
+	// Audit hook allocations without including caches created by host tool launchers.
+	allocator := filepath.Join(t.TempDir(), "mktemp")
+	writeFileMode(t, allocator, "#!/bin/sh\nTMPDIR="+shellQuote(directory)+" exec /usr/bin/mktemp \"$@\"\n", 0o755)
+	contents, err := os.ReadFile(hook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const assignment = "mktemp_bin=/usr/bin/mktemp\n"
+	if strings.Count(string(contents), assignment) != 1 {
+		t.Fatal("expected one hook temporary-file allocator")
+	}
+	writeFileMode(t, hook, strings.Replace(string(contents), assignment, "mktemp_bin="+shellQuote(allocator)+"\n", 1), 0o755)
 }
 
 func assertHookFormattingOutcome(t *testing.T, files []string, failure, output string, err error) {
@@ -507,6 +543,11 @@ func newHookFixture(t *testing.T) string {
 	installers, _, _ = strings.Cut(installers, "\nvscode-extension-install:")
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${GIT_INDEX_FILE-}\"\n\t@test -z \"$${GIT_CONFIG_COUNT-}\"\nhooks-install:\n"+installers)
 	copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), ".githooks", "pre-commit"), filepath.Join(repoDir, ".githooks", "pre-commit"), 0o755)
+	if strings.Contains(installers, "scripts/cleanup-hook-snapshot.sh") {
+		for _, name := range []string{"cleanup-hook-snapshot.sh", "hook-config-preflight.sh"} {
+			copyHookFixtureFile(t, filepath.Join(filepath.Dir(cwd), "scripts", name), filepath.Join(repoDir, "scripts", name), 0o644)
+		}
+	}
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 1 }\n")
 	testutil.RunGit(t, repoDir, "add", ".")
 	testutil.RunGit(t, repoDir, "-c", "core.hooksPath=/dev/null", "commit", "-m", "revision A")

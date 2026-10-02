@@ -283,6 +283,7 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 		mainGoWithTrackedSuppression("nolint:staticcheck"),
 		[]string{
 			"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
+			"CI=true",
 			"GITHUB_SHA=abc123",
 			"GITHUB_SERVER_URL=https://github.com",
 		},
@@ -299,6 +300,82 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 			"Removal condition: analyzer handles generated guard",
 		},
 	)
+}
+
+func TestInlineSuppressionCheckTrackingCreatorBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, login, host, repo string
+		ci                      bool
+	}{
+		{name: "interactive", login: "interactive-user", host: "github.com"},
+		{name: "CI", login: "github-actions[bot]", ci: true},
+		{name: "enterprise-checkout", login: "enterprise-user", host: "github.example.test"},
+		{name: "enterprise-explicit", login: "enterprise-user", host: "github.example.test", repo: "github.example.test/team/project"},
+		{name: "managed-user", login: "octocat_fabrikam", host: "github.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repoDir := newInlineSuppressionRepo(t)
+			content := mainGoWithTrackedSuppression("nolint:staticcheck")
+			writeFile(t, filepath.Join(repoDir, mainGoPath), content)
+			runCommand(t, repoDir, "git", "add", mainGoPath)
+			creator := tc.login
+			statePath := filepath.Join(repoDir, "issues.json")
+			fingerprint := suppressionFingerprint(mainGoPath, strings.Split(content, "\n")[3], 1)
+			// A public issue with the exact marker must not be trusted.
+			issues, err := json.Marshal([]map[string]any{{"number": 99, "author": map[string]string{"login": "untrusted-user"}, "body": "<!-- lopper-inline-suppression:" + fingerprint + " -->"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, statePath, string(issues))
+			ghPath := filepath.Join(repoDir, "gh")
+			writeFileMode(t, ghPath, `#!/usr/bin/env bash
+set -euo pipefail
+case "$1 $2" in
+ "repo view")
+  [[ "$CI" != true ]] || exit 1
+  if [[ -n "$SUPPRESSION_GITHUB_REPOSITORY" ]]; then
+   [[ "$3" == "$SUPPRESSION_GITHUB_REPOSITORY" ]] || exit 1
+  else
+   [[ "$3" == --json ]] || exit 1
+  fi
+  printf '%s\n' "$ISSUE_HOST"
+  ;;
+ "api user")
+  [[ "$CI" != true && "${3:-}" == --hostname && "${4:-}" == "$ISSUE_HOST" ]] || exit 1
+  printf '%s\n' "$ISSUE_CREATOR"
+  ;;
+ "issue list")
+  while [[ "$1" != --jq ]]; do shift; done
+  jq -r "$2 // empty" "$ISSUE_STATE"
+  ;;
+ "issue create")
+  while [[ "$1" != --body-file ]]; do shift; done
+  jq --arg creator "$ISSUE_CREATOR" --rawfile body "$2" '. + [{number:123,author:{login:$creator},body:$body}]' "$ISSUE_STATE" > "$ISSUE_STATE.tmp"
+  mv "$ISSUE_STATE.tmp" "$ISSUE_STATE"
+  printf '%s\n' https://github.com/example/repo/issues/123
+  ;;
+ "issue comment") [[ "$3" == 123 ]] ;;
+ *) exit 1 ;;
+esac
+`, 0o755)
+			env := []string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track", "CI=" + fmt.Sprint(tc.ci), "GITHUB_ACTIONS=" + fmt.Sprint(tc.ci), "ISSUE_STATE=" + statePath, "ISSUE_CREATOR=" + creator, "ISSUE_HOST=" + tc.host, "SUPPRESSION_GITHUB_REPOSITORY=" + tc.repo, "GITHUB_REPOSITORY="}
+			for _, want := range []string{"Opened GitHub tracking issue", "Updated GitHub tracking issue #123"} {
+				output, err := runSuppressionCheckWithEnv(repoDir, env...)
+				if err != nil || !strings.Contains(output, want) {
+					t.Fatalf("want %q, error %v, output:\n%s", want, err, output)
+				}
+			}
+			var finalIssues []json.RawMessage
+			if err := json.Unmarshal([]byte(readFile(t, statePath)), &finalIssues); err != nil {
+				t.Fatal(err)
+			}
+			if len(finalIssues) != 2 {
+				t.Fatalf("want public issue and one tracker, got %d", len(finalIssues))
+			}
+		})
+	}
 }
 
 func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing.T) {
@@ -444,6 +521,7 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	writeFile(t, filepath.Join(repoDir, mainGoPath), prContent)
 	testutil.RunGit(t, repoDir, "add", mainGoPath)
 	testutil.RunGit(t, repoDir, "commit", "-m", "pr adds its own suppression")
+	prHeadSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
 	testutil.RunGit(t, repoDir, "checkout", "main")
 	mainContent := "package main\n\nfunc main() {\n" + line + "\n\tx := 1\n}\n"
@@ -454,32 +532,45 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	testutil.RunGit(t, repoDir, "merge", "--no-edit", "pr")
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	mergeSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 	output, err := runSuppressionCheckWithEnv(repoDir,
 		"SUPPRESSION_BASE="+baseSHA,
 		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
 		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+		"GITHUB_SHA="+mergeSHA,
+		"SUPPRESSION_GITHUB_REPOSITORY=owner/repo",
 	)
 	if err != nil {
 		t.Fatalf("expected the merge-commit scan to pass, output:\n%s", output)
 	}
 
 	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 2 {
-		t.Fatalf("expected two suppression records (one per branch's addition), got %#v", records.Suppressions)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected only the PR-head suppression, got %#v", records.Suppressions)
+	}
+	record := records.Suppressions[0]
+	wantSourceSuffix := "/blob/" + prHeadSHA + "/main.go#L5"
+	if record.File != mainGoPath || record.Line != 5 || !strings.HasSuffix(record.Source, wantSourceSuffix) || record.Content != line || record.Fingerprint != suppressionFingerprint(mainGoPath, line, 1) {
+		t.Fatalf("record does not match the PR-head tree: %#v", record)
 	}
 
-	prFingerprint := suppressionFingerprint(mainGoPath, line, 1)
-	found := false
-	for _, record := range records.Suppressions {
-		if record.Fingerprint == prFingerprint {
-			found = true
-		}
-		if record.Fingerprint == suppressionFingerprint(mainGoPath, line, 2) {
-			t.Fatalf("a record used the occurrence-2 fingerprint, meaning it counted main's independent addition against the PR's own occurrence: %#v", records.Suppressions)
-		}
+	// The current base tip is the first merge parent, but coordinates must
+	// still come from the PR head and its merge base with that tip.
+	output, err = runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE=HEAD^1",
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+		"GITHUB_SHA="+mergeSHA,
+		"SUPPRESSION_GITHUB_REPOSITORY=owner/repo",
+	)
+	if err != nil {
+		t.Fatalf("expected current-base scan to pass, output:\n%s", output)
 	}
-	if !found {
-		t.Fatalf("expected a record with the PR's own occurrence-1 fingerprint %s, got %#v", prFingerprint, records.Suppressions)
+	currentBaseRecords := readSuppressionRecords(t, outputPath)
+	if len(currentBaseRecords.Suppressions) != 1 || currentBaseRecords.Suppressions[0] != record {
+		t.Fatalf("current-base records differ from PR-head coordinates: %#v", currentBaseRecords.Suppressions)
 	}
 }
 
@@ -516,10 +607,17 @@ func TestInlineSuppressionCheckIgnoresOrdinaryLocalMergeCommits(t *testing.T) {
 
 	testutil.RunGit(t, repoDir, "checkout", "topic")
 	testutil.RunGit(t, repoDir, "merge", "--no-edit", "main")
+	prHeadSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	// Deliberately not setting GITHUB_EVENT_NAME, simulating a local run.
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_BASE="+baseSHA, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	// This PR's actual head is itself an ordinary branch merge. Its second
+	// parent must not be mistaken for GitHub's synthetic merge head.
+	output, err := runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE="+baseSHA,
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+		"PR_HEAD_SHA="+prHeadSHA,
+	)
 	if err != nil {
 		t.Fatalf("expected a local merge-commit scan to fall back to the working tree and pass, output:\n%s", output)
 	}
@@ -1454,13 +1552,15 @@ func withoutGitEnv() []string {
 		if strings.HasPrefix(entry, "GIT_") {
 			continue
 		}
-		// This test binary itself runs as a step inside GitHub Actions CI,
-		// so GITHUB_EVENT_NAME is ambiently "pull_request" there even
-		// though these tests aren't simulating that context by default;
-		// leaving it in would leak actual CI state into subprocess runs
-		// that specifically mean to exercise the non-CI (local dev) path.
-		// Tests that do want it set pass it explicitly via env... instead.
-		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") {
+		// CI-specific GitHub values must not leak into local fixture repos:
+		// tests set only the event, head, and source URL inputs they intend
+		// to model, and otherwise exercise the local developer path.
+		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") ||
+			strings.HasPrefix(entry, "GITHUB_SHA=") ||
+			strings.HasPrefix(entry, "GITHUB_REPOSITORY=") ||
+			strings.HasPrefix(entry, "GITHUB_SERVER_URL=") ||
+			strings.HasPrefix(entry, "PR_HEAD_SHA=") ||
+			strings.HasPrefix(entry, "SUPPRESSION_GITHUB_REPOSITORY=") {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -1543,6 +1643,16 @@ done
 
 if [ -n "$body_file" ] && [ -f "$body_file" ]; then
 	cat "$body_file" >> "` + logPath + `"
+fi
+
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+	printf '%s\n' "github.com"
+	exit 0
+fi
+
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+	printf '%s\n' "interactive-user"
+	exit 0
 fi
 
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then

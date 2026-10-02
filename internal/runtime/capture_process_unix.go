@@ -59,7 +59,7 @@ func StartCommand(cmd *exec.Cmd) (func() error, error) {
 
 func cleanupRuntimeProcessGroup(processID int) error {
 	err := runtimeKillProcessGroup(-processID, syscall.SIGKILL)
-	if errors.Is(err, syscall.ESRCH) {
+	if errors.Is(err, syscall.ESRCH) || runtimeProcessGroupExited(processID, err) {
 		return nil
 	}
 	return err

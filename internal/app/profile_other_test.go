@@ -376,13 +376,6 @@ func chdirForProfileTest(t *testing.T, dir string) {
 	}
 }
 
-func profileForceName(force bool) string {
-	if force {
-		return "force"
-	}
-	return "if-absent"
-}
-
 func requireParentWriteDenied(t *testing.T, parentDir, probeName string) {
 	t.Helper()
 

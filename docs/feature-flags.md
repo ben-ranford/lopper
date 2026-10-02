@@ -69,6 +69,11 @@ The PR enforcement workflow keeps a sticky report on feature PRs and on any PR t
 Preview flags can be enabled or disabled by code or name.
 For `analyse`, `pr-review`, and `tui`, explicit CLI choices override the effective repository/policy-pack configuration for the same feature. Configuration overrides build-channel and release-lock defaults; unrelated feature choices retain their existing values. Names, immutable codes, and supported deprecated aliases identify the same feature.
 
+Interactive Stave launches also support a personal preview preference, below
+CLI and repository/policy choices but above defaults. This is dedicated UI
+consent, not a global feature settings system. See [personal preview choice](stave-tui-preview.md#personal-preview-choice)
+for eligibility, storage, `--ui-preference=stave|legacy|ask`, and recovery.
+
 For example:
 
 ```bash

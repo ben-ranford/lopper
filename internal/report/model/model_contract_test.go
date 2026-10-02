@@ -169,8 +169,18 @@ func TestReportJSONContractShape(t *testing.T) {
 	}
 }
 
-func TestReportJSONContractMatchesPublicSchema(t *testing.T) {
+func TestCriticalRiskCueMatchesPublicSchema(t *testing.T) {
 	source := representativeReport()
+	source.Dependencies[0].RiskCues = []RiskCue{{Code: "critical-risk", Severity: "critical", Message: "Critical dependency risk"}}
+	assertReportMatchesPublicSchema(t, source)
+}
+
+func TestReportJSONContractMatchesPublicSchema(t *testing.T) {
+	assertReportMatchesPublicSchema(t, representativeReport())
+}
+
+func assertReportMatchesPublicSchema(t *testing.T, source Report) {
+	t.Helper()
 	payload, err := json.Marshal(source)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)

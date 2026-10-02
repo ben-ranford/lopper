@@ -68,6 +68,7 @@ diff_mode=""
 gh_bin="${GH_BIN:-gh}"
 tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
 tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
+source_sha="${GITHUB_SHA:-}"
 
 create_temp_file() {
 	local temp_file=""
@@ -130,7 +131,6 @@ fingerprint_for_occurrence() {
 
 read_full_file_content() {
 	local file="$1"
-	local head_parent
 
 	# The complete file at its current (target-side) state, not just the
 	# lines visible in this diff: the trusted tracker (which sees GitHub's
@@ -154,8 +154,8 @@ read_full_file_content() {
 	# "this change's own head" -- treating it the same way would read the
 	# wrong tree, or fail outright for a topic-only file that doesn't
 	# exist on that other side.
-	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
-		git show "${head_parent}:${file}" 2>/dev/null
+	if [[ "$diff_mode" == "branch" ]]; then
+		git show "${diff_target}:${file}" 2>/dev/null
 	elif [[ "$diff_mode" == "staged" ]]; then
 		# When the diff being checked is `git diff --cached`, the file being
 		# scanned is the index's content, not the working tree's. If the
@@ -198,7 +198,7 @@ source_url_for_match() {
 	local line="$2"
 	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
 	local server="${GITHUB_SERVER_URL:-https://github.com}"
-	local sha="${GITHUB_SHA:-}"
+	local sha="$source_sha"
 
 	if [[ -n "$repo" && -n "$sha" ]]; then
 		printf '%s/%s/blob/%s/%s#L%s\n' "$server" "$repo" "$sha" "$file" "$line"
@@ -238,15 +238,28 @@ write_tracking_body() {
 gh_issue_list() {
 	local repo="$1"
 	local fingerprint="$2"
+	local creator="github-actions[bot]"
+	if [[ "${CI:-}" != "true" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+		local host
+		if [[ -n "$repo" ]]; then
+			host="$("$gh_bin" repo view "$repo" --json url --jq '.url | split("/")[2]')" || return 1
+		else
+			host="$("$gh_bin" repo view --json url --jq '.url | split("/")[2]')" || return 1
+		fi
+		[[ -n "$host" ]] || return 1
+		creator="$("$gh_bin" api user --hostname "$host" --jq .login)" || return 1
+		# Only use the authenticated account, never caller-supplied issue authors.
+		[[ "$creator" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || return 1
+	fi
 	# Fingerprints are SHA-256 hex digests, so this marker is safe to inline into the jq string literal below.
 	local marker="<!-- lopper-inline-suppression:${fingerprint} -->"
-	local jq_filter="[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
+	local jq_filter="[.[] | select(.author.login == \"${creator}\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
 
 	if [[ -n "$repo" ]]; then
-		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:${creator}" --json number,author,body --jq "$jq_filter"
 		return
 	fi
-	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:${creator}" --json number,author,body --jq "$jq_filter"
 }
 
 gh_issue_comment() {
@@ -449,28 +462,33 @@ elif ! git diff --quiet --exit-code -- .; then
 	diff_mode="worktree"
 	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
+	diff_target="HEAD"
+	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -n "${PR_HEAD_SHA:-}" ]]; then
+		current_head_sha="$(git rev-parse --verify HEAD)"
+		second_parent_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+		# A pull_request checkout normally points at GitHub's synthetic merge
+		# commit. Only use its second parent when that exact commit is the PR's
+		# advertised head; topic branches can themselves contain a merge commit.
+		# Keep source links bound to the same PR-head tree used for the diff.
+		if [[ "$current_head_sha" != "$PR_HEAD_SHA" && "$second_parent_sha" == "$PR_HEAD_SHA" ]]; then
+			diff_target="HEAD^2"
+			source_sha="$PR_HEAD_SHA"
+		elif [[ "$current_head_sha" == "$PR_HEAD_SHA" ]]; then
+			source_sha="$PR_HEAD_SHA"
+		fi
+	fi
 	base_ref="$requested_base_ref"
-	used_fallback=0
-	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
-		echo "Warning: suppression base ref '$base_ref' not found; falling back to 'HEAD~1'. This may miss inline suppressions introduced earlier in this branch." >&2
-		base_ref="HEAD~1"
-		used_fallback=1
+	if ! resolved_base="$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}" 2>/dev/null)"; then
+		echo "Suppression base ref '$base_ref' does not resolve to a commit; cannot check branch changes." >&2
+		exit 1
 	fi
-	if ! git rev-parse --verify -q "$base_ref^{commit}" >/dev/null; then
-		echo "No valid suppression base ref found; skipping inline suppression check." >&2
-		exit 0
+	if ! base_commit="$(git merge-base "$resolved_base" "$diff_target" 2>/dev/null)"; then
+		echo "Suppression base ref '$base_ref' cannot establish a merge base with HEAD; cannot check branch changes." >&2
+		exit 1
 	fi
-	if ! base_commit="$(git merge-base "$base_ref" HEAD 2>/dev/null)"; then
-		echo "Base ref '$base_ref' is not related to HEAD; skipping inline suppression check." >&2
-		exit 0
-	fi
-	if [[ "$used_fallback" -eq 1 ]]; then
-		diff_scope="branch changes vs fallback $base_ref (requested $requested_base_ref)"
-	else
-		diff_scope="branch changes vs $base_ref"
-	fi
+	diff_scope="branch changes vs $base_ref"
 	diff_mode="branch"
-	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..$diff_target" --)
 fi
 
 tmp_matches="$(create_temp_file)"

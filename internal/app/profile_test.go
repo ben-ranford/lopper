@@ -301,6 +301,13 @@ func TestPersistProfileConfigRejectsDanglingTargetSymlinkWithForce(t *testing.T)
 	}
 }
 
+func profileForceName(force bool) string {
+	if force {
+		return "force"
+	}
+	return "if-absent"
+}
+
 func mustProfileFeatureSet(t *testing.T) featureflags.Set {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{{

@@ -11,6 +11,9 @@ import (
 const CodemodSuggestionsFeature = "python-codemod-suggestions"
 
 func buildRequestedPythonDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
+	if normalizeDependencyID(req.Dependency) != "" {
+		req.TopN = 0
+	}
 	buildDependency := func(dependency string, current scanResult) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, current, req)
 	}
