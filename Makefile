@@ -189,7 +189,7 @@ test-leaks-lockfiledrift-head:
 
 test-race:
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
-		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -timeout=15m $pkgs
+		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -timeout=15m $$pkgs
 	@$(MAKE) test-race-lockfiledrift-head
 
 test-race-lockfiledrift-head:
