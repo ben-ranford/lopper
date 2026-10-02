@@ -69,6 +69,31 @@ gh_bin="${GH_BIN:-gh}"
 tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
 tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
 source_sha="${GITHUB_SHA:-}"
+tmp_matches=""
+tmp_diff=""
+tmp_bundle=""
+validation_output=""
+
+cleanup() {
+	local status=$?
+	rm -f -- "$tmp_matches" "$tmp_diff" "$tmp_bundle" "$validation_output"
+	if [[ "$status" -ne 0 && -n "$tracking_output" ]]; then
+		rm -f -- "$tracking_output"
+	fi
+	return "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -n "$tracking_output" ]]; then
+	# A failed or incomplete scan must never reuse evidence from an earlier run.
+	rm -f -- "$tracking_output"
+	if [[ "$tracking_mode" != "detect" && "$tracking_mode" != "track" ]]; then
+		echo "Unsupported SUPPRESSION_TRACKING_MODE '$tracking_mode'; expected 'detect' or 'track'." >&2
+		exit 1
+	fi
+fi
 
 create_temp_file() {
 	local temp_file=""
@@ -364,7 +389,7 @@ json_escape() {
 	printf '%s' "$value"
 }
 
-write_tracking_records() {
+write_tracking_records() (
 	local output_file="$1"
 	local records_file="$2"
 	local output_dir
@@ -382,7 +407,10 @@ write_tracking_records() {
 
 	output_dir="$(dirname "$output_file")"
 	mkdir -p "$output_dir"
-	tmp_output="$(create_temp_file)"
+	# Keep the temporary file on the destination filesystem so publication is
+	# one atomic rename, including when TMPDIR is on a different mount.
+	tmp_output="$(mktemp "$output_dir/.inline-suppressions.XXXXXX")"
+	trap 'rm -f -- "$tmp_output"' EXIT
 
 	{
 		printf '{\n'
@@ -431,8 +459,8 @@ write_tracking_records() {
 		printf '}\n'
 	} >>"$tmp_output"
 
-	mv "$tmp_output" "$output_file"
-}
+	mv -- "$tmp_output" "$output_file"
+)
 
 track_records_with_gh() {
 	local records_file="$1"
@@ -479,11 +507,19 @@ else
 	fi
 	base_ref="$requested_base_ref"
 	if ! resolved_base="$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}" 2>/dev/null)"; then
-		echo "Suppression base ref '$base_ref' does not resolve to a commit; cannot check branch changes." >&2
+		if [[ -n "$tracking_output" ]]; then
+			echo "suppression base ref '$base_ref' not found; cannot produce suppression evidence." >&2
+		else
+			echo "Suppression base ref '$base_ref' does not resolve to a commit." >&2
+		fi
 		exit 1
 	fi
 	if ! base_commit="$(git merge-base "$resolved_base" "$diff_target" 2>/dev/null)"; then
-		echo "Suppression base ref '$base_ref' cannot establish a merge base with HEAD; cannot check branch changes." >&2
+		if [[ -n "$tracking_output" ]]; then
+			echo "Base ref '$base_ref' is not related to HEAD; cannot produce suppression evidence." >&2
+		else
+			echo "Base ref '$base_ref' cannot establish a merge base with HEAD." >&2
+		fi
 		exit 1
 	fi
 	diff_scope="branch changes vs $base_ref"
@@ -494,7 +530,6 @@ fi
 tmp_matches="$(create_temp_file)"
 tmp_diff="$(create_temp_file)"
 tmp_bundle="$(create_temp_file)"
-trap 'rm -f "$tmp_matches" "$tmp_diff" "$tmp_bundle"' EXIT INT TERM
 
 "${diff_args[@]}" >"$tmp_diff"
 
@@ -962,6 +997,9 @@ if [[ "$awk_status" -ne 0 ]]; then
 			;;
 		track)
 			track_records_with_gh "$tmp_matches"
+			if [[ -n "$tracking_output" ]]; then
+				write_tracking_records "$tracking_output" "$tmp_matches"
+			fi
 			echo "Inline suppression tracking passed ($diff_scope)"
 			exit 0
 			;;
@@ -972,4 +1010,7 @@ if [[ "$awk_status" -ne 0 ]]; then
 	esac
 fi
 
+if [[ -n "$tracking_output" ]]; then
+	write_tracking_records "$tracking_output" "$tmp_matches"
+fi
 echo "Inline suppression check passed ($diff_scope)"

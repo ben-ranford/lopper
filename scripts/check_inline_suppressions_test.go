@@ -1552,15 +1552,15 @@ func withoutGitEnv() []string {
 		if strings.HasPrefix(entry, "GIT_") {
 			continue
 		}
-		// CI-specific GitHub values must not leak into local fixture repos:
-		// tests set only the event, head, and source URL inputs they intend
-		// to model, and otherwise exercise the local developer path.
-		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") ||
+		// CI-specific suppression and GitHub values describe the real
+		// checkout, not these fixture repositories. Tests set only the
+		// values they intend to model and otherwise exercise the local path.
+		if strings.HasPrefix(entry, "SUPPRESSION_") ||
+			strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") ||
 			strings.HasPrefix(entry, "GITHUB_SHA=") ||
 			strings.HasPrefix(entry, "GITHUB_REPOSITORY=") ||
 			strings.HasPrefix(entry, "GITHUB_SERVER_URL=") ||
-			strings.HasPrefix(entry, "PR_HEAD_SHA=") ||
-			strings.HasPrefix(entry, "SUPPRESSION_GITHUB_REPOSITORY=") {
+			strings.HasPrefix(entry, "PR_HEAD_SHA=") {
 			continue
 		}
 		filtered = append(filtered, entry)

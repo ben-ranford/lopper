@@ -1032,6 +1032,24 @@ jobs:
             esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
 
+      - name: Require explicit suppression evidence
+        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        env:
+          SUPPRESSIONS_FILE: ${{ runner.temp }}/pr-report-inputs/inline-suppressions.json
+        run: |
+          if [ ! -f "${SUPPRESSIONS_FILE}" ] || [ -L "${SUPPRESSIONS_FILE}" ]; then
+            echo "::error::The producer must provide explicit suppression evidence, including a clean scan." >&2
+            exit 1
+          fi
+          if [ "$(wc -c < "${SUPPRESSIONS_FILE}")" -gt 131072 ]; then
+            echo "::error::Suppression evidence exceeds the 128 KiB limit." >&2
+            exit 1
+          fi
+          if ! jq -e -s 'length == 1 and (.[0] | type == "object" and keys == ["schema", "suppressions"] and .schema == "lopper-inline-suppressions-v1" and (.suppressions | type == "array" and length <= 100))' "${SUPPRESSIONS_FILE}" > /dev/null; then
+            echo "::error::Suppression evidence must be one valid v1 document with at most 100 records." >&2
+            exit 1
+          fi
+
       - name: Verify inline suppression tracking issues were published
         id: verify_suppressions
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
