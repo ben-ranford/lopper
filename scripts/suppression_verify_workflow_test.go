@@ -36,11 +36,12 @@ func TestSuppressionVerifyWorkflowUsesReadOnlyCurrentRunArtifact(t *testing.T) {
 		"Initialize suppression verification",
 		"Download PR report inputs",
 		"Validate PR report inputs",
+		"Require explicit suppression evidence",
 		"Verify inline suppression tracking issues were published",
 	)
 	for _, name := range []string{
 		"Initialize suppression verification", "Download PR report inputs",
-		"Validate PR report inputs", "Verify inline suppression tracking issues were published",
+		"Validate PR report inputs", "Require explicit suppression evidence", "Verify inline suppression tracking issues were published",
 	} {
 		step := workflowStepByName(t, workflow.Jobs, "verify", name)
 		if step.If != "${{ github.event_name == 'pull_request' && !env.ACT }}" {
