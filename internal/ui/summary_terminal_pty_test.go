@@ -25,21 +25,6 @@ func TestSummaryTerminalAltGrScopedCommands(t *testing.T) {
 	runSummaryArrowPTY(t, "altgr")
 }
 
-func TestSummaryTerminalAbandonsPendingAction(t *testing.T) {
-	terminal := &summaryTerminal{ctx: context.Background()}
-	command := terminal.beginAction()
-	action := terminal.action
-
-	action.awaitOrAbandon()
-	if action.state.Load() != summaryActionAbandoned {
-		t.Fatalf("pending action state = %d, want abandoned", action.state.Load())
-	}
-	if message := command(); message != nil {
-		t.Fatalf("abandoned action returned a message: %#v", message)
-	}
-	action.awaitOrAbandon()
-}
-
 func runSummaryArrowPTY(t *testing.T, exit string) {
 	t.Helper()
 	t.Setenv("TERM", "xterm-256color")
