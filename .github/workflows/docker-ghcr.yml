@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/release-source-ci.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     with:
       source_sha: ${{ github.sha }}
       build_channel: release
