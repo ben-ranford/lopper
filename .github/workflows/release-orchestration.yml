@@ -10,6 +10,10 @@ on:
         required: false
         type: string
         default: ''
+      memory_approved:
+        required: false
+        type: boolean
+        default: false
       artifact_prefix:
         required: true
         type: string
@@ -21,6 +25,38 @@ on:
         type: string
 
 jobs:
+  verify-publication-source:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-source-ci.yml
+    with:
+      source_sha: ${{ inputs.source_sha || github.sha }}
+      build_channel: ${{ inputs.build_channel }}
+      memory_approved: ${{ inputs.memory_approved }}
+
+  validate-publication-identifiers:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Validate publication channel and identifiers
+        env:
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          IMAGE_TAGS: ${{ inputs.image_tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_CHANNEL" in
+            release) ;;
+            rolling)
+              [[ "$RELEASE_TAG" =~ ^rolling-[0-9]{14}-[0-9a-f]{7}$ ]] || exit 1
+              while IFS= read -r tag; do
+                [[ -z "$tag" || "$tag" == rolling || "$tag" == "$RELEASE_TAG" ]] || exit 1
+              done <<< "$IMAGE_TAGS"
+              ;;
+            *) exit 1 ;;
+          esac
+
   build-linux-windows:
     runs-on: ubuntu-latest
     permissions:
@@ -359,6 +395,8 @@ jobs:
 
   publish-ghcr-images:
     needs:
+      - verify-publication-source
+      - validate-publication-identifiers
       - build-linux-windows
       - build-darwin
       - prepare-ghcr
@@ -759,6 +797,8 @@ jobs:
 
   publish-ghcr-manifest:
     needs:
+      - verify-publication-source
+      - validate-publication-identifiers
       - publish-ghcr-images
       - prepare-ghcr-manifest
     runs-on: ubuntu-latest

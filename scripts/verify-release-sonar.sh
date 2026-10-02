@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ! "${SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo '::error::A full immutable source SHA is required.' >&2
+  exit 1
+fi
+
+sonar_api() {
+  local endpoint="$1"
+  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+    "https://sonarcloud.io/api/${endpoint}"
+}
+
+source_analysis() {
+  local page response latest_key match total
+  for ((page = 1; page <= 100; page++)); do
+    response=$(sonar_api "project_analyses/search?project=ben-ranford_lopper&branch=main&ps=500&p=${page}") || return 1
+    if [[ "$page" == 1 ]]; then
+      latest_key=$(jq -er '.analyses[0].key | select(type == "string" and length > 0)' <<< "$response") || return 1
+    fi
+    match=$(jq -c --arg sha "$SOURCE_SHA" --arg latest "$latest_key" \
+      '[.analyses[] | select(.revision == $sha)] | first | select(. != null) | {key, revision, date, latest: $latest}' <<< "$response") || return 1
+    if [[ -n "$match" ]]; then
+      jq -ce 'select((.key | type == "string" and length > 0) and (.date | type == "string" and length > 0))' <<< "$match"
+      return
+    fi
+    total=$(jq -er '.paging.total | select(type == "number" and . >= 0)' <<< "$response") || return 1
+    if ((page * 500 >= total)); then
+      break
+    fi
+  done
+  echo '::error::No completed analysis found for the requested source SHA.' >&2
+  return 1
+}
+
+no_pending_analysis() {
+  # ce/component requires Browse permission, available on this public project.
+  # Its queue includes pending and in-progress tasks across all branches; fail
+  # closed for any task rather than mistaking completed history for an idle main.
+  sonar_api 'ce/component?component=ben-ranford_lopper' \
+    | jq -e '.queue == []' >/dev/null
+}
+
+historical_zero_metrics() {
+  local date encoded_date
+  date=$(jq -r '.date' <<< "$before")
+  encoded_date=$(jq -rn --arg date "$date" '$date | @uri')
+  # The issue and hotspot inventories are branch-current. Historical metrics
+  # must separately prove an older source was clean; missing history fails closed.
+  sonar_api "measures/search_history?component=ben-ranford_lopper&branch=main&metrics=violations,accepted_issues,security_hotspots&from=${encoded_date}&to=${encoded_date}&ps=1000" \
+    | jq -e --arg date "$date" '
+      .measures as $measures |
+      ["violations", "accepted_issues", "security_hotspots"] |
+      all(.[]; . as $metric |
+        [$measures[] | select(.metric == $metric) | .history[] | select(.date == $date) | .value] == ["0"])
+    ' >/dev/null
+}
+
+# Analysis history contains completed analyses and is scoped to main. The
+# component compute-engine endpoint is not branch-scoped: a PR task can be its
+# current task, so it cannot prove completion of this release's analysis.
+# Require the exact source revision in history and a quality gate for its ID;
+# re-read history after inventories to reject concurrent main-analysis changes.
+no_pending_analysis
+before=$(source_analysis)
+analysis_id=$(jq -r '.key' <<< "$before")
+latest_id=$(jq -r '.latest' <<< "$before")
+sonar_api "qualitygates/project_status?analysisId=${analysis_id}" \
+  | jq -e '.projectStatus.status == "OK"' >/dev/null
+if [[ "$analysis_id" != "$latest_id" ]]; then
+  historical_zero_metrics
+fi
+sonar_api 'issues/search?componentKeys=ben-ranford_lopper&branch=main&resolved=false&ps=1' \
+  | jq -e '.total == 0 and .issues == []' >/dev/null
+sonar_api 'hotspots/search?projectKey=ben-ranford_lopper&branch=main&status=TO_REVIEW&ps=1' \
+  | jq -e '.paging.total == 0 and .hotspots == []' >/dev/null
+no_pending_analysis
+after=$(source_analysis)
+if [[ "$before" != "$after" ]]; then
+  echo '::error::Sonar analysis changed during publication verification.' >&2
+  exit 1
+fi
+printf 'Verified zero unresolved Sonar issues and hotspots for %s (%s).\n' "$SOURCE_SHA" "$analysis_id"
