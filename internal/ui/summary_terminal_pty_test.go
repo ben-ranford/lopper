@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -41,8 +42,27 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	done := make(chan error, 1)
 	exited := make(chan struct{})
+	registerSummaryPTYCleanup(t, master, cancel, exited)
+	s := NewSummary(terminal, terminal, &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "alpha"}, {Name: "beta"}}}}, report.NewFormatter())
+	runner, mutationRunner := summaryPTYActionRunner(exit)
+	s.Actions = runner
+	if mutationRunner != nil {
+		defer mutationRunner.releaseOnce.Do(func() { close(mutationRunner.release) })
+		s.Actions = mutationRunner
+	}
+	go func() { defer close(exited); done <- s.Start(ctx, Options{PageSize: 1}) }()
+	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 1/2") })
+	exit = sendSummaryPTYCommand(t, exit, master, capture, done)
+	if exit == "mutation" {
+		finishMutationPTY(t, master, ctx, done, mutationRunner)
+		return
+	}
+	finishSummaryPTY(t, exit, master, cancel, ctx, done, runner)
+}
+
+func registerSummaryPTYCleanup(t *testing.T, master *os.File, cancel context.CancelFunc, exited <-chan struct{}) {
+	t.Helper()
 	t.Cleanup(func() {
-		// Also release the baseline line reader when a regression assertion fails.
 		defer cancel()
 		select {
 		case <-exited:
@@ -59,27 +79,20 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 			t.Error("summary cleanup timed out")
 		}
 	})
-	s := NewSummary(terminal, terminal, &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "alpha"}, {Name: "beta"}}}}, report.NewFormatter())
-	runner := &summaryBlockingRunner{started: make(chan struct{})}
-	var mutationRunner *summaryUncancellableMutationRunner
-	var releaseMutation sync.Once
+}
+
+func summaryPTYActionRunner(exit string) (*summaryBlockingRunner, *summaryUncancellableMutationRunner) {
 	if exit == "mutation" {
-		mutationRunner = &summaryUncancellableMutationRunner{started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
-		defer releaseMutation.Do(func() { close(mutationRunner.release) })
-		runner = &summaryBlockingRunner{started: make(chan struct{})}
+		return nil, &summaryUncancellableMutationRunner{started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
 	}
-	s.Actions = runner
-	if mutationRunner != nil {
-		s.Actions = mutationRunner
-	}
-	go func() { defer close(exited); done <- s.Start(ctx, Options{PageSize: 1}) }()
-	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 1/2") })
+	return &summaryBlockingRunner{started: make(chan struct{})}, nil
+}
+
+func sendSummaryPTYCommand(t *testing.T, exit string, master *os.File, capture *signalPTYCapture, done <-chan error) string {
+	t.Helper()
 	input, ready, want := "\x1b[C", "Page: 2/2", "Page: 2/2"
 	if exit == "altgr" {
-		// Kitty's associated text encodes the same printable Ctrl+Alt event as AltGr.
-		input, want = "open \x1b[113;7;64uscope/pkg\r", `No data for dependency "@scope/pkg"`
-		ready = "scope/pkg\"\r\n"
-		exit = "q\r"
+		input, ready, want, exit = "open \x1b[113;7;64uscope/pkg\r", "scope/pkg\"\r\n", `No data for dependency "@scope/pkg"`, "q\r"
 	}
 	if _, err := master.Write([]byte(input)); err != nil {
 		t.Fatal(err)
@@ -88,6 +101,38 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	if !strings.Contains(capture.String(), want) {
 		t.Fatalf("summary command did not preserve its input: want %q in %q", want, capture.String())
 	}
+	return exit
+}
+
+func finishMutationPTY(t *testing.T, master *os.File, ctx context.Context, done <-chan error, runner *summaryUncancellableMutationRunner) {
+	t.Helper()
+	if _, err := master.Write([]byte("save-baseline nightly\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-ctx.Done():
+		t.Fatal("mutating action never started")
+	}
+	if _, err := master.Write([]byte("\x03")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("terminal returned before the mutation completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	runner.releaseOnce.Do(func() { close(runner.release) })
+	waitSummaryPTYResult(t, done, "\x03")
+	select {
+	case <-runner.finished:
+	default:
+		t.Fatal("terminal returned before the mutating action finished")
+	}
+}
+
+func finishSummaryPTY(t *testing.T, exit string, master *os.File, cancel context.CancelFunc, ctx context.Context, done <-chan error, runner *summaryBlockingRunner) {
+	t.Helper()
 	if exit == "queued" {
 		exit = "q\r" + strings.Repeat("x", 1024)
 	}
@@ -101,32 +146,6 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 			t.Fatal("action never started")
 		}
 		exit = "\x03"
-	}
-	if exit == "mutation" {
-		if _, err := master.Write([]byte("save-baseline nightly\r")); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case <-mutationRunner.started:
-		case <-ctx.Done():
-			t.Fatal("mutating action never started")
-		}
-		if _, err := master.Write([]byte("\x03")); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("terminal returned before the mutation completed: %v", err)
-		case <-time.After(100 * time.Millisecond):
-		}
-		releaseMutation.Do(func() { close(mutationRunner.release) })
-		waitSummaryPTYResult(t, done, "\x03")
-		select {
-		case <-mutationRunner.finished:
-		default:
-			t.Fatal("terminal returned before the mutating action finished")
-		}
-		return
 	}
 	if exit == "cancel" {
 		cancel()
@@ -161,9 +180,10 @@ type summaryBlockingRunner struct {
 
 type summaryUncancellableMutationRunner struct {
 	stubSummaryActionRunner
-	started  chan struct{}
-	release  chan struct{}
-	finished chan struct{}
+	started     chan struct{}
+	release     chan struct{}
+	finished    chan struct{}
+	releaseOnce sync.Once
 }
 
 func (s *summaryUncancellableMutationRunner) SaveBaseline(context.Context, BaselineSaveRequest) (report.Report, string, error) {
