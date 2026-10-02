@@ -578,12 +578,15 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 		if err == nil {
 			t.Fatal("hooks-install succeeded after interruption during post-write config read")
 		}
-	case <-time.After(5 * time.Second):
+	// The signal cleanup path may perform a second guarded preflight read. Its
+	// watchdog is 10 seconds, so allow that bound plus time for rollback and
+	// assert cleanup only after the guard has had a chance to terminate it.
+	case <-time.After(15 * time.Second):
 		killPreflightTestProcessGroup(t, command.Process.Pid, syscall.SIGKILL)
 		<-commandDone
 		t.Fatalf("hooks-install did not exit after interruption\n%s", output.String())
 	}
-	waitForPreflightInstallRollback(t, fixture, tmpDir)
+	waitForPreflightInstallRollback(t, fixture, tmpDir, output.String())
 }
 
 func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
@@ -738,9 +741,12 @@ exec %s "$@"
 	}
 }
 
-func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixture, tmpDir string) {
+func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixture, tmpDir, output string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// The cleanup trap can start a fresh preflight reader, whose watchdog is
+	// bounded at 10 seconds. Wait for that bound before classifying its temp
+	// directory as leaked; the caller still fails if rollback is not complete.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		config, err := os.ReadFile(fixture.configPath)
 		_, stateErr := os.Stat(filepath.Dir(fixture.managedHook))
@@ -754,7 +760,20 @@ func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixtu
 	if _, err := os.Stat(filepath.Dir(fixture.managedHook)); !os.IsNotExist(err) {
 		t.Fatalf("installer left managed hook state after interruption: %v", err)
 	}
-	assertNoPreflightTimeoutTemps(t, tmpDir)
+	if temps, err := filepath.Glob(filepath.Join(tmpDir, "lopper-hooks-*")); err != nil || len(temps) != 0 {
+		var contents []string
+		for _, temp := range temps {
+			_ = filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					contents = append(contents, fmt.Sprintf("%s: %v", path, walkErr))
+					return nil
+				}
+				contents = append(contents, path)
+				return nil
+			})
+		}
+		t.Fatalf("preflight cleanup did not finish; temps=%#v err=%v contents=%#v output=%s", temps, err, contents, output)
+	}
 }
 
 type preflightTimeoutFixture struct {
@@ -929,6 +948,17 @@ func assertNoPreflightTimeoutTemps(t *testing.T, tmpDir string) {
 	t.Helper()
 	temps, err := filepath.Glob(filepath.Join(tmpDir, "lopper-hooks-*"))
 	if err != nil || len(temps) != 0 {
-		t.Fatalf("preflight temps = %#v err=%v", temps, err)
+		var contents []string
+		for _, temp := range temps {
+			_ = filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					contents = append(contents, fmt.Sprintf("%s: %v", path, walkErr))
+					return nil
+				}
+				contents = append(contents, path)
+				return nil
+			})
+		}
+		t.Fatalf("preflight temps = %#v err=%v contents=%#v", temps, err, contents)
 	}
 }
