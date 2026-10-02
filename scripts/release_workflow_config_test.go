@@ -1261,6 +1261,8 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	want := []string{
+		"jobs.verify-release-source-ci.secrets.SONAR_TOKEN=${{ secrets.SONAR_TOKEN }}",
+		"jobs.orchestrate-release.secrets.SONAR_TOKEN=${{ secrets.SONAR_TOKEN }}",
 		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release-please PR#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Push refreshed release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
