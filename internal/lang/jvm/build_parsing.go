@@ -398,7 +398,6 @@ func (b *pomExpansionBudget) resolve(value string, properties map[string]string)
 		b.tokensRemaining -= tokensUsed
 		unresolved = unresolved || missing
 		if updated == "" && missing {
-			b.exhausted = true
 			return "", true
 		}
 		value = updated
