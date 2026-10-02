@@ -32,6 +32,19 @@ func TestHooksCleanupBoundsForeignWorktreeConfig(t *testing.T) {
 	cmd.Dir = repo
 	tmp := t.TempDir()
 	cmd.Env = append(withoutGitEnv(), "TMPDIR="+tmp)
+	baseline := exec.Command("git", "--version")
+	baseline.Env = append(withoutGitEnv(), "TMPDIR="+tmp)
+	if output, err := baseline.CombinedOutput(); err != nil {
+		t.Fatalf("prime platform Git temp state: %v\n%s", err, output)
+	}
+	wantTemporaryEntries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("read initial timeout TMPDIR: %v", err)
+	}
+	wantNames := make(map[string]struct{}, len(wantTemporaryEntries))
+	for _, entry := range wantTemporaryEntries {
+		wantNames[entry.Name()] = struct{}{}
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "Timed out while reading Git preflight configuration") {
 		t.Fatalf("foreign config timeout: %v\n%s", err, output)
@@ -39,9 +52,16 @@ func TestHooksCleanupBoundsForeignWorktreeConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(managed, "pre-commit")); err != nil {
 		t.Fatalf("ambiguous reference removed snapshot: %v", err)
 	}
+	// Apple Git may leave its xcrun_db cache in TMPDIR; only new entries after
+	// the platform-Git baseline can be attributed to the bounded hook preflight.
 	entries, err := os.ReadDir(tmp)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("cleanup left temporary files: %v %v", entries, err)
+	if err != nil || len(entries) != len(wantNames) {
+		t.Fatalf("cleanup left temporary files: %v %v, want names %v", entries, err, wantNames)
+	}
+	for _, entry := range entries {
+		if _, ok := wantNames[entry.Name()]; !ok {
+			t.Fatalf("cleanup left new temporary file %q", entry.Name())
+		}
 	}
 }
 

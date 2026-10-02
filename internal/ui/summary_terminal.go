@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,6 +33,7 @@ type summaryTerminal struct {
 	err            error
 	quit           bool
 	inflight       bool
+	action         *summaryTerminalAction
 	cancel         context.CancelFunc
 	writer         io.Writer
 	width          int
@@ -76,6 +78,9 @@ func (s *Summary) runTerminal(ctx context.Context, opts Options, report summaryR
 	}()
 	_, err = program.Run()
 	close(finished)
+	if m.action != nil {
+		m.action.awaitOrAbandon()
+	}
 	if _, writeErr := output.Write([]byte("\r\n")); writeErr != nil {
 		return writeErr
 	}
@@ -253,6 +258,34 @@ type summaryTerminalResult struct {
 	err    error
 }
 
+const (
+	summaryActionPending uint32 = iota
+	summaryActionRunning
+	summaryActionAbandoned
+	summaryActionFinished
+)
+
+type summaryTerminalAction struct {
+	state atomic.Uint32
+	done  chan struct{}
+}
+
+func (a *summaryTerminalAction) awaitOrAbandon() {
+	for {
+		switch a.state.Load() {
+		case summaryActionPending:
+			if a.state.CompareAndSwap(summaryActionPending, summaryActionAbandoned) {
+				return
+			}
+		case summaryActionRunning, summaryActionFinished:
+			<-a.done
+			return
+		case summaryActionAbandoned:
+			return
+		}
+	}
+}
+
 func (m *summaryTerminal) isAction(command string) bool {
 	_, ok, err := parseSummaryAction(strings.TrimSpace(command), &m.state)
 	return ok || err != nil
@@ -263,8 +296,17 @@ func (m *summaryTerminal) beginAction() tea.Cmd {
 	m.line, m.cursor = nil, 0
 	m.inflight = true
 	summary, ctx := m.summary, m.ctx
+	action := &summaryTerminalAction{done: make(chan struct{})}
+	m.action = action
 	result := summaryTerminalResult{opts: m.opts, report: m.report, state: m.state}
 	return func() tea.Msg {
+		if !action.state.CompareAndSwap(summaryActionPending, summaryActionRunning) {
+			return nil
+		}
+		defer func() {
+			action.state.Store(summaryActionFinished)
+			close(action.done)
+		}()
 		var output bytes.Buffer
 		summary.Out = &output
 		result.quit, result.err = summary.handleSummaryInputMutable(ctx, &result.opts, &result.report, &result.state, strings.TrimSpace(command))

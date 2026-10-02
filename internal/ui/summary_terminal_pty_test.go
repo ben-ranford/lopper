@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 func TestSummaryTerminalArrowsWithoutEnter(t *testing.T) {
-	for _, exit := range []string{"q\r", "\x03", "\x04", "cancel", "action", "queued"} {
+	for _, exit := range []string{"q\r", "\x03", "\x04", "cancel", "action", "mutation", "queued"} {
 		t.Run(exit, func(t *testing.T) { runSummaryArrowPTY(t, exit) })
 	}
 }
@@ -60,7 +61,17 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	})
 	s := NewSummary(terminal, terminal, &stubAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "alpha"}, {Name: "beta"}}}}, report.NewFormatter())
 	runner := &summaryBlockingRunner{started: make(chan struct{})}
+	var mutationRunner *summaryUncancellableMutationRunner
+	var releaseMutation sync.Once
+	if exit == "mutation" {
+		mutationRunner = &summaryUncancellableMutationRunner{started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
+		defer releaseMutation.Do(func() { close(mutationRunner.release) })
+		runner = &summaryBlockingRunner{started: make(chan struct{})}
+	}
 	s.Actions = runner
+	if mutationRunner != nil {
+		s.Actions = mutationRunner
+	}
 	go func() { defer close(exited); done <- s.Start(ctx, Options{PageSize: 1}) }()
 	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 1/2") })
 	input, ready, want := "\x1b[C", "Page: 2/2", "Page: 2/2"
@@ -91,6 +102,32 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 		}
 		exit = "\x03"
 	}
+	if exit == "mutation" {
+		if _, err := master.Write([]byte("save-baseline nightly\r")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-mutationRunner.started:
+		case <-ctx.Done():
+			t.Fatal("mutating action never started")
+		}
+		if _, err := master.Write([]byte("\x03")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("terminal returned before the mutation completed: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		releaseMutation.Do(func() { close(mutationRunner.release) })
+		waitSummaryPTYResult(t, done, "\x03")
+		select {
+		case <-mutationRunner.finished:
+		default:
+			t.Fatal("terminal returned before the mutating action finished")
+		}
+		return
+	}
 	if exit == "cancel" {
 		cancel()
 	} else if _, err := master.Write([]byte(exit)); err != nil {
@@ -120,6 +157,20 @@ func waitSummaryPTYResult(t *testing.T, done <-chan error, exit string) {
 type summaryBlockingRunner struct {
 	stubSummaryActionRunner
 	started chan struct{}
+}
+
+type summaryUncancellableMutationRunner struct {
+	stubSummaryActionRunner
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (s *summaryUncancellableMutationRunner) SaveBaseline(context.Context, BaselineSaveRequest) (report.Report, string, error) {
+	close(s.started)
+	<-s.release
+	close(s.finished)
+	return report.Report{}, "saved.json", nil
 }
 
 func (s *summaryBlockingRunner) SaveBaseline(ctx context.Context, _ BaselineSaveRequest) (report.Report, string, error) {

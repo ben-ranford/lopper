@@ -115,7 +115,7 @@ func TestPomPropertyExpansionSharesPOMBudget(t *testing.T) {
 		fmt.Fprintf(&content, "<dependency><groupId>${large}</groupId><artifactId>a%d</artifactId></dependency>", i)
 	}
 	content.WriteString("</dependencies><dependencyManagement><dependencies><dependency><groupId>${large}</groupId><artifactId>managed</artifactId></dependency></dependencies></dependencyManagement></project>")
-	descriptors, _ := parsePomDependencyContent("pom.xml", content.String())
+	descriptors, warnings := parsePomDependencyContent("pom.xml", content.String())
 	bytes := 0
 	for _, descriptor := range descriptors {
 		bytes += len(descriptor.Group) + len(descriptor.Artifact)
@@ -125,6 +125,9 @@ func TestPomPropertyExpansionSharesPOMBudget(t *testing.T) {
 	}
 	if len(descriptors) == 0 || len(descriptors) >= 300 || bytes > maxPomExpansionBytes {
 		t.Fatalf("unbounded aggregate result: %d descriptors, %d bytes", len(descriptors), bytes)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "property expansion budget was exhausted") || !strings.Contains(warnings[0], "pom.xml") {
+		t.Fatalf("expected one truncation warning for exhausted POM budget, got %#v", warnings)
 	}
 }
 

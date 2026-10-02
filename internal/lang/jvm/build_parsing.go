@@ -249,6 +249,9 @@ func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[s
 	descriptors := make([]dependencyDescriptor, 0, len(dependencies))
 	warnings := make([]string, 0)
 	for _, dependency := range dependencies {
+		if budget.exhausted {
+			break
+		}
 		descriptor, warning := parsePomDependencyWithBudget(dependency, propertyMap, kind, relativePath, budget)
 		if descriptor.Group != "" && descriptor.Artifact != "" {
 			descriptors = append(descriptors, descriptor)
@@ -256,6 +259,10 @@ func parsePomDependencyList(dependencies []pomDependencyModel, propertyMap map[s
 		if warning != "" {
 			warnings = append(warnings, warning)
 		}
+	}
+	if budget.exhausted && !budget.exhaustionWarningReported {
+		warnings = append(warnings, fmt.Sprintf("Maven dependency results may be incomplete because the property expansion budget was exhausted in %s", relativePath))
+		budget.exhaustionWarningReported = true
 	}
 	return descriptors, warnings
 }
@@ -354,12 +361,14 @@ const (
 )
 
 type pomExpansionBudget struct {
-	bytesRemaining  int
-	tokensRemaining int
+	bytesRemaining            int
+	tokensRemaining           int
+	exhausted                 bool
+	exhaustionWarningReported bool
 }
 
 func newPomExpansionBudget() *pomExpansionBudget {
-	return &pomExpansionBudget{maxPomExpansionBytes, maxPomExpansionTokens}
+	return &pomExpansionBudget{bytesRemaining: maxPomExpansionBytes, tokensRemaining: maxPomExpansionTokens}
 }
 
 func resolvePomPropertyValue(value string, properties map[string]string) (string, bool) {
@@ -375,6 +384,7 @@ func (b *pomExpansionBudget) resolve(value string, properties map[string]string)
 	tokensRemaining := maxPomPropertyTokens
 	for iteration := 0; iteration < 8; iteration++ {
 		if b.bytesRemaining < maxPomPropertyValueBytes || b.tokensRemaining < maxPomPropertyTokens {
+			b.exhausted = true
 			return "", true
 		}
 		updated, replaced, missing, tokensUsed := replacePomPropertyTokens(value, properties, tokensRemaining)
@@ -388,6 +398,7 @@ func (b *pomExpansionBudget) resolve(value string, properties map[string]string)
 		b.tokensRemaining -= tokensUsed
 		unresolved = unresolved || missing
 		if updated == "" && missing {
+			b.exhausted = true
 			return "", true
 		}
 		value = updated
