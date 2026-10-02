@@ -1,7 +1,23 @@
 name: release-source-ci
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full source SHA to verify without publishing
+        required: true
+        type: string
+      build_channel:
+        description: Stable release verification
+        required: true
+        type: choice
+        options:
+          - release
+        default: release
   workflow_call:
+    secrets:
+      SONAR_TOKEN:
+        required: false
     inputs:
       source_sha:
         required: true
@@ -15,11 +31,50 @@ on:
         default: false
 
 jobs:
-  verify-source-ci:
+  verify-source-sonar:
+    if: ${{ inputs.build_channel == 'release' }}
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      - name: Checkout trusted workflow revision
+        if: ${{ inputs.build_channel == 'release' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Preserve trusted Sonar verifier
+        if: ${{ inputs.build_channel == 'release' }}
+        run: cp scripts/verify-release-sonar.sh "${RUNNER_TEMP}/verify-release-sonar.sh"
+
+      - name: Verify exact source Sonar analysis
+        if: ${{ inputs.build_channel == 'release' }}
+        env:
+          PATH: /usr/bin:/bin
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: bash "${RUNNER_TEMP}/verify-release-sonar.sh"
+
+  verify-source-ci:
+    needs: verify-source-sonar
+    if: ${{ always() && (inputs.build_channel != 'release' || needs.verify-source-sonar.result == 'success') }}
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate build channel
+        env:
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+        run: |
+          case "$BUILD_CHANNEL" in
+            release|rolling) ;;
+            *) echo '::error::Unsupported publication build channel.' >&2; exit 1 ;;
+          esac
+
       - name: Checkout exact release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
