@@ -54,10 +54,10 @@ func runSummaryArrowPTY(t *testing.T, exit string) {
 	waitSignalOutput(t, capture, done, func(s string) bool { return strings.Contains(s, "Page: 1/2") })
 	exit = sendSummaryPTYCommand(t, exit, master, capture, done)
 	if exit == "mutation" {
-		finishMutationPTY(t, master, ctx, done, mutationRunner)
+		finishMutationPTY(ctx, t, master, done, mutationRunner)
 		return
 	}
-	finishSummaryPTY(t, exit, master, cancel, ctx, done, runner)
+	finishSummaryPTY(ctx, t, exit, master, cancel, done, runner)
 }
 
 func registerSummaryPTYCleanup(t *testing.T, master *os.File, cancel context.CancelFunc, exited <-chan struct{}) {
@@ -104,7 +104,7 @@ func sendSummaryPTYCommand(t *testing.T, exit string, master *os.File, capture *
 	return exit
 }
 
-func finishMutationPTY(t *testing.T, master *os.File, ctx context.Context, done <-chan error, runner *summaryUncancellableMutationRunner) {
+func finishMutationPTY(ctx context.Context, t *testing.T, master *os.File, done <-chan error, runner *summaryUncancellableMutationRunner) {
 	t.Helper()
 	if _, err := master.Write([]byte("save-baseline nightly\r")); err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func finishMutationPTY(t *testing.T, master *os.File, ctx context.Context, done 
 	}
 }
 
-func finishSummaryPTY(t *testing.T, exit string, master *os.File, cancel context.CancelFunc, ctx context.Context, done <-chan error, runner *summaryBlockingRunner) {
+func finishSummaryPTY(ctx context.Context, t *testing.T, exit string, master *os.File, cancel context.CancelFunc, done <-chan error, runner *summaryBlockingRunner) {
 	t.Helper()
 	if exit == "queued" {
 		exit = "q\r" + strings.Repeat("x", 1024)
