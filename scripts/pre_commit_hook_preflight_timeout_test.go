@@ -763,7 +763,7 @@ func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixtu
 	if temps, err := filepath.Glob(filepath.Join(tmpDir, "lopper-hooks-*")); err != nil || len(temps) != 0 {
 		var contents []string
 		for _, temp := range temps {
-			_ = filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
+			walkErr := filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					contents = append(contents, fmt.Sprintf("%s: %v", path, walkErr))
 					return nil
@@ -771,6 +771,9 @@ func waitForPreflightInstallRollback(t *testing.T, fixture preflightTimeoutFixtu
 				contents = append(contents, path)
 				return nil
 			})
+			if walkErr != nil {
+				contents = append(contents, fmt.Sprintf("%s: %v", temp, walkErr))
+			}
 		}
 		t.Fatalf("preflight cleanup did not finish; temps=%#v err=%v contents=%#v output=%s", temps, err, contents, output)
 	}
@@ -950,7 +953,7 @@ func assertNoPreflightTimeoutTemps(t *testing.T, tmpDir string) {
 	if err != nil || len(temps) != 0 {
 		var contents []string
 		for _, temp := range temps {
-			_ = filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
+			walkErr := filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					contents = append(contents, fmt.Sprintf("%s: %v", path, walkErr))
 					return nil
@@ -958,6 +961,9 @@ func assertNoPreflightTimeoutTemps(t *testing.T, tmpDir string) {
 				contents = append(contents, path)
 				return nil
 			})
+			if walkErr != nil {
+				contents = append(contents, fmt.Sprintf("%s: %v", temp, walkErr))
+			}
 		}
 		t.Fatalf("preflight temps = %#v err=%v contents=%#v", temps, err, contents)
 	}
