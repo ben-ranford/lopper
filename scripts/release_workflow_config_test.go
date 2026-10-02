@@ -5342,11 +5342,18 @@ func TestReleaseCallersPassMemoryApprovalToSourceCI(t *testing.T) {
 
 	var rolling workflowConfig
 	readYAMLConfig(t, ".github/workflows/rolling.yml", &rolling)
-	assertWorkflowStringValues(t, []workflowStringValue{{
-		label: "rolling memory approval",
-		got:   rolling.Jobs["verify-rolling-source-ci"].With["memory_approved"],
-		want:  "${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}",
-	}})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{
+			label: "rolling source CI memory approval",
+			got:   rolling.Jobs["verify-rolling-source-ci"].With["memory_approved"],
+			want:  "${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}",
+		},
+		{
+			label: "rolling orchestration memory approval",
+			got:   rolling.Jobs["orchestrate-rolling"].With["memory_approved"],
+			want:  "${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}",
+		},
+	})
 
 	var release workflowConfig
 	readYAMLConfig(t, ".github/workflows/release.yml", &release)
