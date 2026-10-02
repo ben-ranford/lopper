@@ -86,7 +86,7 @@ func readPreference(path string) (_ []byte, result error) {
 		return nil, errors.Join(readErr, closeErr)
 	}
 	if len(data) > maxPreferenceSize {
-		return nil, fmt.Errorf("UI preference exceeds %d bytes", maxPreferenceSize)
+		return nil, fmt.Errorf("ui preference exceeds %d bytes", maxPreferenceSize)
 	}
 	return data, nil
 }
