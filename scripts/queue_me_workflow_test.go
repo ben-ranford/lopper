@@ -18,6 +18,23 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 	required := []string{
 		"pull_request_target:",
 		"workflow_dispatch:",
+		"schedule:",
+		"check_run:",
+		"check_suite:",
+		"status:",
+		"workflow_run:",
+		"workflows: [ci, windows runtime]",
+		"github.event_name == 'pull_request_target' &&\n" +
+			"        github.ref == 'refs/heads/main' &&\n" +
+			"        github.workflow_ref == format('{0}/.github/workflows/queue-me.yml@refs/heads/main', github.repository) &&",
+		"'queue_me_reviews.js'",
+		"'queue_me_sonar.js'",
+		"'queue_me_suppressions.js'",
+		"'inline_suppression_tracker.js'",
+		"'queue_me_ci.js'",
+		"'queue_me_ci_intent.js'",
+		"'queue_me_public_api.js'",
+		"'queue_me_reuse.js'",
 		"push:",
 		"- main",
 		"- labeled",
@@ -55,10 +72,12 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"actions/checkout@",
 		"actions/github-script@v",
 		"github.event.pull_request.head",
+		"github.event.pull_request.base.ref",
 		"pull_request:\n",
+		"pull_request_review:",
+		"pull_request_review_comment:",
 	} {
 		if strings.Contains(workflowText, forbidden) {
 			t.Fatalf("queue-me workflow contains unsafe fragment %q", forbidden)
@@ -73,7 +92,10 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"assertCanonicalCommitIdentity",
 		"Queue identity audit failed",
 		"expectedHeadOid",
-		"enablePullRequestAutoMerge",
+		"verifyQueueEvidence",
+		"revalidateQueueEvidence",
+		"verifyQueueCI",
+		"mergeVerifiedQueuedPull",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
 		"updateBranch",
@@ -87,6 +109,7 @@ func TestQueueMeControllerContract(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"requestReviews",
+		"enablePullRequestAutoMerge",
 		"force-push",
 		"updateMethod: REBASE",
 		"process.env.QUEUE_APP_PRIVATE_KEY",
@@ -125,11 +148,134 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 	if err != nil {
 		t.Fatal("node is required to test the queue-me controller")
 	}
-	command := exec.Command(node, "--test", "queue_me_controller.test.js")
+	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js",
+		"queue_me_sonar.test.js", "queue_me_suppressions.test.js", "queue_me_ci.test.js",
+		"queue_me_ci_intent.test.js", "queue_me_public_api.test.js", "queue_me_reuse.test.js")
 	command.Dir = repoPath(t, "scripts")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("queue-me node tests failed: %v\n%s", err, output)
+	}
+}
+
+func TestQueueMeProtectedPhaseIsolation(t *testing.T) {
+	var workflow map[string]any
+	if err := yaml.Unmarshal([]byte(readConfig(t, ".github/workflows/queue-me.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	jobs := workflow["jobs"].(map[string]any)
+	if len(jobs) != 4 {
+		t.Fatal("queue must separate preparation, analysis, suppression and final advance")
+	}
+	for _, name := range []string{"analyze", "suppression", "advance"} {
+		t.Run(name, func(t *testing.T) {
+			job := jobs[name].(map[string]any)
+			assertQueueReadPermissions(t, name, job)
+			assertQueueProtectedPin(t, name, job)
+			if name != "advance" {
+				assertQueueReadOnlyPhase(t, name, job)
+			}
+		})
+	}
+	prepare := queuePhaseYAML(t, jobs["prepare"])
+	if !strings.Contains(prepare, "runController.prepareQueue(") || strings.Contains(prepare, "actions/checkout@") {
+		t.Fatal("preparation must use the protected selector without checking out candidate code")
+	}
+	assertQueueFinalWriter(t, queuePhaseYAML(t, jobs["advance"]))
+}
+
+func queuePhaseYAML(t *testing.T, job any) string {
+	t.Helper()
+	data, err := yaml.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func assertQueueReadPermissions(t *testing.T, name string, job map[string]any) {
+	t.Helper()
+	permissions := job["permissions"].(map[string]any)
+	for scope, permission := range permissions {
+		if permission != "read" {
+			t.Fatalf("%s grants ambient %s: %v", name, scope, permission)
+		}
+	}
+	if permissions["contents"] != "read" || permissions["pull-requests"] != "read" {
+		t.Fatalf("%s must explicitly bound its read-only token", name)
+	}
+	if name != "analyze" && permissions["actions"] != "read" {
+		t.Fatalf("%s must read exact CI artifact provenance", name)
+	}
+}
+
+func assertQueueProtectedPin(t *testing.T, name string, job map[string]any) {
+	t.Helper()
+	steps := job["steps"].([]any)
+	checkout := steps[0].(map[string]any)
+	with := checkout["with"].(map[string]any)
+	if checkout["uses"] != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" ||
+		with["ref"] != nil || with["persist-credentials"] != false || with["fetch-depth"] != 0 {
+		t.Fatalf("%s must fetch protected history without dynamic refs or persisted credentials", name)
+	}
+	binding := steps[1].(map[string]any)
+	environment := binding["env"].(map[string]any)
+	if environment["TRUSTED_CONTROLLER_REF"] != "${{ github.workflow_sha }}" ||
+		environment["QUEUE_TICKET"] != "${{ needs.prepare.outputs.ticket }}" {
+		t.Fatalf("%s pin must bind trusted workflow source to selected ticket", name)
+	}
+	for _, fragment := range []string{
+		"python3 -I -S -B -", "re.fullmatch(r'[0-9a-f]{40}', selected)",
+		"selected != os.environ['TRUSTED_CONTROLLER_REF']", "actual != selected",
+		"not key.startswith('GIT_')", "GIT_CONFIG_NOSYSTEM='1'", "GIT_CONFIG_GLOBAL=os.devnull", "GIT_NO_REPLACE_OBJECTS='1'",
+		"['git', 'remote', 'get-url', '--all', 'origin']", "if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):",
+		"['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main']", "['checkout', '--detach', selected]",
+		"'core.hooksPath=/dev/null'", "env=environment, check=True",
+	} {
+		if !strings.Contains(binding["run"].(string), fragment) {
+			t.Fatalf("%s protected pin lacks %q", name, fragment)
+		}
+	}
+}
+
+func assertQueueReadOnlyPhase(t *testing.T, name string, job map[string]any) {
+	t.Helper()
+	data := queuePhaseYAML(t, job)
+	for _, forbidden := range []string{"secrets.", "create-github-app-token", "queue_token", "permission-", "statuses: write"} {
+		if strings.Contains(data, forbidden) {
+			t.Fatalf("read-only %s job contains privileged source %q", name, forbidden)
+		}
+	}
+	if job["needs"] != "prepare" {
+		t.Fatalf("%s must consume its ticket directly from protected preparation", name)
+	}
+}
+
+func assertQueueFinalWriter(t *testing.T, advance string) {
+	t.Helper()
+	for _, fragment := range []string{"needs.analyze.outputs.analysis", "needs.suppression.outputs.receipt",
+		"needs.analyze.result", "needs.suppression.result", "needs.prepare.outputs.ticket",
+		"QUEUE_REUSE_READ_TOKEN: ${{ github.token }}", "github-token: ${{ steps.queue_token.outputs.token }}"} {
+		if !strings.Contains(advance, fragment) {
+			t.Fatalf("final writer lacks protected same-run evidence %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"check_reuse.py", "queue_me_reuse.py analyze", "setup-go@", "reuse_suppression.js"} {
+		if strings.Contains(advance, forbidden) {
+			t.Fatalf("final writer cannot execute analysis or candidate artifact parsing: %s", forbidden)
+		}
+	}
+}
+
+func TestQueueMeSharedBridgePythonSuite(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal("python3 is required to test shared protected queue validation")
+	}
+	command := exec.Command(python, "-B", "-m", "unittest", "queue_me_reuse_test")
+	command.Dir = repoPath(t, "scripts")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("shared queue bridge tests failed: %v\n%s", err, output)
 	}
 }
 

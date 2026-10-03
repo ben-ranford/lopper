@@ -180,10 +180,7 @@ func TestSanitizedEnvPreventsDetachedGitMaintenanceOnCommit(t *testing.T) {
 	run := func(args ...string) {
 		t.Helper()
 
-		command, err := CommandContext(context.Background(), gitPath, append([]string{"-C", repo}, args...)...)
-		if err != nil {
-			t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
-		}
+		command := fixtureGitCommand(t, gitPath, append([]string{"-C", repo}, args...)...)
 		command.Env = append(SanitizedEnv(), "GIT_TRACE2_EVENT="+tracePath)
 		output, err := command.CombinedOutput()
 		if err != nil {
@@ -251,4 +248,17 @@ func containsArgPair(args []string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func fixtureGitCommand(t *testing.T, gitPath string, args ...string) *exec.Cmd {
+	t.Helper()
+	switch gitPath {
+	case ExecutablePrimary:
+		return exec.Command(ExecutablePrimary, args...)
+	case ExecutableFallback:
+		return exec.Command(ExecutableFallback, args...)
+	default:
+		t.Fatal("unsupported fixture git path")
+		return nil
+	}
 }

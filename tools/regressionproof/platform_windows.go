@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -11,9 +13,41 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func newProofGitCommand(ctx context.Context) (*exec.Cmd, error) {
+	path, err := resolveGitBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(path, proofWindowsGitPath) {
+		return nil, errors.New("unsupported proof Git executable")
+	}
+	return exec.CommandContext(ctx, proofWindowsGitPath), nil
+}
+
+func proofGoSystemPath() string {
+	return `C:\mingw64\bin;` + strings.TrimPrefix(proofWindowsSystemPath, "PATH=")
+}
+
+func proofCompilerEnv() ([]string, error) {
+	// The hosted image's Install-Mingw64.ps1 extracts these compilers to C:\.
+	// Keep native cgo enabled as assumed by declaration routing, without
+	// inheriting arbitrary CC/CXX commands or caller compiler search paths.
+	cc, err := validateWindowsProofExecutable(proofWindowsCCPath, proofWindowsCCPath, "C compiler", os.Stat, windowsProofFinalPath)
+	if err != nil {
+		return nil, err
+	}
+	cxx, err := validateWindowsProofExecutable(proofWindowsCXXPath, proofWindowsCXXPath, "C++ compiler", os.Stat, windowsProofFinalPath)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"CGO_ENABLED=1", "CC=" + cc, "CXX=" + cxx}, nil
+}
+
 const proofWindowsGitPath = `C:\Program Files\Git\cmd\git.exe`
 const proofWindowsGoCache = `C:\hostedtoolcache\windows\go`
 const proofWindowsGoCacheCanonical = `D:\hostedtoolcache\windows\go`
+const proofWindowsCCPath = `C:\mingw64\bin\gcc.exe`
+const proofWindowsCXXPath = `C:\mingw64\bin\g++.exe`
 const proofWindowsSystemPath = `PATH=C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Windows\System32;C:\Windows`
 
 func resolveProofGitBinaryPath() (string, error) {

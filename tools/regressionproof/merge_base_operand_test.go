@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -47,8 +45,7 @@ func checkMergeBaseOperand(t *testing.T, repo regressionProofRepo, operand strin
 	}}
 	err := r.prove(context.Background(), repo.path, operand, nil, io.Discard)
 	if invalid {
-		var exitErr *exec.ExitError
-		if err == nil || !strings.HasPrefix(err.Error(), "resolve merge base:") || !errors.As(err, &exitErr) || calls != 1 {
+		if err == nil || !strings.HasPrefix(err.Error(), "resolve merge base:") || calls != 0 {
 			t.Fatalf("option operand must fail at merge-base before later commands: calls=%d err=%v", calls, err)
 		}
 		return
@@ -67,7 +64,7 @@ func newMergeBaseOperandRepo(t *testing.T) regressionProofRepo {
 	r := &runner{execCommand: (&execRunner{}).Run}
 	git := func(args ...string) string {
 		t.Helper()
-		output, err := r.gitOutput(context.Background(), repo.path, args...)
+		output, err := r.fixtureGitOutput(context.Background(), repo.path, args...)
 		if err != nil {
 			t.Fatalf("prepare merge-base fixture: %v", err)
 		}

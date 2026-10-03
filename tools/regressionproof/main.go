@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,27 +62,6 @@ var openWriteRoot = func(rootDir string) (confinedWriteRoot, error) {
 	return safeio.OpenWriteRoot(rootDir)
 }
 
-type execRunner struct{}
-
-func (*execRunner) Run(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	if len(env) > 0 {
-		cmd.Env = env
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	output := stdout.Bytes()
-	if err != nil {
-		output = append(append([]byte(nil), output...), stderr.Bytes()...)
-		return output, &commandError{name: name, args: args, output: output, err: err}
-	}
-	return output, nil
-}
-
 type commandError struct {
 	name   string
 	args   []string
@@ -106,6 +84,7 @@ func (e *commandError) Unwrap() error {
 type runner struct {
 	stderr      io.Writer
 	execCommand func(context.Context, string, []string, string, []string) ([]byte, error)
+	allocations map[string]proofAllocation
 }
 
 func main() {
@@ -113,8 +92,7 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	execRunner := &execRunner{}
-	r := &runner{stderr: stderr, execCommand: execRunner.Run}
+	r := &runner{stderr: stderr}
 	return r.run(args, getenv, stdout)
 }
 
@@ -212,8 +190,8 @@ func (r *runner) prove(ctx context.Context, repoRoot, baseSHA string, declaratio
 		return fmt.Errorf("resolve merge base: %w", err)
 	}
 	mergeBase = strings.TrimSpace(mergeBase)
-	if mergeBase == "" {
-		return errors.New("resolve merge base: git returned an empty commit")
+	if !gitexec.ValidObjectID(mergeBase) {
+		return errors.New("resolve merge base: git must return one full commit OID")
 	}
 
 	changedFiles, err := r.changedFiles(ctx, repoRoot, mergeBase)
@@ -329,7 +307,11 @@ func (r *runner) createBaseWorktree(ctx context.Context, repoRoot, mergeBase str
 		return "", nil, fmt.Errorf("create worktree parent: %w", err)
 	}
 	worktreePath := filepath.Join(worktreeParent, "base")
+	if err := r.ownProofAllocation(repoRoot, worktreeParent, worktreePath, proofWorktree); err != nil {
+		return "", nil, errors.Join(err, removeAll(worktreeParent))
+	}
 	if _, err := r.runGit(ctx, repoRoot, "worktree", "add", "--detach", worktreePath, mergeBase); err != nil {
+		delete(r.allocations, worktreePath)
 		if removeErr := removeAll(worktreeParent); removeErr != nil {
 			err = errors.Join(err, fmt.Errorf("remove failed worktree parent: %w", removeErr))
 		}
@@ -338,6 +320,7 @@ func (r *runner) createBaseWorktree(ctx context.Context, repoRoot, mergeBase str
 
 	cleanup := func() error {
 		_, removeWorktreeErr := r.runGit(context.Background(), repoRoot, "worktree", "remove", "--force", worktreePath)
+		delete(r.allocations, worktreePath)
 		removeParentErr := removeAll(worktreeParent)
 		return errors.Join(removeWorktreeErr, removeParentErr)
 	}
@@ -406,6 +389,10 @@ func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath strin
 	}()
 
 	testBinaryPath := filepath.Join(testBinaryDir, "test-binary")
+	if err := r.ownProofAllocation(repoRoot, testBinaryDir, testBinaryPath, proofCompileOutput); err != nil {
+		return err
+	}
+	defer delete(r.allocations, testBinaryPath)
 	_, err = r.runGo(ctx, repoRoot, regressionProofGoTestArgs("-c", "-o", testBinaryPath, packagePath))
 	return err
 }
@@ -475,14 +462,6 @@ func regressionProofGoTestArgs(args ...string) []string {
 	return append(result, args...)
 }
 
-func (r *runner) runGo(ctx context.Context, repoRoot string, args []string) ([]byte, error) {
-	goPath, err := proofGoBinaryPath()
-	if err != nil {
-		return nil, err
-	}
-	return r.execCommand(ctx, goPath, args, repoRoot, os.Environ())
-}
-
 func parseDeclaredTestAction(output []byte, expectedPackage, testName string) (testAction, error) {
 	var sawJSON bool
 	for _, line := range strings.Split(string(output), "\n") {
@@ -516,16 +495,6 @@ func parseDeclaredTestAction(output []byte, expectedPackage, testName string) (t
 func (r *runner) gitOutput(ctx context.Context, repoRoot string, args ...string) (string, error) {
 	output, err := r.runGit(ctx, repoRoot, args...)
 	return string(output), err
-}
-
-func (r *runner) runGit(ctx context.Context, repoRoot string, args ...string) ([]byte, error) {
-	gitPath, err := resolveGitBinaryPath()
-	if err != nil {
-		return nil, err
-	}
-	fullArgs := append(gitexec.SafeConfigArgs(), "-C", repoRoot)
-	fullArgs = append(fullArgs, args...)
-	return r.execCommand(ctx, gitPath, fullArgs, repoRoot, proofGitEnv())
 }
 
 func writeError(stderr io.Writer, format string, args ...any) int {

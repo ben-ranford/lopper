@@ -2,6 +2,16 @@ name: queue me
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'
+  check_run:
+    types: [completed, rerequested]
+  check_suite:
+    types: [completed]
+  status:
+  workflow_run:
+    workflows: [ci, windows runtime]
+    types: [completed]
   push:
     branches:
       - main
@@ -25,16 +35,23 @@ permissions:
   contents: read
 
 jobs:
-  advance:
-    name: advance queue-me
+  prepare:
+    name: prepare queue-me
     if: >-
       (
         github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/main'
       ) ||
       github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'check_run' ||
+      github.event_name == 'check_suite' ||
+      github.event_name == 'status' ||
+      github.event_name == 'workflow_run' ||
       (
         github.event_name == 'pull_request_target' &&
+        github.ref == 'refs/heads/main' &&
+        github.workflow_ref == format('{0}/.github/workflows/queue-me.yml@refs/heads/main', github.repository) &&
         (
           (github.event.action == 'labeled' && github.event.label.name == 'queue-me') ||
           (github.event.action == 'unlabeled' && github.event.label.name == 'queue-me') ||
@@ -43,6 +60,8 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      ticket: ${{ steps.select.outputs.ticket }}
     steps:
       - name: Check queue app configuration
         id: queue_config
@@ -98,16 +117,224 @@ jobs:
               flag: 'wx',
               mode: 0o600,
             });
+            const path = require('node:path');
+            for (const name of ['queue_me_reviews.js', 'queue_me_sonar.js',
+              'queue_me_suppressions.js', 'inline_suppression_tracker.js',
+              'queue_me_ci.js', 'queue_me_ci_intent.js', 'queue_me_public_api.js',
+              'queue_me_reuse.js']) {
+              const response = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo,
+                path: `scripts/${name}`, ref: process.env.TRUSTED_CONTROLLER_REF,
+              });
+              const file = response.data;
+              if (Array.isArray(file) || file.type !== 'file' || file.encoding !== 'base64') {
+                throw new Error('Trusted queue policy module is unavailable.');
+              }
+              fs.writeFileSync(path.join(path.dirname(process.env.QUEUE_CONTROLLER_PATH), name),
+                Buffer.from(file.content.replaceAll('\n', ''), 'base64'),
+                { flag: 'wx', mode: 0o600 });
+            }
 
-      - name: Advance queue
+      - name: Select queue candidate
+        id: select
         if: steps.queue_config.outputs.configured == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           QUEUE_CONTROLLER_PATH: ${{ runner.temp }}/queue_me_controller.js
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
           QUEUE_LABEL: queue-me
           QUEUE_APP_SLUG: ${{ steps.queue_token.outputs.app-slug }}
         with:
           github-token: ${{ steps.queue_token.outputs.token }}
           script: |
             const runController = require(process.env.QUEUE_CONTROLLER_PATH);
-            await runController({ github, context, core });
+            const ticket = await runController.prepareQueue({ github, context, core });
+            if (ticket) core.setOutput('ticket', JSON.stringify(ticket));
+
+  analyze:
+    name: analyze protected queue candidate
+    needs: prepare
+    if: ${{ needs.prepare.outputs.ticket != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      analysis: ${{ steps.analyze.outputs.analysis }}
+    steps:
+      - name: Checkout immutable protected policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind protected checkout to selection
+        env:
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, re, subprocess
+          ticket = json.loads(os.environ['QUEUE_TICKET'])
+          selected = ticket['snapshot']['base']
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
+              raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
+          PYTHON
+      - name: Setup protected Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Analyze protected prospective merge
+        id: analyze
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+        run: |
+          set -euo pipefail
+          input=$(python3 -c 'import json,os; print(json.dumps({"snapshot":json.loads(os.environ["QUEUE_TICKET"])["snapshot"]}))')
+          result=$(printf '%s' "$input" | python3 -E -S -B scripts/queue_me_reuse.py analyze)
+          printf 'analysis=%s\n' "$result" >> "$GITHUB_OUTPUT"
+
+  suppression:
+    name: verify protected queue suppression evidence
+    needs: prepare
+    if: ${{ needs.prepare.outputs.ticket != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      receipt: ${{ steps.suppression.outputs.receipt }}
+    steps:
+      - name: Checkout immutable protected policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind protected checkout to selection
+        env:
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, re, subprocess
+          ticket = json.loads(os.environ['QUEUE_TICKET'])
+          selected = ticket['snapshot']['base']
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
+              raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
+          PYTHON
+      - name: Verify shared suppression provenance
+        id: suppression
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+          GH_TOKEN: ${{ github.token }}
+        with:
+          script: |
+            const ticket = JSON.parse(process.env.QUEUE_TICKET);
+            const verify = require('./scripts/reuse_suppression.js');
+            const receipt = await verify({ github, context,
+              snapshot: ticket.snapshot, token: process.env.GH_TOKEN });
+            core.setOutput('receipt', JSON.stringify(receipt));
+
+  advance:
+    name: advance queue-me
+    needs: [prepare, analyze, suppression]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.ticket != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout immutable protected policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind protected checkout to selection
+        env:
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, re, subprocess
+          ticket = json.loads(os.environ['QUEUE_TICKET'])
+          selected = ticket['snapshot']['base']
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
+              raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
+          PYTHON
+      - name: Create final queue app token
+        id: queue_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.QUEUE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Revalidate and advance selected candidate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          TRUSTED_CONTROLLER_REF: ${{ github.workflow_sha }}
+          QUEUE_LABEL: queue-me
+          QUEUE_APP_SLUG: ${{ steps.queue_token.outputs.app-slug }}
+          QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
+          QUEUE_ANALYSIS: ${{ needs.analyze.outputs.analysis }}
+          QUEUE_SUPPRESSION: ${{ needs.suppression.outputs.receipt }}
+          QUEUE_ANALYSIS_OUTCOME: ${{ needs.analyze.result }}
+          QUEUE_SUPPRESSION_OUTCOME: ${{ needs.suppression.result }}
+          QUEUE_REUSE_READ_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ steps.queue_token.outputs.token }}
+          script: |
+            const runController = require('./scripts/queue_me_controller.js');
+            const parse = value => value ? JSON.parse(value) : null;
+            await runController({ github, context, core, queueProof: {
+              ticket: parse(process.env.QUEUE_TICKET),
+              analysis: parse(process.env.QUEUE_ANALYSIS),
+              suppression: parse(process.env.QUEUE_SUPPRESSION),
+              analysisOutcome: process.env.QUEUE_ANALYSIS_OUTCOME,
+              suppressionOutcome: process.env.QUEUE_SUPPRESSION_OUTCOME,
+              readToken: process.env.QUEUE_REUSE_READ_TOKEN,
+            } });

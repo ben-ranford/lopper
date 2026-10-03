@@ -181,7 +181,7 @@ func TestWindowsProofRejectsUntrustedGoRoot(t *testing.T) {
 		t.Fatal("invalid toolchain must fail before executing a command")
 		return nil, nil
 	}}
-	if _, err := r.runGo(context.Background(), t.TempDir(), []string{"version"}); err == nil {
+	if _, err := r.runGo(context.Background(), t.TempDir(), []string{"list", buildVCSFlag, "-tags", regressionProofBuildTag, "-f", "{{.ImportPath}}", "./pkg"}); err == nil {
 		t.Fatal("untrusted Go toolchain was accepted")
 	}
 }
