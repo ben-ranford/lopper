@@ -120,101 +120,103 @@ func pythonIdentityProjection(name string, document report.PythonManifestDocumen
 	if document.Failure != "" {
 		return nil, "", false
 	}
-	copyKeys := func(source map[string]any, keys ...string) map[string]any {
-		if source == nil {
-			return nil
-		}
-		result := make(map[string]any, len(keys))
-		for _, key := range keys {
-			if value, ok := source[key]; ok {
-				result[key] = value
-			}
-		}
-		return result
-	}
 	switch name {
 	case pythonPyprojectFile:
-		result := copyKeys(document.Document, "project", "dependency-groups")
-		tool, ok := document.Document["tool"].(map[string]any)
-		if !ok {
-			if value, exists := document.Document["tool"]; exists {
-				result["tool"] = value
-			}
-		} else {
-			projectTools := make(map[string]any, 2)
-			for _, key := range []string{"uv", "poetry"} {
-				value, exists := tool[key]
-				if !exists {
-					continue
-				}
-				switch key {
-				case "uv":
-					if table, valid := value.(map[string]any); valid {
-						projectTools[key] = copyKeys(table, "dev-dependencies")
-					} else {
-						projectTools[key] = value
-					}
-				case "poetry":
-					if table, valid := value.(map[string]any); valid {
-						projectTools[key] = copyKeys(table, "dependencies", "dev-dependencies", "group")
-					} else {
-						projectTools[key] = value
-					}
-				}
-			}
-			if len(projectTools) != 0 {
-				result["tool"] = projectTools
-			}
-		}
-		return result, "", true
+		return pyprojectIdentityProjection(document.Document), "", true
 	case pythonPipfileName:
-		return copyKeys(document.Document, "packages", "dev-packages"), "", true
+		return pythonIdentityFields(document.Document, "packages", "dev-packages"), "", true
 	case pythonPoetryLockName, pythonUVLockName:
-		packages, exists := document.Document["package"]
-		if !exists {
-			return map[string]any{}, "", true
-		}
-		entries, ok := packages.([]any)
-		if !ok {
-			return map[string]any{"package": packages}, "", true
-		}
-		projected := make([]any, 0, len(entries))
-		for _, entry := range entries {
-			if table, valid := entry.(map[string]any); valid {
-				projected = append(projected, copyKeys(table, "name", "version"))
-			} else {
-				projected = append(projected, entry)
-			}
-		}
-		return map[string]any{"package": projected}, "", true
+		return pythonLockIdentityProjection(document.Document), "", true
 	case pythonPipfileLockName:
-		result := make(map[string]any, 2)
-		for _, section := range []string{"default", "develop"} {
-			value, exists := document.Document[section]
-			if !exists {
-				continue
-			}
-			packages, ok := value.(map[string]any)
-			if !ok {
-				result[section] = value
-				continue
-			}
-			projected := make(map[string]any, len(packages))
-			for name, raw := range packages {
-				if metadata, valid := raw.(map[string]any); valid {
-					projected[name] = copyKeys(metadata, "version")
-				} else {
-					projected[name] = raw
-				}
-			}
-			result[section] = projected
-		}
-		return result, "", true
+		return pipfileLockIdentityProjection(document.Document), "", true
 	case pythonRequirementsTxt:
 		return nil, document.Text, true
 	default:
 		return nil, "", false
 	}
+}
+
+func pythonIdentityFields(source map[string]any, keys ...string) map[string]any {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]any, len(keys))
+	for _, key := range keys {
+		if value, ok := source[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func pythonIdentityTable(value any, keys ...string) any {
+	if table, ok := value.(map[string]any); ok {
+		return pythonIdentityFields(table, keys...)
+	}
+	return value
+}
+
+func pyprojectIdentityProjection(document map[string]any) map[string]any {
+	result := pythonIdentityFields(document, "dependency-groups")
+	if value, exists := document["project"]; exists {
+		result["project"] = pythonIdentityTable(value, "dependencies", "optional-dependencies")
+	}
+	tool, ok := document["tool"].(map[string]any)
+	if !ok {
+		if value, exists := document["tool"]; exists {
+			result["tool"] = value
+		}
+		return result
+	}
+	projectTools := make(map[string]any, 2)
+	if value, exists := tool["uv"]; exists {
+		projectTools["uv"] = pythonIdentityTable(value, "dev-dependencies")
+	}
+	if value, exists := tool["poetry"]; exists {
+		projectTools["poetry"] = pythonIdentityTable(value, "dependencies", "dev-dependencies", "group")
+	}
+	if len(projectTools) != 0 {
+		result["tool"] = projectTools
+	}
+	return result
+}
+
+func pythonLockIdentityProjection(document map[string]any) map[string]any {
+	packages, exists := document["package"]
+	if !exists {
+		return map[string]any{}
+	}
+	entries, ok := packages.([]any)
+	if !ok {
+		return map[string]any{"package": packages}
+	}
+	projected := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		projected = append(projected, pythonIdentityTable(entry, "name", "version"))
+	}
+	return map[string]any{"package": projected}
+}
+
+func pipfileLockIdentityProjection(document map[string]any) map[string]any {
+	result := make(map[string]any, 2)
+	for _, section := range []string{"default", "develop"} {
+		if value, exists := document[section]; exists {
+			result[section] = pipfileLockIdentitySection(value)
+		}
+	}
+	return result
+}
+
+func pipfileLockIdentitySection(value any) any {
+	packages, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	projected := make(map[string]any, len(packages))
+	for name, raw := range packages {
+		projected[name] = pythonIdentityTable(raw, "version")
+	}
+	return projected
 }
 
 func (c *packagingCatalog) parse(repo, path string) (map[string]struct{}, []string, error) {

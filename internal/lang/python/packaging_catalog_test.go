@@ -241,6 +241,34 @@ func TestPackagingCatalogOverflowReportsProjectionBudget(t *testing.T) {
 	}
 }
 
+func TestPackagingCatalogOverflowOmitsUnrelatedProjectMetadata(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	content := "[project]\nname='metadata-only'\nauthors=[{name='Ignored Author'}]\nreadme='" + strings.Repeat("unrelated metadata ", 256) + "'\ndependencies=['requests==2.32.3']\n[project.optional-dependencies]\ndocs=['sphinx==8.0.2']\n"
+	testutil.MustWriteFile(t, path, content)
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	catalog.identityBytes = maxPackagingIdentityProjectionBytes - 256
+	if _, err := catalog.read(repo, path); err != nil {
+		t.Fatal(err)
+	}
+	document := catalog.documents[path]
+	if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+		t.Fatalf("unrelated project metadata exhausted the projection budget: %+v", document)
+	}
+	encoded, err := json.Marshal(document.IdentityProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"project":{"dependencies":["requests==2.32.3"],"optional-dependencies":{"docs":["sphinx==8.0.2"]}}}`
+	if string(encoded) != want {
+		t.Fatalf("project identity fields = %s, want %s", encoded, want)
+	}
+	if catalog.identityBytes <= maxPackagingIdentityProjectionBytes-256 || catalog.identityBytes > maxPackagingIdentityProjectionBytes {
+		t.Fatalf("projection budget accounting changed: %d", catalog.identityBytes)
+	}
+}
+
 func TestPackagingCatalogOverflowProjectionsCoverIdentityFormats(t *testing.T) {
 	for _, tc := range []struct {
 		name, content, key string
