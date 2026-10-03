@@ -69,8 +69,17 @@ def main(argv=None):
         if len(arguments) != 1:
             raise shared.EventError("Specify one queue reuse command")
         value = document(sys.stdin)
-        result = execute(arguments[0], value, ReadOnlyGitHub(os.environ.get("GH_TOKEN")),
-                         Path(__file__).resolve().parents[1])
+        api = ReadOnlyGitHub(os.environ.get("GH_TOKEN"))
+        try:
+            result = execute(arguments[0], value, api, Path(__file__).resolve().parents[1])
+        except shared.CIDeferred:
+            if arguments[0] != "validate":
+                raise shared.EventError("Analysis cannot defer suppression validation") from None
+            snapshot = shared.validate_snapshot(value["snapshot"])
+            shared.same_live_pair(api, snapshot)
+            print(json.dumps({"version": 1, "kind": "ci-deferred", "snapshot": snapshot},
+                             sort_keys=True, separators=(",", ":")))
+            return 75
         encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > MAX_DOCUMENT_BYTES:
             raise shared.EventError("Queue reuse evidence exceeds its bound")

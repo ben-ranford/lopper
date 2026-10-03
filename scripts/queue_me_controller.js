@@ -558,15 +558,26 @@ async function reconcileEventPull({
   );
 }
 
-async function verifyQueueCI(input) {
+async function verifyQueueCI(input, expectedIntent) {
   const { collectCIIntent } = require('./queue_me_ci_intent');
   const { verifyCI } = require('./queue_me_ci');
   const intent = await collectCIIntent(input);
-  const ci = await verifyCI({ ...input, ciNotBefore: intent.ciNotBefore });
+  if (expectedIntent && JSON.stringify(intent) !== JSON.stringify(expectedIntent)) {
+    throw new Error('Queue intent changed before CI revalidation; retry with fresh evidence.');
+  }
+  let ci;
+  let waiting;
+  try {
+    ci = await verifyCI({ ...input, ciNotBefore: intent.ciNotBefore });
+  } catch (error) {
+    if (!require('./queue_me_ci').isWaiting(error)) throw error;
+    waiting = error;
+  }
   const currentIntent = await collectCIIntent(input);
   if (JSON.stringify(currentIntent) !== JSON.stringify(intent)) {
     throw new Error('Queue or metadata intent changed while auditing CI; retry with fresh evidence.');
   }
+  if (waiting) throw waiting;
   return { intent, ci };
 }
 
@@ -585,10 +596,11 @@ async function verifyQueueEvidence(input) {
 }
 
 async function revalidateQueueEvidence(input, evidence) {
-  const ci = await verifyQueueCI(input);
-  if (JSON.stringify(ci) !== JSON.stringify(evidence.ci)) {
-    throw new Error('CI run, attempt, jobs, source, or queue intent changed during the audit; retry with fresh evidence.');
+  const ci = await verifyQueueCI(input, evidence.ci.intent);
+  if (JSON.stringify(ci.intent) !== JSON.stringify(evidence.ci.intent)) {
+    throw new Error('Queue intent changed during the audit; retry with fresh evidence.');
   }
+  require('./queue_me_ci').assertUnchangedCI(evidence.ci.ci, ci.ci);
   const { verifyReviews } = require('./queue_me_reviews');
   await verifyReviews(input);
   const { verifySharedReuse } = require('./queue_me_reuse');
@@ -663,6 +675,7 @@ async function mergeVerifiedQueuedPull({
     await disableAutoMerge(github, owner, repo, candidate.number);
     await syncStatusComment(github, owner, repo, candidate.number,
       `## Queue status\n\nQueue paused before the guarded squash merge.\n\n\`${safeError(error)}\``);
+    if (require('./queue_me_ci').isWaiting(error) || require('./queue_me_reuse').isDeferred(error)) return;
     throw error;
   }
 }
@@ -907,7 +920,12 @@ async function prepareQueue(options) {
   let ticket;
   await runController({ ...options, onCandidate: async (input) => {
     const { prepareCandidate } = require('./queue_me_reuse');
-    ticket = await prepareCandidate(input);
+    const prepared = await prepareCandidate(input);
+    ticket = prepared.ticket;
+    if (prepared.readiness.state === 'WAITING') {
+      await syncStatusComment(input.github, input.owner, input.repo, input.pullNumber,
+        `## Queue status\n\nWaiting for current CI. Auto-merge remains disabled.\n\n${prepared.readiness.reasons.join('\n\n')}`);
+    }
   } });
   return ticket;
 }

@@ -1,7 +1,10 @@
 package scripts
 
 import (
+	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -311,5 +314,30 @@ controller.testables.assertCanonicalCommitIdentity({
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("verified same-repository Renovate identity must pass: %v\n%s", err, output)
+	}
+}
+
+func TestQueueMeWaitingCIEventLifecycle(t *testing.T) {
+	var workflow map[string]any
+	if err := yaml.Unmarshal([]byte(readConfig(t, ".github/workflows/queue-me.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(fixture, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to test the queue CI event lifecycle")
+	}
+	command := exec.Command(node, "--test", "testdata/queue_waiting/lifecycle.cjs")
+	command.Dir = repoPath(t, "scripts")
+	command.Env = append(os.Environ(), "QUEUE_WORKFLOW_FIXTURE="+fixture)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("queue CI event lifecycle failed: %v\n%s", err, output)
 	}
 }

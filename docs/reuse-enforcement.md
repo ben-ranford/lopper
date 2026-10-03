@@ -190,6 +190,23 @@ head or an owner `/reuse-check` comment runs analysis for the current pair.
 Events are asynchronous; the custom merge queue must also validate current
 revisions and authorization immediately before admission/merge.
 
+An authenticated current CI run that is still queued or running is a scheduling
+wait. Preparation leaves `reuse-check` pending and skips proof jobs until a
+fresh event can perform the full analysis. A complete empty CI inventory also
+waits for registration; malformed or incomplete inventory remains an error.
+The queue similarly withholds its ticket while awaiting CI for the current
+queue intent. Waiting produces no successful proof or merge approval, and a
+newer failed run never falls back to older green evidence.
+
+If a newer authenticated CI attempt supersedes verification before a receipt
+is issued, that verification is deferred without a receipt. If publication
+already holds an older receipt, it invalidates that proof and corrects its own
+stale success to pending. Fresh CI completion must perform verification again. Genuine detector, policy, identity and artifact
+errors still fail. The final queue continues to require current full CI,
+protected proof, live review and GitHub `CLEAN` before its guarded merge.
+Asynchronous status correction can still leave pending after a concurrent
+newer result; an owner refresh retries verification of the current pair.
+
 The required result is the explicitly published **commit status** `reuse-check`
 on the exact PR head. No workflow job uses that name. GitHub documents that
 native job checks from `workflow_run` or `issue_comment` do not satisfy PR

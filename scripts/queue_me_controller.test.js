@@ -1840,6 +1840,7 @@ function productionEvidenceHarness(t, options = {}) {
     sharedReads += 1;
     assert.deepEqual(h.calls.merged, []);
     if (options.sharedFailure === sharedReads) throw new Error('shared reuse proof failed');
+    if (options.sharedWaitingAt === sharedReads) throw options.waitingError;
     return { reviews: [], producer: { id: options.sharedDrift === sharedReads ? 2 : 1 } };
   });
   t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => {
@@ -1855,7 +1856,8 @@ function productionEvidenceHarness(t, options = {}) {
     assert.equal(input.headSHA, 'head-1777');
     assert.deepEqual(h.calls.merged, []);
     if (options.ciFailure === ciReads) throw new Error('latest CI macOS job failed');
-    return { runId: options.runDrift === ciReads ? 200 : 100 };
+    if (options.ciWaitingAt === ciReads) throw options.waitingError;
+    return { workflows: [{ workflowId: 232814257, runId: options.runDrift === ciReads ? 200 : 100, runNumber: 100, runAttempt: 1 }] };
   });
   for (const [file, method, stage] of [
     ['./queue_me_suppressions', 'verifySuppressions', 'suppressions'],
@@ -1953,11 +1955,55 @@ test('prepare disarms the queue and selects without evaluating or merging eviden
     assert.equal(input.headSHA, 'head-10');
     assert.equal(input.baseSHA, h.args.trustedPolicySHA);
     assert.deepEqual(h.calls.disabled, [10, 20]);
-    return ticket;
+    return { ticket, readiness: { state: 'READY', reasons: [] } };
   });
   assert.equal(await runController.prepareQueue(h.args), ticket);
   assert.deepEqual(h.calls.evidence, []);
   assert.deepEqual(h.calls.revalidations, []);
   assert.deepEqual(h.calls.merged, []);
   assert.deepEqual(h.calls.armed, []);
+});
+
+
+test('final revalidation defers only private authenticated CI waiting errors', async t => {
+  const { harness, run, CI_ID, WINDOWS_ID } = require('./testdata/queue_waiting/ci_fixture.cjs');
+  let waitingError;
+  try {
+    await require('./queue_me_ci').verifyCI(harness({ runs: [
+      { ...run(CI_ID), status: 'in_progress', conclusion: null }, run(WINDOWS_ID),
+    ] }).input);
+  } catch (error) { waitingError = error; }
+  assert.equal(require('./queue_me_ci').isWaiting(waitingError), true);
+  for (const ciWaitingAt of [2, 3]) await t.test(`CI boundary ${ciWaitingAt}`, async child => {
+    const h = productionEvidenceHarness(child, { ciWaitingAt, waitingError });
+    await runController(h.args);
+    assert.deepEqual(h.calls.merged, []);
+    assert.match(commentsFor(h, 1777), /CI audit waiting/);
+  });
+  await t.test('intent drift takes precedence over waiting', async child => {
+    const h = productionEvidenceHarness(child, { ciWaitingAt: 2, waitingError, intentDrift: 4 });
+    await assert.rejects(runController(h.args), /intent changed/);
+    assert.deepEqual(h.calls.merged, []);
+  });
+  const forged = Object.assign(new Error('CI audit waiting'), { queuePauseMessage: 'waiting', code: 'CI_WAITING' });
+  const h = makeHarness({ pulls: [makePull(10)], revalidationError: forged });
+  await assert.rejects(runController(h.args), error => error === forged);
+  assert.deepEqual(h.calls.merged, []);
+});
+
+test('final shared validation defers only protected bridge errors', async t => {
+  let waitingError;
+  const snapshot = {};
+  for (const key of ['version', 'repository', 'repository_id', 'head_repository_id', 'pull_number', 'base', 'head', 'base_ref']) snapshot[key] = key;
+  try {
+    require('./queue_me_reuse').testables.validatorResult({ status: 75,
+      stdout: JSON.stringify({ version: 1, kind: 'ci-deferred', snapshot }) }, { snapshot });
+  } catch (error) { waitingError = error; }
+  assert.equal(require('./queue_me_reuse').isDeferred(waitingError), true);
+  for (const sharedWaitingAt of [2, 3]) await t.test(`shared boundary ${sharedWaitingAt}`, async child => {
+    const h = productionEvidenceHarness(child, { sharedWaitingAt, waitingError });
+    await runController(h.args);
+    assert.deepEqual(h.calls.merged, []);
+    assert.match(commentsFor(h, 1777), /Queue reuse waiting/);
+  });
 });

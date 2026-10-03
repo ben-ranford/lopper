@@ -219,6 +219,8 @@ jobs:
       pull-requests: read
     outputs:
       receipt: ${{ steps.suppression.outputs.receipt }}
+      deferred: ${{ steps.suppression.outputs.deferred }}
+      readiness: ${{ steps.suppression.outputs.readiness }}
     steps:
       - name: Checkout immutable protected policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -258,14 +260,23 @@ jobs:
           script: |
             const ticket = JSON.parse(process.env.QUEUE_TICKET);
             const verify = require('./scripts/reuse_suppression.js');
-            const receipt = await verify({ github, context,
-              snapshot: ticket.snapshot, token: process.env.GH_TOKEN });
-            core.setOutput('receipt', JSON.stringify(receipt));
+            try {
+              const receipt = await verify({ github, context,
+                snapshot: ticket.snapshot, token: process.env.GH_TOKEN });
+              core.setOutput('receipt', JSON.stringify(receipt));
+            } catch (error) {
+              if (!verify.isDeferred(error)) throw error;
+              core.setOutput('deferred', JSON.stringify(error.deferred));
+              core.setOutput('readiness', 'WAITING');
+            }
 
   advance:
     name: advance queue-me
     needs: [prepare, analyze, suppression]
-    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.ticket != '' }}
+    if: >-
+      ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.ticket != '' &&
+          !(needs.analyze.result == 'success' && needs.suppression.result == 'success' &&
+            needs.suppression.outputs.readiness == 'WAITING' && needs.suppression.outputs.deferred != '' && needs.suppression.outputs.receipt == '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

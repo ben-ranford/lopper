@@ -31,8 +31,26 @@ function receipt(run = makeRun(), artifact = 200) {
 }
 
 function harness() {
-  const state = { run: makeRun(), jobs: [makeJob()], workflow: { ...WORKFLOW }, runs: undefined, calls: [], adapterCalls: [] };
-  const github = { rest: { actions: {
+  const state = {
+    run: makeRun(), jobs: [makeJob()], workflow: { ...WORKFLOW }, runs: undefined, calls: [], adapterCalls: [],
+    repository: { id: 12, full_name: 'owner/repo', default_branch: 'main' },
+    pull: { number: 56, state: 'open', head: { sha: HEAD, repo: { id: 34 } }, base: { sha: BASE, ref: 'main', repo: { id: 12, full_name: 'owner/repo' } } },
+    target: { object: { sha: BASE } },
+  };
+  const github = { rest: {
+    repos: { get: async (parameters) => {
+      state.calls.push({ method: 'repository', ...parameters });
+      return { data: state.repository };
+    } },
+    pulls: { get: async (parameters) => {
+      state.calls.push({ method: 'pull', ...parameters });
+      return { data: state.pull };
+    } },
+    git: { getRef: async (parameters) => {
+      state.calls.push({ method: 'ref', ...parameters });
+      return { data: state.target };
+    } },
+    actions: {
     getWorkflow: async () => ({ data: state.workflow }),
     listWorkflowRuns: async (parameters) => {
       state.calls.push({ method: 'runs', ...parameters });
@@ -114,17 +132,111 @@ for (const [name, mutate] of invalidRunCases) {
   });
 }
 
-test('rejects invalid workflow identity, missing and duplicate runs', async () => {
+test('rejects invalid workflow identity and duplicate or mismatched runs', async () => {
   for (const change of [
     (state) => { state.workflow.path = 'other'; },
     (state) => { state.workflow.id = 0; },
-    (state) => { state.runs = []; },
     (state) => { state.runs = [state.run, state.run]; },
     (state) => { state.runs = [makeRun(101)]; },
   ]) {
     const fixture = harness();
     change(fixture);
     await assert.rejects(fixture.verify(), /Reuse suppression:/);
+  }
+});
+
+function assertDeferred(reason, run = makeRun()) {
+  return (error) => {
+    assert.equal(verifyReuseSuppression.isDeferred(error), true);
+    assert.equal(error.code, 'REUSE_CI_DEFERRED');
+    assert.deepEqual(error.deferred, {
+      version: 1, snapshot: SNAPSHOT, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
+    });
+    assert.equal(Object.isFrozen(error.deferred), true);
+    assert.equal(Object.isFrozen(error.deferred.snapshot), true);
+    return true;
+  };
+}
+
+function assertHardFailure(error) {
+  assert.match(error.message, /Reuse suppression:/);
+  assert.equal(verifyReuseSuppression.isDeferred(error), false);
+  return true;
+}
+
+test('defers only an authenticated empty complete producer inventory as registration', async () => {
+  const fixture = harness();
+  fixture.runs = [];
+  await assert.rejects(fixture.verify(), assertDeferred('registration', null));
+  assert.deepEqual(fixture.calls.map((call) => call.method), ['repository', 'pull', 'ref', 'runs']);
+  assert.equal(fixture.adapterCalls.length, 0);
+});
+
+test('authenticates the live protected pair before deferring registration or pending CI', async () => {
+  for (const change of [
+    (state) => { state.repository.id += 1; },
+    (state) => { state.repository.full_name = 'other/repo'; },
+    (state) => { state.repository.default_branch = 'other'; },
+    (state) => { state.pull.number += 1; },
+    (state) => { state.pull.state = 'closed'; },
+    (state) => { state.pull.head.sha = BASE; },
+    (state) => { state.pull.base.sha = HEAD; },
+    (state) => { state.pull.base.ref = 'other'; },
+    (state) => { state.pull.head.repo.id += 1; },
+    (state) => { state.pull.base.repo.id += 1; },
+    (state) => { state.pull.base.repo.full_name = 'other/repo'; },
+    (state) => { state.target.object.sha = HEAD; },
+    (state) => { state.workflow.id = 0; },
+  ]) {
+    for (const registering of [true, false]) {
+      const fixture = harness();
+      fixture.run.status = 'queued';
+      fixture.run.conclusion = null;
+      if (registering) fixture.runs = [];
+      change(fixture);
+      await assert.rejects(fixture.verify(), assertHardFailure);
+    }
+  }
+});
+
+test('defers authenticated queued and in-progress CI without inspecting artifacts', async () => {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    const fixture = harness();
+    fixture.runs = [makeRun(99), fixture.run];
+    fixture.run.status = status;
+    fixture.run.conclusion = null;
+    await assert.rejects(fixture.verify(), assertDeferred('pending'));
+    assert.equal(fixture.calls.some((call) => ['jobs', 'download'].includes(call.method)), false);
+    assert.equal(fixture.adapterCalls.length, 0);
+  }
+});
+
+test('pending CI still rejects malformed identities and associations', async () => {
+  for (const [name, mutate] of invalidRunCases.filter(([name]) => name !== 'pending')) {
+    const fixture = harness();
+    fixture.run.status = 'queued';
+    fixture.run.conclusion = null;
+    mutate(fixture.run);
+    await assert.rejects(fixture.verify(), assertHardFailure, name);
+  }
+});
+
+test('missing, malformed and terminal CI status never becomes a deferral', async () => {
+  for (const [status, conclusion] of [
+    ['completed', 'failure'], ['completed', 'cancelled'], ['completed', 'skipped'],
+    ['completed', null], ['queued', 'success'], ['in_progress', undefined], ['unknown', null], [undefined, null],
+  ]) {
+    const fixture = harness();
+    Object.assign(fixture.run, { status, conclusion });
+    await assert.rejects(fixture.verify(), assertHardFailure);
+  }
+});
+
+test('incomplete or contradictory producer inventories never defer registration', async () => {
+  for (const data of [{ total_count: 1, workflow_runs: [] }, { total_count: 0, workflow_runs: [makeRun()] }, { total_count: 0, workflow_runs: null }]) {
+    const fixture = harness();
+    fixture.arguments.github.rest.actions.listWorkflowRuns = async () => ({ data });
+    await assert.rejects(fixture.verify(), assertHardFailure);
   }
 });
 
@@ -210,10 +322,76 @@ test('inspects all 1,000 permitted workflow results', async () => {
   assert.equal(calls, 10);
 });
 
-test('rejects changed producer, retried attempt and locator after the adapter', async () => {
+test('defers a newly authenticated attempt discovered during initial selection', async () => {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested', 'completed']) {
+    const fixture = harness();
+    fixture.runs = [makeRun()];
+    fixture.run.run_attempt += 1;
+    fixture.run.status = status;
+    fixture.run.conclusion = status === 'completed' ? 'success' : null;
+    await assert.rejects(fixture.verify(), assertDeferred('superseded', fixture.run));
+    assert.equal(fixture.adapterCalls.length, 0);
+  }
+});
+
+test('defers a newer authenticated run or attempt after verification, including a successful one', async () => {
+  for (const newRun of [false, true]) {
+    for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested', 'completed']) {
+      const fixture = harness();
+      const next = makeRun(newRun ? 101 : 100);
+      if (!newRun) next.run_attempt += 1;
+      next.status = status;
+      next.conclusion = status === 'completed' ? 'success' : null;
+      fixture.adapter = async () => {
+        fixture.run = next;
+        return receipt();
+      };
+      await assert.rejects(fixture.verify(), assertDeferred('superseded', next));
+      assert.equal(fixture.calls.filter((call) => call.method === 'jobs').length, 1);
+    }
+  }
+});
+
+test('retains the original selected generation when an adapter-time reread changes its source object', async () => {
+  const fixture = harness();
+  fixture.adapter = async () => {
+    fixture.run.run_attempt += 1;
+    return receipt();
+  };
+  await assert.rejects(fixture.verify(), assertDeferred('superseded', { id: 100, run_attempt: 3 }));
+});
+
+test('rejects same-generation pending CI after observing successful verification', async () => {
+  const fixture = harness();
+  fixture.adapter = async () => {
+    fixture.run.status = 'in_progress';
+    fixture.run.conclusion = null;
+    return receipt();
+  };
+  await assert.rejects(fixture.verify(), assertHardFailure);
+});
+
+test('rejects same-attempt pending when the initial inventory already recorded success', async () => {
+  const fixture = harness();
+  fixture.runs = [makeRun()];
+  fixture.run.status = 'queued';
+  fixture.run.conclusion = null;
+  await assert.rejects(fixture.verify(), assertHardFailure);
+  assert.equal(fixture.adapterCalls.length, 0);
+});
+
+test('rejects regressing, failed or unauthenticated producers and changed locators after the adapter', async () => {
   for (const change of [
-    (state) => { state.run = makeRun(101); },
-    (state) => { state.run.run_attempt += 1; },
+    (state) => { state.run = makeRun(99); },
+    (state) => { state.run.run_attempt -= 1; },
+    (state) => { state.runs = []; },
+    (state) => { state.run = makeRun(101); state.run.conclusion = 'failure'; },
+    (state) => { state.run.run_attempt += 1; state.run.conclusion = 'cancelled'; },
+    (state) => { state.run = makeRun(101); state.run.pull_requests = []; },
+    (state) => { state.run = makeRun(101); state.run.pull_requests[0].base.sha = HEAD; },
+    (state) => { state.workflow.id += 1; state.run.workflow_id += 1; },
+    (state) => { state.pull.head.sha = BASE; },
+    (state) => { state.target.object.sha = HEAD; },
     (state) => { state.jobs = [makeJob(201)]; },
   ]) {
     const fixture = harness();
@@ -221,8 +399,37 @@ test('rejects changed producer, retried attempt and locator after the adapter', 
       change(fixture);
       return receipt();
     };
-    await assert.rejects(fixture.verify(), /Reuse suppression:/);
+    await assert.rejects(fixture.verify(), assertHardFailure);
   }
+});
+
+test('does not defer a regressing or unauthenticated attempt during initial selection', async () => {
+  for (const change of [
+    (state) => { state.run.run_attempt -= 1; },
+    (state) => { state.run.run_attempt += 1; state.run.conclusion = 'failure'; },
+    (state) => { state.run.run_attempt += 1; state.run.pull_requests = []; },
+    (state) => { state.run.run_attempt += 1; state.run.head_repository.id += 1; },
+  ]) {
+    const fixture = harness();
+    fixture.runs = [makeRun()];
+    change(fixture);
+    await assert.rejects(fixture.verify(), assertHardFailure);
+  }
+});
+
+test('an adapter or download failure remains a failure even if a newer CI run is pending', async () => {
+  for (const dependency of ['adapter', 'download']) {
+    const fixture = harness();
+    fixture[dependency] = async () => {
+      fixture.run = makeRun(101);
+      fixture.run.status = 'queued';
+      fixture.run.conclusion = null;
+      throw Object.assign(new Error('private failure'), { code: 'REUSE_CI_DEFERRED', deferred: { reason: 'pending' } });
+    };
+    await assert.rejects(fixture.verify(), assertHardFailure);
+  }
+  assert.equal(verifyReuseSuppression.isDeferred({ code: 'REUSE_CI_DEFERRED' }), false);
+  assert.equal(verifyReuseSuppression.isDeferred(new Error('Reuse suppression: CI verification deferred (pending)')), false);
 });
 
 test('rejects mismatched or extended adapter receipts', async () => {

@@ -78,6 +78,7 @@ jobs:
       base: ${{ steps.prepare.outputs.base }}
       head: ${{ steps.prepare.outputs.head }}
       pull_number: ${{ steps.prepare.outputs.pull_number }}
+      readiness: ${{ steps.prepare.outputs.readiness }}
     steps:
       - name: Checkout protected controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -119,6 +120,7 @@ jobs:
 
   analyze:
     needs: prepare
+    if: ${{ needs.prepare.outputs.readiness == 'ready' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -179,6 +181,7 @@ jobs:
 
   suppression:
     needs: prepare
+    if: ${{ needs.prepare.outputs.readiness == 'ready' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -186,6 +189,7 @@ jobs:
       pull-requests: read
     outputs:
       receipt: ${{ steps.suppression.outputs.receipt }}
+      deferred: ${{ steps.suppression.outputs.deferred }}
     steps:
       - name: Checkout protected suppression source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -224,13 +228,19 @@ jobs:
         with:
           script: |
             const verify = require('./scripts/reuse_suppression.js');
-            const receipt = await verify({ github, context,
-              snapshot: JSON.parse(process.env.REUSE_SNAPSHOT), token: process.env.GH_TOKEN });
-            core.setOutput('receipt', JSON.stringify(receipt));
+            try {
+              const receipt = await verify({ github, context,
+                snapshot: JSON.parse(process.env.REUSE_SNAPSHOT), token: process.env.GH_TOKEN });
+              core.setOutput('receipt', JSON.stringify(receipt));
+            } catch (error) {
+              if (!verify.isDeferred(error)) throw error;
+              core.setOutput('deferred', JSON.stringify(error.deferred));
+              core.notice('Current CI requires fresh protected suppression evidence; waiting without a receipt.');
+            }
 
   publish:
     needs: [prepare, analyze, suppression]
-    if: ${{ always() && needs.prepare.outputs.snapshot != '' }}
+    if: ${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}
     concurrency:
       group: reuse-publish-${{ needs.prepare.outputs.pull_number }}
       cancel-in-progress: false
@@ -274,6 +284,7 @@ jobs:
           REUSE_SNAPSHOT: ${{ needs.prepare.outputs.snapshot }}
           REUSE_RESULT: ${{ needs.analyze.outputs.result }}
           REUSE_SUPPRESSION: ${{ needs.suppression.outputs.receipt }}
+          REUSE_DEFERRED: ${{ needs.suppression.outputs.deferred }}
         run: |
           python3 - <<'PY'
           import os
@@ -282,6 +293,7 @@ jobs:
           (root / "reuse-snapshot.json").write_text(os.environ["REUSE_SNAPSHOT"])
           (root / "reuse-result.json").write_text(os.environ["REUSE_RESULT"] or "{}")
           (root / "reuse-suppression.json").write_text(os.environ["REUSE_SUPPRESSION"] or "{}")
+          (root / "reuse-deferred.json").write_text(os.environ["REUSE_DEFERRED"] or "{}")
           PY
       - name: Revalidate review and publish exact-head result
         env:
@@ -296,3 +308,4 @@ jobs:
           --reviewer ben-ranford
           --suppression "$RUNNER_TEMP/reuse-suppression.json"
           --suppression-result "$REUSE_SUPPRESSION_RESULT"
+          --deferred "$RUNNER_TEMP/reuse-deferred.json"
