@@ -3,6 +3,7 @@ package python
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -388,5 +389,98 @@ func TestPythonIdentityPackageProjectionPreservesFlagsAndShapes(t *testing.T) {
 		if projected := poetryIdentityGroup(shape); !reflect.DeepEqual(projected, shape) {
 			t.Fatalf("Poetry group shape changed: %#v to %#v", shape, projected)
 		}
+	}
+}
+
+func TestPackagingCatalogOverflowPreservesFormatShapes(t *testing.T) {
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"malformed tool", pythonPyprojectFile, "tool='malformed'\n", `{"tool":"malformed"}`},
+		{"uv development pins", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['pytest==8.0.0']\ncache-dir='discard'\n", `{"tool":{"uv":{"dev-dependencies":["pytest==8.0.0"]}}}`},
+		{"malformed poetry", pythonPyprojectFile, "[tool]\npoetry='malformed'\n", `{"tool":{"poetry":"malformed"}}`},
+		{"missing lock packages", pythonPoetryLockName, "version=1\n", `{}`},
+		{"malformed lock packages", pythonUVLockName, "package='malformed'\n", `{"package":"malformed"}`},
+		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":"malformed"}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			repo := t.TempDir()
+			path := filepath.Join(repo, tc.name)
+			testutil.MustWriteFile(t, path, tc.content)
+			catalog := newPackagingCatalog()
+			catalog.bytes = maxPackagingCatalogBytes
+			if _, err := catalog.read(repo, path); err != nil {
+				t.Fatal(err)
+			}
+			document := catalog.documents[path]
+			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+				t.Fatalf("format shape was not retained for identity consumers: %+v", document)
+			}
+			encoded, err := json.Marshal(document.IdentityProjection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != tc.want {
+				t.Fatalf("format projection = %s, want %s", encoded, tc.want)
+			}
+		})
+	}
+}
+
+func TestPythonIdentityProjectionRejectsUnusableDocuments(t *testing.T) {
+	for _, tc := range []struct{ name, failure string }{
+		{pythonPyprojectFile, "TOML decode failed"},
+		{"setup.cfg", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := report.PythonManifestDocument{
+				Failure: tc.failure,
+				Document: map[string]any{"project": map[string]any{
+					"dependencies": []any{"requests==2.32.3"},
+				}},
+				Text: "requests==2.32.3\n",
+			}
+			projection, text, available := pythonIdentityProjection(tc.name, document)
+			if projection != nil || text != "" || available {
+				t.Fatalf("unusable document yielded identity evidence: %v %q %t", projection, text, available)
+			}
+		})
+	}
+}
+
+func TestPackagingCatalogLockFailureDoesNotReplaceManifestInventory(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), "[project]\ndependencies=['requests>=2']\n")
+	lockPath := filepath.Join(repo, pythonPoetryLockName)
+	testutil.MustWriteFile(t, lockPath, "[[invalid")
+	catalog := newPackagingCatalog()
+	dependencies, warnings, err := collectDirectoryDeclaredDependenciesWithCatalog(repo, repo, nil, catalog)
+	if _, present := dependencies["requests"]; !present || len(dependencies) != 1 || len(warnings) != 0 || err != nil {
+		t.Fatalf("lock evidence failure changed manifest inventory: %v %v %v", dependencies, warnings, err)
+	}
+	document := catalog.documents[lockPath]
+	if document.FailureStage != "parse" || document.Failure == "" {
+		t.Fatalf("lock failure was not retained for identity diagnostics: %+v", document)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := catalog.read(repo, lockPath)
+	if err == nil || cached.Failure != document.Failure || cached.FailureStage != "parse" {
+		t.Fatalf("cached parse failure was replaced by a source reread: %+v %v", cached, err)
+	}
+}
+
+func TestPackagingCatalogClassifiesPermissionFailure(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPoetryLockName)
+	testutil.MustWriteFile(t, path, "[[package]]\nname='requests'\nversion='2.32.3'\n")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(path); !errors.Is(err, os.ErrPermission) {
+		t.Skip("environment does not enforce file read permissions")
+	}
+	document, err := newPackagingCatalog().read(repo, path)
+	if !errors.Is(err, os.ErrPermission) || document.FailureStage != "read" || document.FailureKind != "permission" {
+		t.Fatalf("permission failure classification = %+v, %v", document, err)
 	}
 }
