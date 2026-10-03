@@ -37,6 +37,7 @@ cleanup_preflight_git() {
 	# queued. Handle follow-up signals so they cannot interrupt teardown.
 	trap ':' HUP INT TERM
 	if [ -n "$preflight_runner_pid" ]; then
+		: >"$preflight_state_dir/cancelled"
 		kill -TERM "$preflight_runner_pid" 2>/dev/null || :
 		preflight_wait_pid=$preflight_runner_pid
 		wait_preflight_child 2>/dev/null || :
@@ -45,17 +46,66 @@ cleanup_preflight_git() {
 	# Keep the watchdog alive until the runner is reaped. If a trapped reader
 	# signal leaves the supervisor stuck in a final ownership probe, the
 	# watchdog must still be able to expire and terminate that runner.
-	if [ -n "$preflight_watchdog_pid" ]; then
-		kill "$preflight_watchdog_pid" 2>/dev/null || :
-		preflight_wait_pid=$preflight_watchdog_pid
-		wait_preflight_child 2>/dev/null || :
-		preflight_watchdog_pid=
-	fi
+	stop_preflight_watchdog
 	rm -rf "$preflight_state_dir"
 	preflight_state_dir=
 	rm -f "$preflight_output_file"
 	preflight_output_file=
 	return 0
+}
+
+stop_preflight_watchdog() {
+	if [ -n "$preflight_watchdog_pid" ]; then
+		kill -USR1 "$preflight_watchdog_pid" 2>/dev/null || :
+		preflight_wait_pid=$preflight_watchdog_pid
+		wait_preflight_child 2>/dev/null || :
+		preflight_watchdog_pid=
+	fi
+}
+
+start_preflight_watchdog() {
+	(
+		# Group cancellation must not remove the deadline. The sleeper inherits
+		# these ignored signals; only the owning shell can request an early stop.
+		trap '' HUP INT TERM
+		watchdog_stop=
+		watchdog_publishing=1
+		sleeper_pid=
+		finish_watchdog() {
+			trap '' USR1
+			if [ -n "$sleeper_pid" ]; then
+				kill -KILL "$sleeper_pid" 2>/dev/null || :
+				wait "$sleeper_pid" 2>/dev/null || :
+			fi
+			exit 0
+		}
+		trap 'if [ "$watchdog_publishing" -eq 1 ]; then watchdog_stop=1; else finish_watchdog; fi' USR1
+		sleep 10 & sleeper_pid=$!
+		watchdog_publishing=0
+		[ -z "$watchdog_stop" ] || finish_watchdog
+		printf x >"$preflight_state_dir/watchdog-ready"
+		wait "$sleeper_pid" || :
+		sleeper_pid=
+		if rmdir "$preflight_state_dir/active" 2>/dev/null || [ -f "$preflight_state_dir/cancelled" ]; then
+			printf x >"$preflight_state_dir/expired"
+			if [ -f "$preflight_state_dir/runner-pid" ]; then
+				read -r runner_pid <"$preflight_state_dir/runner-pid" || exit 1
+				case "$runner_pid" in ''|*[!0-9]*|0) exit 1 ;; esac
+				kill -TERM "$runner_pid" 2>/dev/null || :
+			fi
+		fi
+	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
+	# A signal before the watchdog installs its traps cannot strand a runner:
+	# no runner starts until the watchdog has published its protected sleeper.
+	while [ ! -f "$preflight_state_dir/watchdog-ready" ]; do
+		if [ -n "$preflight_pending_signal" ]; then
+			preflight_defer_signals=0
+			preflight_signal_status=$preflight_pending_signal
+			preflight_handle_signal
+		fi
+		kill -0 "$preflight_watchdog_pid" 2>/dev/null || return 1
+		sleep 0.01
+	done
 }
 
 run_preflight_git() {
@@ -84,11 +134,22 @@ run_preflight_git() {
 		fi
 		return 1
 	}
+	start_preflight_watchdog || {
+		cleanup_preflight_git
+		preflight_defer_signals=0
+		return 1
+	}
+	if [ -n "$preflight_pending_signal" ]; then
+		preflight_defer_signals=0
+		preflight_signal_status=$preflight_pending_signal
+		preflight_handle_signal
+	fi
 	# A separate Bash job owns its process group even when a reader exits from
 	# a TERM trap. Privileged mode prevents startup hooks or imported functions
 	# from changing the supervisor; reader arguments stay positional.
 	bash --noprofile --norc -p -c '
 state_dir=$1
+printf "%s\n" "$$" >"$state_dir/runner-pid" || exit 1
 shift
 reader_group_is_running() {
 	# Keep command substitution out of the trapped supervisor: Bash 5.2 can
@@ -108,6 +169,7 @@ reader_group_is_running_or_interrupted() {
 interrupted=
 supervisor_pid=$$
 trap "interrupted=1" HUP INT TERM
+[ ! -f "$state_dir/expired" ] || exit 124
 # Capture only Bash job-launch diagnostics; the anchor restores reader stderr
 # before its body can run. No reader or descendant starts before authorization.
 exec 3>&2
@@ -213,24 +275,6 @@ kill -0 -- "-$reader_group" 2>/dev/null || exit 1
 exit "$status"
 ' -- "$preflight_state_dir" "$@" &
 	preflight_runner_pid=$!
-	(
-		sleeper_pid=
-		trap '
-			trap - EXIT HUP INT TERM
-			if [ -n "$sleeper_pid" ]; then
-				kill "$sleeper_pid" 2>/dev/null || :
-				wait "$sleeper_pid" 2>/dev/null || :
-			fi
-			exit 0
-		' HUP INT TERM
-		sleep 10 & sleeper_pid=$!
-		wait "$sleeper_pid" || exit 0
-		sleeper_pid=
-		if rmdir "$preflight_state_dir/active" 2>/dev/null; then
-			printf x >"$preflight_state_dir/expired"
-			kill -TERM "$preflight_runner_pid" 2>/dev/null || :
-		fi
-	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
 	preflight_defer_signals=0
 	if [ -n "$preflight_pending_signal" ]; then
 		preflight_signal_status=$preflight_pending_signal
@@ -240,10 +284,7 @@ exit "$status"
 	preflight_wait_pid=$preflight_runner_pid
 	wait_preflight_child || status=$?
 	preflight_runner_pid=
-	kill "$preflight_watchdog_pid" 2>/dev/null || :
-	preflight_wait_pid=$preflight_watchdog_pid
-	wait_preflight_child 2>/dev/null || :
-	preflight_watchdog_pid=
+	stop_preflight_watchdog
 	if [ -f "$preflight_state_dir/expired" ]; then
 		rm -rf "$preflight_state_dir"
 		preflight_state_dir=
