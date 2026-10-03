@@ -5,6 +5,7 @@ const test = require('node:test');
 const { verifyCI, checkReadiness, isWaiting, assertUnchangedCI } = require('./queue_me_ci');
 
 const { HEAD, BASE, MERGE, API, WEB, CREATED, CI_ID, WINDOWS_ID, ARTIFACT_ID, PATHS, JOBS, run, jobsFor, harness } = require('./testdata/queue_waiting/ci_fixture.cjs');
+require('./testdata/queue_waiting/rerun_locator.cjs');
 
 test('binds all 13 CI jobs, one artifact locator and Windows runtime to exact source and PR pair', async () => {
   const fixture = harness();

@@ -250,6 +250,13 @@ repository identities, digest, size and explicit zero-record schema must match.
 The download has an eight-MiB bound and never forwards API credentials to the
 signed storage URL. No artifact content is extracted or executed.
 
+Queue admission also audits historical job identities and duplicate locator
+slots. A completed non-success job from an older attempt may retain the
+workflow's exact unexpanded locator name; it occupies only that historical
+slot and cannot authorize an artifact. The current attempt still requires a
+unique numeric, successful locator. Unknown names and malformed, current,
+or successful unexpanded locators remain errors.
+
 The caller enumerates the current head's CI runs within GitHub's filtered-query
 limit, selects the newest run before checking its conclusion or base, and
 re-fetches its current attempt. An incomplete listing, missing association,

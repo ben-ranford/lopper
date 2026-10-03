@@ -11,7 +11,10 @@ const PAGE_SIZE = 100;
 const MAX_ITEMS = 1000;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const BLOCKED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']);
-const SUPPRESSION_LOCATOR = { jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest' };
+const SUPPRESSION_LOCATOR = {
+  jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest',
+  unresolvedName: 'suppression-artifact-${{ needs.verify-checks.outputs.pr_report_artifact_id }}',
+};
 const SOURCE_PATHS = ['.github/workflows/ci.yml', '.github/workflows/ci-tests.yml', '.github/workflows/windows-runtime.yml'];
 const CI_JOBS = {
   'verify-checks': 'ubuntu-latest',
@@ -194,10 +197,14 @@ function assertJobIdentity(job, run, workflow, input, pull) {
   requireEvidence(job.url === `${API_ROOT}/actions/jobs/${job.id}` && job.run_url === run.url && job.html_url === `${WEB_ROOT}/actions/runs/${run.id}/job/${job.id}`, 'noncanonical job URL.');
 }
 
-function jobArtifactID(job, workflow) {
+function jobArtifactID(job, run, workflow) {
   if (Object.hasOwn(workflow.jobs, job.name)) return undefined;
   const locator = workflow.suppressionLocator;
   requireEvidence(locator && typeof job.name === 'string' && job.name.startsWith(locator.namePrefix), `unknown job ${String(job.name)} in ${workflow.name}; review the trusted job manifest.`);
+  // GitHub may retain the unevaluated name when a prior attempt was cancelled
+  // before this job could start. Keep it in duplicate detection, never approval.
+  if (job.name === locator.unresolvedName && job.run_attempt < run.run_attempt &&
+      job.status === 'completed' && BLOCKED_CONCLUSIONS.has(job.conclusion)) return null;
   const match = /^suppression-artifact-([1-9]\d{0,15})$/.exec(job.name);
   const artifactId = match && Number(match[1]);
   requireEvidence(positive(artifactId) && job.name === `${locator.namePrefix}${artifactId}`, 'malformed suppression artifact locator.');
@@ -218,7 +225,7 @@ function selectedJobs(jobs, run, workflow, input, pull) {
   const locators = new Map();
   for (const job of jobs) {
     assertJobIdentity(job, run, workflow, input, pull);
-    const artifactId = jobArtifactID(job, workflow);
+    const artifactId = jobArtifactID(job, run, workflow);
     if (artifactId !== undefined) {
       requireEvidence(!locators.has(job.run_attempt), 'duplicate suppression artifact locator in one run attempt.');
       locators.set(job.run_attempt, { job, artifactId });
