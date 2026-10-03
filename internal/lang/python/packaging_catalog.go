@@ -124,7 +124,7 @@ func pythonIdentityProjection(name string, document report.PythonManifestDocumen
 	case pythonPyprojectFile:
 		return pyprojectIdentityProjection(document.Document), "", true
 	case pythonPipfileName:
-		return pythonIdentityFields(document.Document, "packages", "dev-packages"), "", true
+		return pythonIdentityPackageSections(document.Document, "packages", "dev-packages"), "", true
 	case pythonPoetryLockName, pythonUVLockName:
 		return pythonLockIdentityProjection(document.Document), "", true
 	case pythonPipfileLockName:
@@ -156,6 +156,26 @@ func pythonIdentityTable(value any, keys ...string) any {
 	return value
 }
 
+func pythonIdentityPackageSections(document map[string]any, sections ...string) map[string]any {
+	result := pythonIdentityFields(document, sections...)
+	for section, value := range result {
+		result[section] = pythonIdentityPackageTable(value)
+	}
+	return result
+}
+
+func pythonIdentityPackageTable(value any) any {
+	packages, ok := value.(map[string]any)
+	if !ok || packages == nil {
+		return value
+	}
+	projected := make(map[string]any, len(packages))
+	for name, raw := range packages {
+		projected[name] = pythonIdentityTable(raw, "version", "optional", "file", "git", "path", "ref", "url")
+	}
+	return projected
+}
+
 func pyprojectIdentityProjection(document map[string]any) map[string]any {
 	result := pythonIdentityFields(document, "dependency-groups")
 	if value, exists := document["project"]; exists {
@@ -173,10 +193,46 @@ func pyprojectIdentityProjection(document map[string]any) map[string]any {
 		projectTools["uv"] = pythonIdentityTable(value, "dev-dependencies")
 	}
 	if value, exists := tool["poetry"]; exists {
-		projectTools["poetry"] = pythonIdentityTable(value, "dependencies", "dev-dependencies", "group")
+		projectTools["poetry"] = poetryIdentityProjection(value)
 	}
 	if len(projectTools) != 0 {
 		result["tool"] = projectTools
+	}
+	return result
+}
+
+func poetryIdentityProjection(value any) any {
+	poetry, ok := value.(map[string]any)
+	if !ok || poetry == nil {
+		return value
+	}
+	result := pythonIdentityPackageSections(poetry, "dependencies", "dev-dependencies")
+	if groups, exists := poetry["group"]; exists {
+		result["group"] = poetryIdentityGroups(groups)
+	}
+	return result
+}
+
+func poetryIdentityGroups(value any) any {
+	groups, ok := value.(map[string]any)
+	if !ok || groups == nil {
+		return value
+	}
+	projected := make(map[string]any, len(groups))
+	for name, raw := range groups {
+		projected[name] = poetryIdentityGroup(raw)
+	}
+	return projected
+}
+
+func poetryIdentityGroup(value any) any {
+	group, ok := value.(map[string]any)
+	if !ok || group == nil {
+		return value
+	}
+	result := pythonIdentityFields(group, "optional")
+	if dependencies, exists := group["dependencies"]; exists {
+		result["dependencies"] = pythonIdentityPackageTable(dependencies)
 	}
 	return result
 }

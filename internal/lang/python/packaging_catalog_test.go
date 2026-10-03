@@ -10,6 +10,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -304,5 +305,88 @@ func TestPackagingCatalogOverflowProjectionsCoverIdentityFormats(t *testing.T) {
 				t.Fatalf("projection omitted %q: %#v", tc.key, document.IdentityProjection)
 			}
 		})
+	}
+}
+
+func TestPackagingCatalogOverflowOmitsPackageAndGroupMetadata(t *testing.T) {
+	padding := strings.Repeat("irrelevant metadata ", 256)
+	for _, tc := range []struct{ name, content, want string }{
+		{
+			pythonPipfileName,
+			"[packages]\nrequests={version='==2.32.3', markers='%[1]s', extras=['%[1]s']}\n[dev-packages]\npytest={version='==8.0.0', hashes=['%[1]s']}\n",
+			`{"dev-packages":{"pytest":{"version":"==8.0.0"}},"packages":{"requests":{"version":"==2.32.3"}}}`,
+		},
+		{
+			pythonPyprojectFile,
+			"[tool.poetry.dependencies]\nrequests={version='2.32.3', markers='%[1]s', extras=['%[1]s']}\n[tool.poetry.dev-dependencies]\npytest={version='8.0.0', python='%[1]s'}\n[tool.poetry.group.docs]\noptional=false\ndescription='%[1]s'\n[tool.poetry.group.docs.dependencies]\nsphinx={version='8.0.2', markers='%[1]s'}\n",
+			`{"tool":{"poetry":{"dependencies":{"requests":{"version":"2.32.3"}},"dev-dependencies":{"pytest":{"version":"8.0.0"}},"group":{"docs":{"dependencies":{"sphinx":{"version":"8.0.2"}},"optional":false}}}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			path := filepath.Join(repo, tc.name)
+			testutil.MustWriteFile(t, path, fmt.Sprintf(tc.content, padding))
+			catalog := newPackagingCatalog()
+			catalog.bytes = maxPackagingCatalogBytes
+			catalog.identityBytes = maxPackagingIdentityProjectionBytes - 512
+			if _, err := catalog.read(repo, path); err != nil {
+				t.Fatal(err)
+			}
+			document := catalog.documents[path]
+			if !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+				t.Fatalf("unrelated package metadata exhausted the projection budget: %+v", document)
+			}
+			encoded, err := json.Marshal(document.IdentityProjection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != tc.want {
+				t.Fatalf("identity fields = %s, want %s", encoded, tc.want)
+			}
+		})
+	}
+}
+
+func TestPythonIdentityPackageProjectionPreservesFlagsAndShapes(t *testing.T) {
+	entries := map[string]any{
+		"string":      "2.32.3",
+		"nil":         nil,
+		"nil-table":   map[string]any(nil),
+		"malformed":   []any{"==2.32.3"},
+		"bad-version": map[string]any{"version": []any{"==2.32.3"}},
+	}
+	want := make(map[string]any, len(entries))
+	for name, entry := range entries {
+		want[name] = entry
+	}
+	for _, flag := range []struct {
+		name, field string
+		value       any
+	}{
+		{"optional-true", "optional", true},
+		{"optional-false", "optional", false},
+		{"optional-string", "optional", "true"},
+		{"file", "file", nil},
+		{"git", "git", false},
+		{"path", "path", ""},
+		{"ref", "ref", int64(0)},
+		{"url", "url", []any{"source"}},
+	} {
+		entries[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value, "markers": "omit", "extras": []any{"omit"}}
+		want[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value}
+	}
+	if projected := pythonIdentityPackageTable(entries); !reflect.DeepEqual(projected, want) {
+		t.Fatalf("package projection changed rejection flags or malformed entries: got %#v, want %#v", projected, want)
+	}
+	for _, shape := range []any{nil, map[string]any(nil), "malformed", []any{"malformed"}} {
+		if projected := pythonIdentityPackageTable(shape); !reflect.DeepEqual(projected, shape) {
+			t.Fatalf("package table shape changed: %#v to %#v", shape, projected)
+		}
+		if projected := poetryIdentityGroups(shape); !reflect.DeepEqual(projected, shape) {
+			t.Fatalf("Poetry groups shape changed: %#v to %#v", shape, projected)
+		}
+		if projected := poetryIdentityGroup(shape); !reflect.DeepEqual(projected, shape) {
+			t.Fatalf("Poetry group shape changed: %#v to %#v", shape, projected)
+		}
 	}
 }
