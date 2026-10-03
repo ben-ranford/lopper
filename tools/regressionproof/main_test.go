@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -546,12 +547,12 @@ func TestChangedFilesAndRunGitErrorPaths(t *testing.T) {
 		if name != gitPath {
 			t.Fatalf("name = %q, want git path %q", name, gitPath)
 		}
-		if len(env) == 0 || dir != "." {
+		if len(env) == 0 || !filepath.IsAbs(dir) {
 			t.Fatalf("unexpected runGit call: dir=%q env=%d", dir, len(env))
 		}
 		return []byte("pkg/a_test.go\npkg/testdata/case.txt\n\n"), nil
 	}
-	files, err := r.changedFiles(context.Background(), ".", "base")
+	files, err := r.changedFiles(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("changedFiles returned error: %v", err)
 	}
@@ -562,14 +563,14 @@ func TestChangedFilesAndRunGitErrorPaths(t *testing.T) {
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return nil, errors.New("diff failed")
 	}
-	if _, err := r.changedFiles(context.Background(), ".", "base"); err == nil {
+	if _, err := r.changedFiles(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("changedFiles succeeded when git diff failed")
 	}
 
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return []byte("\n \n"), nil
 	}
-	files, err = r.changedFiles(context.Background(), ".", "base")
+	files, err = r.changedFiles(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("changedFiles returned error for empty diff: %v", err)
 	}
@@ -618,7 +619,7 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 	r := &runner{stderr: &bytes.Buffer{}, execCommand: func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return nil, nil
 	}}
-	if _, _, err := r.createBaseWorktree(context.Background(), ".", "base"); err == nil {
+	if _, _, err := r.createBaseWorktree(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("createBaseWorktree succeeded despite tempdir failure")
 	}
 
@@ -642,7 +643,7 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 		}
 		return nil, nil
 	}}
-	if _, _, err := r.createBaseWorktree(context.Background(), ".", "base"); err == nil {
+	if _, _, err := r.createBaseWorktree(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("createBaseWorktree succeeded on add failure")
 	}
 	if len(removed) != 1 {
@@ -653,7 +654,7 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 		removed = append(removed, path)
 		return errors.New("cleanup add failed")
 	}
-	if _, _, err := r.createBaseWorktree(context.Background(), ".", "base"); err == nil {
+	if _, _, err := r.createBaseWorktree(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("createBaseWorktree succeeded on add failure with cleanup error")
 	}
 
@@ -664,7 +665,7 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 	r.execCommand = func(_ context.Context, _ string, _ []string, _ string, _ []string) ([]byte, error) {
 		return nil, nil
 	}
-	worktreePath, cleanup, err := r.createBaseWorktree(context.Background(), ".", "base")
+	worktreePath, cleanup, err := r.createBaseWorktree(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("createBaseWorktree returned error: %v", err)
 	}
@@ -682,7 +683,7 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 		}
 		return nil, nil
 	}
-	_, cleanup, err = r.createBaseWorktree(context.Background(), ".", "base")
+	_, cleanup, err = r.createBaseWorktree(context.Background(), ".", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("createBaseWorktree returned error: %v", err)
 	}
@@ -960,8 +961,8 @@ func testProveSetupErrors(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "merge-base"):
-			return []byte("deadbeef\n"), nil
-		case strings.Contains(joined, "diff"):
+			return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case slices.Contains(args, "diff"):
 			return nil, errors.New("diff failed")
 		default:
 			return nil, nil
@@ -975,8 +976,8 @@ func testProveSetupErrors(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "merge-base"):
-			return []byte("deadbeef\n"), nil
-		case strings.Contains(joined, "diff"):
+			return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case slices.Contains(args, "diff"):
 			return []byte("pkg/case_test.go\n"), nil
 		case strings.Contains(joined, "worktree add"):
 			return nil, errors.New("add failed")
@@ -1008,8 +1009,8 @@ func testProveExecutionErrors(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "merge-base"):
-			return []byte("deadbeef\n"), nil
-		case strings.Contains(joined, "diff"):
+			return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case slices.Contains(args, "diff"):
 			return []byte("pkg/case_test.go\n"), nil
 		case strings.Contains(joined, "worktree add"):
 			return nil, nil
@@ -1032,8 +1033,8 @@ func testProveExecutionErrors(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "merge-base"):
-			return []byte("deadbeef\n"), nil
-		case strings.Contains(joined, "diff"):
+			return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case slices.Contains(args, "diff"):
 			return []byte("pkg/case_test.go\n"), nil
 		case strings.Contains(joined, "worktree add"), strings.Contains(joined, "worktree remove"):
 			return nil, nil
@@ -1050,8 +1051,8 @@ func testProveExecutionErrors(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.Contains(joined, "merge-base"):
-			return []byte("deadbeef\n"), nil
-		case strings.Contains(joined, "diff"):
+			return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case slices.Contains(args, "diff"):
 			return []byte("pkg/case_test.go\n"), nil
 		case strings.Contains(joined, "worktree add"), strings.Contains(joined, "worktree remove"):
 			return nil, nil
@@ -1141,7 +1142,7 @@ func TestRegressionProof(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			listFailure := errors.New("list failed")
 			r := &runner{stderr: &bytes.Buffer{}, execCommand: func(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
-				isGoList := name == "go" && len(args) > 0 && args[0] == "list"
+				isGoList := (filepath.Base(name) == "go" || filepath.Base(name) == "go.exe") && len(args) > 0 && args[0] == "list"
 				isHead := dir == repo.path
 				if isGoList && isHead == tt.failOnHead {
 					return nil, listFailure

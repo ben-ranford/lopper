@@ -1005,6 +1005,27 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   scanPatchLines(records, { file, patch, context, headSHA, headLines });
 }
 
+// The queue audits the complete immutable tree, including unchanged files.
+// Return locations without allowing tracking metadata to waive a marker.
+function scanFullFileMarkers(content, file) {
+  let state = {};
+  const lines = [];
+  for (const [index, rawLine] of content.split('\n').entries()) {
+    const line = stripTrailingCR(rawLine);
+    const goScan = scanGoLine(line, file, state.goState);
+    const shellScan = SHELL_EXTENSIONS.has(fileExtension(file)) ? scanShellLine(line, state.shellState) : undefined;
+    if (commentPrefixIndexForMarker(line, file, state.quoteState, goScan, shellScan) !== -1) {
+      lines.push(index + 1);
+    }
+    state = {
+      goState: goScan.state,
+      quoteState: goScan.hasColonLineComment ? undefined : carryQuoteState(line, file, state.quoteState, shellScan),
+      shellState: shellScan?.state ?? state.shellState,
+    };
+  }
+  return lines;
+}
+
 function scanPatchLines(records, { file, patch, context, headSHA, headLines }) {
   let line = 0;
   let state = {};
@@ -1382,6 +1403,7 @@ module.exports.testables = {
   metadataValue,
   parseHunkStart,
   recomputeSuppressionRecords,
+  scanFullFileMarkers,
   scanPatch,
   trackingBody,
   validateFile,

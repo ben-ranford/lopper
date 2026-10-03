@@ -49,25 +49,28 @@ func resolveBinaryPath(primary, fallback string, available func(string) bool) (s
 }
 
 func Command(path string, args ...string) (*exec.Cmd, error) {
-	switch path {
-	case ExecutablePrimary:
-		return exec.Command(ExecutablePrimary, args...), nil
-	case ExecutableFallback:
-		return exec.Command(ExecutableFallback, args...), nil
-	default:
-		return nil, fmt.Errorf("unsupported git executable path: %q", path)
-	}
+	return CommandContext(context.Background(), path, args...)
 }
 
 func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd, error) {
+	request, err := parseRequest(args)
+	if err != nil {
+		return nil, err
+	}
+	var command *exec.Cmd
 	switch path {
 	case ExecutablePrimary:
-		return exec.CommandContext(ctx, ExecutablePrimary, args...), nil
+		command = exec.CommandContext(ctx, ExecutablePrimary)
 	case ExecutableFallback:
-		return exec.CommandContext(ctx, ExecutableFallback, args...), nil
+		command = exec.CommandContext(ctx, ExecutableFallback)
 	default:
 		return nil, fmt.Errorf("unsupported git executable path: %q", path)
 	}
+	// Only the copied, schema-validated request reaches command construction.
+	// Validation rejects unsupported operations and option/config injection;
+	// callers retain their existing stdin, environment and cancellation setup.
+	command.Args = append(command.Args, request.args...)
+	return command, nil
 }
 
 func SanitizedEnv() []string {

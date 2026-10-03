@@ -348,11 +348,11 @@ func TestRunGitReturnsStderrInError(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	_, err = runGit(gitPath, t.TempDir(), "hash-object", "--definitely-invalid-option")
+	_, err = runGit(gitPath, t.TempDir(), "status", "--porcelain")
 	if err == nil {
-		t.Fatalf("expected runGit to fail for invalid git option")
+		t.Fatalf("expected runGit to fail outside a repository")
 	}
-	if !strings.Contains(err.Error(), "option") {
+	if !strings.Contains(err.Error(), "not a git repository") {
 		t.Fatalf("expected stderr context in runGit error, got %v", err)
 	}
 }
@@ -434,14 +434,5 @@ func assertParsedPaths(t *testing.T, got, want []string, message string) {
 
 func gitOutput(t *testing.T, repo string, args ...string) string {
 	t.Helper()
-
-	gitPath, err := gitexec.ResolveBinaryPath()
-	if err != nil {
-		t.Fatalf("resolve git binary: %v", err)
-	}
-	output, err := runGit(gitPath, repo, args...)
-	if err != nil {
-		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(output))
+	return testutil.GitOutput(t, repo, args...)
 }

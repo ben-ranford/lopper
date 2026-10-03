@@ -163,11 +163,7 @@ func GitOutput(t *testing.T, repo string, args ...string) string {
 
 func gitOutput(t *testing.T, repo string, args ...string) string {
 	t.Helper()
-	gitPath, err := gitexec.ResolveBinaryPath()
-	if err != nil {
-		t.Fatalf("resolve git path: %v", err)
-	}
-	command, err := gitexec.CommandContext(context.Background(), gitPath, append([]string{"-C", repo}, args...)...)
+	command, err := fixtureGitCommand(repo, args)
 	if err != nil {
 		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
 	}
