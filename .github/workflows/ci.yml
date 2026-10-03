@@ -407,6 +407,25 @@ jobs:
         if: ${{ steps.cov.outcome == 'failure' }}
         run: exit 1
 
+  suppression-evidence:
+    name: suppression-artifact-${{ needs.verify-checks.outputs.pr_report_artifact_id }}
+    needs: verify-checks
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Expose exact producer artifact locator
+        if: ${{ !env.ACT }}
+        env:
+          ARTIFACT_ID: ${{ needs.verify-checks.outputs.pr_report_artifact_id }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import os
+          import re
+          if not re.fullmatch(r"[1-9][0-9]*", os.environ["ARTIFACT_ID"]):
+              raise SystemExit("Missing producer artifact ID")
+          PYTHON
+
   publish-pr-reports:
     needs: verify
     if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.pr_report_artifact_id != '' }}

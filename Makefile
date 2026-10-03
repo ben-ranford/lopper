@@ -103,7 +103,7 @@ shellcheck:
 		echo "No shell scripts found for shellcheck."; \
 		exit 0; \
 	fi; \
-	find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) -print0 | xargs -0 shellcheck
+	find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) -print0 | xargs -0 shellcheck --source-path=SCRIPTDIR
 
 mod-check:
 	$(GO_CMD) mod tidy -diff

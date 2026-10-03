@@ -41,7 +41,6 @@ unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM
 script=$0
 case "$script" in /*) ;; *) script=$PWD/$script ;; esac
-# shellcheck source=scripts/hook-config-preflight.sh
 . "${script%/*}/hook-config-preflight.sh"
 trap cleanup_preflight_git EXIT
 
