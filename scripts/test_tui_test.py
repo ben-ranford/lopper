@@ -7,7 +7,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from scripts import test_tui
 from scripts.test_tui import TerminalSession
 
 
@@ -130,6 +132,58 @@ print(helper.pid, flush=True)
         with TerminalSession([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.2) as terminal:
             with self.assertRaises(subprocess.TimeoutExpired):
                 terminal.finish()
+
+
+class PromptFragmentTests(unittest.TestCase):
+    def session(self, chunks):
+        terminal = test_tui.TerminalSession.__new__(test_tui.TerminalSession)
+        terminal.timeout = 1
+        terminal.master = 1
+        terminal.pending = b""
+        terminal.transcript = b""
+        chunks = iter(chunks)
+
+        def read_output():
+            chunk = next(chunks)
+            terminal.pending += chunk
+            terminal.transcript += chunk
+            return chunk
+
+        terminal.read_output = read_output
+        return terminal
+
+    @patch.object(test_tui.select, "select", return_value=([1], [], []))
+    def test_split_prompt_waits_for_cursor_position(self, _ready):
+        terminal = self.session([
+            b"Page: 1/1\r\n\r\x1b[2K>",
+            b" \x1b[3Gfollowing output",
+        ])
+        terminal.expect("Page: 1/1")
+        match = terminal.expect_pattern(test_tui.PROMPT_FRAME)
+        self.assertEqual(match.groups(), (b"> ", b"3"))
+        self.assertEqual(terminal.pending, b"following output")
+        self.assertEqual(test_tui.PROMPT_FRAME.findall(terminal.transcript), [(b"> ", b"3")])
+
+    @patch.object(test_tui.select, "select", return_value=([1], [], []))
+    def test_complete_oversized_prompt_is_preserved_for_width_check(self, _ready):
+        terminal = self.session([b"\r\x1b[2K> " + b"x" * 20, b"\x1b[23G"])
+        match = terminal.expect_pattern(test_tui.PROMPT_FRAME)
+        text, column = match.groups()
+        self.assertGreaterEqual(len(text), 20)
+        self.assertGreater(int(column), 20)
+
+    @patch.object(test_tui.select, "select", return_value=([1], [], []))
+    def test_incomplete_prompt_at_eof_fails(self, _ready):
+        terminal = self.session([b"\r\x1b[2K> ", b""])
+        with self.assertRaisesRegex(AssertionError, "child ended before"):
+            terminal.expect_pattern(test_tui.PROMPT_FRAME)
+
+    @patch.object(test_tui.time, "monotonic", side_effect=[0, 0, 2])
+    @patch.object(test_tui.select, "select", return_value=([1], [], []))
+    def test_incomplete_prompt_keeps_existing_deadline(self, _ready, _clock):
+        terminal = self.session([b"\r\x1b[2K> "])
+        with self.assertRaisesRegex(AssertionError, "timed out waiting for"):
+            terminal.expect_pattern(test_tui.PROMPT_FRAME)
 
 
 if __name__ == "__main__":

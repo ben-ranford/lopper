@@ -16,6 +16,8 @@ import sys
 import termios
 import time
 
+PROMPT_FRAME = re.compile(rb"\r\x1b\[2K([^\x1b]*)\x1b\[(\d+)G")
+
 
 # Run terminal setup in a fresh interpreter, avoiding preexec callbacks in a
 # potentially threaded test runner. exec preserves Popen's PID and process group.
@@ -97,19 +99,26 @@ class TerminalSession:
         return chunk
 
     def expect(self, text):
-        expected = text.encode("utf-8")
+        self.expect_pattern(re.compile(re.escape(text.encode("utf-8"))), repr(text))
+
+    def expect_pattern(self, pattern, description=None):
+        """Consume a complete match even when a PTY read splits its bytes."""
+        description = description or repr(pattern.pattern)
         deadline = time.monotonic() + self.timeout
-        while expected not in self.pending:
+        while True:
+            match = pattern.search(self.pending)
+            if match:
+                self.pending = self.pending[match.end():]
+                return match
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise AssertionError(f"timed out waiting for {text!r}: {self.transcript!r}")
+                raise AssertionError(f"timed out waiting for {description}: {self.transcript!r}")
             ready, _, _ = select.select([self.master], [], [], remaining)
             if not ready:
                 continue
             chunk = self.read_output()
             if not chunk:
-                raise AssertionError(f"child ended before {text!r}: {self.transcript!r}")
-        _, _, self.pending = self.pending.partition(expected)
+                raise AssertionError(f"child ended before {description}: {self.transcript!r}")
 
     def finish(self):
         deadline = time.monotonic() + self.timeout
@@ -175,8 +184,8 @@ def smoke(binary):
         prompt_start = len(terminal.transcript)
         terminal.send(b" " * 100 + b"pag 1\x1b[D\x1b[De\r")
         terminal.expect("Page: 1/1")
-        terminal.expect(">")
-        prompts = re.findall(rb"\r\x1b\[2K([^\x1b]*)\x1b\[(\d+)G", terminal.transcript[prompt_start:])
+        terminal.expect_pattern(PROMPT_FRAME)
+        prompts = PROMPT_FRAME.findall(terminal.transcript[prompt_start:])
         if not prompts or any(len(text) >= 20 or int(column) > 20 for text, column in prompts):
             raise AssertionError(f"prompt exceeded the narrow terminal: {prompts!r}")
         terminal.command("q")
