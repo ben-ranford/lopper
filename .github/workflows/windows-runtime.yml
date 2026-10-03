@@ -33,6 +33,10 @@ jobs:
         shell: pwsh
         run: go test ./internal/ui -run '^(TestPreferenceConsole|TestStaveConsole)' -v -count=1 -timeout 30s
 
+      - name: Test Windows failure observations
+        shell: pwsh
+        run: go test ./internal/runtime -run '^TestWindowsParentSnapshot' -v -count=1 -timeout 30s
+
       - name: Test Windows runtime cancellation
         shell: pwsh
         run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant|TestWindowsJobCleanupWaitsForDescendants|TestWindowsJobCleanupIsConcurrentAndRepeatable|TestWindowsJobRepeatedStartPreservesCommand|TestWindowsJobCancellationRacesCleanup|TestWindowsJobPreCanceledStartReleasesCommand)$' -v -count=50 -timeout 2m
