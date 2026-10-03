@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -330,14 +331,28 @@ func TestQueueMeWaitingCIEventLifecycle(t *testing.T) {
 	if err := os.WriteFile(fixture, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test the queue CI event lifecycle")
-	}
-	command := exec.Command(node, "--test", "testdata/queue_waiting/lifecycle.cjs")
+	command := exec.Command(queueLifecycleNode(t), "--test", "testdata/queue_waiting/lifecycle.cjs")
 	command.Dir = repoPath(t, "scripts")
 	command.Env = append(os.Environ(), "QUEUE_WORKFLOW_FIXTURE="+fixture)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("queue CI event lifecycle failed: %v\n%s", err, output)
 	}
+}
+
+func queueLifecycleNode(t *testing.T) string {
+	t.Helper()
+	if node, err := exec.LookPath("node"); err == nil {
+		return node
+	}
+	// The proof runner deliberately excludes package-manager directories from
+	// PATH. Use only fixed macOS installation paths; never change its environment.
+	if runtime.GOOS == "darwin" {
+		for _, candidate := range []string{"/opt/homebrew/bin/node", "/usr/local/bin/node"} {
+			if node, err := exec.LookPath(candidate); err == nil {
+				return node
+			}
+		}
+	}
+	t.Fatal("node is required to test the queue CI event lifecycle")
+	return ""
 }
