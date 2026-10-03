@@ -17,15 +17,22 @@ import (
 // Catalog lifetime is one adapter analysis. Parsed documents feed inventory and
 // identity independently, including locks that inventory does not need as fallback.
 type packagingCatalog struct {
-	documents map[string]report.PythonManifestDocument
-	errors    map[string]error
-	bytes     int64
+	documents     map[string]report.PythonManifestDocument
+	errors        map[string]error
+	bytes         int64
+	identityBytes int64
+	identitySizes map[string]int64
 }
 
 const maxPackagingCatalogBytes int64 = 64 << 20
+const maxPackagingIdentityProjectionBytes int64 = 64 << 20
 
 func newPackagingCatalog() *packagingCatalog {
-	return &packagingCatalog{documents: make(map[string]report.PythonManifestDocument), errors: make(map[string]error)}
+	return &packagingCatalog{
+		documents:     make(map[string]report.PythonManifestDocument),
+		errors:        make(map[string]error),
+		identitySizes: make(map[string]int64),
+	}
 }
 
 // ReadPackagingDocument decodes one bounded Python packaging file using the
@@ -70,14 +77,142 @@ func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocumen
 }
 
 func (c *packagingCatalog) retain(path string, document report.PythonManifestDocument, err error, size int64) {
+	if previousSize := c.identitySizes[path]; previousSize != 0 {
+		c.identityBytes -= previousSize
+		delete(c.identitySizes, path)
+	}
 	if err == nil && size > maxPackagingCatalogBytes-c.bytes {
-		c.documents[path] = report.PythonManifestDocument{Path: document.Path, Deferred: true}
+		deferred := report.PythonManifestDocument{Path: document.Path, Deferred: true}
+		deferred.IdentityProjection, deferred.IdentityText, deferred.IdentityProjectionSet = pythonIdentityProjection(filepath.Base(path), document)
+		if deferred.IdentityProjectionSet {
+			projectionBytes, marshalErr := json.Marshal(struct {
+				Document map[string]any `json:"document,omitempty"`
+				Text     string         `json:"text,omitempty"`
+			}{Document: deferred.IdentityProjection, Text: deferred.IdentityText})
+			if marshalErr != nil {
+				deferred.IdentityProjectionError = fmt.Sprintf("encode bounded identity projection: %v", marshalErr)
+				deferred.IdentityProjection = nil
+				deferred.IdentityText = ""
+			} else if int64(len(projectionBytes)) > maxPackagingIdentityProjectionBytes-c.identityBytes {
+				deferred.IdentityProjectionError = fmt.Sprintf("Python identity projection exceeds the %d-byte catalog limit", maxPackagingIdentityProjectionBytes)
+				deferred.IdentityProjection = nil
+				deferred.IdentityText = ""
+			} else {
+				c.identityBytes += int64(len(projectionBytes))
+				c.identitySizes[path] = int64(len(projectionBytes))
+			}
+		}
+		c.documents[path] = deferred
 		return
 	}
 	c.documents[path] = document
 	c.errors[path] = err
 	if err == nil {
 		c.bytes += size
+	}
+}
+
+// pythonIdentityProjection retains only the fields consumed by identity
+// enrichment. The full decoded document remains bounded by maxPackagingCatalogBytes;
+// overflow documents can still enrich identities without another source read.
+func pythonIdentityProjection(name string, document report.PythonManifestDocument) (map[string]any, string, bool) {
+	if document.Failure != "" {
+		return nil, "", false
+	}
+	copyKeys := func(source map[string]any, keys ...string) map[string]any {
+		if source == nil {
+			return nil
+		}
+		result := make(map[string]any, len(keys))
+		for _, key := range keys {
+			if value, ok := source[key]; ok {
+				result[key] = value
+			}
+		}
+		return result
+	}
+	switch name {
+	case pythonPyprojectFile:
+		result := copyKeys(document.Document, "project", "dependency-groups")
+		tool, ok := document.Document["tool"].(map[string]any)
+		if !ok {
+			if value, exists := document.Document["tool"]; exists {
+				result["tool"] = value
+			}
+		} else {
+			projectTools := make(map[string]any, 2)
+			for _, key := range []string{"uv", "poetry"} {
+				value, exists := tool[key]
+				if !exists {
+					continue
+				}
+				switch key {
+				case "uv":
+					if table, valid := value.(map[string]any); valid {
+						projectTools[key] = copyKeys(table, "dev-dependencies")
+					} else {
+						projectTools[key] = value
+					}
+				case "poetry":
+					if table, valid := value.(map[string]any); valid {
+						projectTools[key] = copyKeys(table, "dependencies", "dev-dependencies", "group")
+					} else {
+						projectTools[key] = value
+					}
+				}
+			}
+			if len(projectTools) != 0 {
+				result["tool"] = projectTools
+			}
+		}
+		return result, "", true
+	case pythonPipfileName:
+		return copyKeys(document.Document, "packages", "dev-packages"), "", true
+	case pythonPoetryLockName, pythonUVLockName:
+		packages, exists := document.Document["package"]
+		if !exists {
+			return map[string]any{}, "", true
+		}
+		entries, ok := packages.([]any)
+		if !ok {
+			return map[string]any{"package": packages}, "", true
+		}
+		projected := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			if table, valid := entry.(map[string]any); valid {
+				projected = append(projected, copyKeys(table, "name", "version"))
+			} else {
+				projected = append(projected, entry)
+			}
+		}
+		return map[string]any{"package": projected}, "", true
+	case pythonPipfileLockName:
+		result := make(map[string]any, 2)
+		for _, section := range []string{"default", "develop"} {
+			value, exists := document.Document[section]
+			if !exists {
+				continue
+			}
+			packages, ok := value.(map[string]any)
+			if !ok {
+				result[section] = value
+				continue
+			}
+			projected := make(map[string]any, len(packages))
+			for name, raw := range packages {
+				if metadata, valid := raw.(map[string]any); valid {
+					projected[name] = copyKeys(metadata, "version")
+				} else {
+					projected[name] = raw
+				}
+			}
+			result[section] = projected
+		}
+		return result, "", true
+	case pythonRequirementsTxt:
+		return nil, document.Text, true
+	default:
+		return nil, "", false
 	}
 }
 

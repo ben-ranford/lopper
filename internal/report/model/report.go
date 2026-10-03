@@ -7,14 +7,19 @@ const SchemaVersion = "0.2.0"
 // PythonManifestDocument is an internal decoded adapter artifact, not report output.
 // Paths are relative to the adapter root; decode/read failures remain evidence warnings.
 type PythonManifestDocument struct {
-	// Deferred documents exceeded retention capacity and must be read on demand.
-	Deferred     bool
-	Path         string
-	Document     map[string]any
-	Text         string
-	FailureKind  string
-	FailureStage string
-	Failure      string
+	// Deferred documents exceeded full-document retention capacity. Their bounded
+	// identity projection is retained so identity enrichment does not reread source.
+	Deferred                bool
+	Path                    string
+	Document                map[string]any
+	Text                    string
+	IdentityProjection      map[string]any
+	IdentityText            string
+	IdentityProjectionSet   bool
+	IdentityProjectionError string
+	FailureKind             string
+	FailureStage            string
+	Failure                 string
 }
 
 type Report struct {

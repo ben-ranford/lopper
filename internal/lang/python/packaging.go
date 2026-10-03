@@ -111,17 +111,17 @@ func collectDirectoryDeclaredDependenciesWithCatalog(repoPath, dir string, exclu
 	}
 	addDependencySet(dependencies, manifestDependencies)
 	warnings = append(warnings, manifestWarnings...)
-	if catalog != nil {
-		for _, name := range []string{pythonPoetryLockName, pythonPipfileLockName, pythonUVLockName} {
-			if hasFile(files, name) {
-				if _, err := catalog.read(repoPath, filepath.Join(dir, name)); err != nil {
-					// Catalog retains failures for identity diagnostics without altering inventory fallback policy.
-					continue
+	if len(dependencies) > 0 {
+		if catalog != nil {
+			for _, name := range []string{pythonPoetryLockName, pythonPipfileLockName, pythonUVLockName} {
+				if hasFile(files, name) {
+					if _, err := catalog.read(repoPath, filepath.Join(dir, name)); err != nil {
+						// Catalog retains failures for identity diagnostics without altering inventory policy.
+						continue
+					}
 				}
 			}
 		}
-	}
-	if len(dependencies) > 0 {
 		return dependencies, warnings, nil
 	}
 

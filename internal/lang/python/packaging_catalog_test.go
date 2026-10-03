@@ -192,3 +192,89 @@ func TestPackagingCatalogRetentionLimitPreservesInventory(t *testing.T) {
 		t.Fatalf("retention accounting or discovery changed: %d %v", catalog.bytes, catalog.snapshot())
 	}
 }
+
+func TestPackagingCatalogOverflowRetainsBoundedIdentityProjection(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	testutil.MustWriteFile(t, path, "[project]\ndependencies=['requests==2.32.3']\n[project.optional-dependencies]\ndocs=['docs-only==1.0']\n[tool.poetry.dependencies]\npytest='==8.0.0'\n[tool.unrelated]\nlarge='discard this field'\n")
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	_, err := catalog.read(repo, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := catalog.documents[path]
+	if !stored.Deferred || !stored.IdentityProjectionSet || stored.IdentityProjectionError != "" {
+		t.Fatalf("deferred projection not retained: %+v", stored)
+	}
+	if stored.Document != nil || stored.Text != "" || catalog.identityBytes == 0 || catalog.identityBytes > maxPackagingIdentityProjectionBytes {
+		t.Fatalf("deferred catalog retained full document or exceeded projection budget: doc=%+v bytes=%d", stored, catalog.identityBytes)
+	}
+	if _, ok := stored.IdentityProjection["project"]; !ok {
+		t.Fatalf("project identity fields missing: %#v", stored.IdentityProjection)
+	}
+	if _, ok := stored.IdentityProjection["dependency-groups"]; ok {
+		t.Fatalf("unrelated pyproject fields were retained: %#v", stored.IdentityProjection)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackagingCatalogOverflowReportsProjectionBudget(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, "requests==2.32.3\n")
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	catalog.identityBytes = maxPackagingIdentityProjectionBytes
+	document, err := catalog.read(repo, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := catalog.documents[path]
+	if !stored.Deferred || !stored.IdentityProjectionSet || stored.IdentityProjectionError == "" || stored.IdentityText != "" {
+		t.Fatalf("projection overflow was not represented explicitly: %+v", stored)
+	}
+	if document.Text != "requests==2.32.3\n" {
+		t.Fatalf("inventory lost initial decoded content: %q", document.Text)
+	}
+}
+
+func TestPackagingCatalogOverflowProjectionsCoverIdentityFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, key string
+		wantText           string
+	}{
+		{pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n[tool.poetry.dependencies]\npytest='==8.0.0'\n", "project", ""},
+		{pythonPipfileName, "[packages]\nrequests='==2.32.3'\n", "packages", ""},
+		{pythonPoetryLockName, "[[package]]\nname='requests'\nversion='2.32.3'\n", "package", ""},
+		{pythonUVLockName, "[[package]]\nname='requests'\nversion='2.32.3'\n", "package", ""},
+		{pythonPipfileLockName, `{"default":{"requests":{"version":"==2.32.3"}}}`, "default", ""},
+		{pythonRequirementsTxt, "requests==2.32.3\n", "", "requests==2.32.3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			path := filepath.Join(repo, tc.name)
+			testutil.MustWriteFile(t, path, tc.content)
+			catalog := newPackagingCatalog()
+			catalog.bytes = maxPackagingCatalogBytes
+			if _, err := catalog.read(repo, path); err != nil {
+				t.Fatal(err)
+			}
+			document := catalog.documents[path]
+			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+				t.Fatalf("missing format projection: %+v", document)
+			}
+			if tc.wantText != "" {
+				if document.IdentityText != tc.wantText {
+					t.Fatalf("identity text = %q, want %q", document.IdentityText, tc.wantText)
+				}
+				return
+			}
+			if _, ok := document.IdentityProjection[tc.key]; !ok {
+				t.Fatalf("projection omitted %q: %#v", tc.key, document.IdentityProjection)
+			}
+		})
+	}
+}
