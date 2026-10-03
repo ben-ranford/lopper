@@ -345,9 +345,10 @@ class ReviewDismissalTests(unittest.TestCase):
         self.assertEqual(self.prepare(), SNAPSHOT)
         self.assertEqual([data["state"] for _, data in self.api.posts], ["success", "pending"])
         # Even a successful analysis cannot reinterpret the wakeup as approval.
+        result = result_document(["Makefile"])
+        suppression = suppression_document()
         with self.assertRaises(event.EventError):
-            event.publish(self.api, SNAPSHOT, result_document(["Makefile"]), "success", [OWNER],
-                          suppression_document(), "success")
+            event.publish(self.api, SNAPSHOT, result, "success", [OWNER], suppression, "success")
         self.assertEqual(self.api.posts[-1][1]["state"], "failure")
 
     def test_stale_run_and_missing_association_still_recheck_current_owner_state(self):
@@ -449,9 +450,10 @@ class ReviewDismissalTests(unittest.TestCase):
         self.api.responses[PREFIX + "/actions/runs/7"]["actor"]["login"] = OWNER
         self.api.page_responses[PREFIX + "/pulls/12/reviews"] = [dict(review_document(), body="edited away")]
         self.assertEqual(self.prepare(), SNAPSHOT)
+        result = result_document(["Makefile"])
+        suppression = suppression_document()
         with self.assertRaises(event.EventError):
-            event.publish(self.api, SNAPSHOT, result_document(["Makefile"]), "success", [OWNER],
-                          suppression_document(), "success")
+            event.publish(self.api, SNAPSHOT, result, "success", [OWNER], suppression, "success")
         self.assertEqual([data["state"] for _, data in self.api.posts], ["pending", "failure"])
 
 
