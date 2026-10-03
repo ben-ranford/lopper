@@ -1,16 +1,10 @@
 package analysis
 
 import (
-	"regexp"
 	"sort"
 	"strings"
 
 	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
-)
-
-var (
-	exactPythonRequirementPattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9._,\s-]+\])?\s*(?:==\s*([^,;\s#*)]+)|\(\s*==\s*([^,;\s#*)]+)\s*\))\s*(?:;.*)?$`)
-	exactPythonVersionPattern     = regexp.MustCompile(`(?i)^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?[0-9]*)?(?:(?:-[0-9]+)|(?:[-_.]?(?:post|rev|r)[-_.]?[0-9]*))?(?:[-_.]?dev[-_.]?[0-9]*)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$`)
 )
 
 func collectPyprojectManifestEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
@@ -108,57 +102,15 @@ func addPythonPackageTablePins(index identityIndex, rawTable any, source string,
 }
 
 func exactPythonRequirementPin(requirement string) (string, string, bool) {
-	matches := exactPythonRequirementPattern.FindStringSubmatch(requirement)
-	if len(matches) != 4 {
-		return "", "", false
-	}
-	versionSpec := matches[2]
-	if versionSpec == "" {
-		versionSpec = matches[3]
-	}
-	version, ok := exactPythonVersionSpec("=="+versionSpec, false)
-	return matches[1], version, ok
+	return pythonlang.ExactManifestRequirementPin(requirement)
 }
 
 func exactPythonPackageVersion(rawValue any, allowBareVersion bool) (string, bool) {
-	if value, ok := rawValue.(string); ok {
-		return exactPythonVersionSpec(value, allowBareVersion)
-	}
-	metadata, ok := rawValue.(map[string]any)
-	if !ok || pythonManifestDependencyUnsupported(metadata) {
-		return "", false
-	}
-	version, _ := metadata["version"].(string)
-	return exactPythonVersionSpec(version, allowBareVersion)
-}
-
-func pythonManifestDependencyUnsupported(metadata map[string]any) bool {
-	if optional, _ := metadata["optional"].(bool); optional {
-		return true
-	}
-	for _, field := range []string{"file", "git", "path", "ref", "url"} {
-		if _, ok := metadata[field]; ok {
-			return true
-		}
-	}
-	return false
+	return pythonlang.ExactManifestPackageVersion(rawValue, allowBareVersion)
 }
 
 func exactPythonVersionSpec(spec string, allowBareVersion bool) (string, bool) {
-	spec = strings.TrimSpace(spec)
-	version := spec
-	switch {
-	case strings.HasPrefix(spec, "==="):
-		return "", false
-	case strings.HasPrefix(spec, "=="):
-		version = strings.TrimSpace(strings.TrimPrefix(spec, "=="))
-	case !allowBareVersion:
-		return "", false
-	}
-	if version == "" || !exactPythonVersionPattern.MatchString(version) {
-		return "", false
-	}
-	return version, true
+	return pythonlang.ExactManifestVersionSpec(spec, allowBareVersion)
 }
 
 func addPythonManifestEvidence(index identityIndex, name, version, source string) {
@@ -174,20 +126,7 @@ func pythonManifestTable(rawValue any) map[string]any {
 }
 
 func pythonManifestStrings(rawValue any) []string {
-	switch values := rawValue.(type) {
-	case []string:
-		return values
-	case []any:
-		stringsOnly := make([]string, 0, len(values))
-		for _, value := range values {
-			if item, ok := value.(string); ok {
-				stringsOnly = append(stringsOnly, item)
-			}
-		}
-		return stringsOnly
-	default:
-		return nil
-	}
+	return pythonlang.ManifestRequirementStrings(rawValue)
 }
 
 func sortedPythonManifestKeys(table map[string]any) []string {

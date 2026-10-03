@@ -10,13 +10,19 @@ captured even when inventory has manifest declarations and needs no fallback.
 The catalog uses the existing confined readers and per-file limits (16 MiB for
 TOML manifests; 1 MiB for locks and requirements). Retained input is additionally
 limited to 64 MiB per adapter analysis. Documents, including read/decode failures,
-are reused. Once retention is full, the catalog retains path markers instead of
-document contents: inventory still parses every file, and identity enrichment
-rereads overflow documents through the same confined, bounded reader. This
-fallback also applies to cached markers; exhaustion never becomes a parse failure. Public report
-JSON does not expose the catalog. Cache schema v8 stores it as an internal
-sidecar, so cache hits use the same evidence. Paths are relative to the analysis
-root, including nested adapters and scoped repositories.
+are reused. Once full-document retention is exhausted, the catalog retains only
+the fields needed for identity enrichment, within a separate aggregate 64 MiB
+limit on serialized projections. Inventory still consumes each initial decoded
+document, while identity and cache hits consume its retained projection without
+reopening the source. Projection-limit or serialization failures produce an
+explicit identity warning and no package-specific evidence from that document;
+they do not turn successful inventory parsing into a parse failure. These limits
+measure retained input and serialized projection bytes, not total heap usage.
+
+Older cached path markers without a projection retain the compatibility fallback
+through the same confined, bounded reader. Public report JSON does not expose the
+catalog. Cache schema v8 stores it as an internal sidecar. Paths are relative to
+the analysis root, including nested adapters and scoped repositories.
 
 Remaining identity discovery uses the shared cancellable walker with a maximum
 of 100,000 files per traversal. Reaching the cap emits a deterministic truncation

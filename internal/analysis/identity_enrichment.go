@@ -1881,8 +1881,6 @@ func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warn
 	}
 }
 
-var requirementVersionPattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[A-Za-z0-9._,\s-]+\])?\s*==\s*([^;\s#]+)`)
-
 func collectRequirementsEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
 	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
@@ -1894,13 +1892,9 @@ func collectRequirementsEvidence(repoPath, path string, index identityIndex, war
 
 func collectRequirementsContent(repoPath, path string, index identityIndex, data string) {
 	source := relativeIdentitySource(repoPath, path)
-	for _, line := range strings.Split(string(data), "\n") {
-		matches := requirementVersionPattern.FindStringSubmatch(line)
-		if len(matches) != 4 {
-			continue
-		}
-		addPythonEvidence(index, matches[1], matches[3], source, "medium")
-	}
+	pythonlang.VisitRequirementIdentityPins(data, func(name, version string) {
+		addPythonEvidence(index, name, version, source, "medium")
+	})
 }
 
 func addPythonEvidence(index identityIndex, name, version, source, confidence string) {

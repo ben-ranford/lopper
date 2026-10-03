@@ -3,6 +3,7 @@ package python
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -10,6 +11,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -190,5 +192,377 @@ func TestPackagingCatalogRetentionLimitPreservesInventory(t *testing.T) {
 	}
 	if catalog.bytes != maxPackagingCatalogBytes || len(catalog.snapshot()) != 3 {
 		t.Fatalf("retention accounting or discovery changed: %d %v", catalog.bytes, catalog.snapshot())
+	}
+}
+
+func TestPackagingCatalogOverflowRetainsBoundedIdentityProjection(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	testutil.MustWriteFile(t, path, "[project]\ndependencies=['requests==2.32.3']\n[project.optional-dependencies]\ndocs=['docs-only==1.0']\n[tool.poetry.dependencies]\npytest='==8.0.0'\n[tool.unrelated]\nlarge='discard this field'\n")
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	_, err := catalog.read(repo, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := catalog.documents[path]
+	if !stored.Deferred || !stored.IdentityProjectionSet || stored.IdentityProjectionError != "" {
+		t.Fatalf("deferred projection not retained: %+v", stored)
+	}
+	if stored.Document != nil || stored.Text != "" || catalog.identityBytes == 0 || catalog.identityBytes > maxPackagingIdentityProjectionBytes {
+		t.Fatalf("deferred catalog retained full document or exceeded projection budget: doc=%+v bytes=%d", stored, catalog.identityBytes)
+	}
+	if _, ok := stored.IdentityProjection["project"]; !ok {
+		t.Fatalf("project identity fields missing: %#v", stored.IdentityProjection)
+	}
+	if _, ok := stored.IdentityProjection["dependency-groups"]; ok {
+		t.Fatalf("unrelated pyproject fields were retained: %#v", stored.IdentityProjection)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackagingCatalogOverflowReportsProjectionBudget(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	testutil.MustWriteFile(t, path, "requests==2.32.3\n")
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	catalog.identityBytes = maxPackagingIdentityProjectionBytes
+	document, err := catalog.read(repo, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := catalog.documents[path]
+	if !stored.Deferred || !stored.IdentityProjectionSet || stored.IdentityProjectionError == "" || stored.IdentityText != "" {
+		t.Fatalf("projection overflow was not represented explicitly: %+v", stored)
+	}
+	if document.Text != "requests==2.32.3\n" {
+		t.Fatalf("inventory lost initial decoded content: %q", document.Text)
+	}
+}
+
+func TestPackagingCatalogOverflowOmitsUnrelatedProjectMetadata(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPyprojectFile)
+	content := "[project]\nname='metadata-only'\nauthors=[{name='Ignored Author'}]\nreadme='" + strings.Repeat("unrelated metadata ", 256) + "'\ndependencies=['requests==2.32.3']\n[project.optional-dependencies]\ndocs=['sphinx==8.0.2']\n"
+	testutil.MustWriteFile(t, path, content)
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	catalog.identityBytes = maxPackagingIdentityProjectionBytes - 256
+	if _, err := catalog.read(repo, path); err != nil {
+		t.Fatal(err)
+	}
+	document := catalog.documents[path]
+	if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+		t.Fatalf("unrelated project metadata exhausted the projection budget: %+v", document)
+	}
+	encoded, err := json.Marshal(document.IdentityProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"project":{"dependencies":["requests==2.32.3"],"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`
+	if string(encoded) != want {
+		t.Fatalf("project identity fields = %s, want %s", encoded, want)
+	}
+	if catalog.identityBytes <= maxPackagingIdentityProjectionBytes-256 || catalog.identityBytes > maxPackagingIdentityProjectionBytes {
+		t.Fatalf("projection budget accounting changed: %d", catalog.identityBytes)
+	}
+}
+
+func TestPackagingCatalogOverflowProjectionsCoverIdentityFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, key string
+		wantText           string
+	}{
+		{pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n[tool.poetry.dependencies]\npytest='==8.0.0'\n", "project", ""},
+		{pythonPipfileName, "[packages]\nrequests='==2.32.3'\n", "packages", ""},
+		{pythonPoetryLockName, "[[package]]\nname='requests'\nversion='2.32.3'\n", "package", ""},
+		{pythonUVLockName, "[[package]]\nname='requests'\nversion='2.32.3'\n", "package", ""},
+		{pythonPipfileLockName, `{"default":{"requests":{"version":"==2.32.3"}}}`, "default", ""},
+		{pythonRequirementsTxt, "requests==2.32.3\n", "", "requests==2.32.3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, tc.content)
+			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+				t.Fatalf("missing format projection: %+v", document)
+			}
+			if tc.wantText != "" {
+				if document.IdentityText != tc.wantText {
+					t.Fatalf("identity text = %q, want %q", document.IdentityText, tc.wantText)
+				}
+				return
+			}
+			if _, ok := document.IdentityProjection[tc.key]; !ok {
+				t.Fatalf("projection omitted %q: %#v", tc.key, document.IdentityProjection)
+			}
+		})
+	}
+}
+
+func TestPackagingCatalogOverflowOmitsPackageAndGroupMetadata(t *testing.T) {
+	padding := strings.Repeat("irrelevant metadata ", 256)
+	for _, tc := range []struct{ name, content, want string }{
+		{
+			pythonPipfileName,
+			"[packages]\nrequests={version='==2.32.3', markers='%[1]s', extras=['%[1]s']}\n[dev-packages]\npytest={version='==8.0.0', hashes=['%[1]s']}\n",
+			`{"dev-packages":{"pytest":"==8.0.0"},"packages":{"requests":"==2.32.3"}}`,
+		},
+		{
+			pythonPyprojectFile,
+			"[tool.poetry.dependencies]\nrequests={version='2.32.3', markers='%[1]s', extras=['%[1]s']}\n[tool.poetry.dev-dependencies]\npytest={version='8.0.0', python='%[1]s'}\n[tool.poetry.group.docs]\noptional=false\ndescription='%[1]s'\n[tool.poetry.group.docs.dependencies]\nsphinx={version='8.0.2', markers='%[1]s'}\n",
+			`{"tool":{"poetry":{"dependencies":{"requests":"==2.32.3"},"dev-dependencies":{"pytest":"==8.0.0"},"group":{"00000000000000000000":{"dependencies":{"sphinx":"==8.0.2"}}}}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			path := filepath.Join(repo, tc.name)
+			testutil.MustWriteFile(t, path, fmt.Sprintf(tc.content, padding))
+			catalog := newPackagingCatalog()
+			catalog.bytes = maxPackagingCatalogBytes
+			catalog.identityBytes = maxPackagingIdentityProjectionBytes - 512
+			if _, err := catalog.read(repo, path); err != nil {
+				t.Fatal(err)
+			}
+			document := catalog.documents[path]
+			if !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+				t.Fatalf("unrelated package metadata exhausted the projection budget: %+v", document)
+			}
+			encoded, err := json.Marshal(document.IdentityProjection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != tc.want {
+				t.Fatalf("identity fields = %s, want %s", encoded, tc.want)
+			}
+		})
+	}
+}
+
+func TestPythonIdentityPackageProjectionMatchesFormatRules(t *testing.T) {
+	entries := map[string]any{
+		"bare":        "2.32.3",
+		"exact":       "==2.32.3",
+		"python":      "==3.12.0",
+		" PyThOn ":    "==3.12.0",
+		"   ":         "==1.0",
+		"nil":         nil,
+		"nil-table":   map[string]any(nil),
+		"malformed":   []any{"==2.32.3"},
+		"bad-version": map[string]any{"version": []any{"==2.32.3"}},
+	}
+	for _, flag := range []struct {
+		name, field string
+		value       any
+	}{
+		{"optional-true", "optional", true},
+		{"optional-false", "optional", false},
+		{"optional-string", "optional", "true"},
+		{"file", "file", nil},
+		{"git", "git", false},
+		{"path", "path", ""},
+		{"ref", "ref", int64(0)},
+		{"url", "url", []any{"source"}},
+	} {
+		entries[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value, "markers": "omit", "extras": []any{"omit"}}
+	}
+	for _, allowBareVersion := range []bool{false, true} {
+		want := map[string]any{"exact": "==2.32.3", "optional-false": "==2.32.3", "optional-string": "==2.32.3"}
+		if allowBareVersion {
+			want["bare"] = "==2.32.3"
+		} else {
+			want["python"] = "==3.12.0"
+			want[" PyThOn "] = "==3.12.0"
+		}
+		if projected := pythonIdentityPackageTable(entries, allowBareVersion); !reflect.DeepEqual(projected, want) {
+			t.Fatalf("allowBareVersion=%t: got %#v, want %#v", allowBareVersion, projected, want)
+		}
+	}
+	for _, shape := range []any{nil, map[string]any(nil), "malformed", []any{"malformed"}} {
+		if projected := pythonIdentityPackageTable(shape, false); len(projected) != 0 {
+			t.Fatalf("ignored package table retained: %#v", projected)
+		}
+		if projected := poetryIdentityGroups(shape); len(projected) != 0 {
+			t.Fatalf("ignored Poetry groups retained: %#v", projected)
+		}
+		if projected := poetryIdentityGroup(shape); len(projected) != 0 {
+			t.Fatalf("ignored Poetry group retained: %#v", projected)
+		}
+	}
+}
+
+func TestPackagingCatalogOverflowKeepsConsumedFormatShapes(t *testing.T) {
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"malformed tool", pythonPyprojectFile, "tool='malformed'\n", `{}`},
+		{"uv development pins", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['pytest==8.0.0']\ncache-dir='discard'\n", `{"tool":{"uv":{"dev-dependencies":["pytest==8.0.0"]}}}`},
+		{"malformed poetry", pythonPyprojectFile, "[tool]\npoetry='malformed'\n", `{}`},
+		{"missing lock packages", pythonPoetryLockName, "version=1\n", `{}`},
+		{"malformed lock packages", pythonUVLockName, "package='malformed'\n", `{}`},
+		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":false}`},
+		{"malformed JSON entries", pythonPipfileLockName, `{"default":{"requests":null,"malformed":"bad","invalid":{"version":["bad"]}}}`, `{"default":false}`},
+		{"null JSON entries and versions", pythonPipfileLockName, `{"default":{"requests":null,"empty":{},"null":{"version":null}}}`, `{"default":{"empty":{},"null":{"version":null},"requests":null}}`},
+		{"non-string JSON version", pythonPipfileLockName, `{"default":{"requests":{"version":false}},"develop":null}`, `{"default":false,"develop":null}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, tc.content)
+			assertIdentityProjection(t, document, tc.want)
+		})
+	}
+}
+
+func TestPackagingCatalogOverflowOmitsIgnoredIdentityShapes(t *testing.T) {
+	padding := strings.Repeat("ignored payload ", 256)
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"JSON string section", pythonPipfileLockName, `{"default":"%[1]s","develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array section", pythonPipfileLockName, `{"default":["%[1]s"],"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON string entry", pythonPipfileLockName, `{"default":{"bad":"%[1]s","requests":{"version":"==2.32.3"}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array entry", pythonPipfileLockName, `{"default":{"bad":["%[1]s"]},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array version", pythonPipfileLockName, `{"default":{"bad":{"version":["%[1]s"]}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON object version", pythonPipfileLockName, `{"default":{"bad":{"version":{"ignored":"%[1]s"}}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"lock container", pythonPoetryLockName, "package='%[1]s'\n", `{}`},
+		{"lock entries", pythonUVLockName, "package=[{name='requests',version={ignored='%[1]s'}},'%[1]s',{name={ignored='%[1]s'},version='1.2.3'},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"name":"pytest","version":"8.0.0"}]}`},
+		{"tool", pythonPyprojectFile, "tool='%[1]s'\n[project]\ndependencies=['requests==2.32.3']\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"project", pythonPyprojectFile, "project='%[1]s'\n[dependency-groups]\nmain=['requests==2.32.3']\n", `{"dependency-groups":{"00000000000000000000":["requests==2.32.3"]}}`},
+		{"tool tables", pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n[tool]\nuv='%[1]s'\npoetry='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"poetry tables", pythonPyprojectFile, "[tool.poetry]\ndependencies='%[1]s'\ngroup='%[1]s'\n[tool.poetry.dev-dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"dev-dependencies":{"requests":"==2.32.3"}}}}`},
+		{"poetry group entries", pythonPyprojectFile, "[tool.poetry.group]\nbad='%[1]s'\n[tool.poetry.group.empty]\ndependencies='%[1]s'\noptional='%[1]s'\n[tool.poetry.group.valid.dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"group":{"00000000000000000000":{"dependencies":{"requests":"==2.32.3"}}}}}}`},
+		{"pipfile packages", pythonPipfileName, "packages='%[1]s'\n[dev-packages]\nrequests='==2.32.3'\n", `{"dev-packages":{"requests":"==2.32.3"}}`},
+		{"pipfile dev packages", pythonPipfileName, "dev-packages='%[1]s'\n[packages]\nrequests='==2.32.3'\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"project lists", pythonPyprojectFile, "dependency-groups='%[1]s'\n[project]\ndependencies=['requests==2.32.3', {ignored='%[1]s'}, 3]\noptional-dependencies='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"requirement groups", pythonPyprojectFile, "[dependency-groups]\nbad='%[1]s'\nmain=['requests==2.32.3', {ignored='%[1]s'}]\n[project.optional-dependencies]\nempty={ignored='%[1]s'}\ndocs=['sphinx==8.0.2', true]\n", `{"dependency-groups":{"00000000000000000000":["requests==2.32.3"]},"project":{"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`},
+		{"uv list", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['ruff==0.12.0', {ignored='%[1]s'}]\n", `{"tool":{"uv":{"dev-dependencies":["ruff==0.12.0"]}}}`},
+		{"package entries and flags", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nmalformed=['%[1]s']\nbad-version={version=['%[1]s']}\nforeign={version='==1.2.3',git='%[1]s',optional='%[1]s'}\n", `{"packages":{"requests":"==2.32.3"}}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, fmt.Sprintf(tc.content, padding), 512)
+			assertIdentityProjection(t, document, tc.want)
+		})
+	}
+}
+
+func TestPythonIdentityRequirementsPreservesStringValues(t *testing.T) {
+	for _, tc := range []struct {
+		input any
+		want  []string
+	}{
+		{[]string{"requests===2", " package==1.* "}, []string{"requests===2", " package==1.* "}},
+		{[]any{"requests===2", map[string]any{"ignored": "metadata"}, " package==1.* ", false}, []string{"requests===2", " package==1.* "}},
+		{"requests==2.32.3", nil},
+	} {
+		if got := ManifestRequirementStrings(tc.input); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("requirement strings changed: got %#v, want %#v", got, tc.want)
+		}
+	}
+}
+
+func TestPackagingCatalogOverflowCanonicalizesUsablePins(t *testing.T) {
+	replacer := strings.NewReplacer("@noise@", strings.Repeat("ignored payload ", 256), "@space@", strings.Repeat(" ", 4096))
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"project markers and conflicts", pythonPyprojectFile, "[project]\ndependencies=['requests[security]==2.32.3 ; @noise@','@noise@','requests==3.0 ; @noise@','requests==2.32.3 ; again']\n", `{"project":{"dependencies":["requests==2.32.3","requests==3.0","requests==2.32.3"]}}`},
+		{"optional markers and group names", pythonPyprojectFile, "[project.optional-dependencies]\n'@noise@'=['sphinx==8.0.2 ; @noise@','@noise@']\n", `{"project":{"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`},
+		{"group ordering and uv markers", pythonPyprojectFile, "[dependency-groups]\n'z@noise@'=['requests==3.0 ; @noise@']\n'a@noise@'=['requests==1.0','requests==2.0']\nempty=['@noise@']\n[tool.uv]\ndev-dependencies=['ruff==0.12.0 ; @noise@','@noise@']\n", `{"dependency-groups":{"00000000000000000000":["requests==1.0","requests==2.0"],"00000000000000000001":["requests==3.0"]},"tool":{"uv":{"dev-dependencies":["ruff==0.12.0"]}}}`},
+		{"Pipfile version filtering", pythonPipfileName, "[packages]\nrequests={version='@space@==2.32.3@space@'}\ninvalid='@noise@'\nnested-invalid={version='@noise@'}\nbare='2.32.3'\n'@space@'='==1.0'\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"Poetry version filtering", pythonPyprojectFile, "[tool.poetry.dependencies]\nrequests='@space@2.32.3@space@'\npytest={version='@space@==8.0.0@space@'}\ninvalid='@noise@'\nnested-invalid={version='@noise@'}\n' PyThOn '='3.12.0'\n'@space@'='1.0'\n", `{"tool":{"poetry":{"dependencies":{"pytest":"==8.0.0","requests":"==2.32.3"}}}}`},
+		{"unsupported and optional packages", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nfile={version='==1.0',file='@noise@'}\ngit={version='==1.0',git='@noise@'}\npath={version='==1.0',path='@noise@'}\nref={version='==1.0',ref='@noise@'}\nurl={version='==1.0',url='@noise@'}\noptional={version='@noise@',optional=true}\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"Poetry optional groups and conflicts", pythonPyprojectFile, "[tool.poetry.group.'optional@noise@']\noptional=true\n[tool.poetry.group.'optional@noise@'.dependencies]\nignored='1.0'\n[tool.poetry.group.'z@noise@'.dependencies]\nrequests='3.0'\n[tool.poetry.group.'a@noise@'.dependencies]\nrequests='1.0'\n", `{"tool":{"poetry":{"group":{"00000000000000000000":{"dependencies":{"requests":"==1.0"}},"00000000000000000001":{"dependencies":{"requests":"==3.0"}}}}}}`},
+		{"TOML lock empty names", pythonUVLockName, "package=[{name='@space@',version='1.0'},{version='2.0'},{name='requests',version=3},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"name":"pytest","version":"8.0.0"}]}`},
+		{"JSON lock empty names", pythonPipfileLockName, `{"default":{"@space@":{"version":"==1.0"},"requests":null}}`, `{"default":{"requests":null}}`},
+		{"JSON invalid blank entry still warns", pythonPipfileLockName, `{"default":{"@space@":{"version":false},"requests":{"version":"==2.32.3"}}}`, `{"default":false}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, replacer.Replace(tc.content), 512)
+			assertIdentityProjection(t, document, tc.want)
+		})
+	}
+}
+
+func assertIdentityProjection(t *testing.T, document report.PythonManifestDocument, want string) {
+	t.Helper()
+	if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+		t.Fatalf("identity projection unavailable: %+v", document)
+	}
+	encoded, err := json.Marshal(document.IdentityProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != want {
+		t.Fatalf("identity projection = %s, want %s", encoded, want)
+	}
+}
+
+func readOverflowIdentityDocument(t *testing.T, name, content string, remainingProjectionBytes ...int64) report.PythonManifestDocument {
+	t.Helper()
+	repo := t.TempDir()
+	path := filepath.Join(repo, name)
+	testutil.MustWriteFile(t, path, content)
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	if len(remainingProjectionBytes) != 0 {
+		catalog.identityBytes = maxPackagingIdentityProjectionBytes - remainingProjectionBytes[0]
+	}
+	if _, err := catalog.read(repo, path); err != nil {
+		t.Fatal(err)
+	}
+	return catalog.documents[path]
+}
+
+func TestPythonIdentityProjectionRejectsUnusableDocuments(t *testing.T) {
+	for _, tc := range []struct{ name, failure string }{
+		{pythonPyprojectFile, "TOML decode failed"},
+		{"setup.cfg", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := report.PythonManifestDocument{
+				Failure: tc.failure,
+				Document: map[string]any{"project": map[string]any{
+					"dependencies": []any{"requests==2.32.3"},
+				}},
+				Text: "requests==2.32.3\n",
+			}
+			projection, text, available := pythonIdentityProjection(tc.name, document)
+			if projection != nil || text != "" || available {
+				t.Fatalf("unusable document yielded identity evidence: %v %q %t", projection, text, available)
+			}
+		})
+	}
+}
+
+func TestPackagingCatalogLockFailureDoesNotReplaceManifestInventory(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonPyprojectFile), "[project]\ndependencies=['requests>=2']\n")
+	lockPath := filepath.Join(repo, pythonPoetryLockName)
+	testutil.MustWriteFile(t, lockPath, "[[invalid")
+	catalog := newPackagingCatalog()
+	dependencies, warnings, err := collectDirectoryDeclaredDependenciesWithCatalog(repo, repo, nil, catalog)
+	if _, present := dependencies["requests"]; !present || len(dependencies) != 1 || len(warnings) != 0 || err != nil {
+		t.Fatalf("lock evidence failure changed manifest inventory: %v %v %v", dependencies, warnings, err)
+	}
+	document := catalog.documents[lockPath]
+	if document.FailureStage != "parse" || document.Failure == "" {
+		t.Fatalf("lock failure was not retained for identity diagnostics: %+v", document)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := catalog.read(repo, lockPath)
+	if err == nil || cached.Failure != document.Failure || cached.FailureStage != "parse" {
+		t.Fatalf("cached parse failure was replaced by a source reread: %+v %v", cached, err)
+	}
+}
+
+func TestPackagingCatalogClassifiesPermissionFailure(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonPoetryLockName)
+	testutil.MustWriteFile(t, path, "[[package]]\nname='requests'\nversion='2.32.3'\n")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(path); !errors.Is(err, os.ErrPermission) {
+		t.Skip("environment does not enforce file read permissions")
+	}
+	document, err := newPackagingCatalog().read(repo, path)
+	if !errors.Is(err, os.ErrPermission) || document.FailureStage != "read" || document.FailureKind != "permission" {
+		t.Fatalf("permission failure classification = %+v, %v", document, err)
 	}
 }

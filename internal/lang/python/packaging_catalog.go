@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -17,15 +18,22 @@ import (
 // Catalog lifetime is one adapter analysis. Parsed documents feed inventory and
 // identity independently, including locks that inventory does not need as fallback.
 type packagingCatalog struct {
-	documents map[string]report.PythonManifestDocument
-	errors    map[string]error
-	bytes     int64
+	documents     map[string]report.PythonManifestDocument
+	errors        map[string]error
+	bytes         int64
+	identityBytes int64
+	identitySizes map[string]int64
 }
 
 const maxPackagingCatalogBytes int64 = 64 << 20
+const maxPackagingIdentityProjectionBytes int64 = 64 << 20
 
 func newPackagingCatalog() *packagingCatalog {
-	return &packagingCatalog{documents: make(map[string]report.PythonManifestDocument), errors: make(map[string]error)}
+	return &packagingCatalog{
+		documents:     make(map[string]report.PythonManifestDocument),
+		errors:        make(map[string]error),
+		identitySizes: make(map[string]int64),
+	}
 }
 
 // ReadPackagingDocument decodes one bounded Python packaging file using the
@@ -70,8 +78,33 @@ func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocumen
 }
 
 func (c *packagingCatalog) retain(path string, document report.PythonManifestDocument, err error, size int64) {
+	if previousSize := c.identitySizes[path]; previousSize != 0 {
+		c.identityBytes -= previousSize
+		delete(c.identitySizes, path)
+	}
 	if err == nil && size > maxPackagingCatalogBytes-c.bytes {
-		c.documents[path] = report.PythonManifestDocument{Path: document.Path, Deferred: true}
+		deferred := report.PythonManifestDocument{Path: document.Path, Deferred: true}
+		deferred.IdentityProjection, deferred.IdentityText, deferred.IdentityProjectionSet = pythonIdentityProjection(filepath.Base(path), document)
+		if deferred.IdentityProjectionSet {
+			projectionBytes, marshalErr := json.Marshal(struct {
+				Document map[string]any `json:"document,omitempty"`
+				Text     string         `json:"text,omitempty"`
+			}{Document: deferred.IdentityProjection, Text: deferred.IdentityText})
+			switch {
+			case marshalErr != nil:
+				deferred.IdentityProjectionError = fmt.Sprintf("encode bounded identity projection: %v", marshalErr)
+				deferred.IdentityProjection = nil
+				deferred.IdentityText = ""
+			case int64(len(projectionBytes)) > maxPackagingIdentityProjectionBytes-c.identityBytes:
+				deferred.IdentityProjectionError = fmt.Sprintf("Python identity projection exceeds the %d-byte catalog limit", maxPackagingIdentityProjectionBytes)
+				deferred.IdentityProjection = nil
+				deferred.IdentityText = ""
+			default:
+				c.identityBytes += int64(len(projectionBytes))
+				c.identitySizes[path] = int64(len(projectionBytes))
+			}
+		}
+		c.documents[path] = deferred
 		return
 	}
 	c.documents[path] = document
@@ -79,6 +112,260 @@ func (c *packagingCatalog) retain(path string, document report.PythonManifestDoc
 	if err == nil {
 		c.bytes += size
 	}
+}
+
+// pythonIdentityProjection retains only the fields consumed by identity
+// enrichment. The full decoded document remains bounded by maxPackagingCatalogBytes;
+// overflow documents can still enrich identities without another source read.
+func pythonIdentityProjection(name string, document report.PythonManifestDocument) (map[string]any, string, bool) {
+	if document.Failure != "" {
+		return nil, "", false
+	}
+	switch name {
+	case pythonPyprojectFile:
+		return pyprojectIdentityProjection(document.Document), "", true
+	case pythonPipfileName:
+		return pythonIdentityPackageSections(document.Document, false, "packages", "dev-packages"), "", true
+	case pythonPoetryLockName, pythonUVLockName:
+		return pythonLockIdentityProjection(document.Document), "", true
+	case pythonPipfileLockName:
+		return pipfileLockIdentityProjection(document.Document), "", true
+	case pythonRequirementsTxt:
+		return nil, compactRequirementsIdentityText(document.Text), true
+	default:
+		return nil, "", false
+	}
+}
+
+func pythonIdentityFields(source map[string]any, keys ...string) map[string]any {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]any, len(keys))
+	for _, key := range keys {
+		if value, ok := source[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func pythonIdentityTable(value any, keys ...string) any {
+	if table, ok := value.(map[string]any); ok {
+		return pythonIdentityFields(table, keys...)
+	}
+	return value
+}
+
+func pythonIdentityPackageSections(document map[string]any, allowBareVersion bool, sections ...string) map[string]any {
+	return projectPythonIdentityCollections(pythonIdentityFields(document, sections...), func(value any) map[string]any {
+		return pythonIdentityPackageTable(value, allowBareVersion)
+	}, false)
+}
+
+func projectPythonIdentityCollections[T []string | map[string]any](document map[string]any, project func(any) T, ordinalKeys bool) map[string]any {
+	keys := make([]string, 0, len(document))
+	for name := range document {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	result := make(map[string]any, len(document))
+	for _, name := range keys {
+		if value := project(document[name]); len(value) != 0 {
+			if ordinalKeys {
+				name = fmt.Sprintf("%020d", len(result))
+			}
+			result[name] = value
+		}
+	}
+	return result
+}
+
+func pythonIdentityPackageTable(value any, allowBareVersion bool) map[string]any {
+	packages, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	projected := make(map[string]any, len(packages))
+	for name, raw := range packages {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" || allowBareVersion && strings.EqualFold(trimmed, "python") {
+			continue
+		}
+		if version, valid := ExactManifestPackageVersion(raw, allowBareVersion); valid {
+			projected[name] = "==" + version
+		}
+	}
+	return projected
+}
+
+// ManifestRequirementStrings selects the strings consumed by manifest identity enrichment.
+func ManifestRequirementStrings(value any) []string {
+	switch requirements := value.(type) {
+	case []string:
+		return requirements
+	case []any:
+		result := make([]string, 0, len(requirements))
+		for _, raw := range requirements {
+			if requirement, ok := raw.(string); ok {
+				result = append(result, requirement)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func pythonIdentityRequirementFields(document map[string]any, fields ...string) map[string]any {
+	return projectPythonIdentityCollections(pythonIdentityFields(document, fields...), pythonIdentityRequirementPins, false)
+}
+
+func pythonIdentityRequirementGroups(value any) map[string]any {
+	groups, _ := value.(map[string]any)
+	return projectPythonIdentityCollections(groups, pythonIdentityRequirementPins, true)
+}
+
+func pythonIdentityRequirementPins(value any) []string {
+	var result []string
+	for _, requirement := range ManifestRequirementStrings(value) {
+		if name, version, valid := ExactManifestRequirementPin(requirement); valid {
+			result = append(result, name+"=="+version)
+		}
+	}
+	return result
+}
+
+func pyprojectIdentityProjection(document map[string]any) map[string]any {
+	result := make(map[string]any, 3)
+	if groups := pythonIdentityRequirementGroups(document["dependency-groups"]); len(groups) != 0 {
+		result["dependency-groups"] = groups
+	}
+	if project := pythonProjectIdentityProjection(document["project"]); len(project) != 0 {
+		result["project"] = project
+	}
+	if tool := pythonToolIdentityProjection(document["tool"]); len(tool) != 0 {
+		result["tool"] = tool
+	}
+	return result
+}
+
+func pythonProjectIdentityProjection(value any) map[string]any {
+	project, _ := value.(map[string]any)
+	result := pythonIdentityRequirementFields(project, "dependencies")
+	if groups := pythonIdentityRequirementGroups(project["optional-dependencies"]); len(groups) != 0 {
+		result["optional-dependencies"] = groups
+	}
+	return result
+}
+
+func pythonToolIdentityProjection(value any) map[string]any {
+	tool, _ := value.(map[string]any)
+	result := make(map[string]any, 2)
+	uv, _ := tool["uv"].(map[string]any)
+	if projected := pythonIdentityRequirementFields(uv, "dev-dependencies"); len(projected) != 0 {
+		result["uv"] = projected
+	}
+	if poetry := poetryIdentityProjection(tool["poetry"]); len(poetry) != 0 {
+		result["poetry"] = poetry
+	}
+	return result
+}
+
+func poetryIdentityProjection(value any) map[string]any {
+	poetry, _ := value.(map[string]any)
+	result := pythonIdentityPackageSections(poetry, true, "dependencies", "dev-dependencies")
+	if groups := poetryIdentityGroups(poetry["group"]); len(groups) != 0 {
+		result["group"] = groups
+	}
+	return result
+}
+
+func poetryIdentityGroups(value any) map[string]any {
+	groups, _ := value.(map[string]any)
+	return projectPythonIdentityCollections(groups, poetryIdentityGroup, true)
+}
+
+func poetryIdentityGroup(value any) map[string]any {
+	group, _ := value.(map[string]any)
+	if optional, _ := group["optional"].(bool); optional {
+		return nil
+	}
+	return pythonIdentityPackageSections(group, true, "dependencies")
+}
+
+func pythonLockIdentityProjection(document map[string]any) map[string]any {
+	entries, ok := document["package"].([]any)
+	if !ok {
+		return map[string]any{}
+	}
+	projected := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		if table, ok := entry.(map[string]any); ok {
+			name, _ := table["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				continue
+			}
+			fields := pythonIdentityFields(table, "name", "version")
+			for key, value := range fields {
+				if _, ok := value.(string); !ok {
+					delete(fields, key)
+				}
+			}
+			projected = append(projected, fields)
+		}
+	}
+	return map[string]any{"package": projected}
+}
+
+func pipfileLockIdentityProjection(document map[string]any) map[string]any {
+	result := make(map[string]any, 2)
+	for _, section := range []string{"default", "develop"} {
+		if value, exists := document[section]; exists {
+			result[section] = pipfileLockIdentitySection(value)
+		}
+	}
+	return result
+}
+
+func pipfileLockIdentitySection(value any) any {
+	if value == nil {
+		return nil
+	}
+	packages, ok := value.(map[string]any)
+	if !ok || !ValidPipfileIdentitySection(packages) {
+		// Identity rejects the whole section with a generic warning. A non-null,
+		// non-map sentinel preserves that rejection without retaining its payload.
+		return false
+	}
+	projected := make(map[string]any, len(packages))
+	for name, raw := range packages {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		projected[name] = pythonIdentityTable(raw, "version")
+	}
+	return projected
+}
+
+// ValidPipfileIdentitySection reports whether every entry can supply identity evidence.
+func ValidPipfileIdentitySection(packages map[string]any) bool {
+	for _, raw := range packages {
+		if raw == nil {
+			continue
+		}
+		metadata, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		version := metadata["version"]
+		if version != nil {
+			if _, ok := version.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c *packagingCatalog) parse(repo, path string) (map[string]struct{}, []string, error) {

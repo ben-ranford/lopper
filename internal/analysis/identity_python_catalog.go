@@ -3,12 +3,14 @@ package analysis
 import (
 	"context"
 	"errors"
-	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
-	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
+	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func collectPythonCatalogEvidence(ctx context.Context, repo string, index identityIndex, documents []report.PythonManifestDocument, warnings *identityWarningCollector) {
@@ -29,11 +31,22 @@ func collectPythonCatalogEvidence(ctx context.Context, repo string, index identi
 func collectPythonCatalogDocument(repo string, index identityIndex, document report.PythonManifestDocument, warnings *identityWarningCollector) {
 	path := filepath.Join(repo, filepath.FromSlash(document.Path))
 	if document.Deferred {
-		decoded, err := pythonlang.ReadPackagingDocument(repo, path)
-		document = decoded
-		if err != nil {
-			addPythonCatalogFailure(path, document, warnings)
+		if document.IdentityProjectionError != "" {
+			warnings.append(fmt.Sprintf("identity evidence projection unavailable for %s: %s", relativeIdentitySource(repo, path), document.IdentityProjectionError))
 			return
+		}
+		if document.IdentityProjectionSet {
+			document.Document = document.IdentityProjection
+			document.Text = document.IdentityText
+		} else {
+			// Backward compatibility for cached payloads created before compact
+			// projections were retained for deferred documents.
+			decoded, err := pythonlang.ReadPackagingDocument(repo, path)
+			document = decoded
+			if err != nil {
+				addPythonCatalogFailure(path, document, warnings)
+				return
+			}
 		}
 	}
 	if document.Failure != "" {
@@ -91,20 +104,5 @@ func collectPipfileLockDocument(repo, path string, index identityIndex, document
 }
 
 func validPipfileIdentitySection(packages map[string]any) bool {
-	for _, raw := range packages {
-		if raw == nil {
-			continue
-		}
-		metadata, ok := raw.(map[string]any)
-		if !ok {
-			return false
-		}
-		version := metadata["version"]
-		if version != nil {
-			if _, ok := version.(string); !ok {
-				return false
-			}
-		}
-	}
-	return true
+	return pythonlang.ValidPipfileIdentitySection(packages)
 }
