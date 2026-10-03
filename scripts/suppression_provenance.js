@@ -14,6 +14,17 @@ const DETECTOR_PATH = 'scripts/inline_suppression_tracker.js';
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const MAX_REPORT_BYTES = 128 * 1024;
+const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+
+class ProducerDeferred extends Error {
+  constructor(reason, run) {
+    super(`Suppression provenance: producer verification deferred (${reason})`);
+    this.reason = reason;
+    this.producer = Object.freeze({
+      id: run.id, run_attempt: run.run_attempt, workflow_id: run.workflow_id, status: run.status, conclusion: run.conclusion,
+    });
+  }
+}
 
 // Static, isolated stdlib program: inspect the zip in memory, never extract it.
 const READ_REPORT = `
@@ -107,26 +118,41 @@ function assertPull(pull, expected) {
   requireCondition(pull?.number === expected.pullNumber && pull.state === 'open', 'pull request is unavailable or closed');
   requireCondition(pull.head?.sha === expected.headSHA && pull.base?.sha === expected.baseSHA, 'pull request head or base changed');
   requireCondition(pull.head?.repo?.id === expected.headRepoId && pull.base?.repo?.id === expected.repoId, 'pull request repository mismatch');
+  requireCondition(typeof pull.base.ref === 'string' && pull.base.ref.length > 0, 'missing pull request base ref');
 }
 
-function assertRun(run, workflow, expected) {
-  requireCondition(workflow?.path === WORKFLOW_PATH && positiveID(workflow.id), 'unexpected CI workflow identity');
-  requireCondition(run?.id === expected.runId && run.workflow_id === workflow.id && run.path === WORKFLOW_PATH, 'producer workflow mismatch');
-  requireCondition(run.event === 'pull_request' && run.status === 'completed' && run.conclusion === 'success', 'producer is not a successful completed pull_request run');
-  requireCondition(run.head_sha === expected.headSHA && run.run_attempt === expected.runAttempt, 'producer head or attempt changed');
+function assertRun(run, workflow, expected, livePull) {
+  requireCondition(workflow?.path === WORKFLOW_PATH && workflow.name === 'ci' && positiveID(workflow.id), 'unexpected CI workflow identity');
+  requireCondition(run?.id === expected.runId && run.workflow_id === workflow.id && run.path === WORKFLOW_PATH && run.name === 'ci', 'producer workflow mismatch');
+  requireCondition(run.event === 'pull_request' && run.head_sha === expected.headSHA, 'producer event or head mismatch');
+  requireCondition(positiveID(run.run_attempt) && run.run_attempt >= expected.runAttempt, 'producer attempt regressed or malformed');
   requireCondition(run.repository?.id === expected.repoId && run.head_repository?.id === expected.headRepoId, 'producer repository mismatch');
   const pulls = run.pull_requests;
-  requireCondition(Array.isArray(pulls) && pulls.some((pull) => pull.number === expected.pullNumber &&
-    pull.head?.sha === expected.headSHA && pull.base?.sha === expected.baseSHA &&
-    pull.head?.repo?.id === expected.headRepoId && pull.base?.repo?.id === expected.repoId), 'producer has no exact pull request association');
+  requireCondition(Array.isArray(pulls), 'producer has no exact pull request association');
+  const matches = pulls.filter((pull) => pull?.number === expected.pullNumber);
+  const pull = matches[0];
+  requireCondition(matches.length === 1 && pull.head?.sha === expected.headSHA && pull.base?.sha === expected.baseSHA &&
+    pull.base?.ref === livePull.base.ref && pull.head?.repo?.id === expected.headRepoId &&
+    pull.base?.repo?.id === expected.repoId, 'producer has no exact pull request association');
+  const pending = NONTERMINAL.has(run.status) && run.conclusion === null;
+  requireCondition(pending || (run.status === 'completed' && run.conclusion === 'success'), 'producer is not a successful completed pull_request run');
+  requireCondition(!pending || run.run_attempt > expected.runAttempt, 'successful producer became nonterminal without a new attempt');
+  if (run.run_attempt > expected.runAttempt) return new ProducerDeferred('superseded', run);
+  return undefined;
 }
 
-function assertArtifact(artifact, producer, expected, artifactId, archive) {
+function assertArtifact(artifact, expected, artifactId, archive) {
   requireCondition(artifact?.id === artifactId && artifact.name === `pr-report-inputs-${expected.pullNumber}` && artifact.expired === false, 'missing, expired, or incorrectly named artifact');
   requireCondition(positiveID(artifact.size_in_bytes) && artifact.size_in_bytes <= MAX_ARCHIVE_BYTES && artifact.size_in_bytes === archive.length, 'invalid artifact size');
   const run = artifact.workflow_run;
   requireCondition(run?.id === expected.runId && run.head_sha === expected.headSHA &&
     run.repository_id === expected.repoId && run.head_repository_id === expected.headRepoId, 'artifact producer mismatch');
+  requireCondition(Number.isFinite(Date.parse(artifact.created_at)), 'invalid artifact creation time');
+  const digest = `sha256:${createHash('sha256').update(archive).digest('hex')}`;
+  requireCondition(artifact.digest === digest, 'archive digest mismatch');
+}
+
+function assertArtifactAttempt(artifact, producer) {
   // Artifacts lack run_attempt. Reject retained artifacts from older retries;
   // the caller must select evidence created during this exact producer attempt.
   const started = Date.parse(producer.run_started_at);
@@ -134,8 +160,6 @@ function assertArtifact(artifact, producer, expected, artifactId, archive) {
   const completed = Date.parse(producer.updated_at);
   requireCondition(Number.isFinite(started) && Number.isFinite(created) && Number.isFinite(completed) &&
     created >= started && created <= completed, 'artifact is outside the selected producer attempt');
-  const digest = `sha256:${createHash('sha256').update(archive).digest('hex')}`;
-  requireCondition(artifact.digest === digest, 'archive digest mismatch');
 }
 
 function readReport(archive) {
@@ -203,17 +227,24 @@ async function verifySuppressionProvenance({ github, context, expected: supplied
     github.rest.actions.getArtifact({ ...repo, artifact_id: artifactId }),
   ]);
   assertPull(pull.data, expected);
-  assertRun(run.data, workflow.data, expected);
-  assertArtifact(artifact.data, run.data, expected, artifactId, archive);
+  const deferred = assertRun(run.data, workflow.data, expected, pull.data);
+  // A changed generation cannot authenticate an old artifact's attempt window.
+  // Its identity, bytes and report must still be valid before a typed deferral;
+  // an archive failure must never be hidden by concurrent CI progress.
+  assertArtifact(artifact.data, expected, artifactId, archive);
+  if (!deferred) assertArtifactAttempt(artifact.data, run.data);
   readReport(archive);
+  if (deferred) throw deferred;
   await recomputeFromTrustedSource(github, repo, pull.data, expected);
   const [currentPull, currentRun] = await Promise.all([
     github.rest.pulls.get({ ...repo, pull_number: expected.pullNumber }),
     github.rest.actions.getWorkflowRun({ ...repo, run_id: expected.runId }),
   ]);
   assertPull(currentPull.data, expected);
-  assertRun(currentRun.data, workflow.data, expected);
+  const currentDeferred = assertRun(currentRun.data, workflow.data, expected, currentPull.data);
+  if (currentDeferred) throw currentDeferred;
   return { headSHA: expected.headSHA, baseSHA: expected.baseSHA, runId: expected.runId, runAttempt: expected.runAttempt, artifactId, suppressionCount: 0 };
 }
 
 module.exports = verifySuppressionProvenance;
+module.exports.isDeferred = (error) => error instanceof ProducerDeferred;

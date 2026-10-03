@@ -581,7 +581,7 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
 
     def test_latest_producer_must_keep_exact_attempt_success_and_association(self):
-        cases = (("run_attempt", 3), ("status", "in_progress"), ("conclusion", "cancelled"),
+        cases = (("status", "in_progress"), ("conclusion", "cancelled"),
                  ("pull_requests", []), ("head_repository", dict(id=999)),
                  ("pull_requests", [dict(pull_document(), base=dict(sha="d" * 40, repo=dict(id=10)))]))
         for key, value in cases:
@@ -593,15 +593,13 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
 
     def test_newer_failed_unassociated_or_stale_base_run_never_falls_back(self):
-        for scenario in ("failed", "unassociated", "stale", "queued"):
+        for scenario in ("failed", "unassociated", "stale"):
             api = FakeAPI()
             newer = dict(ci_document(), id=42)
             if scenario == "failed":
                 newer["conclusion"] = "failure"
             elif scenario == "unassociated":
                 newer["pull_requests"] = []
-            elif scenario == "queued":
-                newer.update(status="queued", conclusion=None)
             else:
                 newer["pull_requests"][0]["base"]["sha"] = "d" * 40
             api.responses[CI_RUNS]["workflow_runs"].insert(0, newer)
@@ -626,17 +624,14 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
 
     def test_producer_or_artifact_change_during_status_write_corrects_success(self):
-        for scenario in ("rerun", "expired", "metadata"):
+        for scenario in ("expired", "metadata"):
             api = FakeAPI()
             request = api.request
 
             def change_during_write(path, data=None):
                 if data is not None and data["state"] == "success":
-                    if scenario == "rerun":
-                        api.responses[PREFIX + "/actions/runs/41"]["run_attempt"] = 3
-                    else:
-                        artifact = api.responses[PREFIX + "/actions/artifacts/101"]
-                        artifact["expired" if scenario == "expired" else "digest"] = True if scenario == "expired" else "sha256:" + "b" * 64
+                    artifact = api.responses[PREFIX + "/actions/artifacts/101"]
+                    artifact["expired" if scenario == "expired" else "digest"] = True if scenario == "expired" else "sha256:" + "b" * 64
                 return request(path, data)
 
             with self.subTest(scenario=scenario), patch.object(api, "request", side_effect=change_during_write):
@@ -890,6 +885,141 @@ class InputBoundaryTests(unittest.TestCase):
                 with self.assertRaises(event.EventError):
                     event.evidence_path(expected, "snapshot")
                 self.assertEqual(external.read_text(), '{"untrusted":true}')
+
+
+class PendingCITests(unittest.TestCase):
+    def deferred(self, reason="pending", run_id=41, attempt=2):
+        return dict(version=1, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,
+                    runId=run_id, runAttempt=attempt)
+
+    def publish(self, api, **kwargs):
+        values = dict(suppression=suppression_document(), suppression_result="success")
+        values.update(kwargs)
+        event.publish(api, SNAPSHOT, result_document(), "success", [OWNER], **values)
+
+    def test_prepare_waits_only_for_authenticated_registration_or_pending_ci(self):
+        for state in ("empty", *sorted(event.CI_NONTERMINAL), "ready"):
+            api = FakeAPI()
+            if state == "empty":
+                api.responses[CI_RUNS] = dict(total_count=0, workflow_runs=[])
+            elif state != "ready":
+                api.responses[PREFIX + "/actions/runs/41"].update(status=state, conclusion=None)
+                api.responses[CI_RUNS]["workflow_runs"][0].update(status=state, conclusion=None)
+            with self.subTest(state=state):
+                self.assertEqual(event.prepare_readiness(api, SNAPSHOT), "ready" if state == "ready" else "waiting")
+                self.assertEqual(api.posts, [])
+
+    def test_prepare_does_not_defer_failed_malformed_or_foreign_evidence(self):
+        for scenario in ("failed", "association", "workflow", "incomplete", "wrong_base", "regressed_attempt", "regressed_state"):
+            api = FakeAPI()
+            current = api.responses[PREFIX + "/actions/runs/41"]
+            current.update(status="queued", conclusion=None)
+            api.responses[CI_RUNS]["workflow_runs"][0].update(status="queued", conclusion=None)
+            if scenario == "failed":
+                current.update(status="completed", conclusion="failure")
+            elif scenario == "association":
+                current["pull_requests"] = []
+            elif scenario == "workflow":
+                current["workflow_id"] = 999
+            elif scenario == "incomplete":
+                api.responses[CI_RUNS]["total_count"] = 2
+            elif scenario == "wrong_base":
+                api.responses[PREFIX + "/pulls/12"]["base"]["sha"] = "d" * 40
+            elif scenario == "regressed_attempt":
+                current["run_attempt"] = 1
+            elif scenario == "regressed_state":
+                api.responses[CI_RUNS]["workflow_runs"][0].update(status="completed", conclusion="success")
+            with self.subTest(scenario=scenario), self.assertRaises(event.EventError) as raised:
+                event.prepare_readiness(api, SNAPSHOT)
+            self.assertNotIsInstance(raised.exception, event.CIDeferred)
+
+    def test_current_pending_or_superseding_ci_defers_without_success(self):
+        for scenario in (*sorted(event.CI_NONTERMINAL), "new_attempt", "new_run"):
+            api = FakeAPI()
+            current = api.responses[PREFIX + "/actions/runs/41"]
+            if scenario in event.CI_NONTERMINAL:
+                current.update(status=scenario, conclusion=None, run_attempt=3)
+            elif scenario == "new_attempt":
+                current["run_attempt"] = 3
+            else:
+                current = dict(ci_document(), id=42)
+                api.responses[CI_RUNS] = dict(total_count=2, workflow_runs=[ci_document(), current])
+                api.responses[PREFIX + "/actions/runs/42"] = current
+            with self.subTest(scenario=scenario):
+                self.publish(api)
+                self.assertEqual([data["state"] for _, data in api.posts], ["pending"])
+
+    def test_valid_waiting_output_stays_deferred_when_ci_finishes_before_publish(self):
+        for state in ("queued", "completed"):
+            api = FakeAPI()
+            if state == "queued":
+                api.responses[PREFIX + "/actions/runs/41"].update(status=state, conclusion=None)
+                api.responses[CI_RUNS]["workflow_runs"][0].update(status=state, conclusion=None)
+            with self.subTest(state=state):
+                self.publish(api, suppression={}, deferred=self.deferred())
+                self.assertEqual(api.posts, [], "late waiting-only publication must not overwrite newer success")
+        api = FakeAPI()
+        api.responses[CI_RUNS] = dict(total_count=0, workflow_runs=[])
+        self.publish(api, suppression={}, deferred=self.deferred("registration", None, None))
+        self.assertEqual(api.posts, [])
+
+    def test_completed_proof_cannot_regress_to_pending_in_the_same_attempt(self):
+        api = FakeAPI()
+        api.responses[PREFIX + "/actions/runs/41"].update(status="queued", conclusion=None)
+        with self.assertRaises(event.EventError) as raised:
+            self.publish(api)
+        self.assertNotIsInstance(raised.exception, event.CIDeferred)
+        self.assertEqual(api.posts[-1][1]["state"], "failure")
+
+    def test_deferred_marker_never_hides_missing_proof_or_real_failures(self):
+        cases = [({}, {}), ({}, dict(self.deferred(), extra=True)),
+                 ({}, dict(self.deferred(), runId=None)), ({}, dict(self.deferred(), reason="other")),
+                 ({}, dict(self.deferred(), runAttempt=True)), ({}, dict(self.deferred(), runId=9007199254740992)),
+                 ({}, dict(self.deferred(), snapshot=dict(SNAPSHOT, base="d" * 40))),
+                 (suppression_document(), self.deferred())]
+        for receipt, deferred in cases:
+            api = FakeAPI()
+            with self.subTest(deferred=deferred), self.assertRaises(event.EventError):
+                self.publish(api, suppression=receipt, deferred=deferred)
+            self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
+        for outcome in ("failure", "cancelled", "skipped"):
+            api = FakeAPI()
+            deferred = self.deferred()
+            with self.subTest(outcome=outcome), self.assertRaises(event.EventError):
+                event.publish(api, SNAPSHOT, None, outcome, [OWNER], {}, "success", deferred)
+            self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
+        api = FakeAPI()
+        deferred = self.deferred()
+        with self.assertRaises(event.EventError):
+            self.publish(api, suppression={}, suppression_result="failure", deferred=deferred)
+        self.assertEqual(api.posts[-1][1]["state"], "failure")
+
+    def test_waiting_marker_cannot_hide_failed_regressed_or_disappeared_producer(self):
+        for scenario in ("failed", "regressed", "disappeared"):
+            api = FakeAPI()
+            if scenario == "failed":
+                api.responses[PREFIX + "/actions/runs/41"]["conclusion"] = "failure"
+            elif scenario == "disappeared":
+                api.responses[CI_RUNS] = dict(total_count=0, workflow_runs=[])
+            marker = self.deferred(attempt=3 if scenario == "regressed" else 2)
+            with self.subTest(scenario=scenario), self.assertRaises(event.EventError):
+                self.publish(api, suppression={}, deferred=marker)
+            self.assertEqual(api.posts[-1][1]["state"], "failure")
+
+    def test_success_overtaken_by_new_ci_attempt_corrects_to_pending(self):
+        for state in ("queued", "in_progress", "completed"):
+            api = FakeAPI()
+            request = api.request
+
+            def supersede(path, data=None):
+                if data is not None and data["state"] == "success":
+                    api.responses[PREFIX + "/actions/runs/41"].update(
+                        run_attempt=3, status=state, conclusion="success" if state == "completed" else None)
+                return request(path, data)
+
+            with self.subTest(state=state), patch.object(api, "request", side_effect=supersede):
+                self.publish(api)
+            self.assertEqual([data["state"] for _, data in api.posts], ["success", "pending"])
 
 
 class CandidateTests(unittest.TestCase):

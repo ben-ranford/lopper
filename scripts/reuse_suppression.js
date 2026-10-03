@@ -9,8 +9,19 @@ const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const PAGE_SIZE = 100;
 const LOCATOR_PREFIX = 'suppression-artifact-';
+const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 
 class EvidenceError extends Error {}
+
+class CIDeferred extends Error {
+  constructor(snapshot, reason, run) {
+    super(`Reuse suppression: CI verification deferred (${reason})`);
+    this.code = 'REUSE_CI_DEFERRED';
+    this.deferred = Object.freeze({
+      version: 1, snapshot, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
+    });
+  }
+}
 
 function requireEvidence(condition, message) {
   if (!condition) throw new EvidenceError(`Reuse suppression: ${message}`);
@@ -66,17 +77,37 @@ function assertRunIdentity(run, workflow, snapshot) {
   requireEvidence(run.repository?.id === snapshot.repository_id && run.head_repository?.id === snapshot.head_repository_id, 'producer repository mismatch');
 }
 
-function assertSelectedRun(run, workflow, snapshot) {
+function assertSelectedIdentity(run, workflow, snapshot) {
   assertRunIdentity(run, workflow, snapshot);
   const pull = matchingPull(run, snapshot);
   requireEvidence(pull?.head?.sha === snapshot.head && pull.base?.sha === snapshot.base && pull.base?.ref === snapshot.base_ref &&
     pull.head?.repo?.id === snapshot.head_repository_id && pull.base?.repo?.id === snapshot.repository_id, 'producer pull request snapshot mismatch');
-  requireEvidence(run.status === 'completed' && run.conclusion === 'success', 'latest producer is not successful');
 }
 
-async function latestProducer(github, repo, snapshot) {
+async function assertLiveSnapshot(github, repo, snapshot) {
+  const { data: repository } = await github.rest.repos.get(repo);
+  requireEvidence(repository?.id === snapshot.repository_id && typeof repository.full_name === 'string' &&
+    repository.full_name.toLowerCase() === snapshot.repository.toLowerCase() &&
+    repository.default_branch === snapshot.base_ref, 'live repository mismatch');
+  const { data: pull } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pull_number });
+  requireEvidence(pull?.number === snapshot.pull_number && pull.state === 'open' &&
+    pull.base?.sha === snapshot.base && pull.head?.sha === snapshot.head && pull.base?.ref === snapshot.base_ref &&
+    pull.base?.repo?.id === snapshot.repository_id && pull.head?.repo?.id === snapshot.head_repository_id &&
+    typeof pull.base.repo.full_name === 'string' &&
+    pull.base.repo.full_name.toLowerCase() === snapshot.repository.toLowerCase(), 'live pull request snapshot mismatch');
+  const { data: target } = await github.rest.git.getRef({ ...repo, ref: `heads/${snapshot.base_ref}` });
+  requireEvidence(target?.object?.sha === snapshot.base, 'protected target changed');
+}
+
+function requireCurrentEpoch(run, previous) {
+  requireEvidence(run.id > previous.id || (run.id === previous.id && run.run_attempt >= previous.run_attempt), 'producer epoch regressed');
+}
+
+async function latestProducer(github, repo, snapshot, previous) {
+  await assertLiveSnapshot(github, repo, snapshot);
   const { data: workflow } = await github.rest.actions.getWorkflow({ ...repo, workflow_id: 'ci.yml' });
   requireEvidence(positiveID(workflow?.id) && workflow.path === WORKFLOW_PATH && workflow.name === 'ci', 'unexpected CI workflow');
+  requireEvidence(!previous || workflow.id === previous.workflow_id, 'CI workflow changed');
   // GitHub caps filtered workflow-run searches at 1,000 results. Fail if the
   // complete set cannot be inspected rather than falling back to older evidence.
   const runs = await collectPages(github.rest.actions.listWorkflowRuns, { ...repo, workflow_id: 'ci.yml', head_sha: snapshot.head, event: 'pull_request' }, 'workflow_runs', 1000);
@@ -88,11 +119,30 @@ async function latestProducer(github, repo, snapshot) {
     seen.add(run.id);
     if (!selected || run.id > selected.id) selected = run;
   }
-  requireEvidence(selected, 'no producer for this pull request');
+  if (!selected) {
+    requireEvidence(!previous, 'producer disappeared during verification');
+    throw new CIDeferred(snapshot, 'registration');
+  }
+  assertSelectedIdentity(selected, workflow, snapshot);
+  if (previous) requireEvidence(selected.id >= previous.id, 'producer epoch regressed');
   const { data: current } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: selected.id });
-  requireEvidence(current?.id === selected.id && current.run_attempt === selected.run_attempt, 'producer changed during selection');
-  assertSelectedRun(current, workflow, snapshot);
-  return current;
+  assertSelectedIdentity(current, workflow, snapshot);
+  requireEvidence(current.id === selected.id, 'producer changed during selection');
+  requireCurrentEpoch(current, selected);
+  if (previous) requireCurrentEpoch(current, previous);
+  const pending = NONTERMINAL.has(current.status) && current.conclusion === null;
+  requireEvidence(pending || (current.status === 'completed' && current.conclusion === 'success'), 'latest producer is not successful');
+  const knownSuccessful = [selected, previous].some((prior) => prior?.id === current.id &&
+    prior.run_attempt === current.run_attempt && prior.status === 'completed' && prior.conclusion === 'success');
+  requireEvidence(!(pending && knownSuccessful),
+    'successful producer became nonterminal without a new attempt');
+  if (current.run_attempt > selected.run_attempt ||
+      (previous && (current.id !== previous.id || current.run_attempt !== previous.run_attempt))) {
+    throw new CIDeferred(snapshot, 'superseded', current);
+  }
+  if (pending) throw new CIDeferred(snapshot, 'pending', current);
+  // Keep the selected generation immutable across adapter work and rereads.
+  return Object.freeze({ ...current });
 }
 
 function locatorID(job, run) {
@@ -200,24 +250,37 @@ function assertReceipt(receipt, expected) {
 // Dependency substitution exists only in this private test factory. Workflow
 // callers cannot choose an adapter or downloader through their input object.
 function createVerifier(loadVerifier = () => require('./suppression_provenance.js'), download = downloadArchive) {
-  return async function verifyReuseSuppression({ github, context, snapshot: supplied, token }) {
+  async function verifyReuseSuppression({ github, context, snapshot: supplied, token }) {
     try {
       const { repo, snapshot } = inputs(context, supplied);
       const run = await latestProducer(github, repo, snapshot);
       const artifactId = await artifactLocator(github, repo, run);
       const archive = await download(repo, artifactId, token);
       const expected = { repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt };
-      const receipt = await loadVerifier()({ github, context: { repo }, expected, artifactId, archive });
+      const adapter = loadVerifier();
+      let receipt;
+      try {
+        receipt = await adapter({ github, context: { repo }, expected, artifactId, archive });
+      } catch (error) {
+        if (typeof adapter.isDeferred !== 'function' || !adapter.isDeferred(error)) throw error;
+        // Only the protected adapter's private type can request this reread.
+        // A real artifact, source or adapter failure is never reclassified.
+        requireEvidence(error.producer.workflow_id === run.workflow_id, 'CI workflow changed');
+        requireCurrentEpoch(error.producer, run);
+        const current = await latestProducer(github, repo, snapshot, error.producer);
+        throw new CIDeferred(snapshot, error.reason, current);
+      }
       assertReceipt(receipt, receiptFor(snapshot, run, artifactId));
-      const current = await latestProducer(github, repo, snapshot);
-      requireEvidence(current.id === run.id && current.run_attempt === run.run_attempt, 'producer superseded during verification');
+      const current = await latestProducer(github, repo, snapshot, run);
       requireEvidence(await artifactLocator(github, repo, current) === artifactId, 'artifact locator changed');
       return receipt;
     } catch (error) {
-      if (error instanceof EvidenceError) throw error;
+      if (error instanceof EvidenceError || error instanceof CIDeferred) throw error;
       throw new EvidenceError('Reuse suppression: evidence could not be verified');
     }
-  };
+  }
+  verifyReuseSuppression.isDeferred = (error) => error instanceof CIDeferred;
+  return verifyReuseSuppression;
 }
 
 module.exports = createVerifier();

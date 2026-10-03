@@ -2,6 +2,7 @@
 
 import copy
 import io
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -94,6 +95,40 @@ class QueueReuseTests(unittest.TestCase):
             stream = io.StringIO(raw)
             with self.assertRaises(ValueError):
                 bridge.document(stream)
+
+    def invoke_main(self):
+        output = io.StringIO()
+        with patch.object(bridge.sys, "stdin", io.StringIO(json.dumps(self.value))), \
+                patch.object(bridge.sys, "stdout", output), \
+                patch.object(bridge.sys, "stderr", io.StringIO()), \
+                patch.object(bridge, "ReadOnlyGitHub", return_value=object()):
+            status = bridge.main(["validate"])
+        return status, output.getvalue()
+
+    def test_typed_ci_deferral_rechecks_pair_and_returns_no_success_evidence(self):
+        for producers in ([bridge.shared.CIDeferred("pending")],
+                          [{"id": 6}, bridge.shared.CIDeferred("superseded")]):
+            with self.subTest(producers=producers):
+                self.producer.side_effect = producers
+                self.pair.reset_mock()
+                status, output = self.invoke_main()
+                self.assertEqual(status, 75)
+                self.assertEqual(json.loads(output), {"version": 1, "kind": "ci-deferred",
+                                                     "snapshot": self.snapshot})
+                self.assertEqual(self.pair.call_count, 2)
+                self.publish.assert_not_called()
+
+    def test_ci_deferral_cannot_mask_pair_or_proof_failure(self):
+        self.producer.side_effect = bridge.shared.CIDeferred("pending")
+        self.pair.side_effect = [None, bridge.shared.EventError("pair drift")]
+        self.assertEqual(self.invoke_main(), (1, ""))
+        self.pair.side_effect = None
+        for error in (ValueError("pending"), bridge.shared.EventError("failed producer")):
+            self.producer.side_effect = error
+            self.assertEqual(self.invoke_main(), (1, ""))
+        self.producer.side_effect = bridge.shared.CIDeferred("pending")
+        self.analysis["detector_exit"] = 1
+        self.assertEqual(self.invoke_main(), (1, ""))
 
     def test_api_rejects_all_write_payloads(self):
         api = bridge.ReadOnlyGitHub("read-only-test-token")

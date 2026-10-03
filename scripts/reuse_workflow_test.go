@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,6 +45,112 @@ func TestReuseWorkflowReceivesEvidenceInvalidationEvents(t *testing.T) {
 	}
 }
 
+func TestReuseWorkflowDefersPendingCIWithoutFailedHeadChecks(t *testing.T) {
+	t.Parallel()
+	// Execute the real publisher with a completed proof overtaken by running CI.
+	// Kept in this Go test so the regression CLI can overlay it on the base
+	// without depending on a candidate-only Python test module.
+	const script = `
+import copy, json, os, sys, tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import reuse_event as event
+prefix = '/repos/ben-ranford/lopper'
+head, base = 'b' * 40, 'a' * 40
+snapshot = dict(version=1, repository='ben-ranford/lopper', repository_id=10,
+    head_repository_id=20, pull_number=12, head=head, base=base, base_ref='main')
+pull = dict(number=12, state='open',
+    head=dict(sha=head, repo=dict(id=20)),
+    base=dict(sha=base, ref='main', repo=dict(id=10, full_name='ben-ranford/lopper')))
+run = dict(id=41, workflow_id=6, run_attempt=3, path='.github/workflows/ci.yml',
+    name='ci', event='pull_request', status='in_progress', conclusion=None,
+    head_sha=head, repository=dict(id=10), head_repository=dict(id=20), pull_requests=[pull])
+receipt = dict(headSHA=head, baseSHA=base, runId=41, runAttempt=2,
+    artifactId=101, suppressionCount=0)
+result = dict(version=1, snapshot=snapshot, candidate='c' * 40,
+    detector_exit=0, policy_paths=[])
+class API:
+    def __init__(self, terminal):
+        self.posts = []
+        current = copy.deepcopy(run)
+        if terminal:
+            current.update(status='completed', conclusion='failure')
+        self.data = {
+            prefix: dict(id=10, full_name='ben-ranford/lopper', default_branch='main'),
+            prefix + '/pulls/12': pull,
+            prefix + '/git/ref/heads/main': dict(object=dict(sha=base)),
+            prefix + '/actions/workflows/ci.yml': dict(id=6, path='.github/workflows/ci.yml', name='ci'),
+            prefix + '/actions/runs/41': current,
+            prefix + '/actions/workflows/ci.yml/runs?per_page=100&page=1&head_sha=' + head + '&event=pull_request':
+                dict(total_count=1, workflow_runs=[current]),
+        }
+    def request(self, path, data=None):
+        if data is not None:
+            assert path == prefix + '/statuses/' + head
+            self.posts.append(data['state'])
+            return {}
+        return copy.deepcopy(self.data[path])
+    def pages(self, path):
+        assert path == prefix + '/pulls/12/reviews'
+        return []
+for terminal in (False, True):
+    api = API(terminal)
+    failed = False
+    try:
+        event.publish(api, snapshot, result, 'success', ['ben-ranford'], receipt, 'success')
+    except event.EventError:
+        failed = True
+    assert failed == terminal, ('authenticated running CI must defer; terminal failure must fail', terminal, api.posts)
+    assert api.posts == (['failure'] if terminal else ['pending']), api.posts
+# Separate pending and completion invocations use fresh controller state. The
+# completed CI supplies its new full receipt; the earlier controller is not rerun.
+for completed in (False, True):
+    api = API(False)
+    if completed:
+        api.data[prefix + '/actions/runs/41'].update(status='completed', conclusion='success',
+            run_started_at='2026-09-30T12:00:00Z', updated_at='2026-09-30T12:10:00Z')
+        api.data[prefix + '/actions/artifacts/101'] = dict(id=101, name='pr-report-inputs-12',
+            expired=False, size_in_bytes=100, created_at='2026-09-30T12:05:00Z',
+            digest='sha256:' + 'a' * 64,
+            workflow_run=dict(id=41, head_sha=head, repository_id=10, head_repository_id=20))
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        payload = root / 'event.json'
+        payload.write_text(json.dumps(dict(repository=dict(id=10), action='synchronize',
+            number=12, pull_request=pull)))
+        output = root / 'output'
+        environment = dict(GITHUB_EVENT_PATH=str(payload), GITHUB_EVENT_NAME='pull_request_target',
+            GITHUB_REPOSITORY='ben-ranford/lopper', GITHUB_REPOSITORY_ID='10',
+            RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(output), GH_TOKEN='unused-test-token')
+        with patch.dict(os.environ, environment), patch.object(event, 'GitHub', return_value=api):
+            assert event.main(['prepare', '--snapshot', str(root / 'reuse-snapshot.json'),
+                '--refresh-actor', 'ben-ranford']) == 0
+        outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+        assert json.loads(outputs['snapshot']) == snapshot
+        assert outputs['readiness'] == ('ready' if completed else 'waiting'), outputs
+        assert api.posts == ['pending']
+        if completed:
+            event.publish(api, snapshot, result, 'success', ['ben-ranford'], dict(receipt, runAttempt=3), 'success')
+            assert api.posts == ['pending', 'success'], api.posts
+`
+	command := exec.Command("python3", "-B", "-c", script, repoPath(t, "scripts"))
+	command.Env = gitexec.SanitizedEnv()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("real producer pending-CI lifecycle regression: %v\n%s", err, output)
+	}
+	var workflow reuseWorkflowConfig
+	readYAMLConfig(t, ".github/workflows/reuse-check.yml", &workflow)
+	for _, phase := range []string{"analyze", "suppression"} {
+		if workflow.Jobs[phase].If != "${{ needs.prepare.outputs.readiness == 'ready' }}" {
+			t.Fatalf("actual %s workflow gate would start proof before the tested ready output", phase)
+		}
+	}
+	if workflow.Jobs["publish"].If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}" {
+		t.Fatal("actual publisher gate would turn the tested waiting snapshot into a failed head check")
+	}
+}
+
 func TestReuseWorkflowProtectsExecutableSourceAndCredentials(t *testing.T) {
 	t.Parallel()
 	var workflow reuseWorkflowConfig
@@ -51,7 +159,7 @@ func TestReuseWorkflowProtectsExecutableSourceAndCredentials(t *testing.T) {
 		t.Fatal("controller must deny permissions by default and grant them per job")
 	}
 	prepare := workflowJobByName(t, workflow.Jobs, "prepare")
-	for _, field := range []string{"snapshot", "base", "head", "pull_number"} {
+	for _, field := range []string{"snapshot", "base", "head", "pull_number", "readiness"} {
 		if prepare.Outputs[field] != "${{ steps.prepare.outputs."+field+" }}" {
 			t.Fatalf("prepared %s must retain its own trusted output binding", field)
 		}
@@ -169,6 +277,7 @@ func TestReuseWorkflowSuppressionEvidenceUsesBoundReadonlySource(t *testing.T) {
 	for _, binding := range []string{
 		"require('./scripts/reuse_suppression.js')", "snapshot: JSON.parse(process.env.REUSE_SNAPSHOT)",
 		"core.setOutput('receipt', JSON.stringify(receipt))",
+		"if (!verify.isDeferred(error)) throw error", "core.setOutput('deferred', JSON.stringify(error.deferred))",
 	} {
 		if !strings.Contains(script, binding) {
 			t.Fatalf("suppression verifier must retain protected source and receipt binding %q", binding)
@@ -187,8 +296,13 @@ func TestReuseWorkflowPublishesFailuresAndPreservesAnalysisOutcome(t *testing.T)
 	if !slices.Equal(publish.Needs, workflowJobNeeds{"prepare", "analyze", "suppression"}) {
 		t.Fatal("publication must wait for revision binding and both read-only evidence jobs")
 	}
-	if publish.If != "${{ always() && needs.prepare.outputs.snapshot != '' }}" {
-		t.Fatal("publication must handle failed, cancelled, and skipped analysis when a snapshot exists")
+	if publish.If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}" {
+		t.Fatal("publication must skip authenticated prepare waiting, but handle every real evidence failure")
+	}
+	for _, name := range []string{"analyze", "suppression"} {
+		if workflow.Jobs[name].If != "${{ needs.prepare.outputs.readiness == 'ready' }}" {
+			t.Fatalf("%s must wait for authenticated current CI before attempting proof", name)
+		}
 	}
 	assertWorkflowJobPermissions(t, publish, "reuse publisher", map[string]string{
 		"actions": "read", "contents": "read", "pull-requests": "read", "statuses": "write",
@@ -210,11 +324,13 @@ func assertReusePublicationEvidenceBindings(t *testing.T, workflow reuseWorkflow
 	assertWorkflowStepRunContainsAll(t, step, "reuse publisher", []string{
 		`--analysis-result "$REUSE_ANALYSIS_RESULT"`, `--suppression-result "$REUSE_SUPPRESSION_RESULT"`,
 		`--suppression "$RUNNER_TEMP/reuse-suppression.json"`,
+		`--deferred "$RUNNER_TEMP/reuse-deferred.json"`,
 	})
 	evidence := workflowStepByName(t, workflow.Jobs, "publish", "Read analysis evidence")
 	if !maps.Equal(evidence.Env, map[string]string{
 		"REUSE_RESULT": "${{ needs.analyze.outputs.result }}", "REUSE_SNAPSHOT": "${{ needs.prepare.outputs.snapshot }}",
 		"REUSE_SUPPRESSION": "${{ needs.suppression.outputs.receipt }}",
+		"REUSE_DEFERRED":    "${{ needs.suppression.outputs.deferred }}",
 	}) {
 		t.Fatal("publisher evidence must come from this run's bound snapshot and evidence jobs")
 	}
@@ -264,7 +380,7 @@ func assertReuseEvidenceTransport(t *testing.T, workflow reuseWorkflowConfig, re
 	t.Helper()
 	directory := t.TempDir()
 	snapshot := `{"repository":"example/repo","literal":"$(touch injected)\nsecond line"}`
-	environment := map[string]string{"RUNNER_TEMP": directory, "REUSE_SNAPSHOT": snapshot, "REUSE_RESULT": result, "REUSE_SUPPRESSION": receipt}
+	environment := map[string]string{"RUNNER_TEMP": directory, "REUSE_SNAPSHOT": snapshot, "REUSE_RESULT": result, "REUSE_SUPPRESSION": receipt, "REUSE_DEFERRED": receipt}
 	for _, target := range []struct{ job, step string }{
 		{"analyze", "Read bound snapshot"}, {"publish", "Read analysis evidence"},
 	} {
@@ -276,6 +392,7 @@ func assertReuseEvidenceTransport(t *testing.T, workflow reuseWorkflowConfig, re
 	}
 	assertReuseOptionalEvidenceFile(t, directory, "reuse-result.json", result)
 	assertReuseOptionalEvidenceFile(t, directory, "reuse-suppression.json", receipt)
+	assertReuseOptionalEvidenceFile(t, directory, "reuse-deferred.json", receipt)
 	if _, err := os.Stat(filepath.Join(directory, "injected")); !os.IsNotExist(err) {
 		t.Fatal("transport executed candidate-derived text")
 	}
@@ -353,6 +470,7 @@ func assertReuseDriverOptions(t *testing.T, options []string, temporary string) 
 			"--snapshot": filepath.Join(temporary, "reuse-snapshot.json"),
 			"--result":   filepath.Join(temporary, "reuse-result.json"), "--analysis-result": "cancelled",
 			"--suppression": filepath.Join(temporary, "reuse-suppression.json"), "--suppression-result": "failure",
+			"--deferred": filepath.Join(temporary, "reuse-deferred.json"),
 		}[options[index]]
 		if checked && options[index+1] != want {
 			t.Fatalf("%s changed in shell transport: %q, want %q", options[index], options[index+1], want)

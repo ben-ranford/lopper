@@ -1,7 +1,11 @@
 package scripts
 
 import (
+	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -312,4 +316,48 @@ controller.testables.assertCanonicalCommitIdentity({
 	if err != nil {
 		t.Fatalf("verified same-repository Renovate identity must pass: %v\n%s", err, output)
 	}
+}
+
+func TestQueueMeWaitingCIEventLifecycle(t *testing.T) {
+	var workflow map[string]any
+	if err := yaml.Unmarshal([]byte(readConfig(t, ".github/workflows/queue-me.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(fixture, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(queueLifecycleNode(t), "--test", "testdata/queue_waiting/lifecycle.cjs")
+	command.Dir = repoPath(t, "scripts")
+	command.Env = append(os.Environ(), "QUEUE_WORKFLOW_FIXTURE="+fixture)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("queue CI event lifecycle failed: %v\n%s", err, output)
+	}
+}
+
+func queueLifecycleNode(t *testing.T) string {
+	t.Helper()
+	if node, err := exec.LookPath("node"); err == nil {
+		return node
+	}
+	// The proof runner excludes package-manager directories from PATH. Hosted
+	// Ubuntu uses n's /usr/local prefix; macOS uses fixed Homebrew prefixes.
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{"/opt/homebrew/bin/node", "/usr/local/bin/node"}
+	case "linux":
+		candidates = []string{"/usr/local/bin/node"}
+	}
+	for _, candidate := range candidates {
+		if node, err := exec.LookPath(candidate); err == nil {
+			return node
+		}
+	}
+	t.Fatal("node is required to test the queue CI event lifecycle")
+	return ""
 }

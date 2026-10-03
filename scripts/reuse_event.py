@@ -29,11 +29,17 @@ class InactivePull(EventError):
     """A listed pull request is no longer open against the default branch."""
 
 
+class CIDeferred(EventError):
+    """Authenticated CI has not supplied a current proof yet; never approval."""
+
+
 SNAPSHOT_KEYS = frozenset(("version", "repository", "repository_id", "head_repository_id",
                            "pull_number", "base", "head", "base_ref"))
 RESULT_KEYS = frozenset(("version", "snapshot", "candidate", "detector_exit", "policy_paths"))
 SUPPRESSION_KEYS = frozenset(("headSHA", "baseSHA", "runId", "runAttempt", "artifactId", "suppressionCount"))
+DEFERRED_KEYS = frozenset(("version", "snapshot", "reason", "runId", "runAttempt"))
 CI_WORKFLOW = ".github/workflows/ci.yml"
+CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
 CONTEXT = "reuse-check"
 
 
@@ -123,7 +129,7 @@ def github_api_url(path):
 def evidence_path(requested, name):
     """Limit CLI evidence reads/writes to fixed files in runner scratch."""
     filenames = {"snapshot": "reuse-snapshot.json", "result": "reuse-result.json",
-                 "suppression": "reuse-suppression.json"}
+                 "suppression": "reuse-suppression.json", "deferred": "reuse-deferred.json"}
     if name not in filenames:
         raise EventError("Unsupported evidence file")
     directory = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
@@ -360,6 +366,7 @@ def exact_ci_association(run, snapshot):
         raise EventError("CI producer has no unique pull request association")
     pull = matches[0]
     if (pull["head"]["sha"] != snapshot["head"] or pull["base"]["sha"] != snapshot["base"]
+            or pull["base"]["ref"] != snapshot["base_ref"]
             or pull["head"]["repo"]["id"] != snapshot["head_repository_id"]
             or pull["base"]["repo"]["id"] != snapshot["repository_id"]
             or run["head_sha"] != snapshot["head"]
@@ -628,29 +635,104 @@ def ci_run_page(response, expected_total, head):
     return total, rows
 
 
-def latest_ci_run(api, snapshot):
+def append_ci_runs(runs, rows, workflow, repository_id):
+    for run in rows:
+        if workflow is not None:
+            validate_ci_identity(run, workflow, repository_id)
+        if run["id"] in runs:
+            raise EventError("CI run pagination repeated a producer")
+        runs[run["id"]] = run
+
+
+def latest_ci_run(api, snapshot, *, allow_empty=False, workflow=None):
     endpoint = f"/repos/{snapshot['repository']}/actions/workflows/ci.yml/runs"
     runs, total = {}, None
     for page in range(1, 11):
         response = api.request(f"{endpoint}?per_page=100&page={page}&head_sha={snapshot['head']}&event=pull_request")
         total, rows = ci_run_page(response, total, snapshot["head"])
-        for run in rows:
-            if run["id"] in runs:
-                raise EventError("CI run pagination repeated a producer")
-            runs[run["id"]] = run
+        append_ci_runs(runs, rows, workflow, snapshot["repository_id"])
         if len(runs) == total:
             break
         if len(runs) > total or len(rows) < 100:
             raise EventError("CI run pagination ended before its exact total was established")
+    if allow_empty and total == 0 and not runs:
+        return None
     if not runs or len(runs) != total:
         raise EventError("CI run pagination did not establish the complete current producer set")
     # Select before checking success, base or association: a newer failed,
     # stale or malformed producer must never fall back to an older green run.
     selected = max(runs)
     run = api.request(f"/repos/{snapshot['repository']}/actions/runs/{selected}")
-    if run["id"] != selected:
+    if run["id"] != selected or number(run["run_attempt"]) < number(runs[selected]["run_attempt"]):
         raise EventError("Latest CI producer identity changed")
+    listed = runs[selected]
+    if (run["run_attempt"] == listed["run_attempt"]
+            and listed["status"] == "completed" and listed["conclusion"] == "success"
+            and run["status"] in CI_NONTERMINAL and run["conclusion"] is None):
+        raise EventError("Successful CI producer regressed during selection")
     return run
+
+
+def current_ci(api, snapshot, expected=None, *, allow_registration=False, completed_proof=False):
+    """Separate scheduling from evidence errors without older-green fallback."""
+    same_live_pair(api, snapshot)
+    workflow = ci_workflow(api, snapshot["repository"])
+    run = latest_ci_run(api, snapshot, allow_empty=allow_registration, workflow=workflow)
+    if run is None:
+        if expected is not None:
+            raise EventError("Previously observed CI producer disappeared")
+        raise CIDeferred("Waiting for CI registration for the current pull request")
+    validate_ci_identity(run, workflow, snapshot["repository_id"])
+    exact_ci_association(run, snapshot)
+    epoch = (run["id"], run["run_attempt"])
+    if expected is not None and epoch < expected:
+        raise EventError("Current CI producer regressed behind the bound proof")
+    if run["status"] in CI_NONTERMINAL and run["conclusion"] is None:
+        if completed_proof and epoch == expected:
+            raise EventError("Successful CI proof regressed within the same run attempt")
+        raise CIDeferred("Waiting for the authenticated current CI attempt")
+    if run["status"] != "completed" or run["conclusion"] != "success":
+        raise EventError("Latest CI producer did not complete successfully")
+    if expected is not None and epoch != expected:
+        raise CIDeferred("A newer authenticated CI attempt requires fresh proof")
+    return run
+
+
+def prepare_readiness(api, snapshot):
+    try:
+        current_ci(api, snapshot, allow_registration=True)
+    except CIDeferred as error:
+        print(str(error))
+        return "waiting"
+    return "ready"
+
+
+def validate_deferred(document, snapshot):
+    if (not isinstance(document, dict) or set(document) != DEFERRED_KEYS
+            or type(document["version"]) is not int or document["version"] != 1
+            or validate_snapshot(document["snapshot"]) != snapshot
+            or document["reason"] not in ("registration", "pending", "superseded")):
+        raise EventError("Malformed suppression deferral")
+    if document["reason"] == "registration":
+        if document["runId"] is not None or document["runAttempt"] is not None:
+            raise EventError("Registration deferral cannot claim a producer")
+        return None
+    epoch = (number(document["runId"]), number(document["runAttempt"]))
+    if any(value > 9007199254740991 for value in epoch):
+        raise EventError("Suppression deferral producer exceeds the safe identifier range")
+    return epoch
+
+
+def revalidate_deferred(api, snapshot, document):
+    expected = validate_deferred(document, snapshot)
+    try:
+        current_ci(api, snapshot, expected, allow_registration=expected is None)
+    except CIDeferred:
+        pass
+    same_live_pair(api, snapshot)
+    # The protected read-only job supplied no proof. If CI completed meanwhile,
+    # its completion wakeup must verify it. Do not overwrite a newer publisher's
+    # valid success with an older waiting-only write.
 
 
 def producer_time(value):
@@ -680,19 +762,13 @@ def validate_ci_artifact(artifact, run, snapshot, receipt):
 def suppression_evidence(api, snapshot, receipt):
     validate_suppression(receipt, snapshot)
     repository = snapshot["repository"]
-    workflow = ci_workflow(api, repository)
-    run = latest_ci_run(api, snapshot)
-    validate_ci_identity(run, workflow, snapshot["repository_id"])
-    exact_ci_association(run, snapshot)
-    if (run["id"] != receipt["runId"] or run["run_attempt"] != receipt["runAttempt"]
-            or run["status"] != "completed" or run["conclusion"] != "success"):
-        raise EventError("Suppression receipt producer is no longer the latest successful CI attempt")
+    run = current_ci(api, snapshot, (receipt["runId"], receipt["runAttempt"]), completed_proof=True)
     artifact = api.request(f"/repos/{repository}/actions/artifacts/{receipt['artifactId']}")
     validate_ci_artifact(artifact, run, snapshot, receipt)
     return artifact
 
 
-def publish(api, snapshot, result, analysis_result, reviewers, suppression=None, suppression_result="failure"):
+def publish(api, snapshot, result, analysis_result, reviewers, suppression=None, suppression_result="failure", deferred=None):
     validate_snapshot(snapshot)
     try:
         if analysis_result != "success":
@@ -702,11 +778,21 @@ def publish(api, snapshot, result, analysis_result, reviewers, suppression=None,
             raise EventError("Protected reuse detectors did not pass")
         if suppression_result != "success":
             raise EventError("Read-only suppression provenance job did not succeed")
-        validate_suppression(suppression, snapshot)
+        if deferred:
+            validate_deferred(deferred, snapshot)
+            if suppression not in (None, {}):
+                raise EventError("Suppression deferral cannot also supply an approval receipt")
+        else:
+            if deferred not in (None, {}):
+                raise EventError("Malformed suppression deferral")
+            validate_suppression(suppression, snapshot)
         first = review_evidence(api, snapshot, result, reviewers)
         second = review_evidence(api, snapshot, result, reviewers)
         if first != second:
             raise EventError("Live review evidence changed during publication")
+        if deferred:
+            revalidate_deferred(api, snapshot, deferred)
+            return
         producer = suppression_evidence(api, snapshot, suppression)
         same_live_pair(api, snapshot)
         status(api, snapshot, "success", "Protected reuse, suppression provenance and policy review passed")
@@ -718,6 +804,10 @@ def publish(api, snapshot, result, analysis_result, reviewers, suppression=None,
         if suppression_evidence(api, snapshot, suppression) != producer:
             raise EventError("Suppression producer metadata changed during the status write")
         same_live_pair(api, snapshot)
+    except CIDeferred:
+        # A genuine new CI epoch invalidates this proof without making an
+        # optional PR-head job permanently fail. Correct our own old success.
+        status(api, snapshot, "pending", "Current CI requires fresh protected reuse evidence")
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
         status(api, snapshot, "failure", "Reuse, suppression provenance or policy review failed; see run")
         raise EventError(str(error)) from error
@@ -735,6 +825,13 @@ def emit(path, name, document):
                     stream.write(f"{key}={document[key]}\n")
 
 
+def emit_readiness(readiness):
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as stream:
+            stream.write(f"readiness={readiness}\n")
+
+
 def publication_document(path, name, outcome):
     if outcome != "success":
         return None
@@ -744,6 +841,13 @@ def publication_document(path, name, outcome):
         # Keep malformed/missing successful-job output inside publish's failure
         # path so it actively corrects an earlier success rather than merely exiting.
         return None
+
+
+def publication_deferred(path, outcome):
+    if not path:
+        return None
+    document = publication_document(path, "deferred", outcome)
+    return {"invalid": True} if document is None else document
 
 
 def main(argv=None):
@@ -762,6 +866,7 @@ def main(argv=None):
     publish_parser.add_argument("--result", required=True)
     publish_parser.add_argument("--analysis-result", choices=("success", "failure", "cancelled", "skipped"), required=True)
     publish_parser.add_argument("--suppression", required=True)
+    publish_parser.add_argument("--deferred")
     publish_parser.add_argument("--suppression-result", choices=("success", "failure", "cancelled", "skipped"), required=True)
     publish_parser.add_argument("--reviewer", action="append", required=True)
     args = parser.parse_args(argv)
@@ -776,6 +881,7 @@ def main(argv=None):
             else:
                 snapshot = prepare(*event_arguments, args.signal_workflow, args.refresh_actor)
                 emit(args.snapshot, "snapshot", snapshot)
+                emit_readiness(prepare_readiness(api, snapshot))
         else:
             snapshot = validate_snapshot(json.loads(evidence_path(args.snapshot, "snapshot").read_text()))
             if args.command == "analyze":
@@ -784,8 +890,9 @@ def main(argv=None):
                 return 0 if result["detector_exit"] == 0 else 1
             result = publication_document(args.result, "result", args.analysis_result)
             suppression = publication_document(args.suppression, "suppression", args.suppression_result)
+            deferred = publication_deferred(args.deferred, args.suppression_result)
             publish(api, snapshot, result, args.analysis_result, args.reviewer,
-                    suppression, args.suppression_result)
+                    suppression, args.suppression_result, deferred)
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print("Protected reuse controller failed: " + str(error), file=sys.stderr)

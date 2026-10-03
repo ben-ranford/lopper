@@ -2,117 +2,9 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { verifyCI } = require('./queue_me_ci');
+const { verifyCI, checkReadiness, isWaiting, assertUnchangedCI } = require('./queue_me_ci');
 
-const HEAD = 'a'.repeat(40);
-const BASE = 'b'.repeat(40);
-const MERGE = 'c'.repeat(40);
-const API = 'https://api.github.com/repos/ben-ranford/lopper';
-const WEB = 'https://github.com/ben-ranford/lopper';
-const CREATED = '2026-10-01T01:00:00Z';
-const FINISHED = '2026-10-01T02:00:00Z';
-const REPO = { id: 1155023607, full_name: 'ben-ranford/lopper', name: 'lopper', url: API };
-const CI_ID = 232814257;
-const WINDOWS_ID = 354077369;
-const ARTIFACT_ID = 9876543210;
-const PATHS = ['.github/workflows/ci.yml', '.github/workflows/ci-tests.yml', '.github/workflows/windows-runtime.yml'];
-const JOBS = [
-  ['verify-checks', 'ubuntu-latest'], ['publish-pr-reports', 'ubuntu-latest'],
-  ['verification checks (rolling)', 'ubuntu-latest'], ['verify-tests / tests', 'ubuntu-latest'],
-  ['verify-rolling-tests / tests', 'ubuntu-latest'], ['regression-proof-windows', 'windows-latest'],
-  ['verify', 'ubuntu-latest'], ['verify (rolling)', 'ubuntu-latest'],
-  ['os-smoke (ubuntu-latest)', 'ubuntu-latest'], ['os-smoke (macos-26)', 'macos-26'],
-  ['vscode-smoke (ubuntu-latest)', 'ubuntu-latest'], ['vscode-smoke (macos-26)', 'macos-26'],
-  ['homebrew-tap-verify', 'ubuntu-latest'],
-];
-
-function run(workflow, id = workflow === CI_ID ? 100 : 200) {
-  const ci = workflow === CI_ID;
-  return {
-    id, run_number: id, run_attempt: 1, workflow_id: workflow,
-    name: ci ? 'ci' : 'windows runtime', path: ci ? PATHS[0] : PATHS[2],
-    event: 'pull_request', head_sha: HEAD, head_branch: 'feature',
-    repository: { ...REPO }, head_repository: { ...REPO },
-    url: `${API}/actions/runs/${id}`, html_url: `${WEB}/actions/runs/${id}`,
-    created_at: CREATED, updated_at: FINISHED, status: 'completed', conclusion: 'success',
-    pull_requests: [{
-      id: 300, number: 1777, url: `${API}/pulls/1777`,
-      head: { sha: HEAD, ref: 'feature', repo: { ...REPO } },
-      base: { sha: BASE, ref: 'main', repo: { ...REPO } },
-    }],
-    referenced_workflows: ci ? [{ path: `ben-ranford/lopper/${PATHS[1]}@${MERGE}`, sha: MERGE, ref: 'refs/pull/1777/merge' }] : [],
-  };
-}
-
-function jobsFor(selected) {
-  const names = selected.workflow_id === CI_ID ? [...JOBS, [`suppression-artifact-${ARTIFACT_ID}`, 'ubuntu-latest']] : [['runtime-cancellation', 'windows-latest']];
-  return names.map(([name, label], index) => ({
-    id: selected.id * 100 + index, run_id: selected.id, run_attempt: selected.run_attempt,
-    workflow_name: selected.name, head_sha: HEAD, head_branch: 'feature', name,
-    run_url: selected.url, url: `${API}/actions/jobs/${selected.id * 100 + index}`,
-    html_url: `${WEB}/actions/runs/${selected.id}/job/${selected.id * 100 + index}`,
-    status: 'completed', conclusion: 'success', labels: [label],
-    runner_id: 100000 + index, runner_group_id: 0, runner_name: `Hosted Agent ${index}`,
-    created_at: CREATED, started_at: CREATED, completed_at: FINISHED,
-  }));
-}
-
-function harness(options = {}) {
-  const runs = options.runs ?? [run(CI_ID), run(WINDOWS_ID)];
-  const requests = [];
-  const contents = [];
-  const pull = {
-    id: 300, number: 1777, state: 'open', draft: false,
-    head: { sha: HEAD, ref: 'feature', repo: { ...REPO } },
-    base: { sha: BASE, ref: 'main', repo: { ...REPO } },
-  };
-  const input = {
-    owner: 'ben-ranford', repo: 'lopper', pullNumber: 1777,
-    headSHA: HEAD, baseSHA: BASE, baseRef: 'main', trustedPolicySHA: BASE,
-    ciNotBefore: '2026-10-01T00:59:59Z',
-    github: { rest: {
-      pulls: { get: async () => ({ data: options.pull ? options.pull(structuredClone(pull)) : pull }) },
-      repos: { getContent: async (args) => {
-        contents.push(args);
-        const data = { type: 'file', path: args.path, sha: String(PATHS.indexOf(args.path) + 4).repeat(40) };
-        return { data: options.source ? options.source(data, args) : data };
-      } },
-      git: { getCommit: async (args) => {
-        assert.equal(args.commit_sha, MERGE);
-        const data = { sha: MERGE, parents: [{ sha: BASE }, { sha: HEAD }] };
-        return { data: options.merge ? options.merge(data) : data };
-      } },
-    } },
-    fetchImpl: async (address, init) => {
-      const url = new URL(address);
-      requests.push({ url, init });
-      assert.equal(url.origin, 'https://api.github.com');
-      let data;
-      const workflow = /^\/repos\/ben-ranford\/lopper\/actions\/workflows\/(\d+)\/runs$/.exec(url.pathname);
-      const jobs = /^\/repos\/ben-ranford\/lopper\/actions\/runs\/(\d+)\/jobs$/.exec(url.pathname);
-      if (workflow) {
-        assert.equal(url.searchParams.get('event'), 'pull_request');
-        assert.equal(url.searchParams.get('head_sha'), HEAD);
-        const selected = runs.filter((candidate) => candidate.workflow_id === Number(workflow[1]));
-        const offset = (Number(url.searchParams.get('page')) - 1) * 100;
-        data = { total_count: selected.length, workflow_runs: selected.slice(offset, offset + 100) };
-      } else if (jobs) {
-        assert.equal(url.searchParams.get('filter'), 'all');
-        const selected = runs.find((candidate) => candidate.id === Number(jobs[1]));
-        const listed = options.jobs ? options.jobs(jobsFor(selected), selected) : jobsFor(selected);
-        const offset = (Number(url.searchParams.get('page')) - 1) * 100;
-        data = { total_count: listed.length, jobs: listed.slice(offset, offset + 100) };
-      } else {
-        const selected = runs.find((candidate) => url.pathname === `/repos/ben-ranford/lopper/actions/runs/${candidate.id}`);
-        assert.ok(selected, url.pathname);
-        data = options.reread ? options.reread(structuredClone(selected)) : selected;
-      }
-      if (options.response) data = options.response(structuredClone(data), url);
-      return new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
-    },
-  };
-  return { input, requests, contents };
-}
+const { HEAD, BASE, MERGE, API, WEB, CREATED, CI_ID, WINDOWS_ID, ARTIFACT_ID, PATHS, JOBS, run, jobsFor, harness } = require('./testdata/queue_waiting/ci_fixture.cjs');
 
 test('binds all 13 CI jobs, one artifact locator and Windows runtime to exact source and PR pair', async () => {
   const fixture = harness();
@@ -369,4 +261,67 @@ test('jobs paginate across partial attempts without dropping the last failed job
   } });
   await assert.rejects(verifyCI(fixture.input), /homebrew-tap-verify.*failure/);
   assert.equal(fixture.requests.filter(({ url }) => url.pathname.endsWith('/jobs')).length, 2);
+});
+
+for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+  test(`readiness authenticates newest ${status} CI without auditing incomplete jobs`, async () => {
+    const fixture = harness({ runs: [run(CI_ID), { ...run(CI_ID, 101), status, conclusion: null, referenced_workflows: [] }, run(WINDOWS_ID)] });
+    assert.equal((await checkReadiness(fixture.input)).state, 'WAITING');
+    assert.equal(fixture.requests.some(({ url }) => url.pathname.endsWith('/jobs')), false);
+    await assert.rejects(verifyCI(fixture.input), isWaiting);
+  });
+}
+
+test('complete absence and valid prior-intent CI defer registration; post-intent success resumes', async () => {
+  const empty = harness({ runs: [] });
+  assert.equal((await checkReadiness(empty.input)).state, 'WAITING');
+  const prior = harness();
+  prior.input.ciNotBefore = CREATED;
+  assert.match((await checkReadiness(prior.input)).reasons.join(), /generation/);
+  assert.equal((await checkReadiness(harness().input)).state, 'READY');
+  await assert.rejects(verifyCI(prior.input), /same-second/);
+});
+
+test('readiness preserves terminal, contradictory, identity, source and inventory failures', async () => {
+  const changes = [
+    ...['failure', 'cancelled', 'timed_out', 'neutral', 'skipped'].map(conclusion => ({ conclusion })),
+    { status: 'queued', conclusion: 'success' }, { status: 'unknown', conclusion: null },
+    { status: 'queued', conclusion: null, pull_requests: [] }, { path: '.github/workflows/other.yml' },
+    { status: 'queued', conclusion: null, referenced_workflows: [{}] },
+  ];
+  for (const change of changes) {
+    await assert.rejects(checkReadiness(harness({ runs: [run(CI_ID), { ...run(CI_ID, 101), ...change }, run(WINDOWS_ID)] }).input), error => !isWaiting(error));
+  }
+  const pending = { ...run(CI_ID), status: 'queued', conclusion: null };
+  const failedWindows = harness({ runs: [pending, { ...run(WINDOWS_ID), conclusion: 'failure' }] });
+  await assert.rejects(checkReadiness(failedWindows.input), /latest windows runtime/);
+  await assert.rejects(verifyCI(failedWindows.input), error => !isWaiting(error) && /latest windows runtime/.test(error.message));
+  await assert.rejects(checkReadiness(harness({ source: data => ({ ...data, sha: null }) }).input), /workflow/);
+  await assert.rejects(checkReadiness(harness({ response: data => ({ ...data, total_count: 5 }) }).input), /incomplete/);
+  const unavailable = harness();
+  unavailable.input.fetchImpl = async () => { throw new Error('unavailable'); };
+  await assert.rejects(checkReadiness(unavailable.input), error => !isWaiting(error));
+});
+
+test('only monotonic authenticated rerun pending can defer the final run reread', async () => {
+  const pending = { run_attempt: 2, status: 'in_progress', conclusion: null };
+  await assert.rejects(verifyCI(harness({ reread: selected => ({ ...selected, ...pending }) }).input), isWaiting);
+  for (const change of [{ run_attempt: 1 }, { run_attempt: 0 }, { run_number: 99 }, { created_at: '2026-10-01T00:00:00Z' }, { id: 999 }, { head_sha: BASE }]) {
+    await assert.rejects(verifyCI(harness({ reread: selected => ({ ...selected, ...pending, ...change }) }).input), error => !isWaiting(error));
+  }
+  assert.equal(isWaiting(Object.assign(new Error('CI audit waiting'), { queuePauseMessage: 'waiting', code: 'CI_WAITING' })), false);
+});
+
+test('fully validated newer successful epochs defer but same epoch evidence drift fails', async () => {
+  const previous = await verifyCI(harness().input);
+  for (const latest of [run(CI_ID, 101), { ...run(CI_ID), run_attempt: 2 }]) {
+    const current = await verifyCI(harness({ runs: [latest, run(WINDOWS_ID)] }).input);
+    assert.throws(() => assertUnchangedCI(previous, current), isWaiting);
+  }
+  assert.doesNotThrow(() => assertUnchangedCI(previous, previous));
+  const changed = structuredClone(previous);
+  changed.workflows[0].artifactId++;
+  assert.throws(() => assertUnchangedCI(previous, changed), error => !isWaiting(error));
+  changed.workflows[0].runNumber--;
+  assert.throws(() => assertUnchangedCI(previous, changed), error => !isWaiting(error));
 });

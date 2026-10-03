@@ -44,7 +44,36 @@ async function prepareCandidate(input) {
   };
   validateTicket(ticket, input);
   requireEvidence(pull.state === 'open' && pull.draft === false, 'candidate is no longer open and ready.');
-  return ticket;
+  const { checkReadiness } = require('./queue_me_ci');
+  const readiness = await checkReadiness({ ...input, ciNotBefore: ticket.intent.ciNotBefore });
+  requireEvidence(JSON.stringify(await collectCIIntent(input)) === JSON.stringify(ticket.intent),
+    'queue or metadata intent changed while checking CI readiness.');
+  return { ticket: readiness.state === 'READY' ? ticket : null, readiness };
+}
+
+class SharedCIWaiting extends Error {
+  constructor() {
+    super('Queue reuse waiting: authenticated CI changed during protected validation; await fresh proofs.');
+  }
+}
+
+function isDeferred(error) {
+  return error instanceof SharedCIWaiting;
+}
+
+function validatorResult(result, document) {
+  requireEvidence(!result.error && [0, 75].includes(result.status), 'shared protected validation failed.');
+  const evidence = JSON.parse(result.stdout);
+  if (result.status === 75) {
+    requireEvidence(exactFields(evidence, ['version', 'kind', 'snapshot']) && evidence.version === 1 &&
+      evidence.kind === 'ci-deferred' && exactFields(evidence.snapshot, SNAPSHOT_KEYS) &&
+      SNAPSHOT_KEYS.every(key => evidence.snapshot[key] === document.snapshot[key]),
+    'malformed protected CI deferral.');
+    throw new SharedCIWaiting();
+  }
+  requireEvidence(exactFields(evidence, ['reviews', 'producer']) && Array.isArray(evidence.reviews) &&
+    evidence.producer && typeof evidence.producer === 'object', 'malformed shared live evidence.');
+  return evidence;
 }
 
 function runSharedValidator(document, token) {
@@ -55,11 +84,7 @@ function runSharedValidator(document, token) {
     // paths to the shared validator. It executes no candidate programs.
     env: { PATH: '/usr/bin:/bin', GH_TOKEN: token },
   });
-  requireEvidence(!result.error && result.status === 0, 'shared protected validation failed.');
-  const evidence = JSON.parse(result.stdout);
-  requireEvidence(exactFields(evidence, ['reviews', 'producer']) && Array.isArray(evidence.reviews) &&
-    evidence.producer && typeof evidence.producer === 'object', 'malformed shared live evidence.');
-  return evidence;
+  return validatorResult(result, document);
 }
 
 function createVerifier(validate = runSharedValidator) {
@@ -75,9 +100,17 @@ function createVerifier(validate = runSharedValidator) {
     requireEvidence(workflow && receipt && workflow.runId === receipt.runId &&
       workflow.runAttempt === receipt.runAttempt && workflow.artifactId === receipt.artifactId,
     'CI locator and shared suppression receipt disagree.');
-    return validate({ snapshot, analysis: proof.analysis, suppression: receipt }, proof.readToken);
+    try {
+      return await validate({ snapshot, analysis: proof.analysis, suppression: receipt }, proof.readToken);
+    } catch (error) {
+      if (!isDeferred(error)) throw error;
+      const { collectCIIntent } = require('./queue_me_ci_intent');
+      requireEvidence(JSON.stringify(await collectCIIntent(input)) === JSON.stringify(ciEvidence.intent),
+        'queue intent changed during protected CI deferral.');
+      throw error;
+    }
   };
 }
 
-module.exports = { prepareCandidate, verifySharedReuse: createVerifier() };
-module.exports.testables = { createVerifier, validateTicket, runSharedValidator };
+module.exports = { prepareCandidate, verifySharedReuse: createVerifier(), isDeferred };
+module.exports.testables = { createVerifier, validateTicket, runSharedValidator, validatorResult };

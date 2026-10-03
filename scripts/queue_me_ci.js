@@ -9,6 +9,7 @@ const WEB_ROOT = `https://github.com/${REPOSITORY}`;
 const SHA = /^[a-f0-9]{40}$/;
 const PAGE_SIZE = 100;
 const MAX_ITEMS = 1000;
+const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const SUPPRESSION_LOCATOR = { jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest' };
 const SOURCE_PATHS = ['.github/workflows/ci.yml', '.github/workflows/ci-tests.yml', '.github/workflows/windows-runtime.yml'];
 const CI_JOBS = {
@@ -35,6 +36,16 @@ function pause(message) {
   const error = new Error(`CI audit paused: ${message}`);
   error.queuePauseMessage = error.message;
   return error;
+}
+
+class CIWaiting extends Error {
+  constructor(message) {
+    super(`CI audit waiting: ${message}`);
+  }
+}
+
+function isWaiting(error) {
+  return error instanceof CIWaiting;
 }
 
 function requireEvidence(condition, message) {
@@ -135,17 +146,27 @@ function assertRecordedPull(run, input, pull) {
   requireEvidence(association.base?.sha === input.baseSHA && association.base?.ref === input.baseRef && recordedRepository(association.base.repo, { id: REPOSITORY_ID, url: API_ROOT, full_name: REPOSITORY }), 'recorded pull request base does not match.');
 }
 
-function assertSuccessfulRun(run, workflow, input, pull) {
+function assertRunIdentity(run, workflow, input, pull) {
   assertRunEnvelope(run, workflow, input);
   requireEvidence(matchingHead(run, pull), 'workflow run head repository or branch mismatch.');
   assertRecordedPull(run, input, pull);
+}
+
+function runReadiness(run, workflow) {
+  if (NONTERMINAL.has(run.status) && run.conclusion === null) return 'WAITING';
   requireEvidence(run.status === 'completed' && run.conclusion === 'success', `latest ${workflow.name} run ${run.id} is ${run.status}/${run.conclusion}; wait for a successful current run.`);
+  return 'READY';
+}
+
+function assertSuccessfulRun(run, workflow, input, pull) {
+  assertRunIdentity(run, workflow, input, pull);
+  requireEvidence(runReadiness(run, workflow) === 'READY', `latest ${workflow.name} run ${run.id} is ${run.status}/${run.conclusion}; wait for a successful current run.`);
   requireEvidence(!workflow.intentFloor || timestamp(run.created_at) > timestamp(input.ciNotBefore), 'wait for a new CI run after the current queue or metadata intent; same-second ordering is ambiguous.');
 }
 
 async function latestRun(api, workflow, input, pull) {
   const runs = await inventory(api, `actions/workflows/${workflow.id}/runs`, { event: 'pull_request', head_sha: input.headSHA }, 'workflow_runs');
-  requireEvidence(runs.length > 0, `missing ${workflow.name} pull request run for the exact head.`);
+  if (runs.length === 0) return null;
   const numbers = new Set();
   const candidates = [];
   for (const run of runs) {
@@ -157,7 +178,7 @@ async function latestRun(api, workflow, input, pull) {
   }
   requireEvidence(candidates.length > 0, `missing ${workflow.name} run associated with this pull request.`);
   const latest = candidates.reduce((selected, run) => run.run_number > selected.run_number ? run : selected, candidates[0]);
-  assertSuccessfulRun(latest, workflow, input, pull);
+  assertRunIdentity(latest, workflow, input, pull);
   return latest;
 }
 
@@ -257,6 +278,69 @@ async function assertMergeSources(run, input, read, sources) {
   return mergeSHA;
 }
 
+async function runSources(run, workflow, input, read, sources, readiness) {
+  if (readiness === 'WAITING' && (run.referenced_workflows === undefined ||
+      Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0)) return null;
+  if (workflow.intentFloor) return assertMergeSources(run, input, read, sources);
+  requireEvidence(Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0, 'unexpected Windows reusable workflow source.');
+  return null;
+}
+
+function assertEpochProgression(previous, current) {
+  requireEvidence(current.id === previous.id && current.run_number === previous.run_number &&
+    current.created_at === previous.created_at && current.run_attempt >= previous.run_attempt &&
+    timestamp(current.updated_at) >= timestamp(previous.updated_at), 'workflow logical identity or attempt regressed during the audit.');
+}
+
+function assertUnchangedCI(previous, current) {
+  const { workflows: oldRuns, ...oldContext } = previous;
+  const { workflows: newRuns, ...newContext } = current;
+  requireEvidence(JSON.stringify(oldContext) === JSON.stringify(newContext) &&
+    oldRuns.length === newRuns.length, 'CI source or candidate context changed during the audit.');
+  let superseded = false;
+  for (let index = 0; index < oldRuns.length; index++) {
+    const oldRun = oldRuns[index];
+    const newRun = newRuns[index];
+    requireEvidence(oldRun.workflowId === newRun.workflowId, 'CI workflow identity changed during the audit.');
+    if (JSON.stringify(oldRun) === JSON.stringify(newRun)) continue;
+    requireEvidence(newRun.runId === oldRun.runId && newRun.runNumber === oldRun.runNumber &&
+      newRun.runAttempt > oldRun.runAttempt || newRun.runId !== oldRun.runId &&
+      newRun.runNumber > oldRun.runNumber, 'CI jobs or logical epoch changed without a newer authenticated generation.');
+    superseded = true;
+  }
+  if (superseded) throw new CIWaiting('a newer successful CI run or attempt superseded the audited evidence; await fresh proofs.');
+}
+
+function pendingMessage(run, workflow) {
+  return `latest ${workflow.name} run ${run.id} attempt ${run.run_attempt} is ${run.status}; await its completion event.`;
+}
+
+async function checkReadiness(input) {
+  assertInput(input);
+  const pull = await livePull(input);
+  const api = createPublicAPI({ pause, fetchImpl: input.fetchImpl });
+  const read = sourceReader(input);
+  const sources = await protectedSources(read, input);
+  const reasons = [];
+  await WORKFLOWS.reduce(async (previous, workflow) => {
+    await previous;
+    const run = await latestRun(api, workflow, input, pull);
+    if (!run) {
+      reasons.push(`Awaiting registration of the ${workflow.name} run for the exact head.`);
+      return;
+    }
+    const readiness = runReadiness(run, workflow);
+    await runSources(run, workflow, input, read, sources, readiness);
+    if (workflow.intentFloor && timestamp(run.created_at) <= timestamp(input.ciNotBefore)) {
+      reasons.push('Awaiting a new CI generation after the current queue or metadata intent; same-second ordering is ambiguous.');
+    } else if (readiness === 'WAITING') {
+      reasons.push(pendingMessage(run, workflow));
+    }
+  }, Promise.resolve());
+  await livePull(input);
+  return { state: reasons.length ? 'WAITING' : 'READY', reasons };
+}
+
 function runSnapshot(run) {
   return JSON.stringify({
     id: run.id, runNumber: run.run_number, runAttempt: run.run_attempt,
@@ -267,13 +351,28 @@ function runSnapshot(run) {
 
 async function verifyWorkflow(api, workflow, input, pull, read, sources) {
   const run = await latestRun(api, workflow, input, pull);
+  requireEvidence(run, `missing ${workflow.name} pull request run for the exact head.`);
+  const readiness = runReadiness(run, workflow);
+  const mergeSHA = await runSources(run, workflow, input, read, sources, readiness);
+  if (readiness === 'WAITING') throw new CIWaiting(pendingMessage(run, workflow));
+  assertSuccessfulRun(run, workflow, input, pull);
   const jobs = await inventory(api, `actions/runs/${run.id}/jobs`, { filter: 'all' }, 'jobs');
   const selected = selectedJobs(jobs, run, workflow, input, pull);
-  let mergeSHA = null;
-  if (workflow.intentFloor) mergeSHA = await assertMergeSources(run, input, read, sources);
-  else requireEvidence(Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0, 'unexpected Windows reusable workflow source.');
   const current = await api(`actions/runs/${run.id}`, {}, true);
+  requireEvidence(current?.id === run.id, 'workflow reread returned another run identity.');
+  assertRunIdentity(current, workflow, input, pull);
+  assertEpochProgression(run, current);
+  if (runReadiness(current, workflow) === 'WAITING') {
+    requireEvidence(current.run_attempt > run.run_attempt, 'completed CI returned to pending without a newer attempt.');
+    await runSources(current, workflow, input, read, sources, 'WAITING');
+    throw new CIWaiting(pendingMessage(current, workflow));
+  }
   assertSuccessfulRun(current, workflow, input, pull);
+  if (current.run_attempt > run.run_attempt) {
+    await runSources(current, workflow, input, read, sources, 'READY');
+    selectedJobs(await inventory(api, `actions/runs/${current.id}/jobs`, { filter: 'all' }, 'jobs'), current, workflow, input, pull);
+    throw new CIWaiting('a newer successful CI attempt superseded the jobs audit; await fresh proofs.');
+  }
   requireEvidence(runSnapshot(current) === runSnapshot(run), 'workflow run or attempt changed while auditing jobs.');
   return { workflowId: workflow.id, runId: run.id, runNumber: run.run_number, runAttempt: run.run_attempt, mergeSHA, ...selected };
 }
@@ -287,12 +386,22 @@ async function verifyCI(input) {
   const read = sourceReader(input);
   const sources = await protectedSources(read, input);
   const workflows = [];
+  let waiting;
   await WORKFLOWS.reduce(async (previous, workflow) => {
     await previous;
-    workflows.push(await verifyWorkflow(api, workflow, input, pull, read, sources));
+    try {
+      workflows.push(await verifyWorkflow(api, workflow, input, pull, read, sources));
+    } catch (error) {
+      if (!isWaiting(error)) throw error;
+      waiting = error;
+    }
   }, Promise.resolve());
+  if (waiting) {
+    await livePull(input);
+    throw waiting;
+  }
   return { headSHA: input.headSHA, baseSHA: input.baseSHA, trustedPolicySHA: input.trustedPolicySHA, ciNotBefore: input.ciNotBefore, sources, workflows };
 }
 
-module.exports = { verifyCI };
+module.exports = { verifyCI, checkReadiness, isWaiting, assertUnchangedCI };
 module.exports.testables = { WORKFLOWS };
