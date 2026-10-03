@@ -36,17 +36,20 @@ cleanup_preflight_git() {
 	# Cancellation can trigger this EXIT cleanup while more signals are already
 	# queued. Handle follow-up signals so they cannot interrupt teardown.
 	trap ':' HUP INT TERM
-	if [ -n "$preflight_watchdog_pid" ]; then
-		kill "$preflight_watchdog_pid" 2>/dev/null || :
-		preflight_wait_pid=$preflight_watchdog_pid
-		wait_preflight_child 2>/dev/null || :
-		preflight_watchdog_pid=
-	fi
 	if [ -n "$preflight_runner_pid" ]; then
 		kill -TERM "$preflight_runner_pid" 2>/dev/null || :
 		preflight_wait_pid=$preflight_runner_pid
 		wait_preflight_child 2>/dev/null || :
 		preflight_runner_pid=
+	fi
+	# Keep the watchdog alive until the runner is reaped. If a trapped reader
+	# signal leaves the supervisor stuck in a final ownership probe, the
+	# watchdog must still be able to expire and terminate that runner.
+	if [ -n "$preflight_watchdog_pid" ]; then
+		kill "$preflight_watchdog_pid" 2>/dev/null || :
+		preflight_wait_pid=$preflight_watchdog_pid
+		wait_preflight_child 2>/dev/null || :
+		preflight_watchdog_pid=
 	fi
 	rm -rf "$preflight_state_dir"
 	preflight_state_dir=
