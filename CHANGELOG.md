@@ -2,6 +2,53 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.9](https://github.com/ben-ranford/lopper/compare/v1.8.8...v1.8.9) (2026-10-03)
+
+
+### Bug Fixes
+
+* **automation:** parse workflow YAML safely ([#1677](https://github.com/ben-ranford/lopper/issues/1677)) ([2c02203](https://github.com/ben-ranford/lopper/commit/2c0220327c07fb1eb594570fbb2de0e4d06a3bd6))
+* **ci:** bind suppression evidence to trusted snapshots ([#1770](https://github.com/ben-ranford/lopper/issues/1770)) ([036a41a](https://github.com/ben-ranford/lopper/commit/036a41aa9e5c5f56a4033dd3250997f8dc972c98))
+* **ci:** defer pending CI without blocking queue recovery ([#1817](https://github.com/ben-ranford/lopper/issues/1817)) ([68513d4](https://github.com/ben-ranford/lopper/commit/68513d402a8439c9853bbd6fab1072fb7ffb494a))
+* **ci:** fail closed on incomplete duplication analysis ([#1726](https://github.com/ben-ranford/lopper/issues/1726)) ([cecdfa5](https://github.com/ben-ranford/lopper/commit/cecdfa5664c3aa74ec64dcdfbba5bb03acdaf7ad))
+* **ci:** fold suppression verification into CI and harden Stave shutdown ([#1760](https://github.com/ben-ranford/lopper/issues/1760)) ([4bbdbbf](https://github.com/ben-ranford/lopper/commit/4bbdbbf6dcb0ed5c0b942b6fc400dc20f956eca9))
+* **ci:** preserve suppression check executable mode ([036a41a](https://github.com/ben-ranford/lopper/commit/036a41aa9e5c5f56a4033dd3250997f8dc972c98))
+* **ci:** recover queue checks across failed attempts ([#1819](https://github.com/ben-ranford/lopper/issues/1819)) ([dc54678](https://github.com/ben-ranford/lopper/commit/dc546787f42904a400ae017752d92d1a321c298a))
+* **ci:** resolve main SonarCloud findings ([#1728](https://github.com/ben-ranford/lopper/issues/1728)) ([cc64e61](https://github.com/ben-ranford/lopper/commit/cc64e610b973faaafbb0b2ce19e71167326019d7))
+* **ci:** validate queue evidence and remove subprocess exclusions ([#1814](https://github.com/ben-ranford/lopper/issues/1814)) ([493ec73](https://github.com/ben-ranford/lopper/commit/493ec732de7924d6f2645a8c5fdf666ff0382457))
+* **deps:** update github.com/charmbracelet/ultraviolet digest to 4e49372 ([#1714](https://github.com/ben-ranford/lopper/issues/1714)) ([752335a](https://github.com/ben-ranford/lopper/commit/752335abe682b8403780fedf53f8da71aff3be5d))
+* **deps:** update github.com/charmbracelet/ultraviolet digest to 666ce5e ([#1761](https://github.com/ben-ranford/lopper/issues/1761)) ([fa6af33](https://github.com/ben-ranford/lopper/commit/fa6af33f25a169241da845809928290b1efad5ac))
+* **deps:** update module charm.land/bubbletea/v2 to v2.0.10 ([#1729](https://github.com/ben-ranford/lopper/issues/1729)) ([a51e8ff](https://github.com/ben-ranford/lopper/commit/a51e8ffd5fd8316af0511f06a39a1014fcd75546))
+* **features:** honor layered configuration in CLI and TUI ([#1723](https://github.com/ben-ranford/lopper/issues/1723)) ([a5b85c5](https://github.com/ben-ranford/lopper/commit/a5b85c5b2a11d7043eebe305dcdd529b5bbccc5e))
+* **hooks:** constrain tool trust across worktrees ([#1686](https://github.com/ben-ranford/lopper/issues/1686)) ([da43e5a](https://github.com/ben-ranford/lopper/commit/da43e5a593ab340186d71177a360ccd194928903))
+* **hooks:** retain cleanup watchdog and improve Windows diagnostics ([#1815](https://github.com/ben-ranford/lopper/issues/1815)) ([c20d8a3](https://github.com/ben-ranford/lopper/commit/c20d8a3b6852bd54f1a8c9a2299fd959451350f6))
+* **php:** make class context complexity guard deterministic ([#1722](https://github.com/ben-ranford/lopper/issues/1722)) ([c046bb9](https://github.com/ben-ranford/lopper/commit/c046bb905f60098a0420c15457603379e7e69ab9))
+* **php:** replace timing guard with deterministic context progress check ([c046bb9](https://github.com/ben-ranford/lopper/commit/c046bb905f60098a0420c15457603379e7e69ab9))
+* **python:** retain bounded deferred identity evidence ([#1812](https://github.com/ben-ranford/lopper/issues/1812)) ([37665ff](https://github.com/ben-ranford/lopper/commit/37665ffb5457991abd31be88ac00b914bc451d12))
+* **queue:** update stale branches before identity audit ([#1735](https://github.com/ben-ranford/lopper/issues/1735)) ([dfe361e](https://github.com/ben-ranford/lopper/commit/dfe361e6465d672b53e6b4d631993a5e3c1c8329))
+* **release:** gate stable publication on exact source ([#1679](https://github.com/ben-ranford/lopper/issues/1679)) ([948be77](https://github.com/ben-ranford/lopper/commit/948be772aa0564c53c00d64baaa72ac979daf5e8))
+* **release:** integrate v1.8.9 scanner, hook, and UI fixes ([#1807](https://github.com/ben-ranford/lopper/issues/1807)) ([1aa762a](https://github.com/ben-ranford/lopper/commit/1aa762aad810d451fc2d99b3d71940b876a0acd8))
+* **runtime:** synchronize Windows cleanup with native regression proof ([#1782](https://github.com/ben-ranford/lopper/issues/1782)) ([a98f58d](https://github.com/ben-ranford/lopper/commit/a98f58df6a92594340cf4cc348bf2b8cb138e90b))
+* **shell:** remove inherited ShellCheck suppressions ([#1778](https://github.com/ben-ranford/lopper/issues/1778)) ([b59ec90](https://github.com/ben-ranford/lopper/commit/b59ec907a98ef0d903133f92fa1ee4a880aab4dc))
+* **tests:** prevent ETXTBSY in automation fixtures ([#1739](https://github.com/ben-ranford/lopper/issues/1739)) ([c74fd1a](https://github.com/ben-ranford/lopper/commit/c74fd1a0f9d12e11af4d063a6c261435a83b50a2))
+* **ui:** join terminal input relay during shutdown ([#1691](https://github.com/ben-ranford/lopper/issues/1691)) ([62ef873](https://github.com/ben-ranford/lopper/commit/62ef8732270c11bf8c9f3c322e1fff27603ae4ec))
+* **ui:** synchronize PTY resize observation ([#1738](https://github.com/ben-ranford/lopper/issues/1738)) ([ad4a59a](https://github.com/ben-ranford/lopper/commit/ad4a59ae0329c3d81acddd479a9a9447b1096d6f))
+
+
+### Documentation
+
+* **ci:** explain reuse-check status triage ([#1816](https://github.com/ben-ranford/lopper/issues/1816)) ([c4ad853](https://github.com/ben-ranford/lopper/commit/c4ad85325696320b449431afbbaa70694454bd7d))
+* **ci:** record protected reuse activation and recovery ([#1818](https://github.com/ben-ranford/lopper/issues/1818)) ([39a0937](https://github.com/ben-ranford/lopper/commit/39a0937b5714d4e1be37d98fc8a9645dc87b920f))
+
+
+### Code Refactoring
+
+* **async:** resolve main Sonar control-flow findings ([#1767](https://github.com/ben-ranford/lopper/issues/1767)) ([25a7b75](https://github.com/ben-ranford/lopper/commit/25a7b75e22427727f6061f74588477cf2a8b9a88))
+* consolidate production clone and shared helper cleanup ([#1804](https://github.com/ben-ranford/lopper/issues/1804)) ([3b08dd0](https://github.com/ben-ranford/lopper/commit/3b08dd0b24ea46ad0732870308a9e065b44b067f))
+* **php:** remove dynamic pattern lint suppression ([#1776](https://github.com/ben-ranford/lopper/issues/1776)) ([81f96df](https://github.com/ben-ranford/lopper/commit/81f96dfe0d8e7bebdb41f412838ced4cb47daf4a))
+* **php:** split dynamic pattern alternatives ([81f96df](https://github.com/ben-ranford/lopper/commit/81f96dfe0d8e7bebdb41f412838ced4cb47daf4a))
+* **report:** reuse shared stats builder ([#1756](https://github.com/ben-ranford/lopper/issues/1756)) ([deabd8a](https://github.com/ben-ranford/lopper/commit/deabd8aa1f83e385ce10818cb58f399a839163a9))
+
 ## [1.8.8](https://github.com/ben-ranford/lopper/compare/v1.8.7...v1.8.8) (2026-09-22)
 
 
