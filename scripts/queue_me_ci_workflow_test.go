@@ -65,21 +65,26 @@ func TestQueueMeCIWorkflowManifestContract(t *testing.T) {
 	}
 	for _, workflowPath := range paths {
 		t.Run(workflowPath, func(t *testing.T) {
-			manifest, exists := byPath[workflowPath]
-			if !exists {
-				t.Fatalf("trusted CI manifest omits %s", workflowPath)
-			}
-			name, jobs, locator := queueCIWorkflowJobs(t, workflowPath, make(map[string]bool))
-			if manifest.Name != name {
-				t.Errorf("workflow name = %q, trusted manifest has %q", name, manifest.Name)
-			}
-			if !reflect.DeepEqual(manifest.Jobs, jobs) {
-				t.Errorf("trusted CI job manifest is stale; workflow defines %#v, manifest has %#v", jobs, manifest.Jobs)
-			}
-			if !reflect.DeepEqual(manifest.SuppressionLocator, locator) {
-				t.Errorf("trusted CI locator manifest is stale; workflow defines %#v, manifest has %#v", locator, manifest.SuppressionLocator)
-			}
+			assertQueueCIWorkflowManifest(t, byPath, workflowPath)
 		})
+	}
+}
+
+func assertQueueCIWorkflowManifest(t *testing.T, byPath map[string]queueCIManifestWorkflow, workflowPath string) {
+	t.Helper()
+	manifest, exists := byPath[workflowPath]
+	if !exists {
+		t.Fatalf("trusted CI manifest omits %s", workflowPath)
+	}
+	name, jobs, locator := queueCIWorkflowJobs(t, workflowPath, make(map[string]bool))
+	if manifest.Name != name {
+		t.Errorf("workflow name = %q, trusted manifest has %q", name, manifest.Name)
+	}
+	if !reflect.DeepEqual(manifest.Jobs, jobs) {
+		t.Errorf("trusted CI job manifest is stale; workflow defines %#v, manifest has %#v", jobs, manifest.Jobs)
+	}
+	if !reflect.DeepEqual(manifest.SuppressionLocator, locator) {
+		t.Errorf("trusted CI locator manifest is stale; workflow defines %#v, manifest has %#v", locator, manifest.SuppressionLocator)
 	}
 }
 
