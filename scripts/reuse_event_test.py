@@ -330,6 +330,131 @@ class EventTests(unittest.TestCase):
                 self.assertEqual(api.posts[-1][0], PREFIX + "/statuses/" + "e" * 40)
 
 
+class ReviewDismissalTests(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeAPI()
+        self.api.responses[PREFIX + "/actions/runs/7"]["actor"]["login"] = "other-maintainer"
+        self.api.page_responses[PREFIX + "/pulls/12/reviews"][0]["state"] = "DISMISSED"
+        self.signal = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=7))
+
+    def prepare(self):
+        return event.prepare(self.api, self.signal, "workflow_run", REPOSITORY, 10, SIGNAL, OWNER)
+
+    def test_other_maintainer_dismissal_erases_success_without_permission_dependency(self):
+        event.status(self.api, SNAPSHOT, "success", "Previously approved")
+        self.assertEqual(self.prepare(), SNAPSHOT)
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["success", "pending"])
+        # Even a successful analysis cannot reinterpret the wakeup as approval.
+        with self.assertRaises(event.EventError):
+            event.publish(self.api, SNAPSHOT, result_document(["Makefile"]), "success", [OWNER],
+                          suppression_document(), "success")
+        self.assertEqual(self.api.posts[-1][1]["state"], "failure")
+
+    def test_stale_run_and_missing_association_still_recheck_current_owner_state(self):
+        run = self.api.responses[PREFIX + "/actions/runs/7"]
+        run["head_sha"] = "c" * 40
+        run["pull_requests"] = []
+        self.api.page_responses[PREFIX + "/commits/" + "c" * 40 + "/pulls"] = []
+        self.assertEqual(self.prepare(), SNAPSHOT)
+        self.assertEqual(self.api.posts[-1][0], PREFIX + "/statuses/" + HEAD)
+
+    def test_untrusted_actor_can_only_wake_an_existing_dismissal_despite_pending_draft(self):
+        self.api.responses[PREFIX + "/actions/runs/7"]["actor"]["login"] = "ordinary-fork-author"
+        self.api.page_responses[PREFIX + "/pulls/12/reviews"].append(
+            dict(review_document(), id=20, state="PENDING", submitted_at=None))
+        self.assertEqual(self.prepare(), SNAPSHOT)
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+
+    def test_nonowner_cannot_invalidate_without_live_owner_dismissal(self):
+        cases = ([review_document()], [], [dict(review_document(), user=dict(login="other-maintainer"), state="DISMISSED")],
+                 [dict(review_document(), state="PENDING", submitted_at=None)],
+                 [dict(review_document(), body="edited away")],
+                 [dict(review_document(), commit_id="c" * 40)],
+                 [dict(review_document(), state="DISMISSED"),
+                  dict(review_document(), id=20, submitted_at="2026-09-30T12:01:00Z")])
+        for reviews in cases:
+            self.api.page_responses[PREFIX + "/pulls/12/reviews"] = reviews
+            with self.subTest(reviews=reviews), self.assertRaises(event.EventError):
+                self.prepare()
+            self.assertEqual(self.api.posts, [])
+
+    def add_approved_pull(self):
+        pull = dict(pull_document(), number=13, head=dict(sha="e" * 40, repo=dict(id=20)))
+        self.api.responses[PREFIX + "/pulls/13"] = pull
+        self.api.page_responses[PREFIX + "/pulls"].append(pull)
+        review = dict(review_document(), commit_id="e" * 40,
+                      pull_request_url=f"https://api.github.com/repos/{REPOSITORY}/pulls/13",
+                      body=policy.format_signoff(repository=REPOSITORY, pull_request=13,
+                                                base=BASE, head="e" * 40, decision="approve"))
+        self.api.page_responses[PREFIX + "/pulls/13/reviews"] = [review]
+
+    def test_unresolved_nonowner_wakeup_invalidates_only_live_dismissed_owner_reviews(self):
+        self.add_approved_pull()
+        run = self.api.responses[PREFIX + "/actions/runs/7"]
+        for associations in (None, [], [{"number": 12}]):
+            run["pull_requests"] = associations
+            self.api.archive = b"unreadable"
+            self.api.posts.clear()
+            with self.subTest(associations=associations), self.assertRaises(event.EventError):
+                self.prepare()
+            self.assertEqual([path for path, _ in self.api.posts], [PREFIX + "/statuses/" + HEAD])
+            self.assertEqual(self.api.posts[0][1]["state"], "pending")
+
+    def test_unresolved_fallback_continues_after_one_unreadable_review_history(self):
+        self.add_approved_pull()
+        self.api.responses[PREFIX + "/actions/runs/7"]["pull_requests"] = None
+        self.api.page_responses[PREFIX + "/pulls/13/reviews"][0]["state"] = "DISMISSED"
+        pages = self.api.pages
+
+        def unavailable_first_review(path):
+            if path == PREFIX + "/pulls/12/reviews":
+                raise TimeoutError("unavailable")
+            return pages(path)
+
+        with patch.object(self.api, "pages", side_effect=unavailable_first_review):
+            with self.assertRaises(event.EventError):
+                self.prepare()
+        self.assertEqual([path for path, _ in self.api.posts], [PREFIX + "/statuses/" + "e" * 40])
+        self.assertEqual(self.api.posts[0][1]["state"], "pending")
+
+    def test_untrusted_unresolved_signal_cannot_invalidate_approved_or_unreviewed_pulls(self):
+        self.add_approved_pull()
+        self.api.page_responses[PREFIX + "/pulls/12/reviews"] = []
+        self.api.responses[PREFIX + "/actions/runs/7"]["pull_requests"] = None
+        with self.assertRaises(event.EventError):
+            self.prepare()
+        self.assertEqual(self.api.posts, [])
+
+    def test_malformed_or_unavailable_live_reviews_cannot_authorize_invalidation(self):
+        for reviews in (None, [dict(review_document(), state="DISMISSED", pull_request_url="other")],
+                        [dict(review_document(), state="DISMISSED", submitted_at=None)]):
+            self.api.page_responses[PREFIX + "/pulls/12/reviews"] = reviews
+            with self.subTest(reviews=reviews), self.assertRaises((ValueError, TypeError)):
+                self.prepare()
+            self.assertEqual(self.api.posts, [])
+        with patch.object(self.api, "pages", side_effect=TimeoutError("unavailable")):
+            with self.assertRaises(TimeoutError):
+                self.prepare()
+        self.assertEqual(self.api.posts, [])
+
+    def test_dismissal_does_not_bypass_source_identity_checks(self):
+        for field, value in (("path", "other.yml"), ("event", "push"), ("repository", dict(id=99)),
+                             ("status", "in_progress"), ("name", "Other"), ("id", 99)):
+            self.api.responses[PREFIX + "/actions/runs/7"] = dict(signal_document(), **{field: value})
+            with self.subTest(field=field), self.assertRaises(event.EventError):
+                self.prepare()
+            self.assertEqual(self.api.posts, [])
+
+    def test_owner_edited_review_wakes_analysis_but_cannot_publish_success(self):
+        self.api.responses[PREFIX + "/actions/runs/7"]["actor"]["login"] = OWNER
+        self.api.page_responses[PREFIX + "/pulls/12/reviews"] = [dict(review_document(), body="edited away")]
+        self.assertEqual(self.prepare(), SNAPSHOT)
+        with self.assertRaises(event.EventError):
+            event.publish(self.api, SNAPSHOT, result_document(["Makefile"]), "success", [OWNER],
+                          suppression_document(), "success")
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending", "failure"])
+
+
 class ArtifactTests(unittest.TestCase):
     def test_exact_json_file_is_parsed_without_extracting(self):
         self.assertEqual(event.artifact_pull_number(archive()), 12)

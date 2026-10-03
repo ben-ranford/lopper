@@ -156,12 +156,27 @@ The controller handles protected `pull_request_target` events and fresh owner
 `/reuse-check` comments. A comment requests reevaluation; it grants no review
 approval. A separate no-checkout `pull_request_review` signal covers submitted,
 edited and dismissed reviews. Its bounded artifact contains only a PR number.
+The signal selects the review's owner author, not the event sender, so another
+maintainer dismissing the owner's review also wakes the controller.
 The protected `workflow_run` controller validates the originating run and reads
 live PR/review data itself. Artifact data cannot grant a signoff or establish a
 passing detector result. If an authenticated owner review signal cannot identify
 its PR safely, the controller conservatively marks all open default-target heads
 pending before failing. An unreadable notification must not preserve an earlier
 approval; an owner refresh recovers unaffected PRs.
+
+A non-owner signal can trigger reevaluation only when the latest submitted
+owner review is currently `DISMISSED` in GitHub's complete live review history.
+The dismisser need not retain collaborator access. A newer owner decision takes
+precedence; neither another reviewer nor an artifact can authorize approval.
+If that signal's PR association is missing or malformed, the controller scans
+open default-target PRs and invalidates only those with a live latest owner
+dismissal. Unreviewed PRs and PRs with a current owner approval are untouched.
+An unrelated actor can therefore request reevaluation of an already dismissed
+owner review, but cannot use this path to invalidate all PRs. API failures are
+reported and do not authorize blanket invalidation; an owner refresh can retry.
+The live read and pending write are asynchronous: a concurrent newer approval
+may temporarily be replaced with pending until reevaluation or owner refresh.
 
 Preparation replaces prior success with a pending commit status. The final
 publisher requires a successful analysis job, complete matching revision

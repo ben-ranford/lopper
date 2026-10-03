@@ -8,7 +8,7 @@ permissions: {}
 
 jobs:
   signal:
-    if: ${{ github.event.sender.login == 'ben-ranford' }}
+    if: ${{ github.event.review.user.login == 'ben-ranford' }}
     runs-on: ubuntu-latest
     steps:
       - name: Record review wakeup

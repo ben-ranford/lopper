@@ -430,8 +430,8 @@ func TestReuseReviewSignalHasNoCandidateExecutionOrWriteAuthority(t *testing.T) 
 	}
 	job := workflowJobByName(t, workflow.Jobs, "signal")
 	assertWorkflowJobOmitsCheckout(t, job, "review signal")
-	if job.If != "${{ github.event.sender.login == 'ben-ranford' }}" {
-		t.Fatal("only the configured review owner should initiate a review wakeup")
+	if job.If != "${{ github.event.review.user.login == 'ben-ranford' }}" {
+		t.Fatal("owner review changes must wake analysis even when another maintainer dismisses the review")
 	}
 	if job.Name == "reuse-check" {
 		t.Fatal("review signal must not impersonate the explicit reuse-check commit status")

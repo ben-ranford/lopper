@@ -300,16 +300,36 @@ def signal_pull_number(api, event, repository, identifier, workflow, actor):
     if (event["action"] != "completed" or run["status"] != "completed"
             or run["event"] != "pull_request_review" or run["path"] != workflow
             or run["repository"]["id"] != identifier or run["id"] != event["workflow_run"]["id"]
-            or run["name"] != "Reuse review signal" or run["actor"]["login"] != actor):
+            or run["name"] != "Reuse review signal"):
         raise EventError("Review signal does not match the trusted workflow and repository")
+    owner_wakeup = run["actor"]["login"] == actor
     try:
-        return resolve_signal_pull(api, repository, identifier, run)
+        pull_number = resolve_signal_pull(api, repository, identifier, run)
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
         document = live_repository(api, repository, identifier)
         invalidate_pulls(api, repository, identifier, document["default_branch"],
-                         "Review wakeup unresolved; refresh exact-revision reuse analysis")
-        raise EventError("Authenticated owner review wakeup could not resolve a PR; "
-                         "invalidated open target PRs pending explicit refresh") from error
+                         "Review wakeup unresolved; refresh exact-revision reuse analysis",
+                         dismissed_reviewer=None if owner_wakeup else actor)
+        raise EventError("Authenticated review wakeup could not resolve a PR; "
+                         "eligible open target PRs invalidated pending explicit refresh") from error
+    # A different actor can dismiss the owner's review. Only live revocation,
+    # never the signal artifact or another reviewer's decision, permits this
+    # wakeup. Rechecking state also makes older dismissal events harmless after
+    # a newer owner review and does not depend on the dismisser retaining access.
+    if not owner_wakeup and not owner_review_dismissed(api, repository, pull_number, actor):
+        raise EventError("Non-owner review wakeup has no live owner dismissal")
+    return pull_number
+
+
+def owner_review_dismissed(api, repository, pull_number, actor):
+    reviewers = policy.trusted_reviewers([actor])
+    reviews = api.pages(f"/repos/{repository}/pulls/{number(pull_number)}/reviews")
+    expected_url = f"https://api.github.com/repos/{repository}/pulls/{pull_number}"
+    if not any(policy.authorized_submission(review, policy.review_identity(review)[1],
+                                            reviewers, expected_url) is not None for review in reviews):
+        return False
+    review = policy.latest_authorized_review(reviews, reviewers, expected_url)
+    return review["state"] == "DISMISSED"
 
 
 def ci_workflow(api, repository):
@@ -463,7 +483,8 @@ def invalidate_base(api, event, event_name, repository, identifier):
 
 
 def invalidate_pulls(api, repository, identifier, branch,
-                     description="Protected base changed; refresh exact-revision reuse analysis"):
+                     description="Protected base changed; refresh exact-revision reuse analysis", *,
+                     dismissed_reviewer=None):
     count, failures = 0, 0
     for pull in api.pages(f"/repos/{repository}/pulls"):
         try:
@@ -473,6 +494,9 @@ def invalidate_pulls(api, repository, identifier, branch,
             # catches up with a main push. This branch can only publish pending.
             snapshot = pull_snapshot(api, repository, identifier, number(pull["number"]),
                                      require_current_base=False)
+            if dismissed_reviewer is not None and not owner_review_dismissed(
+                    api, repository, snapshot["pull_number"], dismissed_reviewer):
+                continue
             status(api, snapshot, "pending", description)
             count += 1
         except InactivePull:
