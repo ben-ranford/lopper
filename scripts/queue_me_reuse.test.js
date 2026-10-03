@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { testables } = require('./queue_me_reuse');
+const { testables, prepareCandidate } = require('./queue_me_reuse');
 
 function fixture() {
   const snapshot = { version: 1, repository: 'ben-ranford/lopper', repository_id: 1155023607,
@@ -82,4 +82,35 @@ test('protected bridge deferral requires exact exit discriminator and same snaps
   t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => ({ ...ci.intent, queueEventId: 'new' }));
   await assert.rejects(verify(input, ci), error => !isDeferred(error) && /intent changed/.test(error.message));
   assert.equal(isDeferred(Object.assign(new Error('waiting'), { code: 'ci-deferred' })), false);
+});
+
+test('preparation returns no ticket for cancelled or pending CI and recovers on fresh success', async t => {
+  const { harness, run, CI_ID, WINDOWS_ID } = require('./testdata/queue_waiting/ci_fixture.cjs');
+  const runs = [{ ...run(CI_ID), conclusion: 'cancelled', referenced_workflows: [] }, run(WINDOWS_ID)];
+  const { input } = harness({ runs });
+  const intent = { queueEventId: 'label', ciNotBefore: input.ciNotBefore };
+  t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => intent);
+  const blocked = await prepareCandidate(input);
+  assert.equal(blocked.ticket, null);
+  assert.equal(blocked.readiness.state, 'BLOCKED');
+  runs.push({ ...run(CI_ID, 101), status: 'queued', conclusion: null, referenced_workflows: [] });
+  const waiting = await prepareCandidate(input);
+  assert.equal(waiting.ticket, null);
+  assert.equal(waiting.readiness.state, 'WAITING');
+  Object.assign(runs.at(-1), run(CI_ID, 101));
+  const ready = await prepareCandidate(input);
+  assert.equal(ready.readiness.state, 'READY');
+  assert.equal(ready.ticket.snapshot.head, input.headSHA);
+  assert.equal(ready.ticket.snapshot.base, input.baseSHA);
+  assert.deepEqual(ready.ticket.intent, intent);
+});
+
+test('blocked readiness cannot hide an intent change during preparation', async t => {
+  const { harness, run, CI_ID, WINDOWS_ID } = require('./testdata/queue_waiting/ci_fixture.cjs');
+  const { input } = harness({ runs: [{ ...run(CI_ID), conclusion: 'cancelled' }, run(WINDOWS_ID)] });
+  let reads = 0;
+  t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => ({
+    queueEventId: `label-${++reads}`, ciNotBefore: input.ciNotBefore,
+  }));
+  await assert.rejects(prepareCandidate(input), /intent changed/);
 });

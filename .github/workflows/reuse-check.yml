@@ -240,7 +240,7 @@ jobs:
 
   publish:
     needs: [prepare, analyze, suppression]
-    if: ${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}
+    if: ${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' && needs.prepare.outputs.readiness != 'blocked' }}
     concurrency:
       group: reuse-publish-${{ needs.prepare.outputs.pull_number }}
       cancel-in-progress: false

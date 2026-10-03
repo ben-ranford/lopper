@@ -103,11 +103,13 @@ for terminal in (False, True):
         failed = True
     assert failed == terminal, ('authenticated running CI must defer; terminal failure must fail', terminal, api.posts)
     assert api.posts == (['failure'] if terminal else ['pending']), api.posts
-# Separate pending and completion invocations use fresh controller state. The
+# Separate blocked, pending and completion invocations use fresh controller state. The
 # completed CI supplies its new full receipt; the earlier controller is not rerun.
-for completed in (False, True):
+for readiness in ('blocked', 'waiting', 'ready'):
     api = API(False)
-    if completed:
+    if readiness == 'blocked':
+        api.data[prefix + '/actions/runs/41'].update(status='completed', conclusion='cancelled', run_attempt=2)
+    if readiness == 'ready':
         api.data[prefix + '/actions/runs/41'].update(status='completed', conclusion='success',
             run_started_at='2026-09-30T12:00:00Z', updated_at='2026-09-30T12:10:00Z')
         api.data[prefix + '/actions/artifacts/101'] = dict(id=101, name='pr-report-inputs-12',
@@ -128,9 +130,9 @@ for completed in (False, True):
                 '--refresh-actor', 'ben-ranford']) == 0
         outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
         assert json.loads(outputs['snapshot']) == snapshot
-        assert outputs['readiness'] == ('ready' if completed else 'waiting'), outputs
-        assert api.posts == ['pending']
-        if completed:
+        assert outputs['readiness'] == readiness, outputs
+        assert api.posts == (['pending', 'failure'] if readiness == 'blocked' else ['pending']), api.posts
+        if readiness == 'ready':
             event.publish(api, snapshot, result, 'success', ['ben-ranford'], dict(receipt, runAttempt=3), 'success')
             assert api.posts == ['pending', 'success'], api.posts
 `
@@ -146,7 +148,7 @@ for completed in (False, True):
 			t.Fatalf("actual %s workflow gate would start proof before the tested ready output", phase)
 		}
 	}
-	if workflow.Jobs["publish"].If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}" {
+	if workflow.Jobs["publish"].If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' && needs.prepare.outputs.readiness != 'blocked' }}" {
 		t.Fatal("actual publisher gate would turn the tested waiting snapshot into a failed head check")
 	}
 }
@@ -296,7 +298,7 @@ func TestReuseWorkflowPublishesFailuresAndPreservesAnalysisOutcome(t *testing.T)
 	if !slices.Equal(publish.Needs, workflowJobNeeds{"prepare", "analyze", "suppression"}) {
 		t.Fatal("publication must wait for revision binding and both read-only evidence jobs")
 	}
-	if publish.If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' }}" {
+	if publish.If != "${{ always() && needs.prepare.outputs.snapshot != '' && needs.prepare.outputs.readiness != 'waiting' && needs.prepare.outputs.readiness != 'blocked' }}" {
 		t.Fatal("publication must skip authenticated prepare waiting, but handle every real evidence failure")
 	}
 	for _, name := range []string{"analyze", "suppression"} {

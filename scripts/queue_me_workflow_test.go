@@ -339,6 +339,14 @@ func TestQueueMeWaitingCIEventLifecycle(t *testing.T) {
 	}
 }
 
+func TestQueueMeRerunRetainsCancelledLocatorHistory(t *testing.T) {
+	command := exec.Command(queueLifecycleNode(t), "--test", "testdata/queue_waiting/rerun_locator.cjs")
+	command.Dir = repoPath(t, "scripts")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("queue CI rerun locator history failed: %v\n%s", err, output)
+	}
+}
+
 func queueLifecycleNode(t *testing.T) string {
 	t.Helper()
 	if node, err := exec.LookPath("node"); err == nil {

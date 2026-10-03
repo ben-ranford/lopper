@@ -33,6 +33,13 @@ class CIDeferred(EventError):
     """Authenticated CI has not supplied a current proof yet; never approval."""
 
 
+class _CIBlocked(EventError):
+    """An authenticated terminal CI outcome prevents proof, without a controller fault."""
+
+    def __init__(self, run):
+        super().__init__(f"Current CI run {run['id']}/{run['run_attempt']} completed {run['conclusion']}")
+
+
 SNAPSHOT_KEYS = frozenset(("version", "repository", "repository_id", "head_repository_id",
                            "pull_number", "base", "head", "base_ref"))
 RESULT_KEYS = frozenset(("version", "snapshot", "candidate", "detector_exit", "policy_paths"))
@@ -40,6 +47,7 @@ SUPPRESSION_KEYS = frozenset(("headSHA", "baseSHA", "runId", "runAttempt", "arti
 DEFERRED_KEYS = frozenset(("version", "snapshot", "reason", "runId", "runAttempt"))
 CI_WORKFLOW = ".github/workflows/ci.yml"
 CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
+CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
 
 
@@ -666,11 +674,20 @@ def latest_ci_run(api, snapshot, *, allow_empty=False, workflow=None):
     if run["id"] != selected or number(run["run_attempt"]) < number(runs[selected]["run_attempt"]):
         raise EventError("Latest CI producer identity changed")
     listed = runs[selected]
-    if (run["run_attempt"] == listed["run_attempt"]
-            and listed["status"] == "completed" and listed["conclusion"] == "success"
-            and run["status"] in CI_NONTERMINAL and run["conclusion"] is None):
-        raise EventError("Successful CI producer regressed during selection")
+    if (run["run_attempt"] == listed["run_attempt"] and listed["status"] == "completed"
+            and (run["status"], run["conclusion"]) != (listed["status"], listed["conclusion"])):
+        raise EventError("Completed CI producer changed within the same run attempt")
     return run
+
+
+def require_ci_completion(run, expected, completed_proof):
+    if run["status"] == "completed" and run["conclusion"] == "success":
+        return
+    if completed_proof and (run["id"], run["run_attempt"]) == expected:
+        raise EventError("Successful CI proof regressed within the same run attempt")
+    if run["status"] == "completed" and run["conclusion"] in CI_BLOCKED:
+        raise _CIBlocked(run)
+    raise EventError("Latest CI producer did not complete successfully")
 
 
 def current_ci(api, snapshot, expected=None, *, allow_registration=False, completed_proof=False):
@@ -691,8 +708,7 @@ def current_ci(api, snapshot, expected=None, *, allow_registration=False, comple
         if completed_proof and epoch == expected:
             raise EventError("Successful CI proof regressed within the same run attempt")
         raise CIDeferred("Waiting for the authenticated current CI attempt")
-    if run["status"] != "completed" or run["conclusion"] != "success":
-        raise EventError("Latest CI producer did not complete successfully")
+    require_ci_completion(run, expected, completed_proof)
     if expected is not None and epoch != expected:
         raise CIDeferred("A newer authenticated CI attempt requires fresh proof")
     return run
@@ -701,6 +717,11 @@ def current_ci(api, snapshot, expected=None, *, allow_registration=False, comple
 def prepare_readiness(api, snapshot):
     try:
         current_ci(api, snapshot, allow_registration=True)
+    except _CIBlocked as error:
+        same_live_pair(api, snapshot)
+        status(api, snapshot, "failure", "Current CI did not succeed; fresh passing CI required")
+        print(str(error))
+        return "blocked"
     except CIDeferred as error:
         print(str(error))
         return "waiting"

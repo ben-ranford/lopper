@@ -10,7 +10,12 @@ const SHA = /^[a-f0-9]{40}$/;
 const PAGE_SIZE = 100;
 const MAX_ITEMS = 1000;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
-const SUPPRESSION_LOCATOR = { jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest' };
+const BLOCKED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']);
+const BLOCKED_RUN_CONCLUSIONS = new Set([...BLOCKED_CONCLUSIONS, 'startup_failure']);
+const SUPPRESSION_LOCATOR = {
+  jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest',
+  unresolvedName: 'suppression-artifact-${{ needs.verify-checks.outputs.pr_report_artifact_id }}',
+};
 const SOURCE_PATHS = ['.github/workflows/ci.yml', '.github/workflows/ci-tests.yml', '.github/workflows/windows-runtime.yml'];
 const CI_JOBS = {
   'verify-checks': 'ubuntu-latest',
@@ -158,6 +163,11 @@ function runReadiness(run, workflow) {
   return 'READY';
 }
 
+function initialRunReadiness(run, workflow) {
+  if (run.status === 'completed' && BLOCKED_RUN_CONCLUSIONS.has(run.conclusion)) return 'BLOCKED';
+  return runReadiness(run, workflow);
+}
+
 function assertSuccessfulRun(run, workflow, input, pull) {
   assertRunIdentity(run, workflow, input, pull);
   requireEvidence(runReadiness(run, workflow) === 'READY', `latest ${workflow.name} run ${run.id} is ${run.status}/${run.conclusion}; wait for a successful current run.`);
@@ -188,10 +198,14 @@ function assertJobIdentity(job, run, workflow, input, pull) {
   requireEvidence(job.url === `${API_ROOT}/actions/jobs/${job.id}` && job.run_url === run.url && job.html_url === `${WEB_ROOT}/actions/runs/${run.id}/job/${job.id}`, 'noncanonical job URL.');
 }
 
-function jobArtifactID(job, workflow) {
+function jobArtifactID(job, run, workflow) {
   if (Object.hasOwn(workflow.jobs, job.name)) return undefined;
   const locator = workflow.suppressionLocator;
   requireEvidence(locator && typeof job.name === 'string' && job.name.startsWith(locator.namePrefix), `unknown job ${String(job.name)} in ${workflow.name}; review the trusted job manifest.`);
+  // GitHub may retain the unevaluated name when a prior attempt was cancelled
+  // before this job could start. Keep it in duplicate detection, never approval.
+  if (job.name === locator.unresolvedName && job.run_attempt < run.run_attempt &&
+      job.status === 'completed' && BLOCKED_CONCLUSIONS.has(job.conclusion)) return null;
   const match = /^suppression-artifact-([1-9]\d{0,15})$/.exec(job.name);
   const artifactId = match && Number(match[1]);
   requireEvidence(positive(artifactId) && job.name === `${locator.namePrefix}${artifactId}`, 'malformed suppression artifact locator.');
@@ -212,7 +226,7 @@ function selectedJobs(jobs, run, workflow, input, pull) {
   const locators = new Map();
   for (const job of jobs) {
     assertJobIdentity(job, run, workflow, input, pull);
-    const artifactId = jobArtifactID(job, workflow);
+    const artifactId = jobArtifactID(job, run, workflow);
     if (artifactId !== undefined) {
       requireEvidence(!locators.has(job.run_attempt), 'duplicate suppression artifact locator in one run attempt.');
       locators.set(job.run_attempt, { job, artifactId });
@@ -279,7 +293,7 @@ async function assertMergeSources(run, input, read, sources) {
 }
 
 async function runSources(run, workflow, input, read, sources, readiness) {
-  if (readiness === 'WAITING' && (run.referenced_workflows === undefined ||
+  if (['WAITING', 'BLOCKED'].includes(readiness) && (run.referenced_workflows === undefined ||
       Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0)) return null;
   if (workflow.intentFloor) return assertMergeSources(run, input, read, sources);
   requireEvidence(Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0, 'unexpected Windows reusable workflow source.');
@@ -322,6 +336,7 @@ async function checkReadiness(input) {
   const read = sourceReader(input);
   const sources = await protectedSources(read, input);
   const reasons = [];
+  const blocked = [];
   await WORKFLOWS.reduce(async (previous, workflow) => {
     await previous;
     const run = await latestRun(api, workflow, input, pull);
@@ -329,15 +344,18 @@ async function checkReadiness(input) {
       reasons.push(`Awaiting registration of the ${workflow.name} run for the exact head.`);
       return;
     }
-    const readiness = runReadiness(run, workflow);
+    const readiness = initialRunReadiness(run, workflow);
     await runSources(run, workflow, input, read, sources, readiness);
-    if (workflow.intentFloor && timestamp(run.created_at) <= timestamp(input.ciNotBefore)) {
+    if (readiness === 'BLOCKED') {
+      blocked.push(`latest ${workflow.name} run ${run.id} attempt ${run.run_attempt} completed with ${run.conclusion}; a successful current run is required.`);
+    } else if (workflow.intentFloor && timestamp(run.created_at) <= timestamp(input.ciNotBefore)) {
       reasons.push('Awaiting a new CI generation after the current queue or metadata intent; same-second ordering is ambiguous.');
     } else if (readiness === 'WAITING') {
       reasons.push(pendingMessage(run, workflow));
     }
   }, Promise.resolve());
   await livePull(input);
+  if (blocked.length) return { state: 'BLOCKED', reasons: [...blocked, ...reasons] };
   return { state: reasons.length ? 'WAITING' : 'READY', reasons };
 }
 

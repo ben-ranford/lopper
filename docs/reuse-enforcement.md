@@ -198,6 +198,15 @@ The queue similarly withholds its ticket while awaiting CI for the current
 queue intent. Waiting produces no successful proof or merge approval, and a
 newer failed run never falls back to older green evidence.
 
+At preparation, an authenticated latest CI run with a known terminal
+non-success conclusion is blocked. The producer reports `reuse-check=failure`
+and skips proof and publication jobs; the queue emits no ticket and keeps
+auto-merge disabled. Reporting this expected rejection completes normally,
+so an optional head check does not remain failed after a later CI generation
+provides fresh successful evidence. This is not a passing result or a scheduling
+wait. Malformed identity, unknown outcomes and failed status writes remain
+errors, and full verification and final merge checks remain strict.
+
 If a newer authenticated CI attempt supersedes verification before a receipt
 is issued, that verification is deferred without a receipt. If publication
 already holds an older receipt, it invalidates that proof and corrects its own
@@ -240,6 +249,13 @@ protected-base detector. The artifact's run, attempt time window, head,
 repository identities, digest, size and explicit zero-record schema must match.
 The download has an eight-MiB bound and never forwards API credentials to the
 signed storage URL. No artifact content is extracted or executed.
+
+Queue admission also audits historical job identities and duplicate locator
+slots. A completed non-success job from an older attempt may retain the
+workflow's exact unexpanded locator name; it occupies only that historical
+slot and cannot authorize an artifact. The current attempt still requires a
+unique numeric, successful locator. Unknown names and malformed, current,
+or successful unexpanded locators remain errors.
 
 The caller enumerates the current head's CI runs within GitHub's filtered-query
 limit, selects the newest run before checking its conclusion or base, and

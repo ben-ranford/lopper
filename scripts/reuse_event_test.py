@@ -909,15 +909,13 @@ class PendingCITests(unittest.TestCase):
                 self.assertEqual(event.prepare_readiness(api, SNAPSHOT), "ready" if state == "ready" else "waiting")
                 self.assertEqual(api.posts, [])
 
-    def test_prepare_does_not_defer_failed_malformed_or_foreign_evidence(self):
-        for scenario in ("failed", "association", "workflow", "incomplete", "wrong_base", "regressed_attempt", "regressed_state"):
+    def test_prepare_does_not_defer_malformed_or_foreign_evidence(self):
+        for scenario in ("association", "workflow", "incomplete", "wrong_base", "regressed_attempt", "regressed_state"):
             api = FakeAPI()
             current = api.responses[PREFIX + "/actions/runs/41"]
             current.update(status="queued", conclusion=None)
             api.responses[CI_RUNS]["workflow_runs"][0].update(status="queued", conclusion=None)
-            if scenario == "failed":
-                current.update(status="completed", conclusion="failure")
-            elif scenario == "association":
+            if scenario == "association":
                 current["pull_requests"] = []
             elif scenario == "workflow":
                 current["workflow_id"] = 999
@@ -932,6 +930,100 @@ class PendingCITests(unittest.TestCase):
             with self.subTest(scenario=scenario), self.assertRaises(event.EventError) as raised:
                 event.prepare_readiness(api, SNAPSHOT)
             self.assertNotIsInstance(raised.exception, event.CIDeferred)
+
+    def test_prepare_reports_terminal_ci_failure_then_recovers_on_new_epoch(self):
+        for conclusion in ("cancelled", "startup_failure"):
+            api = FakeAPI()
+            payload = dict(repository=dict(id=10), action="synchronize", number=12,
+                           pull_request=pull_document())
+            for run, expected in ((dict(ci_document(), conclusion=conclusion), "blocked"),
+                                  (dict(ci_document(), id=42, status="queued", conclusion=None), "waiting"),
+                                  (dict(ci_document(), id=42), "ready")):
+                api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+                api.responses[PREFIX + "/actions/runs/" + str(run["id"])] = run
+                snapshot = event.prepare(api, payload, "pull_request_target", REPOSITORY, 10, SIGNAL, OWNER)
+                self.assertEqual(event.prepare_readiness(api, snapshot), expected)
+            self.assertEqual([data["state"] for _, data in api.posts], ["pending", "failure", "pending", "pending"])
+            self.assertTrue(all(path == PREFIX + "/statuses/" + HEAD for path, _ in api.posts))
+
+    def test_prepare_blocks_only_known_authenticated_terminal_ci_outcomes(self):
+        for conclusion in ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure"):
+            api = FakeAPI()
+            run = dict(ci_document(), conclusion=conclusion)
+            api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+            api.responses[PREFIX + "/actions/runs/41"] = run
+            with self.subTest(conclusion=conclusion):
+                self.assertEqual(event.prepare_readiness(api, SNAPSHOT), "blocked")
+                self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
+
+    def test_terminal_readiness_rejects_malformed_or_contradictory_states(self):
+        for scenario in ("unknown", "missing", "nonterminal", "changed_conclusion", "regressed_attempt", "foreign"):
+            api = FakeAPI()
+            run = dict(ci_document(), conclusion="cancelled")
+            api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[copy.deepcopy(run)])
+            api.responses[PREFIX + "/actions/runs/41"] = run
+            if scenario == "unknown":
+                run["conclusion"] = "unexpected"
+                api.responses[CI_RUNS]["workflow_runs"][0]["conclusion"] = "unexpected"
+            elif scenario == "missing":
+                run["conclusion"] = None
+                api.responses[CI_RUNS]["workflow_runs"][0]["conclusion"] = None
+            elif scenario == "nonterminal":
+                run["status"] = "in_progress"
+                api.responses[CI_RUNS]["workflow_runs"][0]["status"] = "in_progress"
+            elif scenario == "changed_conclusion":
+                api.responses[CI_RUNS]["workflow_runs"][0]["conclusion"] = "success"
+            elif scenario == "regressed_attempt":
+                run["run_attempt"] = 1
+            else:
+                run["head_repository"]["id"] = 999
+            with self.subTest(scenario=scenario), self.assertRaises(event.EventError):
+                event.prepare_readiness(api, SNAPSHOT)
+            self.assertEqual(api.posts, [])
+
+    def test_blocked_readiness_does_not_hide_status_write_failure(self):
+        api = FakeAPI()
+        run = dict(ci_document(), conclusion="failure")
+        api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+        api.responses[PREFIX + "/actions/runs/41"] = run
+        request = api.request
+
+        def fail_write(path, data=None):
+            if data is not None:
+                raise OSError("status service unavailable")
+            return request(path)
+
+        api.request = fail_write
+        with self.assertRaisesRegex(OSError, "status service unavailable"):
+            event.prepare_readiness(api, SNAPSHOT)
+        self.assertEqual(api.posts, [])
+
+    def test_blocked_readiness_rechecks_pair_before_failure_status(self):
+        api = FakeAPI()
+        run = dict(ci_document(), conclusion="cancelled")
+        api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+        api.responses[PREFIX + "/actions/runs/41"] = run
+        request = api.request
+
+        def change_pair_after_selection(path, data=None):
+            response = request(path, data)
+            if path == PREFIX + "/actions/runs/41":
+                api.responses[PREFIX + "/pulls/12"]["head"]["sha"] = "d" * 40
+            return response
+
+        api.request = change_pair_after_selection
+        with self.assertRaises(event.EventError):
+            event.prepare_readiness(api, SNAPSHOT)
+        self.assertEqual(api.posts, [])
+
+    def test_bound_success_cannot_become_a_blocked_result_in_same_epoch(self):
+        api = FakeAPI()
+        run = dict(ci_document(), conclusion="cancelled")
+        api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+        api.responses[PREFIX + "/actions/runs/41"] = run
+        with self.assertRaisesRegex(event.EventError, "regressed within the same run attempt"):
+            event.current_ci(api, SNAPSHOT, (41, 2), completed_proof=True)
+        self.assertEqual(api.posts, [])
 
     def test_current_pending_or_superseding_ci_defers_without_success(self):
         for scenario in (*sorted(event.CI_NONTERMINAL), "new_attempt", "new_run"):

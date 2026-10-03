@@ -922,9 +922,10 @@ async function prepareQueue(options) {
     const { prepareCandidate } = require('./queue_me_reuse');
     const prepared = await prepareCandidate(input);
     ticket = prepared.ticket;
-    if (prepared.readiness.state === 'WAITING') {
+    if (['WAITING', 'BLOCKED'].includes(prepared.readiness.state)) {
+      const message = prepared.readiness.state === 'BLOCKED' ? 'Blocked by current CI.' : 'Waiting for current CI.';
       await syncStatusComment(input.github, input.owner, input.repo, input.pullNumber,
-        `## Queue status\n\nWaiting for current CI. Auto-merge remains disabled.\n\n${prepared.readiness.reasons.join('\n\n')}`);
+        `## Queue status\n\n${message} Auto-merge remains disabled.\n\n${prepared.readiness.reasons.join('\n\n')}`);
     }
   } });
   return ticket;
