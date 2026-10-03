@@ -394,8 +394,10 @@ func TestPackagingCatalogOverflowKeepsConsumedFormatShapes(t *testing.T) {
 		{"malformed poetry", pythonPyprojectFile, "[tool]\npoetry='malformed'\n", `{}`},
 		{"missing lock packages", pythonPoetryLockName, "version=1\n", `{}`},
 		{"malformed lock packages", pythonUVLockName, "package='malformed'\n", `{}`},
-		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":"malformed"}`},
-		{"malformed JSON entries", pythonPipfileLockName, `{"default":{"requests":null,"malformed":"bad","invalid":{"version":["bad"]}}}`, `{"default":{"invalid":{"version":["bad"]},"malformed":"bad","requests":null}}`},
+		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":false}`},
+		{"malformed JSON entries", pythonPipfileLockName, `{"default":{"requests":null,"malformed":"bad","invalid":{"version":["bad"]}}}`, `{"default":false}`},
+		{"null JSON entries and versions", pythonPipfileLockName, `{"default":{"requests":null,"empty":{},"null":{"version":null}}}`, `{"default":{"empty":{},"null":{"version":null},"requests":null}}`},
+		{"non-string JSON version", pythonPipfileLockName, `{"default":{"requests":{"version":false}},"develop":null}`, `{"default":false,"develop":null}`},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			document := readOverflowIdentityDocument(t, tc.name, tc.content)
@@ -407,6 +409,12 @@ func TestPackagingCatalogOverflowKeepsConsumedFormatShapes(t *testing.T) {
 func TestPackagingCatalogOverflowOmitsIgnoredIdentityShapes(t *testing.T) {
 	padding := strings.Repeat("ignored payload ", 256)
 	for _, tc := range []struct{ label, name, content, want string }{
+		{"JSON string section", pythonPipfileLockName, `{"default":"%[1]s","develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array section", pythonPipfileLockName, `{"default":["%[1]s"],"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON string entry", pythonPipfileLockName, `{"default":{"bad":"%[1]s","requests":{"version":"==2.32.3"}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array entry", pythonPipfileLockName, `{"default":{"bad":["%[1]s"]},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON array version", pythonPipfileLockName, `{"default":{"bad":{"version":["%[1]s"]}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
+		{"JSON object version", pythonPipfileLockName, `{"default":{"bad":{"version":{"ignored":"%[1]s"}}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
 		{"lock container", pythonPoetryLockName, "package='%[1]s'\n", `{}`},
 		{"lock entries", pythonUVLockName, "package=[{name='requests',version={ignored='%[1]s'}},'%[1]s',{name={ignored='%[1]s'},version='1.2.3'},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"version":"1.2.3"},{"name":"pytest","version":"8.0.0"}]}`},
 		{"tool", pythonPyprojectFile, "tool='%[1]s'\n[project]\ndependencies=['requests==2.32.3']\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},

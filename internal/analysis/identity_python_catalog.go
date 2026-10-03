@@ -104,20 +104,5 @@ func collectPipfileLockDocument(repo, path string, index identityIndex, document
 }
 
 func validPipfileIdentitySection(packages map[string]any) bool {
-	for _, raw := range packages {
-		if raw == nil {
-			continue
-		}
-		metadata, ok := raw.(map[string]any)
-		if !ok {
-			return false
-		}
-		version := metadata["version"]
-		if version != nil {
-			if _, ok := version.(string); !ok {
-				return false
-			}
-		}
-	}
-	return true
+	return pythonlang.ValidPipfileIdentitySection(packages)
 }

@@ -157,10 +157,14 @@ func pythonIdentityTable(value any, keys ...string) any {
 }
 
 func pythonIdentityPackageSections(document map[string]any, sections ...string) map[string]any {
-	result := make(map[string]any, len(sections))
-	for _, section := range sections {
-		if packages := pythonIdentityPackageTable(document[section]); len(packages) != 0 {
-			result[section] = packages
+	return projectPythonIdentityCollections(pythonIdentityFields(document, sections...), pythonIdentityPackageTable)
+}
+
+func projectPythonIdentityCollections[T []string | map[string]any](document map[string]any, project func(any) T) map[string]any {
+	result := make(map[string]any, len(document))
+	for name, raw := range document {
+		if value := project(raw); len(value) != 0 {
+			result[name] = value
 		}
 	}
 	return result
@@ -220,24 +224,12 @@ func ManifestRequirementStrings(value any) []string {
 }
 
 func pythonIdentityRequirementFields(document map[string]any, fields ...string) map[string]any {
-	result := make(map[string]any, len(fields))
-	for _, field := range fields {
-		if requirements := ManifestRequirementStrings(document[field]); len(requirements) != 0 {
-			result[field] = requirements
-		}
-	}
-	return result
+	return projectPythonIdentityCollections(pythonIdentityFields(document, fields...), ManifestRequirementStrings)
 }
 
 func pythonIdentityRequirementGroups(value any) map[string]any {
 	groups, _ := value.(map[string]any)
-	result := make(map[string]any, len(groups))
-	for name, raw := range groups {
-		if requirements := ManifestRequirementStrings(raw); len(requirements) != 0 {
-			result[name] = requirements
-		}
-	}
-	return result
+	return projectPythonIdentityCollections(groups, ManifestRequirementStrings)
 }
 
 func pyprojectIdentityProjection(document map[string]any) map[string]any {
@@ -287,13 +279,7 @@ func poetryIdentityProjection(value any) map[string]any {
 
 func poetryIdentityGroups(value any) map[string]any {
 	groups, _ := value.(map[string]any)
-	projected := make(map[string]any, len(groups))
-	for name, raw := range groups {
-		if group := poetryIdentityGroup(raw); len(group) != 0 {
-			projected[name] = group
-		}
-	}
-	return projected
+	return projectPythonIdentityCollections(groups, poetryIdentityGroup)
 }
 
 func poetryIdentityGroup(value any) map[string]any {
@@ -336,15 +322,40 @@ func pipfileLockIdentityProjection(document map[string]any) map[string]any {
 }
 
 func pipfileLockIdentitySection(value any) any {
+	if value == nil {
+		return nil
+	}
 	packages, ok := value.(map[string]any)
-	if !ok {
-		return value
+	if !ok || !ValidPipfileIdentitySection(packages) {
+		// Identity rejects the whole section with a generic warning. A non-null,
+		// non-map sentinel preserves that rejection without retaining its payload.
+		return false
 	}
 	projected := make(map[string]any, len(packages))
 	for name, raw := range packages {
 		projected[name] = pythonIdentityTable(raw, "version")
 	}
 	return projected
+}
+
+// ValidPipfileIdentitySection reports whether every entry can supply identity evidence.
+func ValidPipfileIdentitySection(packages map[string]any) bool {
+	for _, raw := range packages {
+		if raw == nil {
+			continue
+		}
+		metadata, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		version := metadata["version"]
+		if version != nil {
+			if _, ok := version.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c *packagingCatalog) parse(repo, path string) (map[string]struct{}, []string, error) {

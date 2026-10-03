@@ -84,19 +84,24 @@ func TestPythonRequirementsProjectionPreservesConflictsAndPermissiveVersions(t *
 				{Language: "python", Name: "extra-equals"}, {Language: "python", Name: "invalid"},
 			}}
 			annotateDependencyIdentities(repo, &result)
-			conflicting := findIdentityDependency(t, result, "python", "requests").Identity
-			if conflicting.VersionStatus != identityStatusConflicting || conflicting.Version != "" || len(conflicting.Conflicts) != 2 {
-				t.Fatalf("requirements version conflict changed: %+v", conflicting)
-			}
-			for name, want := range map[string]string{"wildcard": "1.*", "extra-equals": "=3", "invalid": "not-a-version"} {
-				identity := findIdentityDependency(t, result, "python", name).Identity
-				if identity.Version != want || identity.VersionStatus != identityStatusResolved || identity.Source != "requirements.txt" || identity.Confidence != "medium" {
-					t.Fatalf("permissive requirements evidence changed for %s: %+v", name, identity)
-				}
-			}
-			if len(result.Warnings) != 0 {
-				t.Fatalf("requirements projection required source reads: %v", result.Warnings)
-			}
+			assertPermissiveRequirementsIdentity(t, result)
 		})
+	}
+}
+
+func assertPermissiveRequirementsIdentity(t *testing.T, result report.Report) {
+	t.Helper()
+	conflicting := findIdentityDependency(t, result, "python", "requests").Identity
+	if conflicting.VersionStatus != identityStatusConflicting || conflicting.Version != "" || len(conflicting.Conflicts) != 2 {
+		t.Fatalf("requirements version conflict changed: %+v", conflicting)
+	}
+	for name, want := range map[string]string{"wildcard": "1.*", "extra-equals": "=3", "invalid": "not-a-version"} {
+		identity := findIdentityDependency(t, result, "python", name).Identity
+		if identity.Version != want || identity.VersionStatus != identityStatusResolved || identity.Source != "requirements.txt" || identity.Confidence != "medium" {
+			t.Fatalf("permissive requirements evidence changed for %s: %+v", name, identity)
+		}
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("requirements projection required source reads: %v", result.Warnings)
 	}
 }
