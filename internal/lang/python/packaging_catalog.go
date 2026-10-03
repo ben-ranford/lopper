@@ -89,15 +89,16 @@ func (c *packagingCatalog) retain(path string, document report.PythonManifestDoc
 				Document map[string]any `json:"document,omitempty"`
 				Text     string         `json:"text,omitempty"`
 			}{Document: deferred.IdentityProjection, Text: deferred.IdentityText})
-			if marshalErr != nil {
+			switch {
+			case marshalErr != nil:
 				deferred.IdentityProjectionError = fmt.Sprintf("encode bounded identity projection: %v", marshalErr)
 				deferred.IdentityProjection = nil
 				deferred.IdentityText = ""
-			} else if int64(len(projectionBytes)) > maxPackagingIdentityProjectionBytes-c.identityBytes {
+			case int64(len(projectionBytes)) > maxPackagingIdentityProjectionBytes-c.identityBytes:
 				deferred.IdentityProjectionError = fmt.Sprintf("Python identity projection exceeds the %d-byte catalog limit", maxPackagingIdentityProjectionBytes)
 				deferred.IdentityProjection = nil
 				deferred.IdentityText = ""
-			} else {
+			default:
 				c.identityBytes += int64(len(projectionBytes))
 				c.identitySizes[path] = int64(len(projectionBytes))
 			}
