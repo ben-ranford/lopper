@@ -190,8 +190,9 @@ head or an owner `/reuse-check` comment runs analysis for the current pair.
 Events are asynchronous; the custom merge queue must also validate current
 revisions and authorization immediately before admission/merge.
 
-An authenticated current CI run that is still queued or running is a scheduling
-wait. Preparation leaves `reuse-check` pending and skips proof jobs until a
+The pending-CI lifecycle repair in [#1817](https://github.com/ben-ranford/lopper/pull/1817)
+treats an authenticated current CI run that is still queued or running as a
+scheduling wait. Preparation leaves `reuse-check` pending and skips proof jobs until a
 fresh event can perform the full analysis. A complete empty CI inventory also
 waits for registration; malformed or incomplete inventory remains an error.
 The queue similarly withholds its ticket while awaiting CI for the current
@@ -219,9 +220,10 @@ newer result; an owner refresh retries verification of the current pair.
 The required result is the explicitly published **commit status** `reuse-check`
 on the exact PR head. No workflow job uses that name. GitHub documents that
 native job checks from `workflow_run` or `issue_comment` do not satisfy PR
-required checks; this design does not rely on those job checks. Live isolated
-protected-target proof must establish that the commit status is accepted from
-the expected Actions integration before changing the production ruleset.
+required checks; this design does not rely on those job checks. The recorded
+six-check production transition below passed GitHub's aggregate required-status
+rule. REST status records do not independently authenticate the publisher App;
+that limitation remains separate from the exact-transition rule evaluation.
 
 The repository is personally owned and currently uses a custom queue. Native
 GitHub merge queues are unavailable in this configuration. The event module
@@ -235,8 +237,8 @@ substitutes. Live group proof remains an explicit future adoption prerequisite.
 ## Trusted suppression caller
 
 The controller also invokes the separate #1606 adapter from #1770 in a read-only
-job pinned to the exact protected base. That dependency must land before this
-job can succeed. Candidate files and artifacts are data; the adapter and its
+job pinned to the exact protected base. The adapter and its trusted caller are
+installed on protected `main`. Candidate files and artifacts are data; the adapter and its
 base detector are trusted executable source. The publisher requires both the
 reuse analysis and suppression jobs to succeed, with matching exact revisions.
 
@@ -278,8 +280,13 @@ This proves only the protected detector's recognized suppression markers on
 changed lines. It does not prove absence on unchanged files, in the prospective
 merged tree, or for ShellCheck directives. The separate queue audit owns that
 broader policy. Missing fork associations fail closed and remain a live proof
-case. Local fixtures establish behavior, not protected-target enforcement;
-#1606 and #1612 remain open until activation and recorded live proof.
+case. [#1606 closed](https://github.com/ben-ranford/lopper/issues/1606#issuecomment-5971166507)
+on recorded late-CI completion and protected artifact-provenance evidence. That
+issue-specific result does not close #1612 or establish automatic queue recovery.
+The pending-CI handling in #1817 and the terminal-CI preparation and historical
+locator handling in [#1819](https://github.com/ben-ranford/lopper/pull/1819) still need an ordinary
+live observation of automatic recovery. Local regression tests and the earlier
+manually recovered queue run do not substitute for it.
 
 ## Read-only queue consumer
 
@@ -377,25 +384,37 @@ against that exact protected source. Preserve acceptance holds for any live
 proof that is still outstanding; installing a workflow does not establish that
 the proof passed.
 
-At inspection, ruleset `12669248` required `verify`, `homebrew-tap-verify`,
-`pr-metadata` and `enforce` from Actions integration `15368`, plus
-`SonarCloud Code Analysis` from integration `12526`. Strict checking was enabled,
-required approving reviews were zero, code-owner review was disabled, and
-review thread resolution was required. Re-read settings immediately before any
-approved mutation and preserve every existing rule and check.
-
-After protected-target proof, the proposed ruleset delta is one appended entry:
+On 2026-10-03, ruleset `12669248` was updated to require six contexts:
+`verify`, `homebrew-tap-verify`, `pr-metadata`, `enforce` and `reuse-check` from
+Actions integration `15368`, plus `SonarCloud Code Analysis` from integration
+`12526`. The approved change appended only the entry below; strict checking,
+zero required approving reviews, disabled code-owner review, required thread
+resolution, bypass actors and all other protections were preserved. Re-read
+current settings before an approved change; this dated record is not live state.
 
 ```json
 {"context":"reuse-check","integration_id":15368}
 ```
+
+The observed merge of [PR #1816](https://github.com/ben-ranford/lopper/pull/1816)
+is consistent with the reviewed exact-head guarded squash path in
+[queue run 37139420707](https://github.com/ben-ranford/lopper/actions/runs/37139420707),
+with persistent auto-merge disabled.
+[Rule suite 4347579688](https://api.github.com/repos/ben-ranford/lopper/rulesets/rule-suites/4347579688)
+recorded `pass`, not `bypass`, for the exact `493ec732` to `c4ad8532` main
+transition, including the active required-status-checks rule under the unchanged
+six-check configuration. That aggregate evaluation does not independently
+authenticate each status publisher or supply a merge-mutation receipt. Earlier
+head-associated optional checks required genuine workflow retries; this merge
+therefore did not establish automatic pending-to-complete recovery.
 
 The workflow additionally requests ephemeral `statuses: write` only for the
 protected preparation, invalidation and publication jobs. Analysis has only
 read permissions. It uses the existing Actions token, with no persistent App,
 new secret, global token-permission change, collaborator change, CODEOWNERS
 change or global review requirement. Workflow activation and repository-rule
-changes require their own action-time approval; this draft does not apply them.
+changes require their own action-time approval; this documentation does not
+apply them.
 
 Actions integration identity binds the App, not an individual workflow. The
 current repository has one trusted same-repository writer, `ben-ranford`. This
@@ -434,6 +453,6 @@ snapshot and check URLs for each scenario:
 Use a separately approved, non-merging protected fixture target for negative
 proof. Do not submit an intentionally violating candidate for production-main
 merge. Local regression tests are implementation evidence, not proof of live
-branch protection. Keep #1612 and its batch tickets open until shared evidence
+branch protection. Keep the remaining #1612 acceptance tickets open until shared evidence
 records actual enforcement and the final integration satisfies all existing
 checks, zero SonarQube issues and zero unresolved review threads.
