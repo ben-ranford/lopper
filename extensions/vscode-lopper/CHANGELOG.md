@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.9 (2026-10-03)
+
+- async: resolve main Sonar control-flow findings
+
 ## 1.8.8 (2026-09-22)
 
 - Updated the bundled `adm-zip` dependency from 0.6.0 to 0.6.1.
