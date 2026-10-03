@@ -66,10 +66,11 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWindowsDescendantHelper$")
 	cmd.Env = append(os.Environ(), "LOPPER_WINDOWS_DESCENDANT_ROLE=parent", "LOPPER_WINDOWS_DESCENDANT_MARKER="+markerPath)
-	var output bytes.Buffer
+	var output descendantFailureOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	ConfigureCommandCancellation(cmd)
+	started := time.Now()
 	cleanup, err := StartCommand(cmd)
 	if err != nil {
 		t.Fatalf("start job command: %v", err)
@@ -83,14 +84,15 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 		}
 	}()
 	defer func() {
-		cancel()
-		if cmd.ProcessState == nil {
-			if waitErr := cmd.Wait(); waitErr != nil {
-				t.Logf("reap cancelled command: %v", waitErr)
-			}
+		if t.Failed() && ctx.Err() == nil {
+			tail, omitted := output.Snapshot()
+			t.Logf("descendant helper before cancellation: elapsed=%s marker={%s} parent={%s} combined_output_tail=%q omitted_bytes=%d",
+				time.Since(started), descendantMarkerSnapshot(markerPath), windowsParentSnapshot(uint32(cmd.Process.Pid)), tail, omitted)
 		}
+		reapCancelledWindowsHelper(t, cancel, cmd)
 		if t.Failed() {
-			t.Logf("descendant helper output: %s", output.String())
+			tail, omitted := output.Snapshot()
+			t.Logf("descendant helper output after reap: tail=%q omitted_bytes=%d", tail, omitted)
 		}
 	}()
 
@@ -122,6 +124,16 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	}
 }
 
+func reapCancelledWindowsHelper(t *testing.T, cancel context.CancelFunc, cmd *exec.Cmd) {
+	t.Helper()
+	cancel()
+	if cmd.ProcessState == nil {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			t.Logf("reap cancelled command: %v", waitErr)
+		}
+	}
+}
+
 func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32 {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -144,6 +156,8 @@ func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32
 // Using the already-built test executable avoids PowerShell and cmd startup.
 func TestWindowsDescendantHelper(t *testing.T) {
 	switch os.Getenv("LOPPER_WINDOWS_DESCENDANT_ROLE") {
+	case "observer-exit":
+		os.Exit(17)
 	case "parent":
 		executable, err := os.Executable()
 		if err != nil {
