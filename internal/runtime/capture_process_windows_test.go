@@ -89,12 +89,7 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 			t.Logf("descendant helper before cancellation: elapsed=%s marker={%s} parent={%s} combined_output_tail=%q omitted_bytes=%d",
 				time.Since(started), descendantMarkerSnapshot(markerPath), windowsParentSnapshot(uint32(cmd.Process.Pid)), tail, omitted)
 		}
-		cancel()
-		if cmd.ProcessState == nil {
-			if waitErr := cmd.Wait(); waitErr != nil {
-				t.Logf("reap cancelled command: %v", waitErr)
-			}
-		}
+		reapCancelledWindowsHelper(t, cancel, cmd)
 		if t.Failed() {
 			tail, omitted := output.Snapshot()
 			t.Logf("descendant helper output after reap: tail=%q omitted_bytes=%d", tail, omitted)
@@ -126,6 +121,16 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	}
 	if status != win.WAIT_OBJECT_0 {
 		t.Fatalf("child process %d remained active after cleanup (status %d)", childPID, status)
+	}
+}
+
+func reapCancelledWindowsHelper(t *testing.T, cancel context.CancelFunc, cmd *exec.Cmd) {
+	t.Helper()
+	cancel()
+	if cmd.ProcessState == nil {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			t.Logf("reap cancelled command: %v", waitErr)
+		}
 	}
 }
 
