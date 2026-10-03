@@ -185,9 +185,10 @@ function needsFor(ticket) {
     suppression: { result: 'success', outputs: { receipt: '', deferred: '', readiness: '' } } };
 }
 
-for (const initial of ['pending', 'registration', 'prior-intent']) {
+for (const initial of ['cancelled', 'failure', 'pending', 'registration', 'prior-intent']) {
   test(`queue lifecycle: ${initial} initial head event waits, completion performs strict CI and guarded merge`, async t => {
     const runs = initial === 'registration' ? [] : [run(CI_ID), run(WINDOWS_ID)];
+    if (['cancelled', 'failure'].includes(initial)) runs[0] = { ...run(CI_ID, 99), status: 'completed', conclusion: initial, referenced_workflows: [] };
     if (initial === 'pending') Object.assign(runs[0], { status: 'queued', conclusion: null, referenced_workflows: [] });
     if (initial === 'prior-intent') runs[0].created_at = '2026-10-01T00:59:59Z';
     const fixture = queueHarness(runs);
@@ -200,7 +201,16 @@ for (const initial of ['pending', 'registration', 'prior-intent']) {
     assert.equal(fixture.calls.proofs, 0);
     assert.deepEqual(fixture.calls.merged, []);
     assert.equal(fixture.state.autoMergeRequest, null);
-    assert.match(fixture.calls.comments.join(), /Waiting for current CI/);
+    assert.match(fixture.calls.comments.join(), ['cancelled', 'failure'].includes(initial) ? /Blocked by current CI/ : /Waiting for current CI/);
+
+    if (['cancelled', 'failure'].includes(initial)) {
+      runs.splice(0, runs.length, { ...run(CI_ID), status: 'queued', conclusion: null, referenced_workflows: [] }, run(WINDOWS_ID));
+      const pending = await controller.prepareQueue(fixture.args);
+      assert.equal(pending, null, 'a newer pending generation still has no ticket');
+      assert.equal(fixture.calls.proofs, 0);
+      assert.deepEqual(fixture.calls.merged, []);
+      assert.match(fixture.calls.comments.at(-1), /Waiting for current CI/);
+    }
 
     // A main-associated workflow_run completion repeats real preparation; the
     // initial head event has created no failed proof/advance job to retain.

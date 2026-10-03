@@ -1964,6 +1964,22 @@ test('prepare disarms the queue and selects without evaluating or merging eviden
   assert.deepEqual(h.calls.armed, []);
 });
 
+test('blocked preparation disarms queued pulls and records the hold without a ticket or proof', async t => {
+  const h = makeHarness({ pulls: [makePull(10), makePull(20)],
+    initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} } } });
+  t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async () => {
+    assert.deepEqual(h.calls.disabled, [10, 20]);
+    return { ticket: null, readiness: { state: 'BLOCKED', reasons: ['latest ci run 100 attempt 1 completed with cancelled; a successful current run is required.'] } };
+  });
+  assert.equal(await runController.prepareQueue(h.args), null);
+  assert.match(commentsFor(h, 10), /Blocked by current CI\. Auto-merge remains disabled/);
+  assert.match(commentsFor(h, 10), /completed with cancelled/);
+  assert.deepEqual(h.calls.evidence, []);
+  assert.deepEqual(h.calls.revalidations, []);
+  assert.deepEqual(h.calls.merged, []);
+  assert.deepEqual(h.calls.armed, []);
+});
+
 
 test('final revalidation defers only private authenticated CI waiting errors', async t => {
   const { harness, run, CI_ID, WINDOWS_ID } = require('./testdata/queue_waiting/ci_fixture.cjs');

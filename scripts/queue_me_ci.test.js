@@ -282,20 +282,63 @@ test('complete absence and valid prior-intent CI defer registration; post-intent
   await assert.rejects(verifyCI(prior.input), /same-second/);
 });
 
-test('readiness preserves terminal, contradictory, identity, source and inventory failures', async () => {
+test('initial readiness blocks known unsuccessful terminal outcomes without authorizing final CI', async () => {
+  for (const workflow of [CI_ID, WINDOWS_ID]) {
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']) {
+      const runs = [run(CI_ID), run(WINDOWS_ID)].map(value => value.workflow_id === workflow
+        ? { ...value, conclusion, referenced_workflows: [] } : value);
+      const fixture = harness({ runs });
+      const result = await checkReadiness(fixture.input);
+      assert.equal(result.state, 'BLOCKED');
+      assert.match(result.reasons.join(), new RegExp(`completed with ${conclusion}`));
+      assert.equal(fixture.requests.some(({ url }) => url.pathname.endsWith('/jobs')), false);
+      await assert.rejects(verifyCI(fixture.input), error => !isWaiting(error) && error.message.includes(conclusion));
+    }
+  }
+});
+
+test('cancelled initial selection recovers only through the fresh current CI generation', async () => {
+  const runs = [run(CI_ID, 99), { ...run(CI_ID), conclusion: 'cancelled', referenced_workflows: undefined }, run(WINDOWS_ID)];
+  const fixture = harness({ runs });
+  assert.equal((await checkReadiness(fixture.input)).state, 'BLOCKED');
+  await assert.rejects(verifyCI(fixture.input), /latest ci run 100.*cancelled/);
+  runs.push({ ...run(CI_ID, 101), status: 'queued', conclusion: null, referenced_workflows: [] });
+  const waiting = await checkReadiness(fixture.input);
+  assert.equal(waiting.state, 'WAITING');
+  assert.match(waiting.reasons.join(), /run 101 attempt 1/);
+  Object.assign(runs.at(-1), run(CI_ID, 101));
+  assert.deepEqual(await checkReadiness(fixture.input), { state: 'READY', reasons: [] });
+  assert.equal((await verifyCI(fixture.input)).workflows[0].runId, 101);
+});
+
+test('BLOCKED dominates waiting across workflows but never masks malformed evidence', async () => {
+  const pending = { ...run(CI_ID), status: 'queued', conclusion: null };
+  const failedWindows = harness({ runs: [pending, { ...run(WINDOWS_ID), conclusion: 'failure' }] });
+  const blocked = await checkReadiness(failedWindows.input);
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.match(blocked.reasons.join(), /windows runtime.*failure/);
+  assert.match(blocked.reasons.join(), /ci run 100.*queued/);
+  await assert.rejects(verifyCI(failedWindows.input), error => !isWaiting(error) && /latest windows runtime/.test(error.message));
+  const failed = { ...run(CI_ID), conclusion: 'cancelled', referenced_workflows: [] };
+  const waitingWindows = { ...run(WINDOWS_ID), status: 'in_progress', conclusion: null };
+  assert.equal((await checkReadiness(harness({ runs: [failed, waitingWindows] }).input)).state, 'BLOCKED');
+  await assert.rejects(checkReadiness(harness({ runs: [failed, { ...waitingWindows, pull_requests: [] }] }).input), /association/);
+});
+
+test('readiness preserves contradictory, identity, source and inventory failures', async () => {
   const changes = [
-    ...['failure', 'cancelled', 'timed_out', 'neutral', 'skipped'].map(conclusion => ({ conclusion })),
+    { conclusion: null }, { conclusion: 'unknown' },
     { status: 'queued', conclusion: 'success' }, { status: 'unknown', conclusion: null },
     { status: 'queued', conclusion: null, pull_requests: [] }, { path: '.github/workflows/other.yml' },
     { status: 'queued', conclusion: null, referenced_workflows: [{}] },
+    { conclusion: 'cancelled', pull_requests: [] },
+    { conclusion: 'cancelled', referenced_workflows: [{}] },
+    { conclusion: 'cancelled', referenced_workflows: null },
+    { conclusion: 'cancelled', referenced_workflows: 'missing' },
   ];
   for (const change of changes) {
     await assert.rejects(checkReadiness(harness({ runs: [run(CI_ID), { ...run(CI_ID, 101), ...change }, run(WINDOWS_ID)] }).input), error => !isWaiting(error));
   }
-  const pending = { ...run(CI_ID), status: 'queued', conclusion: null };
-  const failedWindows = harness({ runs: [pending, { ...run(WINDOWS_ID), conclusion: 'failure' }] });
-  await assert.rejects(checkReadiness(failedWindows.input), /latest windows runtime/);
-  await assert.rejects(verifyCI(failedWindows.input), error => !isWaiting(error) && /latest windows runtime/.test(error.message));
   await assert.rejects(checkReadiness(harness({ source: data => ({ ...data, sha: null }) }).input), /workflow/);
   await assert.rejects(checkReadiness(harness({ response: data => ({ ...data, total_count: 5 }) }).input), /incomplete/);
   const unavailable = harness();

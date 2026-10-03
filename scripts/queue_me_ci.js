@@ -10,6 +10,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const PAGE_SIZE = 100;
 const MAX_ITEMS = 1000;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+const BLOCKED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']);
 const SUPPRESSION_LOCATOR = { jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest' };
 const SOURCE_PATHS = ['.github/workflows/ci.yml', '.github/workflows/ci-tests.yml', '.github/workflows/windows-runtime.yml'];
 const CI_JOBS = {
@@ -158,6 +159,11 @@ function runReadiness(run, workflow) {
   return 'READY';
 }
 
+function initialRunReadiness(run, workflow) {
+  if (run.status === 'completed' && BLOCKED_CONCLUSIONS.has(run.conclusion)) return 'BLOCKED';
+  return runReadiness(run, workflow);
+}
+
 function assertSuccessfulRun(run, workflow, input, pull) {
   assertRunIdentity(run, workflow, input, pull);
   requireEvidence(runReadiness(run, workflow) === 'READY', `latest ${workflow.name} run ${run.id} is ${run.status}/${run.conclusion}; wait for a successful current run.`);
@@ -279,7 +285,7 @@ async function assertMergeSources(run, input, read, sources) {
 }
 
 async function runSources(run, workflow, input, read, sources, readiness) {
-  if (readiness === 'WAITING' && (run.referenced_workflows === undefined ||
+  if (['WAITING', 'BLOCKED'].includes(readiness) && (run.referenced_workflows === undefined ||
       Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0)) return null;
   if (workflow.intentFloor) return assertMergeSources(run, input, read, sources);
   requireEvidence(Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0, 'unexpected Windows reusable workflow source.');
@@ -322,6 +328,7 @@ async function checkReadiness(input) {
   const read = sourceReader(input);
   const sources = await protectedSources(read, input);
   const reasons = [];
+  const blocked = [];
   await WORKFLOWS.reduce(async (previous, workflow) => {
     await previous;
     const run = await latestRun(api, workflow, input, pull);
@@ -329,15 +336,18 @@ async function checkReadiness(input) {
       reasons.push(`Awaiting registration of the ${workflow.name} run for the exact head.`);
       return;
     }
-    const readiness = runReadiness(run, workflow);
+    const readiness = initialRunReadiness(run, workflow);
     await runSources(run, workflow, input, read, sources, readiness);
-    if (workflow.intentFloor && timestamp(run.created_at) <= timestamp(input.ciNotBefore)) {
+    if (readiness === 'BLOCKED') {
+      blocked.push(`latest ${workflow.name} run ${run.id} attempt ${run.run_attempt} completed with ${run.conclusion}; a successful current run is required.`);
+    } else if (workflow.intentFloor && timestamp(run.created_at) <= timestamp(input.ciNotBefore)) {
       reasons.push('Awaiting a new CI generation after the current queue or metadata intent; same-second ordering is ambiguous.');
     } else if (readiness === 'WAITING') {
       reasons.push(pendingMessage(run, workflow));
     }
   }, Promise.resolve());
   await livePull(input);
+  if (blocked.length) return { state: 'BLOCKED', reasons: [...blocked, ...reasons] };
   return { state: reasons.length ? 'WAITING' : 'READY', reasons };
 }
 
