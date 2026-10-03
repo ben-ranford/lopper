@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,22 +21,27 @@ func TestProofCommandOutputAndCancellation(t *testing.T) {
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProofCommandChild$")
 			cmd.Env = append(os.Environ(), "LOPPER_PROOF_COMMAND_CHILD="+mode)
 			output, err := (&runner{}).executeProofCommand(ctx, cmd)
-			switch mode {
-			case "success":
-				if err != nil || string(output) != "stdout\n" {
-					t.Fatalf("success must return only stdout: output=%q err=%v", output, err)
-				}
-			case "failure":
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || string(output) != "stdout\nstderr\n" {
-					t.Fatalf("failure must retain diagnostics and exit error: output=%q err=%v", output, err)
-				}
-			case "cancel":
-				if err == nil || ctx.Err() != context.DeadlineExceeded || cmd.ProcessState == nil {
-					t.Fatalf("running process must be cancelled and reaped: err=%v context=%v", err, ctx.Err())
-				}
-			}
+			assertProofCommandResult(t, mode, ctx.Err(), cmd, output, err)
 		})
+	}
+}
+
+func assertProofCommandResult(t *testing.T, mode string, contextErr error, cmd *exec.Cmd, output []byte, err error) {
+	t.Helper()
+	switch mode {
+	case "success":
+		if err != nil || string(output) != "stdout\n" {
+			t.Fatalf("success must return only stdout: output=%q err=%v", output, err)
+		}
+	case "failure":
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || string(output) != "stdout\nstderr\n" {
+			t.Fatalf("failure must retain diagnostics and exit error: output=%q err=%v", output, err)
+		}
+	case "cancel":
+		if err == nil || !errors.Is(contextErr, context.DeadlineExceeded) || cmd.ProcessState == nil {
+			t.Fatalf("running process must be cancelled and reaped: err=%v context=%v", err, contextErr)
+		}
 	}
 }
 
@@ -117,5 +123,26 @@ func TestProofGoConstructorRejectsForeignExecutable(t *testing.T) {
 		if cmd, err := newProofGoCommand(context.Background(), path); err == nil || cmd != nil {
 			t.Fatalf("foreign executable accepted: path=%q command=%v err=%v", path, cmd, err)
 		}
+	}
+}
+
+func TestProofGoEnvPreservesOnlyValidLocalAppData(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("GOCACHE", "")
+	for _, value := range []string{cacheRoot, "", "relative", cacheRoot + "\r", cacheRoot + "\n"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("LOCALAPPDATA", value)
+			env, err := proofGoEnv(os.Args[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(env, "GOCACHE=") {
+				t.Fatal("empty cache override must use the platform default")
+			}
+			found := slices.Contains(env, "LOCALAPPDATA="+value)
+			if found != (value == cacheRoot) {
+				t.Fatalf("platform cache root presence=%v for %q", found, value)
+			}
+		})
 	}
 }

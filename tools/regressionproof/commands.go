@@ -209,7 +209,7 @@ func proofGoEnv(goPath string) ([]string, error) {
 		"PATH=" + filepath.Dir(goPath) + string(os.PathListSeparator) + proofGoSystemPath(),
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
 	}
-	for _, key := range []string{"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "TMPDIR", "TMP", "TEMP", "GOCACHE", "GOMODCACHE", "GOPATH"} {
+	for _, key := range []string{"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "SYSTEMROOT", "WINDIR", "TMPDIR", "TMP", "TEMP", "GOCACHE", "GOMODCACHE", "GOPATH"} {
 		if value := os.Getenv(key); filepath.IsAbs(value) && !strings.ContainsAny(value, "\x00\r\n") {
 			env = append(env, key+"="+value)
 		}

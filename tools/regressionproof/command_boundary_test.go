@@ -102,33 +102,38 @@ func TestProofOwnsGoExecutableAndEnvironment(t *testing.T) {
 		if !filepath.IsAbs(name) || strings.HasPrefix(name, foreign+string(os.PathSeparator)) {
 			t.Errorf("proof selected caller executable: %q", name)
 		}
-		values := make(map[string]string)
-		for _, entry := range env {
-			key, value, _ := strings.Cut(entry, "=")
-			values[strings.ToUpper(key)] = value
-		}
-		for _, key := range []string{"LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GITHUB_TOKEN", "GIT_CONFIG_COUNT"} {
-			if _, found := values[key]; found {
-				t.Errorf("caller process capability survived: %s", key)
-			}
-		}
-		for _, key := range []string{"CC", "CXX"} {
-			if !filepath.IsAbs(values[key]) || strings.Contains(values[key], "attacker") {
-				t.Errorf("compiler must be owned: %s=%q", key, values[key])
-			}
-		}
-		for key, want := range map[string]string{"GOFLAGS": "", "GOENV": "off", "GOTOOLCHAIN": "local", "GOWORK": "off", "GOAUTH": "off"} {
-			if values[key] != want {
-				t.Errorf("%s=%q, want %q", key, values[key], want)
-			}
-		}
-		if values["GOROOT"] == foreign || strings.Contains(values["PATH"], foreign) {
-			t.Error("caller toolchain or PATH override survived")
-		}
+		assertProofEnvironment(t, env, foreign)
 		return []byte("example.com/proof/pkg\n"), nil
 	}}
 	if _, err := r.resolvePackage(context.Background(), t.TempDir(), "./pkg"); err != nil || calls != 1 {
 		t.Fatalf("valid package request must still run: calls=%d err=%v", calls, err)
+	}
+}
+
+func assertProofEnvironment(t *testing.T, env []string, foreign string) {
+	t.Helper()
+	values := make(map[string]string)
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		values[strings.ToUpper(key)] = value
+	}
+	for _, key := range []string{"LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GITHUB_TOKEN", "GIT_CONFIG_COUNT"} {
+		if _, found := values[key]; found {
+			t.Errorf("caller process capability survived: %s", key)
+		}
+	}
+	for _, key := range []string{"CC", "CXX"} {
+		if !filepath.IsAbs(values[key]) || strings.Contains(values[key], "attacker") {
+			t.Errorf("compiler must be owned: %s=%q", key, values[key])
+		}
+	}
+	for key, want := range map[string]string{"GOFLAGS": "", "GOENV": "off", "GOTOOLCHAIN": "local", "GOWORK": "off", "GOAUTH": "off"} {
+		if values[key] != want {
+			t.Errorf("%s=%q, want %q", key, values[key], want)
+		}
+	}
+	if values["GOROOT"] == foreign || strings.Contains(values["PATH"], foreign) {
+		t.Error("caller toolchain or PATH override survived")
 	}
 }
 

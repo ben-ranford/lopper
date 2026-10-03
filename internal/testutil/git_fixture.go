@@ -13,6 +13,17 @@ import (
 	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
+const (
+	fixtureLocalToken      = "@local"
+	fixtureOperandToken    = "@operand"
+	fixtureOperandsToken   = "@operands"
+	fixtureValueToken      = "@value"
+	fixtureConfigToken     = "@config"
+	fixtureLocalFlag       = "--local"
+	fixtureNoFFFlag        = "--no-ff"
+	fixtureRevParseCommand = "rev-parse"
+)
+
 // Fixture setup intentionally supports writes and hostile config values used
 // by security tests. Keep that vocabulary here, separate from the application's
 // Git boundary; it cannot select arbitrary executables, globals or options.
@@ -71,21 +82,21 @@ func fixtureOverride(key, value string) bool {
 }
 
 var fixturePatterns = [][]string{
-	{"init"}, {"init", "-q"}, {"init", "-b", "@operand"}, {"init", "--bare", "@local"},
-	{"status", "--short"}, {"add", "-A"}, {"add", "@operands"},
-	{"commit", "-m", "@value"}, {"commit", "-qm", "@value"}, {"commit", "-am", "@value"}, {"commit", "--no-verify", "-m", "@value"},
-	{"config", "@config", "@value"}, {"config", "--get", "@config"}, {"config", "--unset", "@config"},
-	{"config", "--local", "@config", "@value"}, {"config", "--local", "--get", "@config"}, {"config", "--local", "--add", "@config", "@value"},
-	{"checkout", "@operand"}, {"checkout", "-b", "@operand"}, {"checkout", "-b", "@operand", "@operand"}, {"checkout", "--orphan", "@operand"},
-	{"branch", "@operand", "@operand"}, {"tag", "@operand"}, {"tag", "@operand", "@operand"},
-	{"clone", "@local", "@local"}, {"remote", "add", "origin", "@local"}, {"push", "@local", "@operands"},
-	{"merge", "--no-edit", "@operand"}, {"merge", "--no-ff", "--no-edit", "@operand"}, {"merge", "--no-commit", "--no-ff", "@operand"}, {"merge", "--no-ff", "-m", "@value", "@operand"},
-	{"mv", "@operand", "@operand"}, {"sparse-checkout", "list"}, {"sparse-checkout", "set", "@operand"},
-	{"worktree", "add", "@local"}, {"worktree", "add", "--detach", "@local"}, {"worktree", "list", "--porcelain"},
-	{"ls-files"}, {"show", "@operand"}, {"write-tree"}, {"commit-tree", "@operand", "-m", "@value"},
-	{"diff", "--cached", "--name-only"}, {"verify-pack", "-v", "@local"},
-	{"rev-parse", "HEAD"}, {"rev-parse", "HEAD^{tree}"}, {"rev-parse", "--absolute-git-dir"},
-	{"rev-parse", "--git-path", "@operand"}, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, {"rev-parse", "--path-format=absolute", "--git-path", "@operand"},
+	{"init"}, {"init", "-q"}, {"init", "-b", fixtureOperandToken}, {"init", "--bare", fixtureLocalToken},
+	{"status", "--short"}, {"add", "-A"}, {"add", fixtureOperandsToken},
+	{"commit", "-m", fixtureValueToken}, {"commit", "-qm", fixtureValueToken}, {"commit", "-am", fixtureValueToken}, {"commit", "--no-verify", "-m", fixtureValueToken},
+	{"config", fixtureConfigToken, fixtureValueToken}, {"config", "--get", fixtureConfigToken}, {"config", "--unset", fixtureConfigToken},
+	{"config", fixtureLocalFlag, fixtureConfigToken, fixtureValueToken}, {"config", fixtureLocalFlag, "--get", fixtureConfigToken}, {"config", fixtureLocalFlag, "--add", fixtureConfigToken, fixtureValueToken},
+	{"checkout", fixtureOperandToken}, {"checkout", "-b", fixtureOperandToken}, {"checkout", "-b", fixtureOperandToken, fixtureOperandToken}, {"checkout", "--orphan", fixtureOperandToken},
+	{"branch", fixtureOperandToken, fixtureOperandToken}, {"tag", fixtureOperandToken}, {"tag", fixtureOperandToken, fixtureOperandToken},
+	{"clone", fixtureLocalToken, fixtureLocalToken}, {"remote", "add", "origin", fixtureLocalToken}, {"push", fixtureLocalToken, fixtureOperandsToken},
+	{"merge", "--no-edit", fixtureOperandToken}, {"merge", fixtureNoFFFlag, "--no-edit", fixtureOperandToken}, {"merge", "--no-commit", fixtureNoFFFlag, fixtureOperandToken}, {"merge", fixtureNoFFFlag, "-m", fixtureValueToken, fixtureOperandToken},
+	{"mv", fixtureOperandToken, fixtureOperandToken}, {"sparse-checkout", "list"}, {"sparse-checkout", "set", fixtureOperandToken},
+	{"worktree", "add", fixtureLocalToken}, {"worktree", "add", "--detach", fixtureLocalToken}, {"worktree", "list", "--porcelain"},
+	{"ls-files"}, {"show", fixtureOperandToken}, {"write-tree"}, {"commit-tree", fixtureOperandToken, "-m", fixtureValueToken},
+	{"diff", "--cached", "--name-only"}, {"verify-pack", "-v", fixtureLocalToken},
+	{fixtureRevParseCommand, "HEAD"}, {fixtureRevParseCommand, "HEAD^{tree}"}, {fixtureRevParseCommand, "--absolute-git-dir"},
+	{fixtureRevParseCommand, "--git-path", fixtureOperandToken}, {fixtureRevParseCommand, "--path-format=absolute", "--git-common-dir"}, {fixtureRevParseCommand, "--path-format=absolute", "--git-path", fixtureOperandToken},
 }
 
 func fixtureMatches(args, pattern []string) bool {
@@ -93,7 +104,7 @@ func fixtureMatches(args, pattern []string) bool {
 		if index >= len(args) {
 			return false
 		}
-		if token == "@operands" {
+		if token == fixtureOperandsToken {
 			for _, arg := range args[index:] {
 				if !fixtureOperand(arg) {
 					return false
@@ -110,13 +121,13 @@ func fixtureMatches(args, pattern []string) bool {
 
 func fixtureToken(value, token string) bool {
 	switch token {
-	case "@value":
+	case fixtureValueToken:
 		return !strings.ContainsRune(value, 0)
-	case "@operand":
+	case fixtureOperandToken:
 		return fixtureOperand(value)
-	case "@config":
+	case fixtureConfigToken:
 		return fixtureConfigKey(value)
-	case "@local":
+	case fixtureLocalToken:
 		return fixtureLocal(value)
 	default:
 		return value == token

@@ -39,7 +39,7 @@ const SUSPECT_PATTERNS = [
   /\bpragma[ \t]*(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored\b/i,
   /\bnullable[ \t]+disable\b/i,
   /\bSuppress(?:Warnings|Message)?\b/i,
-  /#\s*\[\s*(?:allow|expect)\s*\(/i,
+  /#\s*(?:!\s*)?\[\s*(?:allow|expect)\s*\(/i,
 ];
 const LINE_MARKER = ['//', 'nolint'].join('');
 const BLOCK_MARKER = ['/*', 'nolint'].join('');
@@ -233,7 +233,7 @@ function normalizeMarkers(content, path = '') {
     .replace(/#[ \t]*pragma[ \t]+warning[ \t]+disable\b/gi, LINE_MARKER)
     .replace(/#[ \t]*pragma[ \t]+(?:GCC|clang)[ \t]+diagnostic[ \t]+ignored\b/gi, LINE_MARKER)
     .replace(/#[ \t]*nullable[ \t]+disable\b/gi, LINE_MARKER)
-    .replace(/#\s*\[\s*(?:allow|expect)\s*\(/g, `${BLOCK_MARKER}(`)
+    .replace(/#\s*(?:!\s*)?\[\s*(?:allow|expect)\s*\(/g, `${BLOCK_MARKER}(`)
     .replace(/^([ \t]*)\*[ \t]+(?=nolint\b)/gm, '$1/* ');
   return normalized;
 }

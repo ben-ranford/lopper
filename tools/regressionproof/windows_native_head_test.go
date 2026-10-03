@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/prmetadata"
@@ -12,6 +14,11 @@ import (
 func TestWindowsProofNativeGoAndCgo(t *testing.T) {
 	// Exercise Start through the production boundary, including a real C
 	// compiler invocation. A cross-compile cannot establish these guarantees.
+	// Hosted Go discovers its default cache through LOCALAPPDATA when GOCACHE
+	// is unset; use a fresh directory so an inherited override cannot mask it.
+	cacheRoot := t.TempDir()
+	t.Setenv("GOCACHE", "")
+	t.Setenv("LOCALAPPDATA", cacheRoot)
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"go.mod":            "module example.com/nativeproof\n\ngo 1.23\n",
@@ -25,6 +32,9 @@ func TestWindowsProofNativeGoAndCgo(t *testing.T) {
 	}
 	if err := r.compilePackage(context.Background(), root, "./pkg"); err != nil {
 		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(cacheRoot, "go-build")); err != nil || !info.IsDir() {
+		t.Fatalf("native proof did not create its default Windows cache: %v", err)
 	}
 	declaration := prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestNativeValue"}
 	if err := r.expectPass(context.Background(), root, importPath, declaration); err != nil {

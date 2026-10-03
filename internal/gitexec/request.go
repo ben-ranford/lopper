@@ -8,7 +8,11 @@ import (
 	"strings"
 )
 
-const filterProbeCommand = "git hash-object --stdin --__LOPPER_LOCKFILE_FILTER_PROBE__"
+const (
+	filterProbeCommand = "git hash-object --stdin --__LOPPER_LOCKFILE_FILTER_PROBE__"
+	verifyFlag         = "--verify"
+	nameOnlyFlag       = "--name-only"
+)
 
 type gitRequest struct {
 	args  []string
@@ -46,17 +50,8 @@ func (r *gitRequest) globals() ([]string, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("missing git global argument")
 		}
-		if args[0] == "-C" {
-			if r.repo || !directoryOperand(args[1]) {
-				return nil, fmt.Errorf("invalid git working directory")
-			}
-			r.repo = true
-		} else {
-			key, value, ok := strings.Cut(args[1], "=")
-			if _, duplicate := configs[key]; !ok || duplicate {
-				return nil, fmt.Errorf("invalid or repeated git config")
-			}
-			configs[key] = value
+		if err := r.applyGlobal(args[0], args[1], configs); err != nil {
+			return nil, err
 		}
 		args = args[2:]
 	}
@@ -64,6 +59,22 @@ func (r *gitRequest) globals() ([]string, error) {
 		return nil, fmt.Errorf("unsupported git config")
 	}
 	return args, nil
+}
+
+func (r *gitRequest) applyGlobal(option, value string, configs map[string]string) error {
+	if option == "-C" {
+		if r.repo || !directoryOperand(value) {
+			return fmt.Errorf("invalid git working directory")
+		}
+		r.repo = true
+		return nil
+	}
+	key, setting, ok := strings.Cut(value, "=")
+	if _, duplicate := configs[key]; !ok || duplicate {
+		return fmt.Errorf("invalid or repeated git config")
+	}
+	configs[key] = setting
+	return nil
 }
 
 func (r *gitRequest) configs(configs map[string]string) bool {
@@ -153,19 +164,19 @@ func (r *gitRequest) operation(args []string) bool {
 }
 
 func (r *gitRequest) revParse(args []string) bool {
-	if slices.Equal(args, []string{"--verify", "HEAD"}) {
+	if slices.Equal(args, []string{verifyFlag, "HEAD"}) {
 		return true
 	}
 	if r.file {
 		return false
 	}
-	if slices.Equal(args, []string{"--is-inside-work-tree"}) || slices.Equal(args, []string{"--verify", "--quiet", "HEAD"}) {
+	if slices.Equal(args, []string{"--is-inside-work-tree"}) || slices.Equal(args, []string{verifyFlag, "--quiet", "HEAD"}) {
 		return !r.hooks
 	}
 	if slices.Equal(args, []string{"--show-toplevel"}) || slices.Equal(args, []string{"--show-prefix"}) {
 		return r.hooks
 	}
-	return r.hooks && len(args) == 2 && args[0] == "--verify" && strings.HasSuffix(args[1], "^{commit}") && ValidObjectID(strings.TrimSuffix(args[1], "^{commit}"))
+	return r.hooks && len(args) == 2 && args[0] == verifyFlag && strings.HasSuffix(args[1], "^{commit}") && ValidObjectID(strings.TrimSuffix(args[1], "^{commit}"))
 }
 
 func validWorktree(args []string) bool {
@@ -212,7 +223,7 @@ func validDiff(args []string) bool {
 	if !ok {
 		return false
 	}
-	if slices.Equal(tail, []string{"--name-only", "--diff-filter=ACMRD", "HEAD~1..HEAD"}) {
+	if slices.Equal(tail, []string{nameOnlyFlag, "--diff-filter=ACMRD", "HEAD~1..HEAD"}) {
 		return true
 	}
 	if operands, matched := takePrefix(tail, []string{"--name-status", "-z", "--find-renames", "--find-copies", "--diff-filter=ACMRD"}); matched {
@@ -221,14 +232,14 @@ func validDiff(args []string) bool {
 	if len(tail) != 0 && (tail[0] == "HEAD" || tail[0] == "--cached") {
 		tail = tail[1:]
 	}
-	paths, matched := takePrefix(tail, []string{"--name-only", "-z", "--"})
+	paths, matched := takePrefix(tail, []string{nameOnlyFlag, "-z", "--"})
 	// Codemod cleanliness checks intentionally cover the whole worktree. The
 	// fixed -- terminator still prevents filenames from introducing options.
 	return matched && (len(paths) == 0 || literalPaths(paths))
 }
 
 func proofDiff(args []string) bool {
-	return len(args) == 4 && args[0] == "--name-only" && args[1] == "--diff-filter=ACMR" &&
+	return len(args) == 4 && args[0] == nameOnlyFlag && args[1] == "--diff-filter=ACMR" &&
 		strings.HasSuffix(args[2], "..HEAD") && ValidObjectID(strings.TrimSuffix(args[2], "..HEAD")) && args[3] == "--"
 }
 

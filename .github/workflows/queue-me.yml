@@ -165,7 +165,6 @@ jobs:
       - name: Checkout immutable protected policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Bind protected checkout to selection
@@ -174,12 +173,22 @@ jobs:
           QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
         run: |
           python3 -I -S -B - <<'PYTHON'
-          import json, os, subprocess
+          import json, os, re, subprocess
           ticket = json.loads(os.environ['QUEUE_TICKET'])
           selected = ticket['snapshot']['base']
-          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          if selected != os.environ['TRUSTED_CONTROLLER_REF'] or actual != selected:
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
               raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
           PYTHON
       - name: Setup protected Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -213,7 +222,6 @@ jobs:
       - name: Checkout immutable protected policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Bind protected checkout to selection
@@ -222,12 +230,22 @@ jobs:
           QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
         run: |
           python3 -I -S -B - <<'PYTHON'
-          import json, os, subprocess
+          import json, os, re, subprocess
           ticket = json.loads(os.environ['QUEUE_TICKET'])
           selected = ticket['snapshot']['base']
-          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          if selected != os.environ['TRUSTED_CONTROLLER_REF'] or actual != selected:
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
               raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
           PYTHON
       - name: Verify shared suppression provenance
         id: suppression
@@ -257,7 +275,6 @@ jobs:
       - name: Checkout immutable protected policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Bind protected checkout to selection
@@ -266,12 +283,22 @@ jobs:
           QUEUE_TICKET: ${{ needs.prepare.outputs.ticket }}
         run: |
           python3 -I -S -B - <<'PYTHON'
-          import json, os, subprocess
+          import json, os, re, subprocess
           ticket = json.loads(os.environ['QUEUE_TICKET'])
           selected = ticket['snapshot']['base']
-          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          if selected != os.environ['TRUSTED_CONTROLLER_REF'] or actual != selected:
+          if not re.fullmatch(r'[0-9a-f]{40}', selected) or selected != os.environ['TRUSTED_CONTROLLER_REF']:
               raise SystemExit('Protected queue policy no longer matches the selected base')
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+          environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1')
+          origin = subprocess.check_output(['git', 'remote', 'get-url', '--all', 'origin'], env=environment, text=True).strip()
+          if origin not in ('https://github.com/ben-ranford/lopper', 'https://github.com/ben-ranford/lopper.git'):
+              raise SystemExit('Checkout origin is not the protected repository')
+          for arguments in (['merge-base', '--is-ancestor', selected, 'refs/remotes/origin/main'],
+                            ['checkout', '--detach', selected]):
+              subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *arguments], env=environment, check=True)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], env=environment, text=True).strip()
+          if actual != selected:
+              raise SystemExit('Protected source selection drifted')
           PYTHON
       - name: Create final queue app token
         id: queue_token

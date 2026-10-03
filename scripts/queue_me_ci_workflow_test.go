@@ -49,21 +49,7 @@ var queueCIMatrixOSExpression = regexp.MustCompile(`\$\{\{\s*matrix\.os\s*\}\}`)
 // This verifies the trusted admission manifest against executable workflow
 // definitions, including matrix legs and jobs within local reusable workflows.
 func TestQueueMeCIWorkflowManifestContract(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to inspect the trusted queue CI manifest")
-	}
-	const script = "process.stdout.write(JSON.stringify(require('./queue_me_ci').testables.WORKFLOWS))"
-	command := exec.Command(node, "-e", script)
-	command.Dir = repoPath(t, "scripts")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("read queue CI manifest: %v\n%s", err, output)
-	}
-	var workflows []queueCIManifestWorkflow
-	if err := json.Unmarshal(output, &workflows); err != nil {
-		t.Fatalf("parse queue CI manifest: %v", err)
-	}
+	workflows := readQueueCIManifest(t)
 	byPath := make(map[string]queueCIManifestWorkflow, len(workflows))
 	for _, workflow := range workflows {
 		if _, exists := byPath[workflow.Path]; exists {
@@ -95,6 +81,26 @@ func TestQueueMeCIWorkflowManifestContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func readQueueCIManifest(t *testing.T) []queueCIManifestWorkflow {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to inspect the trusted queue CI manifest")
+	}
+	const script = "process.stdout.write(JSON.stringify(require('./queue_me_ci').testables.WORKFLOWS))"
+	command := exec.Command(node, "-e", script)
+	command.Dir = repoPath(t, "scripts")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read queue CI manifest: %v\n%s", err, output)
+	}
+	var workflows []queueCIManifestWorkflow
+	if err := json.Unmarshal(output, &workflows); err != nil {
+		t.Fatalf("parse queue CI manifest: %v", err)
+	}
+	return workflows
 }
 
 func queueCIWorkflowJobs(t *testing.T, workflowPath string, visiting map[string]bool) (string, map[string]string, *queueCISuppressionLocator) {

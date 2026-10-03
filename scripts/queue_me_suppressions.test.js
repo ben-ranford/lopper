@@ -118,6 +118,26 @@ test('ShellCheck and further lint/coverage directives are active', () => {
   for (const [path, content] of cases) assert.ok(scan(path, content).length, `${path}: ${content}`);
 });
 
+test('Rust inner suppression attributes hold while quoted examples remain inert', () => {
+  for (const marker of [
+    '#![allow(dead_code)]',
+    '#![expect(dead_code)]',
+    '# ! [ allow(dead_code) ]',
+    '#!\n[\nexpect(dead_code)\n]',
+  ]) {
+    assert.ok(scan('source.rs', marker + '\nfn unused() {}\n').length, marker);
+    assert.ok(scan('source.rs', 'mod nested {\n' + marker + '\n}').length, marker);
+    const literals = [JSON.stringify(marker)];
+    if (!marker.includes('\n')) literals.push('r#"' + marker + '"#');
+    for (const literal of literals) {
+      assert.deepEqual(scan('source.rs', 'const EXAMPLE: &str = ' + literal + ';\n'), []);
+    }
+    const findings = scan('source.rs', 'const EXAMPLE: &str = "#![allow(dead_code)]";\n' + marker);
+    assert.ok(findings.length, marker);
+    assert.equal(findings[0].line, 2);
+  }
+});
+
 test('quoted Go raw fixtures and shell strings are inert but following markers remain active', () => {
   assert.equal(scan('fixture_test.go', 'package test\nconst fixture = `\n//nolint:all\n`\n').length, 0);
   assert.equal(scan('fixture.sh', 'value=\'\n# shellcheck disable=SC2016\n\'\n').length, 0);

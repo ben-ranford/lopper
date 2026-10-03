@@ -151,6 +151,22 @@ test('returns exact-head evidence from public APIs without reading credentials',
   assert.equal(runs.url.searchParams.get('app_id'), '12526');
 });
 
+test('accepts only the exact configured HTML or API analysis pull request URL', async () => {
+  for (const url of [
+    'https://github.com/ben-ranford/lopper/pull/42',
+    'https://api.github.com/repos/ben-ranford/lopper/pulls/42',
+  ]) {
+    assert.equal((await harness({ pulls: [{ ...analysis(), url }] }).run()).pullNumber, 42);
+  }
+  for (const url of [
+    'https://api.github.com/repos/attacker/lopper/pulls/42',
+    'https://api.github.com/repos/ben-ranford/lopper/pulls/43',
+    'https://api.github.com/repos/ben-ranford/lopper/pulls/42/files',
+    'https://api.github.com/repos/ben-ranford/lopper/pulls/42?ref=main',
+    'http://api.github.com/repos/ben-ranford/lopper/pulls/42',
+  ]) await rejectsAudit({ pulls: [{ ...analysis(), url }] }, /base identity/);
+});
+
 test('audits complete issue pagination including historical fixed findings', async () => {
   const audit = harness({ issues: Array.from({ length: 501 }, (_, index) => fixedIssue(index)) });
   assert.equal((await audit.run()).fixedIssueCount, 501);

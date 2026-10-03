@@ -8,6 +8,8 @@ import (
 	"unicode"
 )
 
+const shallowDepthFlag = "--depth=1"
+
 func (r *gitRequest) materialize(args []string) bool {
 	if r.safe || r.hooks {
 		return false
@@ -15,7 +17,7 @@ func (r *gitRequest) materialize(args []string) bool {
 	if len(args) == 2 && args[0] == "init" {
 		return !r.file && directoryOperand(args[1])
 	}
-	values, ok := takePrefix(args, []string{"clone", "--no-tags", "--depth=1", "--"})
+	values, ok := takePrefix(args, []string{"clone", "--no-tags", shallowDepthFlag, "--"})
 	if !ok || len(values) != 2 || !directoryOperand(values[1]) {
 		return false
 	}
@@ -52,10 +54,10 @@ func validRemote(args []string) bool {
 }
 
 func validFetch(args []string) bool {
-	if slices.Equal(args, []string{"--prune", "--depth=1", "origin", "HEAD"}) {
+	if slices.Equal(args, []string{"--prune", shallowDepthFlag, "origin", "HEAD"}) {
 		return true
 	}
-	values, ok := takePrefix(args, []string{"--prune", "--no-tags", "--depth=1", "origin"})
+	values, ok := takePrefix(args, []string{"--prune", "--no-tags", shallowDepthFlag, "origin"})
 	return ok && len(values) == 1 && fetchRef(values[0])
 }
 

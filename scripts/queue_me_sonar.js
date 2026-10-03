@@ -57,7 +57,8 @@ async function analyzedPull(api, pullNumber, headSHA, baseRef) {
   const pull = matches[0];
   requireEvidence(pull.commit?.sha === headSHA, 'the analyzed commit is not the current pull request head.');
   requireEvidence(pull.base === baseRef && pull.target === baseRef &&
-    pull.url === `https://github.com/${REPOSITORY}/pull/${pullNumber}` &&
+    [`https://github.com/${REPOSITORY}/pull/${pullNumber}`,
+      `${GITHUB_ORIGIN}/repos/${REPOSITORY}/pulls/${pullNumber}`].includes(pull.url) &&
     identifier(pull.pullRequestUuidV1), 'the analysis repository or base identity does not match.');
   timestamp(pull.analysisDate);
   return {

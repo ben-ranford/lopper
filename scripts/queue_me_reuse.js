@@ -65,7 +65,7 @@ function runSharedValidator(document, token) {
 function createVerifier(validate = runSharedValidator) {
   return async function verifySharedReuse(input, ciEvidence) {
     const proof = input.queueProof;
-    requireEvidence(proof && proof.analysisOutcome === 'success' && proof.suppressionOutcome === 'success',
+    requireEvidence(proof?.analysisOutcome === 'success' && proof.suppressionOutcome === 'success',
       'both protected read-only jobs must succeed.');
     const snapshot = validateTicket(proof.ticket, input);
     requireEvidence(JSON.stringify(proof.ticket.intent) === JSON.stringify(ciEvidence.intent),

@@ -91,8 +91,9 @@ class QueueReuseTests(unittest.TestCase):
 
     def test_bounded_json_input(self):
         for raw in ("[]", "{} " + " " * bridge.MAX_DOCUMENT_BYTES, "{"):
+            stream = io.StringIO(raw)
             with self.assertRaises(ValueError):
-                bridge.document(io.StringIO(raw))
+                bridge.document(stream)
 
     def test_api_rejects_all_write_payloads(self):
         api = bridge.ReadOnlyGitHub("read-only-test-token")
