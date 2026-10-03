@@ -24,7 +24,9 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"status:",
 		"workflow_run:",
 		"workflows: [ci, windows runtime]",
-		"github.event.pull_request.base.ref == 'main'",
+		"github.event_name == 'pull_request_target' &&\n" +
+			"        github.ref == 'refs/heads/main' &&\n" +
+			"        github.workflow_ref == format('{0}/.github/workflows/queue-me.yml@refs/heads/main', github.repository) &&",
 		"'queue_me_reviews.js'",
 		"'queue_me_sonar.js'",
 		"'queue_me_suppressions.js'",
@@ -72,6 +74,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"actions/github-script@v",
 		"github.event.pull_request.head",
+		"github.event.pull_request.base.ref",
 		"pull_request:\n",
 		"pull_request_review:",
 		"pull_request_review_comment:",

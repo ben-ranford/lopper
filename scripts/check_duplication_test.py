@@ -34,6 +34,8 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.git("init", "-q", "-b", "target")
         self.git("config", "user.name", "Ben Ranford")
         self.git("config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+        self.git("config", "--local", "gc.auto", "0")
+        self.git("config", "--local", "maintenance.auto", "false")
         self.write("Makefile", "GO ?= go\nDUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 55\n")
         self.write("original.go", "package fixture\n")
         self.commit()
@@ -50,6 +52,22 @@ class DuplicationRunnerTest(unittest.TestCase):
     def commit(self):
         self.git("add", ".")
         self.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "duplication fixture")
+
+    def test_fixture_commit_does_not_launch_automatic_maintenance(self):
+        trace = self.repo / ".git" / "fixture-commit-trace.json"
+        config = self.repo / ".git" / "trace-defaults.cfg"
+        config.write_text("[maintenance]\n\tauto = true\n[gc]\n\tauto = 0\n")
+        self.write("original.go", "package fixture\nvar Updated = 1\n")
+        with mock.patch.dict(self.environment, {"GIT_TRACE2_EVENT": str(trace),
+                                                "GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"}):
+            self.commit()
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        self.assertTrue(any(event.get("event") == "start" and "commit" in event.get("argv", [])
+                            for event in events), "trace did not observe the fixture commit")
+        housekeeping = [event.get("argv") for event in events
+                        if event.get("event") == "child_start"
+                        and any(argument in ("maintenance", "gc") for argument in event.get("argv", []))]
+        self.assertEqual(housekeeping, [], "fixture commit launched automatic Git housekeeping")
 
     def test_target_merge_base_covers_all_branch_commits(self):
         self.git("checkout", "-qb", "feature")
