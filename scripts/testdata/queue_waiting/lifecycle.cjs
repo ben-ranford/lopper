@@ -17,18 +17,27 @@ function conditionTokens(source) {
   assert.ok(wrapped.startsWith('${{') && wrapped.endsWith('}}'), 'condition wrapper');
   assert.ok(wrapped.length <= 4096, 'bounded condition length');
   const expression = wrapped.slice(3, -2).trim();
-  const tokenPattern = /\s+|needs\.[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|'[^'\r\n]*'|always\(\)|&&|\|\||==|!=|[!()]/gy;
+  const patterns = [/\s+/y, /needs\.[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/y,
+    /'[^'\r\n]*'/y, /always\(\)|&&|\|\||==|!=|[!()]/y];
   const tokens = [];
   let offset = 0;
   while (offset < expression.length) {
-    tokenPattern.lastIndex = offset;
-    const match = tokenPattern.exec(expression);
+    const match = conditionToken(patterns, expression, offset);
     assert.ok(match, `unsupported condition token at ${offset}`);
-    offset = tokenPattern.lastIndex;
+    offset += match[0].length;
     if (match[0].trim()) tokens.push(match[0]);
     assert.ok(tokens.length <= 256, 'bounded condition token count');
   }
   return tokens;
+}
+
+function conditionToken(patterns, expression, offset) {
+  for (const pattern of patterns) {
+    pattern.lastIndex = offset;
+    const match = pattern.exec(expression);
+    if (match) return match;
+  }
+  return null;
 }
 
 function conditionValue(token, needs) {
