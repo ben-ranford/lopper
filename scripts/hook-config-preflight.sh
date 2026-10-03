@@ -61,6 +61,7 @@ stop_preflight_watchdog() {
 		wait_preflight_child 2>/dev/null || :
 		preflight_watchdog_pid=
 	fi
+	return 0
 }
 
 start_preflight_watchdog() {
@@ -90,7 +91,10 @@ start_preflight_watchdog() {
 			printf x >"$preflight_state_dir/expired"
 			if [ -f "$preflight_state_dir/runner-pid" ]; then
 				read -r runner_pid <"$preflight_state_dir/runner-pid" || exit 1
-				case "$runner_pid" in ''|*[!0-9]*|0) exit 1 ;; esac
+				case "$runner_pid" in
+					''|*[!0-9]*|0) exit 1 ;;
+					*) : ;;
+				esac
 				kill -TERM "$runner_pid" 2>/dev/null || :
 			fi
 		fi
