@@ -279,6 +279,54 @@ token}`. It runs the #1606 adapter and returns the exact producer receipt.
 The queue must authenticate its own source and live inputs; a copied JSON
 receipt or status name is insufficient.
 
+## Triage a missing or stale result
+
+Check the producer installation and required-status settings separately. Read
+protected `main`, the Actions workflow state, and the effective rules for `main`;
+a workflow file on a PR branch does not establish installation.
+
+| Observed configuration | Operational meaning |
+| --- | --- |
+| Protected `main` lacks `.github/workflows/reuse-check.yml` | Producer uninstalled; local results do not supply a live status. |
+| Producer and dependencies are present, workflow enabled, but no effective required entry exists | Installed, unrequired; publication can run without making this status a merge requirement. |
+| Producer and dependencies are present, workflow enabled, with required `reuse-check` from integration `15368` | Installed and required; the exact PR result and outstanding proof still need validation. |
+
+Missing dependencies or a required entry with a missing or disabled producer
+indicate a configuration problem.
+An unavailable settings or workflow read leaves its state unknown.
+
+For an individual PR:
+
+1. Record the live full head and base SHAs; verify that the base equals current
+   `main`. Inspect the latest `reuse-check` **commit status** on that head
+   separately from job check runs.
+   Use its target URL to locate the controller run, then inspect the workflow
+   path, protected source revision, current attempt and job outcomes. A green
+   context, URL, `github-actions[bot]` creator or Actions App identity does not
+   authenticate the workflow. The analyzer's logged `revision` is the
+   prospective merge commit; it is not the PR head.
+2. For suppression evidence, select the newest `ci.yml` pull-request run for
+   that exact head from the complete listing, then inspect its current
+   `run_attempt`, live base/head association and that attempt's jobs/artifact.
+   A newer pending or failed run, stale base, or retry makes older green
+   evidence unusable. The `suppression` job reports missing or mismatched
+   producer evidence; do not substitute an earlier successful attempt.
+3. Inspect the first failing controller job: `prepare` binds the pair,
+   `analyze` runs the protected checks, `suppression` validates CI evidence,
+   and `publish` rechecks live evidence. After the underlying failure is
+   resolved, repository owner `ben-ranford` can post the exact comment
+   `/reuse-check` on the PR to request reevaluation. That comment grants no
+   policy approval; a policy change still needs current exact-pair signoff.
+
+Main pushes, CI events and review signals are asynchronous. Old success can
+remain visible until the controller successfully replaces it; a concurrent
+change can also require
+correction after publication. A base-push run only invalidates to pending;
+request fresh analysis after the PR/CI pair is current. Treat pending as work
+still outstanding, and retain the run URL, attempt and revision evidence when
+reporting a failure. Confirm deployed queue integration separately against the
+[read-only consumer contract](#read-only-queue-consumer).
+
 ## Activation and minimal settings delta
 
 All detector and adapter dependencies must land before this controller is
