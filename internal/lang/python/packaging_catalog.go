@@ -130,7 +130,7 @@ func pythonIdentityProjection(name string, document report.PythonManifestDocumen
 	case pythonPipfileLockName:
 		return pipfileLockIdentityProjection(document.Document), "", true
 	case pythonRequirementsTxt:
-		return nil, document.Text, true
+		return nil, compactRequirementsIdentityText(document.Text), true
 	default:
 		return nil, "", false
 	}
@@ -157,98 +157,170 @@ func pythonIdentityTable(value any, keys ...string) any {
 }
 
 func pythonIdentityPackageSections(document map[string]any, sections ...string) map[string]any {
-	result := pythonIdentityFields(document, sections...)
-	for section, value := range result {
-		result[section] = pythonIdentityPackageTable(value)
+	result := make(map[string]any, len(sections))
+	for _, section := range sections {
+		if packages := pythonIdentityPackageTable(document[section]); len(packages) != 0 {
+			result[section] = packages
+		}
 	}
 	return result
 }
 
-func pythonIdentityPackageTable(value any) any {
+func pythonIdentityPackageTable(value any) map[string]any {
 	packages, ok := value.(map[string]any)
-	if !ok || packages == nil {
-		return value
+	if !ok {
+		return nil
 	}
 	projected := make(map[string]any, len(packages))
 	for name, raw := range packages {
-		projected[name] = pythonIdentityTable(raw, "version", "optional", "file", "git", "path", "ref", "url")
+		if entry := pythonIdentityPackageEntry(raw); entry != nil {
+			projected[name] = entry
+		}
 	}
 	return projected
+}
+
+func pythonIdentityPackageEntry(value any) any {
+	if version, ok := value.(string); ok {
+		return version
+	}
+	entry, _ := value.(map[string]any)
+	if _, ok := entry["version"].(string); !ok {
+		return nil
+	}
+	result := pythonIdentityFields(entry, "version")
+	// Unsupported sources reject by key presence; their values are not consumed.
+	for _, field := range []string{"file", "git", "path", "ref", "url"} {
+		if _, exists := entry[field]; exists {
+			result[field] = nil
+		}
+	}
+	if optional, ok := entry["optional"].(bool); ok {
+		result["optional"] = optional
+	}
+	return result
+}
+
+// ManifestRequirementStrings selects the strings consumed by manifest identity enrichment.
+func ManifestRequirementStrings(value any) []string {
+	switch requirements := value.(type) {
+	case []string:
+		return requirements
+	case []any:
+		result := make([]string, 0, len(requirements))
+		for _, raw := range requirements {
+			if requirement, ok := raw.(string); ok {
+				result = append(result, requirement)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func pythonIdentityRequirementFields(document map[string]any, fields ...string) map[string]any {
+	result := make(map[string]any, len(fields))
+	for _, field := range fields {
+		if requirements := ManifestRequirementStrings(document[field]); len(requirements) != 0 {
+			result[field] = requirements
+		}
+	}
+	return result
+}
+
+func pythonIdentityRequirementGroups(value any) map[string]any {
+	groups, _ := value.(map[string]any)
+	result := make(map[string]any, len(groups))
+	for name, raw := range groups {
+		if requirements := ManifestRequirementStrings(raw); len(requirements) != 0 {
+			result[name] = requirements
+		}
+	}
+	return result
 }
 
 func pyprojectIdentityProjection(document map[string]any) map[string]any {
-	result := pythonIdentityFields(document, "dependency-groups")
-	if value, exists := document["project"]; exists {
-		result["project"] = pythonIdentityTable(value, "dependencies", "optional-dependencies")
+	result := make(map[string]any, 3)
+	if groups := pythonIdentityRequirementGroups(document["dependency-groups"]); len(groups) != 0 {
+		result["dependency-groups"] = groups
 	}
-	tool, ok := document["tool"].(map[string]any)
-	if !ok {
-		if value, exists := document["tool"]; exists {
-			result["tool"] = value
-		}
-		return result
+	if project := pythonProjectIdentityProjection(document["project"]); len(project) != 0 {
+		result["project"] = project
 	}
-	projectTools := make(map[string]any, 2)
-	if value, exists := tool["uv"]; exists {
-		projectTools["uv"] = pythonIdentityTable(value, "dev-dependencies")
-	}
-	if value, exists := tool["poetry"]; exists {
-		projectTools["poetry"] = poetryIdentityProjection(value)
-	}
-	if len(projectTools) != 0 {
-		result["tool"] = projectTools
+	if tool := pythonToolIdentityProjection(document["tool"]); len(tool) != 0 {
+		result["tool"] = tool
 	}
 	return result
 }
 
-func poetryIdentityProjection(value any) any {
-	poetry, ok := value.(map[string]any)
-	if !ok || poetry == nil {
-		return value
+func pythonProjectIdentityProjection(value any) map[string]any {
+	project, _ := value.(map[string]any)
+	result := pythonIdentityRequirementFields(project, "dependencies")
+	if groups := pythonIdentityRequirementGroups(project["optional-dependencies"]); len(groups) != 0 {
+		result["optional-dependencies"] = groups
 	}
+	return result
+}
+
+func pythonToolIdentityProjection(value any) map[string]any {
+	tool, _ := value.(map[string]any)
+	result := make(map[string]any, 2)
+	uv, _ := tool["uv"].(map[string]any)
+	if projected := pythonIdentityRequirementFields(uv, "dev-dependencies"); len(projected) != 0 {
+		result["uv"] = projected
+	}
+	if poetry := poetryIdentityProjection(tool["poetry"]); len(poetry) != 0 {
+		result["poetry"] = poetry
+	}
+	return result
+}
+
+func poetryIdentityProjection(value any) map[string]any {
+	poetry, _ := value.(map[string]any)
 	result := pythonIdentityPackageSections(poetry, "dependencies", "dev-dependencies")
-	if groups, exists := poetry["group"]; exists {
-		result["group"] = poetryIdentityGroups(groups)
+	if groups := poetryIdentityGroups(poetry["group"]); len(groups) != 0 {
+		result["group"] = groups
 	}
 	return result
 }
 
-func poetryIdentityGroups(value any) any {
-	groups, ok := value.(map[string]any)
-	if !ok || groups == nil {
-		return value
-	}
+func poetryIdentityGroups(value any) map[string]any {
+	groups, _ := value.(map[string]any)
 	projected := make(map[string]any, len(groups))
 	for name, raw := range groups {
-		projected[name] = poetryIdentityGroup(raw)
+		if group := poetryIdentityGroup(raw); len(group) != 0 {
+			projected[name] = group
+		}
 	}
 	return projected
 }
 
-func poetryIdentityGroup(value any) any {
-	group, ok := value.(map[string]any)
-	if !ok || group == nil {
-		return value
-	}
-	result := pythonIdentityFields(group, "optional")
-	if dependencies, exists := group["dependencies"]; exists {
-		result["dependencies"] = pythonIdentityPackageTable(dependencies)
+func poetryIdentityGroup(value any) map[string]any {
+	group, _ := value.(map[string]any)
+	result := pythonIdentityPackageSections(group, "dependencies")
+	if optional, ok := group["optional"].(bool); ok {
+		result["optional"] = optional
 	}
 	return result
 }
 
 func pythonLockIdentityProjection(document map[string]any) map[string]any {
-	packages, exists := document["package"]
-	if !exists {
-		return map[string]any{}
-	}
-	entries, ok := packages.([]any)
+	entries, ok := document["package"].([]any)
 	if !ok {
-		return map[string]any{"package": packages}
+		return map[string]any{}
 	}
 	projected := make([]any, 0, len(entries))
 	for _, entry := range entries {
-		projected = append(projected, pythonIdentityTable(entry, "name", "version"))
+		if table, ok := entry.(map[string]any); ok {
+			fields := pythonIdentityFields(table, "name", "version")
+			for key, value := range fields {
+				if _, ok := value.(string); !ok {
+					delete(fields, key)
+				}
+			}
+			projected = append(projected, fields)
+		}
 	}
 	return map[string]any{"package": projected}
 }

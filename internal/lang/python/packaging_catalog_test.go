@@ -340,7 +340,7 @@ func TestPackagingCatalogOverflowOmitsPackageAndGroupMetadata(t *testing.T) {
 	}
 }
 
-func TestPythonIdentityPackageProjectionPreservesFlagsAndShapes(t *testing.T) {
+func TestPythonIdentityPackageProjectionPreservesRejectionFlags(t *testing.T) {
 	entries := map[string]any{
 		"string":      "2.32.3",
 		"nil":         nil,
@@ -348,74 +348,125 @@ func TestPythonIdentityPackageProjectionPreservesFlagsAndShapes(t *testing.T) {
 		"malformed":   []any{"==2.32.3"},
 		"bad-version": map[string]any{"version": []any{"==2.32.3"}},
 	}
-	want := make(map[string]any, len(entries))
-	for name, entry := range entries {
-		want[name] = entry
-	}
+	want := map[string]any{"string": "2.32.3"}
 	for _, flag := range []struct {
 		name, field string
 		value       any
+		retained    bool
+		wantValue   any
 	}{
-		{"optional-true", "optional", true},
-		{"optional-false", "optional", false},
-		{"optional-string", "optional", "true"},
-		{"file", "file", nil},
-		{"git", "git", false},
-		{"path", "path", ""},
-		{"ref", "ref", int64(0)},
-		{"url", "url", []any{"source"}},
+		{"optional-true", "optional", true, true, true},
+		{"optional-false", "optional", false, true, false},
+		{"optional-string", "optional", "true", false, nil},
+		{"file", "file", nil, true, nil},
+		{"git", "git", false, true, nil},
+		{"path", "path", "", true, nil},
+		{"ref", "ref", int64(0), true, nil},
+		{"url", "url", []any{"source"}, true, nil},
 	} {
 		entries[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value, "markers": "omit", "extras": []any{"omit"}}
-		want[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value}
+		projected := map[string]any{"version": "==2.32.3"}
+		if flag.retained {
+			projected[flag.field] = flag.wantValue
+		}
+		want[flag.name] = projected
 	}
 	if projected := pythonIdentityPackageTable(entries); !reflect.DeepEqual(projected, want) {
-		t.Fatalf("package projection changed rejection flags or malformed entries: got %#v, want %#v", projected, want)
+		t.Fatalf("package projection changed rejection flags: got %#v, want %#v", projected, want)
 	}
 	for _, shape := range []any{nil, map[string]any(nil), "malformed", []any{"malformed"}} {
-		if projected := pythonIdentityPackageTable(shape); !reflect.DeepEqual(projected, shape) {
-			t.Fatalf("package table shape changed: %#v to %#v", shape, projected)
+		if projected := pythonIdentityPackageTable(shape); len(projected) != 0 {
+			t.Fatalf("ignored package table retained: %#v", projected)
 		}
-		if projected := poetryIdentityGroups(shape); !reflect.DeepEqual(projected, shape) {
-			t.Fatalf("Poetry groups shape changed: %#v to %#v", shape, projected)
+		if projected := poetryIdentityGroups(shape); len(projected) != 0 {
+			t.Fatalf("ignored Poetry groups retained: %#v", projected)
 		}
-		if projected := poetryIdentityGroup(shape); !reflect.DeepEqual(projected, shape) {
-			t.Fatalf("Poetry group shape changed: %#v to %#v", shape, projected)
+		if projected := poetryIdentityGroup(shape); len(projected) != 0 {
+			t.Fatalf("ignored Poetry group retained: %#v", projected)
 		}
 	}
 }
 
-func TestPackagingCatalogOverflowPreservesFormatShapes(t *testing.T) {
+func TestPackagingCatalogOverflowKeepsConsumedFormatShapes(t *testing.T) {
 	for _, tc := range []struct{ label, name, content, want string }{
-		{"malformed tool", pythonPyprojectFile, "tool='malformed'\n", `{"tool":"malformed"}`},
+		{"malformed tool", pythonPyprojectFile, "tool='malformed'\n", `{}`},
 		{"uv development pins", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['pytest==8.0.0']\ncache-dir='discard'\n", `{"tool":{"uv":{"dev-dependencies":["pytest==8.0.0"]}}}`},
-		{"malformed poetry", pythonPyprojectFile, "[tool]\npoetry='malformed'\n", `{"tool":{"poetry":"malformed"}}`},
+		{"malformed poetry", pythonPyprojectFile, "[tool]\npoetry='malformed'\n", `{}`},
 		{"missing lock packages", pythonPoetryLockName, "version=1\n", `{}`},
-		{"malformed lock packages", pythonUVLockName, "package='malformed'\n", `{"package":"malformed"}`},
+		{"malformed lock packages", pythonUVLockName, "package='malformed'\n", `{}`},
 		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":"malformed"}`},
+		{"malformed JSON entries", pythonPipfileLockName, `{"default":{"requests":null,"malformed":"bad","invalid":{"version":["bad"]}}}`, `{"default":{"invalid":{"version":["bad"]},"malformed":"bad","requests":null}}`},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			document := readOverflowIdentityDocument(t, tc.name, tc.content)
-			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
-				t.Fatalf("format shape was not retained for identity consumers: %+v", document)
-			}
-			encoded, err := json.Marshal(document.IdentityProjection)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(encoded) != tc.want {
-				t.Fatalf("format projection = %s, want %s", encoded, tc.want)
-			}
+			assertIdentityProjection(t, document, tc.want)
 		})
 	}
 }
 
-func readOverflowIdentityDocument(t *testing.T, name, content string) report.PythonManifestDocument {
+func TestPackagingCatalogOverflowOmitsIgnoredIdentityShapes(t *testing.T) {
+	padding := strings.Repeat("ignored payload ", 256)
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"lock container", pythonPoetryLockName, "package='%[1]s'\n", `{}`},
+		{"lock entries", pythonUVLockName, "package=[{name='requests',version={ignored='%[1]s'}},'%[1]s',{name={ignored='%[1]s'},version='1.2.3'},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"version":"1.2.3"},{"name":"pytest","version":"8.0.0"}]}`},
+		{"tool", pythonPyprojectFile, "tool='%[1]s'\n[project]\ndependencies=['requests==2.32.3']\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"project", pythonPyprojectFile, "project='%[1]s'\n[dependency-groups]\nmain=['requests==2.32.3']\n", `{"dependency-groups":{"main":["requests==2.32.3"]}}`},
+		{"tool tables", pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n[tool]\nuv='%[1]s'\npoetry='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"poetry tables", pythonPyprojectFile, "[tool.poetry]\ndependencies='%[1]s'\ngroup='%[1]s'\n[tool.poetry.dev-dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"dev-dependencies":{"requests":"2.32.3"}}}}`},
+		{"poetry group entries", pythonPyprojectFile, "[tool.poetry.group]\nbad='%[1]s'\n[tool.poetry.group.empty]\ndependencies='%[1]s'\noptional='%[1]s'\n[tool.poetry.group.valid.dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"group":{"valid":{"dependencies":{"requests":"2.32.3"}}}}}}`},
+		{"pipfile packages", pythonPipfileName, "packages='%[1]s'\n[dev-packages]\nrequests='==2.32.3'\n", `{"dev-packages":{"requests":"==2.32.3"}}`},
+		{"pipfile dev packages", pythonPipfileName, "dev-packages='%[1]s'\n[packages]\nrequests='==2.32.3'\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"project lists", pythonPyprojectFile, "dependency-groups='%[1]s'\n[project]\ndependencies=['requests==2.32.3', {ignored='%[1]s'}, 3]\noptional-dependencies='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
+		{"requirement groups", pythonPyprojectFile, "[dependency-groups]\nbad='%[1]s'\nmain=['requests==2.32.3', {ignored='%[1]s'}]\n[project.optional-dependencies]\nempty={ignored='%[1]s'}\ndocs=['sphinx==8.0.2', true]\n", `{"dependency-groups":{"main":["requests==2.32.3"]},"project":{"optional-dependencies":{"docs":["sphinx==8.0.2"]}}}`},
+		{"uv list", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['ruff==0.12.0', {ignored='%[1]s'}]\n", `{"tool":{"uv":{"dev-dependencies":["ruff==0.12.0"]}}}`},
+		{"package entries and flags", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nmalformed=['%[1]s']\nbad-version={version=['%[1]s']}\nforeign={version='==1.2.3',git='%[1]s',optional='%[1]s'}\n", `{"packages":{"foreign":{"git":null,"version":"==1.2.3"},"requests":"==2.32.3"}}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, fmt.Sprintf(tc.content, padding), 512)
+			assertIdentityProjection(t, document, tc.want)
+		})
+	}
+}
+
+func TestPythonIdentityRequirementsPreservesStringValues(t *testing.T) {
+	for _, tc := range []struct {
+		input any
+		want  []string
+	}{
+		{[]string{"requests===2", " package==1.* "}, []string{"requests===2", " package==1.* "}},
+		{[]any{"requests===2", map[string]any{"ignored": "metadata"}, " package==1.* ", false}, []string{"requests===2", " package==1.* "}},
+		{"requests==2.32.3", nil},
+	} {
+		if got := ManifestRequirementStrings(tc.input); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("requirement strings changed: got %#v, want %#v", got, tc.want)
+		}
+	}
+}
+
+func assertIdentityProjection(t *testing.T, document report.PythonManifestDocument, want string) {
+	t.Helper()
+	if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
+		t.Fatalf("identity projection unavailable: %+v", document)
+	}
+	encoded, err := json.Marshal(document.IdentityProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != want {
+		t.Fatalf("identity projection = %s, want %s", encoded, want)
+	}
+}
+
+func readOverflowIdentityDocument(t *testing.T, name, content string, remainingProjectionBytes ...int64) report.PythonManifestDocument {
 	t.Helper()
 	repo := t.TempDir()
 	path := filepath.Join(repo, name)
 	testutil.MustWriteFile(t, path, content)
 	catalog := newPackagingCatalog()
 	catalog.bytes = maxPackagingCatalogBytes
+	if len(remainingProjectionBytes) != 0 {
+		catalog.identityBytes = maxPackagingIdentityProjectionBytes - remainingProjectionBytes[0]
+	}
 	if _, err := catalog.read(repo, path); err != nil {
 		t.Fatal(err)
 	}

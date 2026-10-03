@@ -61,3 +61,42 @@ func TestPythonCatalogDeferredProjectionLimitIsExplicitAndDoesNotReadSource(t *t
 		t.Fatalf("projection cap was not made explicit: %v", result.Warnings)
 	}
 }
+
+func TestPythonRequirementsProjectionPreservesConflictsAndPermissiveVersions(t *testing.T) {
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		name, text string
+		deferred   bool
+	}{
+		{"original", "# ignored\n--index-url=https://example.test/==1\nrequests[security]==2.0; marker\nrequests==1.0 # conflict\nrequests==2.0\nwildcard==1.*\nextra-equals===3\ninvalid==not-a-version\n", false},
+		{"compact", "requests==2.0\nrequests==1.0\nrequests==2.0\nwildcard==1.*\nextra-equals===3\ninvalid==not-a-version\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := report.PythonManifestDocument{Path: "requirements.txt", Text: tc.text}
+			if tc.deferred {
+				document.Text = ""
+				document.Deferred = true
+				document.IdentityProjectionSet = true
+				document.IdentityText = tc.text
+			}
+			result := report.Report{PythonManifestCatalog: true, PythonManifests: []report.PythonManifestDocument{document}, Dependencies: []report.DependencyReport{
+				{Language: "python", Name: "requests"}, {Language: "python", Name: "wildcard"},
+				{Language: "python", Name: "extra-equals"}, {Language: "python", Name: "invalid"},
+			}}
+			annotateDependencyIdentities(repo, &result)
+			conflicting := findIdentityDependency(t, result, "python", "requests").Identity
+			if conflicting.VersionStatus != identityStatusConflicting || conflicting.Version != "" || len(conflicting.Conflicts) != 2 {
+				t.Fatalf("requirements version conflict changed: %+v", conflicting)
+			}
+			for name, want := range map[string]string{"wildcard": "1.*", "extra-equals": "=3", "invalid": "not-a-version"} {
+				identity := findIdentityDependency(t, result, "python", name).Identity
+				if identity.Version != want || identity.VersionStatus != identityStatusResolved || identity.Source != "requirements.txt" || identity.Confidence != "medium" {
+					t.Fatalf("permissive requirements evidence changed for %s: %+v", name, identity)
+				}
+			}
+			if len(result.Warnings) != 0 {
+				t.Fatalf("requirements projection required source reads: %v", result.Warnings)
+			}
+		})
+	}
+}

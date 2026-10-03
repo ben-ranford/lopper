@@ -174,20 +174,7 @@ func pythonManifestTable(rawValue any) map[string]any {
 }
 
 func pythonManifestStrings(rawValue any) []string {
-	switch values := rawValue.(type) {
-	case []string:
-		return values
-	case []any:
-		stringsOnly := make([]string, 0, len(values))
-		for _, value := range values {
-			if item, ok := value.(string); ok {
-				stringsOnly = append(stringsOnly, item)
-			}
-		}
-		return stringsOnly
-	default:
-		return nil
-	}
+	return pythonlang.ManifestRequirementStrings(rawValue)
 }
 
 func sortedPythonManifestKeys(table map[string]any) []string {
