@@ -262,7 +262,7 @@ func TestPackagingCatalogOverflowOmitsUnrelatedProjectMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"project":{"dependencies":["requests==2.32.3"],"optional-dependencies":{"docs":["sphinx==8.0.2"]}}}`
+	want := `{"project":{"dependencies":["requests==2.32.3"],"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`
 	if string(encoded) != want {
 		t.Fatalf("project identity fields = %s, want %s", encoded, want)
 	}
@@ -307,12 +307,12 @@ func TestPackagingCatalogOverflowOmitsPackageAndGroupMetadata(t *testing.T) {
 		{
 			pythonPipfileName,
 			"[packages]\nrequests={version='==2.32.3', markers='%[1]s', extras=['%[1]s']}\n[dev-packages]\npytest={version='==8.0.0', hashes=['%[1]s']}\n",
-			`{"dev-packages":{"pytest":{"version":"==8.0.0"}},"packages":{"requests":{"version":"==2.32.3"}}}`,
+			`{"dev-packages":{"pytest":"==8.0.0"},"packages":{"requests":"==2.32.3"}}`,
 		},
 		{
 			pythonPyprojectFile,
 			"[tool.poetry.dependencies]\nrequests={version='2.32.3', markers='%[1]s', extras=['%[1]s']}\n[tool.poetry.dev-dependencies]\npytest={version='8.0.0', python='%[1]s'}\n[tool.poetry.group.docs]\noptional=false\ndescription='%[1]s'\n[tool.poetry.group.docs.dependencies]\nsphinx={version='8.0.2', markers='%[1]s'}\n",
-			`{"tool":{"poetry":{"dependencies":{"requests":{"version":"2.32.3"}},"dev-dependencies":{"pytest":{"version":"8.0.0"}},"group":{"docs":{"dependencies":{"sphinx":{"version":"8.0.2"}},"optional":false}}}}}`,
+			`{"tool":{"poetry":{"dependencies":{"requests":"==2.32.3"},"dev-dependencies":{"pytest":"==8.0.0"},"group":{"00000000000000000000":{"dependencies":{"sphinx":"==8.0.2"}}}}}}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -340,42 +340,47 @@ func TestPackagingCatalogOverflowOmitsPackageAndGroupMetadata(t *testing.T) {
 	}
 }
 
-func TestPythonIdentityPackageProjectionPreservesRejectionFlags(t *testing.T) {
+func TestPythonIdentityPackageProjectionMatchesFormatRules(t *testing.T) {
 	entries := map[string]any{
-		"string":      "2.32.3",
+		"bare":        "2.32.3",
+		"exact":       "==2.32.3",
+		"python":      "==3.12.0",
+		" PyThOn ":    "==3.12.0",
+		"   ":         "==1.0",
 		"nil":         nil,
 		"nil-table":   map[string]any(nil),
 		"malformed":   []any{"==2.32.3"},
 		"bad-version": map[string]any{"version": []any{"==2.32.3"}},
 	}
-	want := map[string]any{"string": "2.32.3"}
 	for _, flag := range []struct {
 		name, field string
 		value       any
-		retained    bool
-		wantValue   any
 	}{
-		{"optional-true", "optional", true, true, true},
-		{"optional-false", "optional", false, true, false},
-		{"optional-string", "optional", "true", false, nil},
-		{"file", "file", nil, true, nil},
-		{"git", "git", false, true, nil},
-		{"path", "path", "", true, nil},
-		{"ref", "ref", int64(0), true, nil},
-		{"url", "url", []any{"source"}, true, nil},
+		{"optional-true", "optional", true},
+		{"optional-false", "optional", false},
+		{"optional-string", "optional", "true"},
+		{"file", "file", nil},
+		{"git", "git", false},
+		{"path", "path", ""},
+		{"ref", "ref", int64(0)},
+		{"url", "url", []any{"source"}},
 	} {
 		entries[flag.name] = map[string]any{"version": "==2.32.3", flag.field: flag.value, "markers": "omit", "extras": []any{"omit"}}
-		projected := map[string]any{"version": "==2.32.3"}
-		if flag.retained {
-			projected[flag.field] = flag.wantValue
-		}
-		want[flag.name] = projected
 	}
-	if projected := pythonIdentityPackageTable(entries); !reflect.DeepEqual(projected, want) {
-		t.Fatalf("package projection changed rejection flags: got %#v, want %#v", projected, want)
+	for _, allowBareVersion := range []bool{false, true} {
+		want := map[string]any{"exact": "==2.32.3", "optional-false": "==2.32.3", "optional-string": "==2.32.3"}
+		if allowBareVersion {
+			want["bare"] = "==2.32.3"
+		} else {
+			want["python"] = "==3.12.0"
+			want[" PyThOn "] = "==3.12.0"
+		}
+		if projected := pythonIdentityPackageTable(entries, allowBareVersion); !reflect.DeepEqual(projected, want) {
+			t.Fatalf("allowBareVersion=%t: got %#v, want %#v", allowBareVersion, projected, want)
+		}
 	}
 	for _, shape := range []any{nil, map[string]any(nil), "malformed", []any{"malformed"}} {
-		if projected := pythonIdentityPackageTable(shape); len(projected) != 0 {
+		if projected := pythonIdentityPackageTable(shape, false); len(projected) != 0 {
 			t.Fatalf("ignored package table retained: %#v", projected)
 		}
 		if projected := poetryIdentityGroups(shape); len(projected) != 0 {
@@ -416,18 +421,18 @@ func TestPackagingCatalogOverflowOmitsIgnoredIdentityShapes(t *testing.T) {
 		{"JSON array version", pythonPipfileLockName, `{"default":{"bad":{"version":["%[1]s"]}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
 		{"JSON object version", pythonPipfileLockName, `{"default":{"bad":{"version":{"ignored":"%[1]s"}}},"develop":{"pytest":{"version":"==8.0.0"}}}`, `{"default":false,"develop":{"pytest":{"version":"==8.0.0"}}}`},
 		{"lock container", pythonPoetryLockName, "package='%[1]s'\n", `{}`},
-		{"lock entries", pythonUVLockName, "package=[{name='requests',version={ignored='%[1]s'}},'%[1]s',{name={ignored='%[1]s'},version='1.2.3'},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"version":"1.2.3"},{"name":"pytest","version":"8.0.0"}]}`},
+		{"lock entries", pythonUVLockName, "package=[{name='requests',version={ignored='%[1]s'}},'%[1]s',{name={ignored='%[1]s'},version='1.2.3'},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"name":"pytest","version":"8.0.0"}]}`},
 		{"tool", pythonPyprojectFile, "tool='%[1]s'\n[project]\ndependencies=['requests==2.32.3']\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
-		{"project", pythonPyprojectFile, "project='%[1]s'\n[dependency-groups]\nmain=['requests==2.32.3']\n", `{"dependency-groups":{"main":["requests==2.32.3"]}}`},
+		{"project", pythonPyprojectFile, "project='%[1]s'\n[dependency-groups]\nmain=['requests==2.32.3']\n", `{"dependency-groups":{"00000000000000000000":["requests==2.32.3"]}}`},
 		{"tool tables", pythonPyprojectFile, "[project]\ndependencies=['requests==2.32.3']\n[tool]\nuv='%[1]s'\npoetry='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
-		{"poetry tables", pythonPyprojectFile, "[tool.poetry]\ndependencies='%[1]s'\ngroup='%[1]s'\n[tool.poetry.dev-dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"dev-dependencies":{"requests":"2.32.3"}}}}`},
-		{"poetry group entries", pythonPyprojectFile, "[tool.poetry.group]\nbad='%[1]s'\n[tool.poetry.group.empty]\ndependencies='%[1]s'\noptional='%[1]s'\n[tool.poetry.group.valid.dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"group":{"valid":{"dependencies":{"requests":"2.32.3"}}}}}}`},
+		{"poetry tables", pythonPyprojectFile, "[tool.poetry]\ndependencies='%[1]s'\ngroup='%[1]s'\n[tool.poetry.dev-dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"dev-dependencies":{"requests":"==2.32.3"}}}}`},
+		{"poetry group entries", pythonPyprojectFile, "[tool.poetry.group]\nbad='%[1]s'\n[tool.poetry.group.empty]\ndependencies='%[1]s'\noptional='%[1]s'\n[tool.poetry.group.valid.dependencies]\nrequests='2.32.3'\n", `{"tool":{"poetry":{"group":{"00000000000000000000":{"dependencies":{"requests":"==2.32.3"}}}}}}`},
 		{"pipfile packages", pythonPipfileName, "packages='%[1]s'\n[dev-packages]\nrequests='==2.32.3'\n", `{"dev-packages":{"requests":"==2.32.3"}}`},
 		{"pipfile dev packages", pythonPipfileName, "dev-packages='%[1]s'\n[packages]\nrequests='==2.32.3'\n", `{"packages":{"requests":"==2.32.3"}}`},
 		{"project lists", pythonPyprojectFile, "dependency-groups='%[1]s'\n[project]\ndependencies=['requests==2.32.3', {ignored='%[1]s'}, 3]\noptional-dependencies='%[1]s'\n", `{"project":{"dependencies":["requests==2.32.3"]}}`},
-		{"requirement groups", pythonPyprojectFile, "[dependency-groups]\nbad='%[1]s'\nmain=['requests==2.32.3', {ignored='%[1]s'}]\n[project.optional-dependencies]\nempty={ignored='%[1]s'}\ndocs=['sphinx==8.0.2', true]\n", `{"dependency-groups":{"main":["requests==2.32.3"]},"project":{"optional-dependencies":{"docs":["sphinx==8.0.2"]}}}`},
+		{"requirement groups", pythonPyprojectFile, "[dependency-groups]\nbad='%[1]s'\nmain=['requests==2.32.3', {ignored='%[1]s'}]\n[project.optional-dependencies]\nempty={ignored='%[1]s'}\ndocs=['sphinx==8.0.2', true]\n", `{"dependency-groups":{"00000000000000000000":["requests==2.32.3"]},"project":{"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`},
 		{"uv list", pythonPyprojectFile, "[tool.uv]\ndev-dependencies=['ruff==0.12.0', {ignored='%[1]s'}]\n", `{"tool":{"uv":{"dev-dependencies":["ruff==0.12.0"]}}}`},
-		{"package entries and flags", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nmalformed=['%[1]s']\nbad-version={version=['%[1]s']}\nforeign={version='==1.2.3',git='%[1]s',optional='%[1]s'}\n", `{"packages":{"foreign":{"git":null,"version":"==1.2.3"},"requests":"==2.32.3"}}`},
+		{"package entries and flags", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nmalformed=['%[1]s']\nbad-version={version=['%[1]s']}\nforeign={version='==1.2.3',git='%[1]s',optional='%[1]s'}\n", `{"packages":{"requests":"==2.32.3"}}`},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			document := readOverflowIdentityDocument(t, tc.name, fmt.Sprintf(tc.content, padding), 512)
@@ -448,6 +453,27 @@ func TestPythonIdentityRequirementsPreservesStringValues(t *testing.T) {
 		if got := ManifestRequirementStrings(tc.input); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("requirement strings changed: got %#v, want %#v", got, tc.want)
 		}
+	}
+}
+
+func TestPackagingCatalogOverflowCanonicalizesUsablePins(t *testing.T) {
+	replacer := strings.NewReplacer("@noise@", strings.Repeat("ignored payload ", 256), "@space@", strings.Repeat(" ", 4096))
+	for _, tc := range []struct{ label, name, content, want string }{
+		{"project markers and conflicts", pythonPyprojectFile, "[project]\ndependencies=['requests[security]==2.32.3 ; @noise@','@noise@','requests==3.0 ; @noise@','requests==2.32.3 ; again']\n", `{"project":{"dependencies":["requests==2.32.3","requests==3.0","requests==2.32.3"]}}`},
+		{"optional markers and group names", pythonPyprojectFile, "[project.optional-dependencies]\n'@noise@'=['sphinx==8.0.2 ; @noise@','@noise@']\n", `{"project":{"optional-dependencies":{"00000000000000000000":["sphinx==8.0.2"]}}}`},
+		{"group ordering and uv markers", pythonPyprojectFile, "[dependency-groups]\n'z@noise@'=['requests==3.0 ; @noise@']\n'a@noise@'=['requests==1.0','requests==2.0']\nempty=['@noise@']\n[tool.uv]\ndev-dependencies=['ruff==0.12.0 ; @noise@','@noise@']\n", `{"dependency-groups":{"00000000000000000000":["requests==1.0","requests==2.0"],"00000000000000000001":["requests==3.0"]},"tool":{"uv":{"dev-dependencies":["ruff==0.12.0"]}}}`},
+		{"Pipfile version filtering", pythonPipfileName, "[packages]\nrequests={version='@space@==2.32.3@space@'}\ninvalid='@noise@'\nnested-invalid={version='@noise@'}\nbare='2.32.3'\n'@space@'='==1.0'\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"Poetry version filtering", pythonPyprojectFile, "[tool.poetry.dependencies]\nrequests='@space@2.32.3@space@'\npytest={version='@space@==8.0.0@space@'}\ninvalid='@noise@'\nnested-invalid={version='@noise@'}\n' PyThOn '='3.12.0'\n'@space@'='1.0'\n", `{"tool":{"poetry":{"dependencies":{"pytest":"==8.0.0","requests":"==2.32.3"}}}}`},
+		{"unsupported and optional packages", pythonPipfileName, "[packages]\nrequests='==2.32.3'\nfile={version='==1.0',file='@noise@'}\ngit={version='==1.0',git='@noise@'}\npath={version='==1.0',path='@noise@'}\nref={version='==1.0',ref='@noise@'}\nurl={version='==1.0',url='@noise@'}\noptional={version='@noise@',optional=true}\n", `{"packages":{"requests":"==2.32.3"}}`},
+		{"Poetry optional groups and conflicts", pythonPyprojectFile, "[tool.poetry.group.'optional@noise@']\noptional=true\n[tool.poetry.group.'optional@noise@'.dependencies]\nignored='1.0'\n[tool.poetry.group.'z@noise@'.dependencies]\nrequests='3.0'\n[tool.poetry.group.'a@noise@'.dependencies]\nrequests='1.0'\n", `{"tool":{"poetry":{"group":{"00000000000000000000":{"dependencies":{"requests":"==1.0"}},"00000000000000000001":{"dependencies":{"requests":"==3.0"}}}}}}`},
+		{"TOML lock empty names", pythonUVLockName, "package=[{name='@space@',version='1.0'},{version='2.0'},{name='requests',version=3},{name='pytest',version='8.0.0'}]\n", `{"package":[{"name":"requests"},{"name":"pytest","version":"8.0.0"}]}`},
+		{"JSON lock empty names", pythonPipfileLockName, `{"default":{"@space@":{"version":"==1.0"},"requests":null}}`, `{"default":{"requests":null}}`},
+		{"JSON invalid blank entry still warns", pythonPipfileLockName, `{"default":{"@space@":{"version":false},"requests":{"version":"==2.32.3"}}}`, `{"default":false}`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			document := readOverflowIdentityDocument(t, tc.name, replacer.Replace(tc.content), 512)
+			assertIdentityProjection(t, document, tc.want)
+		})
 	}
 }
 

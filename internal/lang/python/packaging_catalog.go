@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -124,7 +125,7 @@ func pythonIdentityProjection(name string, document report.PythonManifestDocumen
 	case pythonPyprojectFile:
 		return pyprojectIdentityProjection(document.Document), "", true
 	case pythonPipfileName:
-		return pythonIdentityPackageSections(document.Document, "packages", "dev-packages"), "", true
+		return pythonIdentityPackageSections(document.Document, false, "packages", "dev-packages"), "", true
 	case pythonPoetryLockName, pythonUVLockName:
 		return pythonLockIdentityProjection(document.Document), "", true
 	case pythonPipfileLockName:
@@ -156,53 +157,46 @@ func pythonIdentityTable(value any, keys ...string) any {
 	return value
 }
 
-func pythonIdentityPackageSections(document map[string]any, sections ...string) map[string]any {
-	return projectPythonIdentityCollections(pythonIdentityFields(document, sections...), pythonIdentityPackageTable)
+func pythonIdentityPackageSections(document map[string]any, allowBareVersion bool, sections ...string) map[string]any {
+	return projectPythonIdentityCollections(pythonIdentityFields(document, sections...), func(value any) map[string]any {
+		return pythonIdentityPackageTable(value, allowBareVersion)
+	}, false)
 }
 
-func projectPythonIdentityCollections[T []string | map[string]any](document map[string]any, project func(any) T) map[string]any {
+func projectPythonIdentityCollections[T []string | map[string]any](document map[string]any, project func(any) T, ordinalKeys bool) map[string]any {
+	keys := make([]string, 0, len(document))
+	for name := range document {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
 	result := make(map[string]any, len(document))
-	for name, raw := range document {
-		if value := project(raw); len(value) != 0 {
+	for _, name := range keys {
+		if value := project(document[name]); len(value) != 0 {
+			if ordinalKeys {
+				name = fmt.Sprintf("%020d", len(result))
+			}
 			result[name] = value
 		}
 	}
 	return result
 }
 
-func pythonIdentityPackageTable(value any) map[string]any {
+func pythonIdentityPackageTable(value any, allowBareVersion bool) map[string]any {
 	packages, ok := value.(map[string]any)
 	if !ok {
 		return nil
 	}
 	projected := make(map[string]any, len(packages))
 	for name, raw := range packages {
-		if entry := pythonIdentityPackageEntry(raw); entry != nil {
-			projected[name] = entry
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" || allowBareVersion && strings.EqualFold(trimmed, "python") {
+			continue
+		}
+		if version, valid := ExactManifestPackageVersion(raw, allowBareVersion); valid {
+			projected[name] = "==" + version
 		}
 	}
 	return projected
-}
-
-func pythonIdentityPackageEntry(value any) any {
-	if version, ok := value.(string); ok {
-		return version
-	}
-	entry, _ := value.(map[string]any)
-	if _, ok := entry["version"].(string); !ok {
-		return nil
-	}
-	result := pythonIdentityFields(entry, "version")
-	// Unsupported sources reject by key presence; their values are not consumed.
-	for _, field := range []string{"file", "git", "path", "ref", "url"} {
-		if _, exists := entry[field]; exists {
-			result[field] = nil
-		}
-	}
-	if optional, ok := entry["optional"].(bool); ok {
-		result["optional"] = optional
-	}
-	return result
 }
 
 // ManifestRequirementStrings selects the strings consumed by manifest identity enrichment.
@@ -224,12 +218,22 @@ func ManifestRequirementStrings(value any) []string {
 }
 
 func pythonIdentityRequirementFields(document map[string]any, fields ...string) map[string]any {
-	return projectPythonIdentityCollections(pythonIdentityFields(document, fields...), ManifestRequirementStrings)
+	return projectPythonIdentityCollections(pythonIdentityFields(document, fields...), pythonIdentityRequirementPins, false)
 }
 
 func pythonIdentityRequirementGroups(value any) map[string]any {
 	groups, _ := value.(map[string]any)
-	return projectPythonIdentityCollections(groups, ManifestRequirementStrings)
+	return projectPythonIdentityCollections(groups, pythonIdentityRequirementPins, true)
+}
+
+func pythonIdentityRequirementPins(value any) []string {
+	var result []string
+	for _, requirement := range ManifestRequirementStrings(value) {
+		if name, version, valid := ExactManifestRequirementPin(requirement); valid {
+			result = append(result, name+"=="+version)
+		}
+	}
+	return result
 }
 
 func pyprojectIdentityProjection(document map[string]any) map[string]any {
@@ -270,7 +274,7 @@ func pythonToolIdentityProjection(value any) map[string]any {
 
 func poetryIdentityProjection(value any) map[string]any {
 	poetry, _ := value.(map[string]any)
-	result := pythonIdentityPackageSections(poetry, "dependencies", "dev-dependencies")
+	result := pythonIdentityPackageSections(poetry, true, "dependencies", "dev-dependencies")
 	if groups := poetryIdentityGroups(poetry["group"]); len(groups) != 0 {
 		result["group"] = groups
 	}
@@ -279,16 +283,15 @@ func poetryIdentityProjection(value any) map[string]any {
 
 func poetryIdentityGroups(value any) map[string]any {
 	groups, _ := value.(map[string]any)
-	return projectPythonIdentityCollections(groups, poetryIdentityGroup)
+	return projectPythonIdentityCollections(groups, poetryIdentityGroup, true)
 }
 
 func poetryIdentityGroup(value any) map[string]any {
 	group, _ := value.(map[string]any)
-	result := pythonIdentityPackageSections(group, "dependencies")
-	if optional, ok := group["optional"].(bool); ok {
-		result["optional"] = optional
+	if optional, _ := group["optional"].(bool); optional {
+		return nil
 	}
-	return result
+	return pythonIdentityPackageSections(group, true, "dependencies")
 }
 
 func pythonLockIdentityProjection(document map[string]any) map[string]any {
@@ -299,6 +302,10 @@ func pythonLockIdentityProjection(document map[string]any) map[string]any {
 	projected := make([]any, 0, len(entries))
 	for _, entry := range entries {
 		if table, ok := entry.(map[string]any); ok {
+			name, _ := table["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				continue
+			}
 			fields := pythonIdentityFields(table, "name", "version")
 			for key, value := range fields {
 				if _, ok := value.(string); !ok {
@@ -333,6 +340,9 @@ func pipfileLockIdentitySection(value any) any {
 	}
 	projected := make(map[string]any, len(packages))
 	for name, raw := range packages {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
 		projected[name] = pythonIdentityTable(raw, "version")
 	}
 	return projected
