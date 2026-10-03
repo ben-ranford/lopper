@@ -185,10 +185,11 @@ function needsFor(ticket) {
     suppression: { result: 'success', outputs: { receipt: '', deferred: '', readiness: '' } } };
 }
 
-for (const initial of ['cancelled', 'failure', 'pending', 'registration', 'prior-intent']) {
+const BLOCKED_INITIAL = ['cancelled', 'failure', 'startup_failure'];
+for (const initial of [...BLOCKED_INITIAL, 'pending', 'registration', 'prior-intent']) {
   test(`queue lifecycle: ${initial} initial head event waits, completion performs strict CI and guarded merge`, async t => {
     const runs = initial === 'registration' ? [] : [run(CI_ID), run(WINDOWS_ID)];
-    if (['cancelled', 'failure'].includes(initial)) runs[0] = { ...run(CI_ID, 99), status: 'completed', conclusion: initial, referenced_workflows: [] };
+    if (BLOCKED_INITIAL.includes(initial)) runs[0] = { ...run(CI_ID, 99), status: 'completed', conclusion: initial, referenced_workflows: [] };
     if (initial === 'pending') Object.assign(runs[0], { status: 'queued', conclusion: null, referenced_workflows: [] });
     if (initial === 'prior-intent') runs[0].created_at = '2026-10-01T00:59:59Z';
     const fixture = queueHarness(runs);
@@ -201,9 +202,9 @@ for (const initial of ['cancelled', 'failure', 'pending', 'registration', 'prior
     assert.equal(fixture.calls.proofs, 0);
     assert.deepEqual(fixture.calls.merged, []);
     assert.equal(fixture.state.autoMergeRequest, null);
-    assert.match(fixture.calls.comments.join(), ['cancelled', 'failure'].includes(initial) ? /Blocked by current CI/ : /Waiting for current CI/);
+    assert.match(fixture.calls.comments.join(), BLOCKED_INITIAL.includes(initial) ? /Blocked by current CI/ : /Waiting for current CI/);
 
-    if (['cancelled', 'failure'].includes(initial)) {
+    if (BLOCKED_INITIAL.includes(initial)) {
       runs.splice(0, runs.length, { ...run(CI_ID), status: 'queued', conclusion: null, referenced_workflows: [] }, run(WINDOWS_ID));
       const pending = await controller.prepareQueue(fixture.args);
       assert.equal(pending, null, 'a newer pending generation still has no ticket');

@@ -28,8 +28,12 @@ function rerunFixture(history = [{}], current = (jobs) => jobs) {
   });
 }
 
+function sequentialCases(cases, verify) {
+  return cases.reduce((pending, value) => pending.then(() => verify(value)), Promise.resolve());
+}
+
 test('successful rerun retains cancelled unresolved locator history without approving it', async () => {
-  for (const conclusion of TERMINAL_FAILURES) {
+  await sequentialCases(TERMINAL_FAILURES, async (conclusion) => {
     const evidence = await verifyCI(rerunFixture([{ conclusion }]).input);
     const ci = evidence.workflows[0];
     assert.equal(ci.runAttempt, 3);
@@ -37,28 +41,28 @@ test('successful rerun retains cancelled unresolved locator history without appr
     assert.equal(ci.jobs.length, 14);
     assert.ok(ci.jobs.every((job) => job.runAttempt === 3 && job.id !== 99000));
     assert.equal(ci.jobs.filter((job) => job.name.startsWith('suppression-artifact-')).length, 1);
-  }
+  });
 });
 
 test('historical unresolved locator cannot replace current artifact evidence', async () => {
   await assert.rejects(verifyCI(rerunFixture([{}], (jobs) => jobs.slice(0, -1)).input), /missing suppression artifact locator for the current run attempt/);
-  for (const conclusion of ['success', 'cancelled']) {
+  await sequentialCases(['success', 'cancelled'], async (conclusion) => {
     const fixture = rerunFixture([], (jobs) => jobs.map((job) => job.name.startsWith('suppression-artifact-')
       ? { ...job, name: UNRESOLVED, conclusion } : job));
     await assert.rejects(verifyCI(fixture.input), /malformed suppression artifact locator/);
-  }
+  });
 });
 
 test('historical unresolved locator rejects successful, unknown and nonterminal states', async () => {
-  for (const change of [
+  await sequentialCases([
     { conclusion: 'success' }, { conclusion: null }, { conclusion: 'unknown' },
     ...['queued', 'in_progress', 'waiting', 'pending', 'requested'].map((status) => ({ status, conclusion: null })),
     { status: 'waiting', conclusion: 'cancelled' }, { status: null },
-  ]) await assert.rejects(verifyCI(rerunFixture([change]).input), /malformed suppression artifact locator/);
+  ], (change) => assert.rejects(verifyCI(rerunFixture([change]).input), /malformed suppression artifact locator/));
 });
 
 test('historical unresolved locator preserves strict static-job carry-forward', async () => {
-  for (const conclusion of ['success', 'failure']) {
+  await sequentialCases(['success', 'failure'], async (conclusion) => {
     const fixture = rerunFixture([{}], (jobs) => jobs.map((job) => job.name === 'verify-checks'
       ? { ...job, run_attempt: 1, conclusion } : job));
     if (conclusion === 'failure') {
@@ -68,24 +72,24 @@ test('historical unresolved locator preserves strict static-job carry-forward', 
       assert.equal(ci.jobs.find((job) => job.name === 'verify-checks').runAttempt, 1);
       assert.equal(ci.artifactId, ARTIFACT_ID);
     }
-  }
+  });
 });
 
 test('historical unresolved locator requires exact name and authenticated prior-attempt identity', async () => {
-  for (const change of [
+  await sequentialCases([
     { name: `${UNRESOLVED} ` }, { name: 'suppression-artifact-${{ other }}' },
     { name: 'suppression-artifact-01' }, { name: 'unknown job' },
     { run_attempt: 0 }, { run_attempt: 3 }, { run_attempt: 4 },
     { run_id: 99 }, { head_sha: BASE }, { head_branch: 'other' },
     { workflow_name: 'other' }, { url: 'https://example.test/job' },
-  ]) await assert.rejects(verifyCI(rerunFixture([change]).input), /CI audit paused/);
+  ], (change) => assert.rejects(verifyCI(rerunFixture([change]).input), /CI audit paused/));
 });
 
 test('historical unresolved locators still participate in duplicate detection in either order', async () => {
   const numeric = { name: 'suppression-artifact-123', conclusion: 'success' };
-  for (const history of [[{}, numeric], [numeric, {}], [{}, {}]]) {
+  await sequentialCases([[{}, numeric], [numeric, {}], [{}, {}]], async (history) => {
     await assert.rejects(verifyCI(rerunFixture(history).input), /duplicate suppression artifact locator in one run attempt/);
-  }
+  });
 });
 
 test('unresolved locator is unknown in a workflow without the trusted locator contract', async () => {

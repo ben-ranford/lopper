@@ -47,7 +47,7 @@ SUPPRESSION_KEYS = frozenset(("headSHA", "baseSHA", "runId", "runAttempt", "arti
 DEFERRED_KEYS = frozenset(("version", "snapshot", "reason", "runId", "runAttempt"))
 CI_WORKFLOW = ".github/workflows/ci.yml"
 CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
-CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale")
+CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
 
 

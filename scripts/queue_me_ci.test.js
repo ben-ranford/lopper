@@ -285,7 +285,7 @@ test('complete absence and valid prior-intent CI defer registration; post-intent
 
 test('initial readiness blocks known unsuccessful terminal outcomes without authorizing final CI', async () => {
   for (const workflow of [CI_ID, WINDOWS_ID]) {
-    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']) {
+    for (const conclusion of ['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale', 'startup_failure']) {
       const runs = [run(CI_ID), run(WINDOWS_ID)].map(value => value.workflow_id === workflow
         ? { ...value, conclusion, referenced_workflows: [] } : value);
       const fixture = harness({ runs });
@@ -329,6 +329,8 @@ test('BLOCKED dominates waiting across workflows but never masks malformed evide
 test('readiness preserves contradictory, identity, source and inventory failures', async () => {
   const changes = [
     { conclusion: null }, { conclusion: 'unknown' },
+    { status: 'in_progress', conclusion: 'startup_failure' },
+    { conclusion: 'startup_failure', pull_requests: [] },
     { status: 'queued', conclusion: 'success' }, { status: 'unknown', conclusion: null },
     { status: 'queued', conclusion: null, pull_requests: [] }, { path: '.github/workflows/other.yml' },
     { status: 'queued', conclusion: null, referenced_workflows: [{}] },

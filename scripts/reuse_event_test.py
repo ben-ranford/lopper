@@ -932,21 +932,22 @@ class PendingCITests(unittest.TestCase):
             self.assertNotIsInstance(raised.exception, event.CIDeferred)
 
     def test_prepare_reports_terminal_ci_failure_then_recovers_on_new_epoch(self):
-        api = FakeAPI()
-        payload = dict(repository=dict(id=10), action="synchronize", number=12,
-                       pull_request=pull_document())
-        for run, expected in ((dict(ci_document(), conclusion="cancelled"), "blocked"),
-                              (dict(ci_document(), id=42, status="queued", conclusion=None), "waiting"),
-                              (dict(ci_document(), id=42), "ready")):
-            api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
-            api.responses[PREFIX + "/actions/runs/" + str(run["id"])] = run
-            snapshot = event.prepare(api, payload, "pull_request_target", REPOSITORY, 10, SIGNAL, OWNER)
-            self.assertEqual(event.prepare_readiness(api, snapshot), expected)
-        self.assertEqual([data["state"] for _, data in api.posts], ["pending", "failure", "pending", "pending"])
-        self.assertTrue(all(path == PREFIX + "/statuses/" + HEAD for path, _ in api.posts))
+        for conclusion in ("cancelled", "startup_failure"):
+            api = FakeAPI()
+            payload = dict(repository=dict(id=10), action="synchronize", number=12,
+                           pull_request=pull_document())
+            for run, expected in ((dict(ci_document(), conclusion=conclusion), "blocked"),
+                                  (dict(ci_document(), id=42, status="queued", conclusion=None), "waiting"),
+                                  (dict(ci_document(), id=42), "ready")):
+                api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])
+                api.responses[PREFIX + "/actions/runs/" + str(run["id"])] = run
+                snapshot = event.prepare(api, payload, "pull_request_target", REPOSITORY, 10, SIGNAL, OWNER)
+                self.assertEqual(event.prepare_readiness(api, snapshot), expected)
+            self.assertEqual([data["state"] for _, data in api.posts], ["pending", "failure", "pending", "pending"])
+            self.assertTrue(all(path == PREFIX + "/statuses/" + HEAD for path, _ in api.posts))
 
     def test_prepare_blocks_only_known_authenticated_terminal_ci_outcomes(self):
-        for conclusion in ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale"):
+        for conclusion in ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure"):
             api = FakeAPI()
             run = dict(ci_document(), conclusion=conclusion)
             api.responses[CI_RUNS] = dict(total_count=1, workflow_runs=[run])

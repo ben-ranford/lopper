@@ -11,6 +11,7 @@ const PAGE_SIZE = 100;
 const MAX_ITEMS = 1000;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const BLOCKED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale']);
+const BLOCKED_RUN_CONCLUSIONS = new Set([...BLOCKED_CONCLUSIONS, 'startup_failure']);
 const SUPPRESSION_LOCATOR = {
   jobID: 'suppression-evidence', namePrefix: 'suppression-artifact-', runnerLabel: 'ubuntu-latest',
   unresolvedName: 'suppression-artifact-${{ needs.verify-checks.outputs.pr_report_artifact_id }}',
@@ -163,7 +164,7 @@ function runReadiness(run, workflow) {
 }
 
 function initialRunReadiness(run, workflow) {
-  if (run.status === 'completed' && BLOCKED_CONCLUSIONS.has(run.conclusion)) return 'BLOCKED';
+  if (run.status === 'completed' && BLOCKED_RUN_CONCLUSIONS.has(run.conclusion)) return 'BLOCKED';
   return runReadiness(run, workflow);
 }
 
