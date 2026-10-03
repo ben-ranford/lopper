@@ -1,0 +1,33 @@
+name: Reuse review signal
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  signal:
+    if: ${{ github.event.review.user.login == 'ben-ranford' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record review wakeup
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          number = event["pull_request"]["number"]
+          if type(number) is not int or number < 1:
+              raise ValueError("Expected a pull request number")
+          Path("reuse-review-wakeup.json").write_text(json.dumps({"pull_number": number}))
+          PY
+      - name: Upload review wakeup
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reuse-review-wakeup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reuse-review-wakeup.json
+          if-no-files-found: error
+          retention-days: 1

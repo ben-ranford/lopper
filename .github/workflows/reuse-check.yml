@@ -1,0 +1,298 @@
+name: Protected reuse controller
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_run:
+    workflows: [Reuse review signal, ci]
+    types: [requested, in_progress, completed]
+  issue_comment:
+    types: [created, edited]
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: protected-reuse-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  invalidate-base:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Checkout protected controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin immutable protected source
+        env:
+          REUSE_SOURCE_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          revision = os.environ["REUSE_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              raise SystemExit("Protected source must be a full immutable SHA")
+          environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+          environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+          origin = subprocess.check_output(["git", "remote", "get-url", "--all", "origin"], env=environment, text=True).strip()
+          if origin not in ("https://github.com/ben-ranford/lopper", "https://github.com/ben-ranford/lopper.git"):
+              raise SystemExit("Checkout origin is not the protected repository")
+          for arguments in (["merge-base", "--is-ancestor", revision, "refs/remotes/origin/main"],
+                            ["checkout", "--detach", revision]):
+              subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *arguments], env=environment, check=True)
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, text=True).strip()
+          if actual != revision:
+              raise SystemExit("Protected source selection drifted")
+          PY
+      - name: Invalidate previous base evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -E -S -B scripts/reuse_event.py invalidate-base
+
+  prepare:
+    if: >-
+      ${{ github.event_name != 'push' &&
+          (github.event_name != 'issue_comment' ||
+           (github.event.issue.pull_request &&
+            github.event.comment.user.login == 'ben-ranford' &&
+            github.event.comment.body == '/reuse-check')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      snapshot: ${{ steps.prepare.outputs.snapshot }}
+      base: ${{ steps.prepare.outputs.base }}
+      head: ${{ steps.prepare.outputs.head }}
+      pull_number: ${{ steps.prepare.outputs.pull_number }}
+    steps:
+      - name: Checkout protected controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin immutable protected source
+        env:
+          REUSE_SOURCE_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          revision = os.environ["REUSE_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              raise SystemExit("Protected source must be a full immutable SHA")
+          environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+          environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+          origin = subprocess.check_output(["git", "remote", "get-url", "--all", "origin"], env=environment, text=True).strip()
+          if origin not in ("https://github.com/ben-ranford/lopper", "https://github.com/ben-ranford/lopper.git"):
+              raise SystemExit("Checkout origin is not the protected repository")
+          for arguments in (["merge-base", "--is-ancestor", revision, "refs/remotes/origin/main"],
+                            ["checkout", "--detach", revision]):
+              subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *arguments], env=environment, check=True)
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, text=True).strip()
+          if actual != revision:
+              raise SystemExit("Protected source selection drifted")
+          PY
+      - name: Bind current revisions and invalidate prior result
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -E -S -B scripts/reuse_event.py prepare
+          --snapshot "$RUNNER_TEMP/reuse-snapshot.json"
+          --signal-workflow .github/workflows/reuse-review-signal.yml
+          --refresh-actor ben-ranford
+
+  analyze:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      result: ${{ steps.analyze.outputs.result }}
+    steps:
+      - name: Checkout protected analysis source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin immutable protected source
+        env:
+          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.base }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          revision = os.environ["REUSE_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              raise SystemExit("Protected source must be a full immutable SHA")
+          environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+          environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+          origin = subprocess.check_output(["git", "remote", "get-url", "--all", "origin"], env=environment, text=True).strip()
+          if origin not in ("https://github.com/ben-ranford/lopper", "https://github.com/ben-ranford/lopper.git"):
+              raise SystemExit("Checkout origin is not the protected repository")
+          for arguments in (["merge-base", "--is-ancestor", revision, "refs/remotes/origin/main"],
+                            ["checkout", "--detach", revision]):
+              subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *arguments], env=environment, check=True)
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, text=True).strip()
+          if actual != revision:
+              raise SystemExit("Protected source selection drifted")
+          PY
+      - name: Setup protected Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Read bound snapshot
+        env:
+          REUSE_SNAPSHOT: ${{ needs.prepare.outputs.snapshot }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path(os.environ["RUNNER_TEMP"], "reuse-snapshot.json").write_text(os.environ["REUSE_SNAPSHOT"])
+          PY
+      - name: Analyze exact prospective merge
+        id: analyze
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -E -S -B scripts/reuse_event.py analyze
+          --snapshot "$RUNNER_TEMP/reuse-snapshot.json"
+          --result "$RUNNER_TEMP/reuse-result.json"
+
+  suppression:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      receipt: ${{ steps.suppression.outputs.receipt }}
+    steps:
+      - name: Checkout protected suppression source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin immutable protected source
+        env:
+          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.base }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          revision = os.environ["REUSE_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              raise SystemExit("Protected source must be a full immutable SHA")
+          environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+          environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+          origin = subprocess.check_output(["git", "remote", "get-url", "--all", "origin"], env=environment, text=True).strip()
+          if origin not in ("https://github.com/ben-ranford/lopper", "https://github.com/ben-ranford/lopper.git"):
+              raise SystemExit("Checkout origin is not the protected repository")
+          for arguments in (["merge-base", "--is-ancestor", revision, "refs/remotes/origin/main"],
+                            ["checkout", "--detach", revision]):
+              subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *arguments], env=environment, check=True)
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, text=True).strip()
+          if actual != revision:
+              raise SystemExit("Protected source selection drifted")
+          PY
+      - name: Verify exact CI suppression evidence
+        id: suppression
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          REUSE_SNAPSHOT: ${{ needs.prepare.outputs.snapshot }}
+          GH_TOKEN: ${{ github.token }}
+        with:
+          script: |
+            const verify = require('./scripts/reuse_suppression.js');
+            const receipt = await verify({ github, context,
+              snapshot: JSON.parse(process.env.REUSE_SNAPSHOT), token: process.env.GH_TOKEN });
+            core.setOutput('receipt', JSON.stringify(receipt));
+
+  publish:
+    needs: [prepare, analyze, suppression]
+    if: ${{ always() && needs.prepare.outputs.snapshot != '' }}
+    concurrency:
+      group: reuse-publish-${{ needs.prepare.outputs.pull_number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Checkout protected publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin immutable protected source
+        env:
+          REUSE_SOURCE_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          revision = os.environ["REUSE_SOURCE_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              raise SystemExit("Protected source must be a full immutable SHA")
+          environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+          environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+          origin = subprocess.check_output(["git", "remote", "get-url", "--all", "origin"], env=environment, text=True).strip()
+          if origin not in ("https://github.com/ben-ranford/lopper", "https://github.com/ben-ranford/lopper.git"):
+              raise SystemExit("Checkout origin is not the protected repository")
+          for arguments in (["merge-base", "--is-ancestor", revision, "refs/remotes/origin/main"],
+                            ["checkout", "--detach", revision]):
+              subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *arguments], env=environment, check=True)
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, text=True).strip()
+          if actual != revision:
+              raise SystemExit("Protected source selection drifted")
+          PY
+      - name: Read analysis evidence
+        env:
+          REUSE_SNAPSHOT: ${{ needs.prepare.outputs.snapshot }}
+          REUSE_RESULT: ${{ needs.analyze.outputs.result }}
+          REUSE_SUPPRESSION: ${{ needs.suppression.outputs.receipt }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          (root / "reuse-snapshot.json").write_text(os.environ["REUSE_SNAPSHOT"])
+          (root / "reuse-result.json").write_text(os.environ["REUSE_RESULT"] or "{}")
+          (root / "reuse-suppression.json").write_text(os.environ["REUSE_SUPPRESSION"] or "{}")
+          PY
+      - name: Revalidate review and publish exact-head result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_ANALYSIS_RESULT: ${{ needs.analyze.result }}
+          REUSE_SUPPRESSION_RESULT: ${{ needs.suppression.result }}
+        run: >-
+          python3 -E -S -B scripts/reuse_event.py publish
+          --snapshot "$RUNNER_TEMP/reuse-snapshot.json"
+          --result "$RUNNER_TEMP/reuse-result.json"
+          --analysis-result "$REUSE_ANALYSIS_RESULT"
+          --reviewer ben-ranford
+          --suppression "$RUNNER_TEMP/reuse-suppression.json"
+          --suppression-result "$REUSE_SUPPRESSION_RESULT"
