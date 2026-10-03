@@ -322,11 +322,12 @@ async function checkReadiness(input) {
   const read = sourceReader(input);
   const sources = await protectedSources(read, input);
   const reasons = [];
-  for (const workflow of WORKFLOWS) {
+  await WORKFLOWS.reduce(async (previous, workflow) => {
+    await previous;
     const run = await latestRun(api, workflow, input, pull);
     if (!run) {
       reasons.push(`Awaiting registration of the ${workflow.name} run for the exact head.`);
-      continue;
+      return;
     }
     const readiness = runReadiness(run, workflow);
     await runSources(run, workflow, input, read, sources, readiness);
@@ -335,7 +336,7 @@ async function checkReadiness(input) {
     } else if (readiness === 'WAITING') {
       reasons.push(pendingMessage(run, workflow));
     }
-  }
+  }, Promise.resolve());
   await livePull(input);
   return { state: reasons.length ? 'WAITING' : 'READY', reasons };
 }
@@ -386,14 +387,15 @@ async function verifyCI(input) {
   const sources = await protectedSources(read, input);
   const workflows = [];
   let waiting;
-  for (const workflow of WORKFLOWS) {
+  await WORKFLOWS.reduce(async (previous, workflow) => {
+    await previous;
     try {
       workflows.push(await verifyWorkflow(api, workflow, input, pull, read, sources));
     } catch (error) {
       if (!isWaiting(error)) throw error;
       waiting = error;
     }
-  }
+  }, Promise.resolve());
   if (waiting) {
     await livePull(input);
     throw waiting;

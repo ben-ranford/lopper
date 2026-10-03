@@ -984,12 +984,14 @@ class PendingCITests(unittest.TestCase):
             self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
         for outcome in ("failure", "cancelled", "skipped"):
             api = FakeAPI()
+            deferred = self.deferred()
             with self.subTest(outcome=outcome), self.assertRaises(event.EventError):
-                event.publish(api, SNAPSHOT, None, outcome, [OWNER], {}, "success", self.deferred())
+                event.publish(api, SNAPSHOT, None, outcome, [OWNER], {}, "success", deferred)
             self.assertEqual([data["state"] for _, data in api.posts], ["failure"])
         api = FakeAPI()
+        deferred = self.deferred()
         with self.assertRaises(event.EventError):
-            self.publish(api, suppression={}, suppression_result="failure", deferred=self.deferred())
+            self.publish(api, suppression={}, suppression_result="failure", deferred=deferred)
         self.assertEqual(api.posts[-1][1]["state"], "failure")
 
     def test_waiting_marker_cannot_hide_failed_regressed_or_disappeared_producer(self):

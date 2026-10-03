@@ -635,18 +635,22 @@ def ci_run_page(response, expected_total, head):
     return total, rows
 
 
+def append_ci_runs(runs, rows, workflow, repository_id):
+    for run in rows:
+        if workflow is not None:
+            validate_ci_identity(run, workflow, repository_id)
+        if run["id"] in runs:
+            raise EventError("CI run pagination repeated a producer")
+        runs[run["id"]] = run
+
+
 def latest_ci_run(api, snapshot, *, allow_empty=False, workflow=None):
     endpoint = f"/repos/{snapshot['repository']}/actions/workflows/ci.yml/runs"
     runs, total = {}, None
     for page in range(1, 11):
         response = api.request(f"{endpoint}?per_page=100&page={page}&head_sha={snapshot['head']}&event=pull_request")
         total, rows = ci_run_page(response, total, snapshot["head"])
-        for run in rows:
-            if workflow is not None:
-                validate_ci_identity(run, workflow, snapshot["repository_id"])
-            if run["id"] in runs:
-                raise EventError("CI run pagination repeated a producer")
-            runs[run["id"]] = run
+        append_ci_runs(runs, rows, workflow, snapshot["repository_id"])
         if len(runs) == total:
             break
         if len(runs) > total or len(rows) < 100:
@@ -839,6 +843,13 @@ def publication_document(path, name, outcome):
         return None
 
 
+def publication_deferred(path, outcome):
+    if not path:
+        return None
+    document = publication_document(path, "deferred", outcome)
+    return {"invalid": True} if document is None else document
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -879,11 +890,7 @@ def main(argv=None):
                 return 0 if result["detector_exit"] == 0 else 1
             result = publication_document(args.result, "result", args.analysis_result)
             suppression = publication_document(args.suppression, "suppression", args.suppression_result)
-            deferred = None
-            if args.deferred:
-                deferred = publication_document(args.deferred, "deferred", args.suppression_result)
-                if deferred is None:
-                    deferred = {"invalid": True}
+            deferred = publication_deferred(args.deferred, args.suppression_result)
             publish(api, snapshot, result, args.analysis_result, args.reviewer,
                     suppression, args.suppression_result, deferred)
         return 0

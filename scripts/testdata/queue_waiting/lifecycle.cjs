@@ -10,10 +10,86 @@ const reuse = require('../../queue_me_reuse');
 const { harness, run, HEAD, BASE, REPO, CI_ID, WINDOWS_ID, ARTIFACT_ID } = require('./ci_fixture.cjs');
 const workflow = JSON.parse(fs.readFileSync(process.env.QUEUE_WORKFLOW_FIXTURE, 'utf8'));
 
-function condition(name, needs) {
-  const expression = workflow.jobs[name].if.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, '');
-  return Function('needs', 'always', `return (${expression});`)(needs, () => true);
+// Interpret only the workflow condition grammar exercised here. Workflow text
+// is data: no part of the expression is passed to a JavaScript code evaluator.
+function conditionTokens(source) {
+  const wrapped = source.trim();
+  assert.ok(wrapped.startsWith('${{') && wrapped.endsWith('}}'), 'condition wrapper');
+  assert.ok(wrapped.length <= 4096, 'bounded condition length');
+  const expression = wrapped.slice(3, -2).trim();
+  const tokenPattern = /\s+|needs\.[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|'[^'\r\n]*'|always\(\)|&&|\|\||==|!=|[!()]/gy;
+  const tokens = [];
+  let offset = 0;
+  while (offset < expression.length) {
+    tokenPattern.lastIndex = offset;
+    const match = tokenPattern.exec(expression);
+    assert.ok(match, `unsupported condition token at ${offset}`);
+    offset = tokenPattern.lastIndex;
+    if (match[0].trim()) tokens.push(match[0]);
+    assert.ok(tokens.length <= 256, 'bounded condition token count');
+  }
+  return tokens;
 }
+
+function conditionValue(token, needs) {
+  if (token === 'always()') return true;
+  if (token?.startsWith("'")) return token.slice(1, -1);
+  assert.ok(token?.startsWith('needs.'), 'expected condition value');
+  return token.split('.').slice(1).reduce((value, key) => {
+    assert.ok(value && Object.hasOwn(value, key), 'unknown condition property');
+    return value[key];
+  }, needs);
+}
+
+function conditionOperation(operator, left, right) {
+  switch (operator) {
+    case '&&': return Boolean(left) && Boolean(right);
+    case '||': return Boolean(left) || Boolean(right);
+    case '==': return left === right;
+    case '!=': return left !== right;
+    default: throw new Error('unsupported condition operator');
+  }
+}
+
+function evaluateCondition(source, needs) {
+  const tokens = conditionTokens(source);
+  let index = 0;
+  function chain(next, operators) {
+    let value = next();
+    while (operators.includes(tokens[index])) {
+      const operator = tokens[index++];
+      value = conditionOperation(operator, value, next());
+    }
+    return value;
+  }
+  function primary() {
+    const token = tokens[index++];
+    if (token === '!') return !primary();
+    if (token !== '(') return conditionValue(token, needs);
+    const value = disjunction();
+    assert.equal(tokens[index++], ')', 'balanced condition parentheses');
+    return value;
+  }
+  const comparison = () => chain(primary, ['==', '!=']);
+  const conjunction = () => chain(comparison, ['&&']);
+  const disjunction = () => chain(conjunction, ['||']);
+  const value = disjunction();
+  assert.equal(index, tokens.length, 'complete condition expression');
+  return Boolean(value);
+}
+
+function condition(name, needs) {
+  return evaluateCondition(workflow.jobs[name].if, needs);
+}
+
+test('condition interpreter rejects executable or unsupported workflow text', () => {
+  for (const expression of ["process.exit()", "always(); true", "needs.constructor.name == 'Object'",
+    "always() + 1", "(always()", "always() always()", "'unterminated"] ) {
+    assert.throws(() => evaluateCondition('${{ ' + expression + ' }}', {}));
+  }
+  assert.equal(evaluateCondition("${{ !('failed' == 'success') && (always() || 'a' != 'a') }}", {}), true);
+  assert.equal(evaluateCondition("${{ always() && 'a' == 'b' || 'c' != 'c' }}", {}), false);
+});
 
 function queueHarness(runs) {
   const fixture = harness({ runs });
