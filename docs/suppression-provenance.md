@@ -38,7 +38,11 @@ The adapter checks GitHub's producer run, workflow, pull request and artifact
 metadata against that snapshot. Only a completed successful pull-request run of
 the repository's `ci.yml` workflow is eligible. The artifact must match the exact
 run and head, repository identities, expected name and digest, and be unexpired.
-An old completion or newer attempt cannot substitute for the selected run.
+An old completion or newer attempt cannot substitute for the selected run. The
+[#1817 lifecycle repair](https://github.com/ben-ranford/lopper/pull/1817) defers an
+authenticated newer CI attempt without returning a receipt. Invalid artifact
+bytes, terminal failures and same-attempt success-to-pending contradictions still
+fail; the later successful attempt must supply fresh protected verification.
 
 The archive is bounded data. It is never extracted or executed. The reader accepts
 only the known regular report files, rejects duplicate or unsafe entries and
@@ -64,19 +68,20 @@ export rename must update the trusted caller and adapter together.
 ## Activation boundary
 
 This adapter has no workflow trigger, check publisher, credentials or repository
-settings mutations. It must be integrated into the single trusted execution and
-policy-review mechanism being designed for #1612. Do not restore the deleted
+settings mutations. It is invoked by the protected reuse controller and queue
+consumer described in [reuse enforcement](reuse-enforcement.md). Do not restore the deleted
 standalone suppression polling workflow or create a competing check publisher.
 Binding a check name merely to the shared GitHub Actions App does not identify
 which workflow supplied it.
 
 The selected review policy is explicit agent review and signoff bound to the exact
-head and base, using the existing authenticated identity. Its trusted event and
-publisher integration remains under #1612; repository settings are unchanged. Keep
-#1606 open until the selected trusted caller is enforced on the protected target
-and both a violating candidate and a valid candidate have been tested on recorded
-exact revisions. Local fixtures and green PR CI prove the adapter's behavior,
-not that activation has happened.
+head and base, using the existing authenticated identity.
+[#1606 closed](https://github.com/ben-ranford/lopper/issues/1606#issuecomment-5971166507)
+on the recorded late-CI completion and protected artifact-provenance control.
+The broader #1612 acceptance work remains separate, including real-fork proof
+and automatic lifecycle recovery. Local fixtures and green PR CI do not establish
+those remaining cases, and the existing non-atomic status-correction limitation
+remains documented in [reuse enforcement](reuse-enforcement.md).
 
 Relevant GitHub contracts: [artifact metadata and download API](https://docs.github.com/en/rest/actions/artifacts),
 [workflow-run metadata](https://docs.github.com/en/rest/actions/workflow-runs), and
