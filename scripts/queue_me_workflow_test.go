@@ -344,13 +344,18 @@ func queueLifecycleNode(t *testing.T) string {
 	if node, err := exec.LookPath("node"); err == nil {
 		return node
 	}
-	// The proof runner deliberately excludes package-manager directories from
-	// PATH. Use only fixed macOS installation paths; never change its environment.
-	if runtime.GOOS == "darwin" {
-		for _, candidate := range []string{"/opt/homebrew/bin/node", "/usr/local/bin/node"} {
-			if node, err := exec.LookPath(candidate); err == nil {
-				return node
-			}
+	// The proof runner excludes package-manager directories from PATH. Hosted
+	// Ubuntu uses n's /usr/local prefix; macOS uses fixed Homebrew prefixes.
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{"/opt/homebrew/bin/node", "/usr/local/bin/node"}
+	case "linux":
+		candidates = []string{"/usr/local/bin/node"}
+	}
+	for _, candidate := range candidates {
+		if node, err := exec.LookPath(candidate); err == nil {
+			return node
 		}
 	}
 	t.Fatal("node is required to test the queue CI event lifecycle")
