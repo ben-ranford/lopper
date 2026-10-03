@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const { IncomingMessage } = require('node:http');
+const { PassThrough } = require('node:stream');
 const test = require('node:test');
 const verifyReuseSuppression = require('./reuse_suppression.js');
 const { createVerifier, collectPages, signedArchiveURL, requestArtifact, downloadArchive, MAX_ARCHIVE_BYTES } = verifyReuseSuppression.testables;
@@ -308,6 +310,35 @@ test('reads bounded archives and handles the single API redirect', async () => {
   assert.equal((await requestArtifact(url, {}, false, fakeGet())).toString(), 'archive');
   assert.equal((await requestArtifact(url, {}, false, fakeGet({ headers: { 'content-length': '7' } }))).length, 7);
   assert.equal(await requestArtifact(url, {}, true, fakeGet({ status: 302, headers: { location: 'https://storage.invalid' } })), 'https://storage.invalid');
+});
+
+test('settles a native API redirect before disposing its response', async () => {
+  function nativeResponseGet(statusCode, headers, disposeAfterCallback = false) {
+    return (url, options, callback) => {
+      const request = new EventEmitter();
+      request.destroy = (error) => {
+        if (error) request.emit('error', error);
+        request.emit('close');
+      };
+      queueMicrotask(() => {
+        const response = new IncomingMessage(new PassThrough());
+        response.statusCode = statusCode;
+        response.headers = headers;
+        callback(response);
+        if (disposeAfterCallback) response.destroy();
+        request.emit('close');
+      });
+      return request;
+    };
+  }
+
+  const url = new URL('https://api.github.com/');
+  const location = 'https://results.blob.core.windows.net/archive?signature=value';
+  assert.equal(await requestArtifact(url, {}, true, nativeResponseGet(302, { location })), location);
+  await assert.rejects(
+    requestArtifact(url, {}, false, nativeResponseGet(200, {}, true)),
+    /Reuse suppression: artifact response aborted/,
+  );
 });
 
 test('rejects failed responses, further redirects, truncated and oversized bodies', async () => {

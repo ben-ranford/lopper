@@ -159,8 +159,8 @@ function requestArtifact(url, headers, redirect, get = https.get) {
       response.on('aborted', () => reject(new EvidenceError('Reuse suppression: artifact response aborted')));
       if (redirect && response.statusCode === 302) {
         const location = response.headers.location;
-        response.destroy();
         resolve(location);
+        response.destroy();
       } else if (!redirect && response.statusCode === 200) {
         readArchive(response, resolve, reject);
       } else {
