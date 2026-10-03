@@ -284,15 +284,7 @@ func TestPackagingCatalogOverflowProjectionsCoverIdentityFormats(t *testing.T) {
 		{pythonRequirementsTxt, "requests==2.32.3\n", "", "requests==2.32.3\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			path := filepath.Join(repo, tc.name)
-			testutil.MustWriteFile(t, path, tc.content)
-			catalog := newPackagingCatalog()
-			catalog.bytes = maxPackagingCatalogBytes
-			if _, err := catalog.read(repo, path); err != nil {
-				t.Fatal(err)
-			}
-			document := catalog.documents[path]
+			document := readOverflowIdentityDocument(t, tc.name, tc.content)
 			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
 				t.Fatalf("missing format projection: %+v", document)
 			}
@@ -402,15 +394,7 @@ func TestPackagingCatalogOverflowPreservesFormatShapes(t *testing.T) {
 		{"malformed JSON sections", pythonPipfileLockName, `{"default":null,"develop":"malformed"}`, `{"default":null,"develop":"malformed"}`},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
-			repo := t.TempDir()
-			path := filepath.Join(repo, tc.name)
-			testutil.MustWriteFile(t, path, tc.content)
-			catalog := newPackagingCatalog()
-			catalog.bytes = maxPackagingCatalogBytes
-			if _, err := catalog.read(repo, path); err != nil {
-				t.Fatal(err)
-			}
-			document := catalog.documents[path]
+			document := readOverflowIdentityDocument(t, tc.name, tc.content)
 			if !document.Deferred || !document.IdentityProjectionSet || document.IdentityProjectionError != "" {
 				t.Fatalf("format shape was not retained for identity consumers: %+v", document)
 			}
@@ -423,6 +407,19 @@ func TestPackagingCatalogOverflowPreservesFormatShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func readOverflowIdentityDocument(t *testing.T, name, content string) report.PythonManifestDocument {
+	t.Helper()
+	repo := t.TempDir()
+	path := filepath.Join(repo, name)
+	testutil.MustWriteFile(t, path, content)
+	catalog := newPackagingCatalog()
+	catalog.bytes = maxPackagingCatalogBytes
+	if _, err := catalog.read(repo, path); err != nil {
+		t.Fatal(err)
+	}
+	return catalog.documents[path]
 }
 
 func TestPythonIdentityProjectionRejectsUnusableDocuments(t *testing.T) {
