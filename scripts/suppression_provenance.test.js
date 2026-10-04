@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { inflateRawSync } = require('node:zlib');
 const verifySuppressionProvenance = require('./suppression_provenance.js');
 const verifyReuseSuppression = require('./reuse_suppression.js');
 
@@ -27,11 +28,13 @@ with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         info.create_system = 3
         info.external_attr = entry.get('mode', 0o100600) << 16
         info.compress_type = zipfile.ZIP_DEFLATED
-        archive.writestr(info, entry['content'])
+        archive.writestr(info, entry['content'] * entry.get('repeat', 1))
 sys.stdout.buffer.write(output.getvalue())
 `;
+  const input = JSON.stringify(entries);
+  assert(Buffer.byteLength(input) <= 4096, 'ZIP fixtures must keep Python stdin small; expand repeated content in Python');
   const result = spawnSync('/usr/bin/python3', ['-I', '-c', script], {
-    input: JSON.stringify(entries), maxBuffer: 1024 * 1024,
+    input, maxBuffer: 1024 * 1024,
     timeout: 10000, killSignal: 'SIGKILL', env: { PATH: '/usr/bin:/bin' },
   });
   assert.ifError(result.error);
@@ -225,6 +228,15 @@ test('validates immutable expected inputs before any API reads', async (t) => {
 });
 
 test('rejects missing, malformed, unsafe or oversized archives without extracting files', async (t) => {
+  const oversizedReport = zip([{ name: 'inline-suppressions.json', content: ' ', repeat: 131073 }]);
+  // Check the local ZIP header and inflate independently so a compact descriptor
+  // cannot silently turn the decompressed-size regression into another JSON error.
+  assert.equal(oversizedReport.readUInt32LE(0), 0x04034b50);
+  assert.equal(oversizedReport.readUInt16LE(8), 8);
+  assert.equal(oversizedReport.readUInt32LE(22), 131073);
+  const contentStart = 30 + oversizedReport.readUInt16LE(26) + oversizedReport.readUInt16LE(28);
+  const compressed = oversizedReport.subarray(contentStart, contentStart + oversizedReport.readUInt32LE(18));
+  assert.deepEqual(inflateRawSync(compressed), Buffer.alloc(131073, ' '));
   const archives = {
     'not ZIP': Buffer.from('not an archive'),
     'archive too large': Buffer.alloc(8 * 1024 * 1024 + 1),
@@ -234,7 +246,7 @@ test('rejects missing, malformed, unsafe or oversized archives without extractin
     'wrong records type': reportZip('{"schema":"lopper-inline-suppressions-v1","suppressions":{}}'),
     'nonempty records': reportZip('{"schema":"lopper-inline-suppressions-v1","suppressions":[{}]}'),
     'duplicate JSON member': reportZip('{"schema":"lopper-inline-suppressions-v1","suppressions":[{}],"suppressions":[]}'),
-    'oversized decompressed report': reportZip(' '.repeat(131073)),
+    'oversized decompressed report': oversizedReport,
     traversal: reportZip(emptyReport, [{ name: '../detector.cjs', content: 'throw new Error("executed")' }]),
     'unknown root file': reportZip(emptyReport, [{ name: 'detector.cjs', content: 'throw new Error("executed")' }]),
     'duplicate report': reportZip(emptyReport, [{ name: 'inline-suppressions.json', content: emptyReport }]),
