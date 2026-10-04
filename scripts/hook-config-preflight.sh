@@ -129,7 +129,8 @@ run_preflight_git() {
 		return "$status"
 	}
 	mkdir "$preflight_state_dir/active" || {
-		rmdir "$preflight_state_dir"
+		# mkdir can create active before interruption makes it report failure.
+		rm -rf "$preflight_state_dir"
 		preflight_state_dir=
 		preflight_defer_signals=0
 		if [ -n "$preflight_pending_signal" ]; then
