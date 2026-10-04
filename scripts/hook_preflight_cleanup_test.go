@@ -14,6 +14,54 @@ import (
 	"time"
 )
 
+func TestHookPreflightCleansPartialActiveDirectoryAfterInterrupt(t *testing.T) {
+	realMkdir, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir, evidenceDir, binDir := t.TempDir(), t.TempDir(), t.TempDir()
+	created, readerStarted := filepath.Join(evidenceDir, "active-created"), filepath.Join(evidenceDir, "reader-started")
+	// Model mkdir creating its directory before interruption makes it fail.
+	// The witness survives cleanup, so the test verifies the injected boundary.
+	writeFileMode(t, filepath.Join(binDir, "mkdir"), `#!/bin/sh
+`+shellQuote(realMkdir)+` "$@" || exit "$?"
+case "$1" in
+	"$TMPDIR"/lopper-hooks-preflight.*/active)
+		printf x >"$HOOK_ACTIVE_CREATED"
+		kill -TERM "$PPID"
+		exit 143
+		;;
+esac
+`, 0o755)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "sh", "-c", `set -eu
+. ./hook-config-preflight.sh
+cleanup_preflight_temps() { cleanup_preflight_git; }
+trap 'preflight_signal_status=143; preflight_handle_signal' TERM
+trap cleanup_preflight_git EXIT
+run_preflight_git sh -c 'printf x >"$1"' sh "$1" || exit "$?"
+`, "sh", readerStarted)
+	command.Env = append(os.Environ(), "TMPDIR="+stateDir, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "HOOK_ACTIVE_CREATED="+created)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	var exitErr *exec.ExitError
+	if ctx.Err() != nil || !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+		t.Fatalf("partial allocation interruption status: err=%v context=%v output=%s", err, ctx.Err(), output)
+	}
+	if _, err := os.Stat(created); err != nil {
+		t.Fatalf("active directory creation was not interrupted: %v", err)
+	}
+	if _, err := os.Stat(readerStarted); !os.IsNotExist(err) {
+		t.Fatalf("reader started after allocation interruption: %v", err)
+	}
+	if entries, err := os.ReadDir(stateDir); err != nil || len(entries) != 0 {
+		t.Fatalf("partial allocation left preflight state: %v %v; output=%s", entries, err, output)
+	}
+}
+
 func TestHookPreflightCleanupKeepsWatchdogUntilRunnerExits(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
