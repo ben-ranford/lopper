@@ -11,6 +11,7 @@ import (
 )
 
 func TestInstalledPreCommitRunsStagedCI(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "ci-ran")
 	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nexit 99\n", 0o755)
@@ -29,6 +30,7 @@ func TestInstalledPreCommitRunsStagedCI(t *testing.T) {
 }
 
 func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@echo fixture-ci-failed; exit 42\n")
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
@@ -45,8 +47,10 @@ func TestInstalledPreCommitBlocksFailedCI(t *testing.T) {
 }
 
 func TestInstalledPreCommitIgnoresCheckoutHooks(t *testing.T) {
+	t.Parallel()
 	for _, hookExit := range []string{"0", "42"} {
 		t.Run("exit_"+hookExit, func(t *testing.T) {
+			t.Parallel()
 			repoDir := newHookFixture(t)
 			hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 			writeFileMode(t, filepath.Join(hookDir, "post-checkout"), "#!/bin/sh\nprintf 'ci:\\n\\t@true\\n' > Makefile\nexit "+hookExit+"\n", 0o755)
@@ -74,6 +78,7 @@ func assertHookWorktreeCleaned(t *testing.T, repoDir string) {
 }
 
 func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "Makefile"), "ci:\n\t@test -z \"$${LOPPER_HOOK_AMEND-}\"\n\t@test \"$$(git rev-parse HEAD^)\" = \"$$(git rev-parse before-amend^)\"\n\t@! git merge-base --is-ancestor before-amend HEAD\n")
 	testutil.RunGit(t, repoDir, "add", "Makefile")
@@ -88,6 +93,7 @@ func TestInstalledPreCommitPreservesAmendParents(t *testing.T) {
 }
 
 func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	testutil.RunGit(t, repoDir, "checkout", "-b", "incoming")
 	writeFile(t, filepath.Join(repoDir, "incoming.txt"), "incoming change\n")
@@ -106,6 +112,7 @@ func TestInstalledPreCommitPreservesMergeParents(t *testing.T) {
 }
 
 func TestInstalledPreCommitChecksFullTreeFromSparseCheckout(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "included", "keep.txt"), "keep\n")
 	writeFile(t, filepath.Join(repoDir, "excluded", "required.txt"), "required\n")
@@ -129,6 +136,7 @@ func TestInstalledPreCommitChecksFullTreeFromSparseCheckout(t *testing.T) {
 }
 
 func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	hookDir := strings.TrimSpace(testutil.GitOutput(t, repoDir, "config", "--get", "core.hooksPath"))
 	managedHook := filepath.Join(hookDir, "pre-commit")
@@ -145,10 +153,12 @@ func TestHooksInstallRefreshesManagedSnapshot(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsUnformattedStagedGo(t *testing.T) {
+	t.Parallel()
 	assertInstalledPreCommitRejects(t, "sample.go", "package sample\n\nfunc Value() int {return 2}\n", "unformatted", "gofmt-formatted")
 }
 
 func TestInstalledPreCommitRejectsStagedWhitespace(t *testing.T) {
+	t.Parallel()
 	assertInstalledPreCommitRejects(t, "notes.txt", "trailing space \n", "whitespace", "trailing whitespace")
 }
 
@@ -165,6 +175,7 @@ func assertInstalledPreCommitRejects(t *testing.T, path, contents, message, expe
 }
 
 func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "sample.go"), "package sample\n\nfunc Value() int { return 2 }\n")
 	testutil.RunGit(t, repoDir, "add", "sample.go")
@@ -176,6 +187,7 @@ func TestInstalledPreCommitUsesStagedGoContent(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsExternalGofmtLinkIntoCheckout(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
 	toolsDir := filepath.Join(repoDir, "tools")
@@ -211,6 +223,7 @@ func TestInstalledPreCommitRejectsExternalGofmtLinkIntoCheckout(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsDirectCheckoutGofmt(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "branch-gofmt-ran")
 	toolsDir := filepath.Join(repoDir, "tools")
@@ -231,6 +244,7 @@ func TestInstalledPreCommitRejectsDirectCheckoutGofmt(t *testing.T) {
 }
 
 func TestInstalledPreCommitUsesSelectedExternalGofmt(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	trustedDir := filepath.Join(filepath.Dir(repoDir), "trusted")
 	selectedDir := filepath.Join(filepath.Dir(repoDir), "selected")
@@ -264,6 +278,7 @@ func TestInstalledPreCommitUsesSelectedExternalGofmt(t *testing.T) {
 }
 
 func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	testutil.RunGit(t, repoDir, "config", "core.hooksPath", "/custom/hooks")
@@ -286,6 +301,7 @@ func TestHooksInstallPreservesCustomPathAndManagedUninstall(t *testing.T) {
 }
 
 func TestHooksUninstallPreservesExplicitEmptyHooksPath(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	testutil.RunGit(t, repoDir, "config", "--local", "--add", "core.hooksPath", "")
@@ -299,6 +315,7 @@ func TestHooksUninstallPreservesExplicitEmptyHooksPath(t *testing.T) {
 }
 
 func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	sentinel := filepath.Join(repoDir, "legacy-hook-ran")
 	writeFileMode(t, filepath.Join(repoDir, ".githooks", "pre-commit"), "#!/bin/sh\nprintf legacy >"+sentinel+"\n", 0o755)
@@ -322,6 +339,7 @@ func TestHooksUninstallRemovesLegacyManagedPath(t *testing.T) {
 }
 
 func TestHooksInstallRejectsNonExecutableManagedHook(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	hookDir, err := hookCommand(repoDir, "git", "config", "--get", "core.hooksPath")
 	if err != nil {
@@ -347,6 +365,7 @@ func TestHooksInstallRejectsNonExecutableManagedHook(t *testing.T) {
 }
 
 func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	runCommand(t, repoDir, "make", "hooks-uninstall")
 	linkedDir := filepath.Join(filepath.Dir(repoDir), "linked")
@@ -362,6 +381,7 @@ func TestHooksInstallWorksFromLinkedWorktree(t *testing.T) {
 }
 
 func TestInstalledPreCommitUsesAlternateCommonDirectory(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	commonDir := filepath.Join(t.TempDir(), "common")
 	if err := os.CopyFS(commonDir, os.DirFS(filepath.Join(repoDir, ".git"))); err != nil {
@@ -380,6 +400,7 @@ func TestInstalledPreCommitUsesAlternateCommonDirectory(t *testing.T) {
 }
 
 func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	originalHead := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
 	objects := t.TempDir()
@@ -412,6 +433,7 @@ func TestInstalledPreCommitUsesAlternateObjectDatabase(t *testing.T) {
 }
 
 func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	indexPath := filepath.Join(repoDir, "alternate-index")
 	_, err := hookCommandWithEnv(repoDir, []string{"GIT_INDEX_FILE=" + indexPath}, "git", "read-tree", "HEAD")
@@ -435,6 +457,7 @@ func TestInstalledPreCommitUsesAlternateIndex(t *testing.T) {
 }
 
 func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
+	t.Parallel()
 	repoDir := newHookFixture(t)
 	writeFile(t, filepath.Join(repoDir, "0:formatted.go"), "package sample\n\nfunc Value() int { return 2 }\n")
 	testutil.RunGit(t, repoDir, "add", "0:formatted.go")
@@ -461,12 +484,14 @@ func TestInstalledPreCommitHandlesStageLikeGoFileNames(t *testing.T) {
 }
 
 func TestInstalledPreCommitChecksEveryLiteralGoFileName(t *testing.T) {
+	t.Parallel()
 	for _, fixture := range []struct{ name, source, failure string }{
 		{"formatted", "package sample\n\nfunc Value() int { return 2 }\n", ""},
 		{"unformatted", "package sample\n\nfunc Value() int {return 2}\n", "staged Go file must be gofmt-formatted: "},
 		{"invalid", "package sample\n\nfunc {\n", "gofmt failed for "},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
 			repoDir := newHookFixture(t)
 			files := []string{"space name.go", "line\nbreak.go", `back\slash.go`, `quote'"$name.go`, "-leading.go", ":(glob)*.go"}
 			for _, file := range files {
@@ -522,6 +547,8 @@ func assertHookFormattingOutcome(t *testing.T, files []string, failure, output s
 	}
 }
 
+// Each fixture owns its repository and managed hook snapshot. Command helpers
+// set environments on individual subprocesses so independent tests can overlap.
 func newHookFixture(t *testing.T) string {
 	t.Helper()
 	repoDir := filepath.Join(t.TempDir(), "repo")
@@ -590,10 +617,12 @@ func hookCommandWithEnv(dir string, env []string, name string, args ...string) (
 }
 
 func TestInstalledPreCommitExcludesSiblingTools(t *testing.T) {
+	t.Parallel()
 	for _, direction := range []string{"main-to-linked", "linked-to-main"} {
 		for _, tool := range []string{"git", "gofmt", "make"} {
 			for _, link := range []bool{false, true} {
 				t.Run(direction+"/"+tool+"/"+map[bool]string{false: "direct", true: "symlink"}[link], func(t *testing.T) {
+					t.Parallel()
 					assertSiblingHookToolExcluded(t, direction, tool, link)
 				})
 			}
@@ -633,6 +662,7 @@ func assertSiblingHookToolExcluded(t *testing.T, direction, tool string, link bo
 }
 
 func TestInstalledPreCommitKeepsFilteredPathInCI(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	tools := filepath.Join(repo, "tools")
 	writeFileMode(t, filepath.Join(tools, "untrusted-probe"), "#!/bin/sh\nexit 99\n", 0o755)
@@ -646,6 +676,7 @@ func TestInstalledPreCommitKeepsFilteredPathInCI(t *testing.T) {
 }
 
 func TestInstalledPreCommitAcceptsExternalPrefixAndMissingWorktree(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	missing := filepath.Join(filepath.Dir(repo), "missing")
 	testutil.RunGit(t, repo, "worktree", "add", "--detach", missing)
@@ -671,6 +702,7 @@ func TestInstalledPreCommitAcceptsExternalPrefixAndMissingWorktree(t *testing.T)
 }
 
 func TestInstalledPreCommitRejectsInvalidInventory(t *testing.T) {
+	t.Parallel()
 	for _, response := range []struct{ name, script string }{
 		{"failed", "exit 42"},
 		{"empty", "exit 0"},
@@ -681,6 +713,7 @@ func TestInstalledPreCommitRejectsInvalidInventory(t *testing.T) {
 		{"incomplete", "printf 'worktree %s\\0HEAD abc\\0' \"$PWD\""},
 	} {
 		t.Run(response.name, func(t *testing.T) {
+			t.Parallel()
 			repo := newHookFixture(t)
 			hook := filepath.Join(strings.TrimSpace(testutil.GitOutput(t, repo, "config", "--get", "core.hooksPath")), "pre-commit")
 			contents, err := os.ReadFile(hook)
@@ -700,8 +733,10 @@ func TestInstalledPreCommitRejectsInvalidInventory(t *testing.T) {
 }
 
 func TestInstalledPreCommitChecksEverySymlinkHop(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"return-to-external", "directory-link", "cycle", "dangling"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			repo := newHookFixture(t)
 			external := t.TempDir()
 			linkExternalHookTools(t, external)
@@ -741,6 +776,7 @@ func TestInstalledPreCommitChecksEverySymlinkHop(t *testing.T) {
 }
 
 func TestInstalledPreCommitDisablesGitExecutableConfiguration(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	external := t.TempDir()
 	marker := filepath.Join(external, "git-called")
@@ -766,6 +802,7 @@ func TestInstalledPreCommitDisablesGitExecutableConfiguration(t *testing.T) {
 }
 
 func TestInstalledPreCommitAllowsInaccessibleForeignWorktree(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	foreign := filepath.Join(filepath.Dir(repo), "inaccessible")
 	testutil.RunGit(t, repo, "worktree", "add", "--detach", foreign)
@@ -785,6 +822,7 @@ func TestInstalledPreCommitAllowsInaccessibleForeignWorktree(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsCheckoutCaseAlias(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	alias := filepath.Join(filepath.Dir(repo), "REPO")
 	if _, err := os.Stat(alias); err != nil {
@@ -799,6 +837,7 @@ func TestInstalledPreCommitRejectsCheckoutCaseAlias(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsSparseInspectionFailure(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	external := t.TempDir()
 	writeFileMode(t, filepath.Join(external, "git"), "#!/bin/sh\ncase \"$*\" in *'config --bool core.sparseCheckout'*) exit 42 ;; esac\nexec /usr/bin/git \"$@\"\n", 0o755)
@@ -811,8 +850,10 @@ func TestInstalledPreCommitRejectsSparseInspectionFailure(t *testing.T) {
 }
 
 func TestInstalledPreCommitRejectsAlternateCommonWorktreeTools(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []string{"git", "gofmt", "make"} {
 		t.Run(tool, func(t *testing.T) {
+			t.Parallel()
 			assertAlternateCommonToolRejected(t, tool)
 		})
 	}
@@ -849,6 +890,7 @@ func assertAlternateCommonToolRejected(t *testing.T, tool string) {
 }
 
 func TestInstalledPreCommitRejectsUnavailableAlternateCommonInventory(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	external := t.TempDir()
 	marker := filepath.Join(external, "git-executed")

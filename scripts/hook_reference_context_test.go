@@ -32,8 +32,12 @@ var hookReferenceCases = []hookReferenceCase{
 }
 
 func TestHooksUninstallResolvesOwningWorktree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range hookReferenceCases {
-		t.Run(tc.name, func(t *testing.T) { assertHookReferenceCase(t, tc) })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertHookReferenceCase(t, tc)
+		})
 	}
 }
 
@@ -126,6 +130,7 @@ func assertHookSnapshotRetention(t *testing.T, managed string, tc hookReferenceC
 }
 
 func TestHooksUninstallResolvesConfiguredWorktreeRoot(t *testing.T) {
+	t.Parallel()
 	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
 	effectiveRoot := t.TempDir()
 	const hookPath = "custom hooks"
@@ -145,6 +150,7 @@ func TestHooksUninstallResolvesConfiguredWorktreeRoot(t *testing.T) {
 }
 
 func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		link func(string, string) error
@@ -153,6 +159,7 @@ func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
 		{name: "hard link", link: os.Link},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
 			custom := filepath.Join(linked, "custom hooks")
 			if err := os.Mkdir(custom, 0o755); err != nil {
@@ -177,6 +184,7 @@ func TestHooksUninstallRetainsCustomHookFileLinks(t *testing.T) {
 }
 
 func TestHooksUninstallIgnoresCommandScopedHookPathOverride(t *testing.T) {
+	t.Parallel()
 	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
 	runCommand(t, linked, "git", "config", "--worktree", "core.hooksPath", managed)
 	env := []string{
@@ -194,6 +202,7 @@ func TestHooksUninstallIgnoresCommandScopedHookPathOverride(t *testing.T) {
 }
 
 func TestHooksUninstallIgnoresGlobalConfigFileSelector(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
 	env := hookHomeConfigEnvironment(t, repo, managed, "HOME")
@@ -211,6 +220,7 @@ func TestHooksUninstallIgnoresGlobalConfigFileSelector(t *testing.T) {
 }
 
 func TestHooksCleanupIgnoresSystemConfigFileSelector(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
 	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
@@ -225,8 +235,10 @@ func TestHooksCleanupIgnoresSystemConfigFileSelector(t *testing.T) {
 }
 
 func TestHooksCleanupRetainsOnInspectionFailure(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"missing", "malformed", "replaced"} {
 		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
 			repo := newHookFixture(t)
 			managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
 			linked := filepath.Join(t.TempDir(), "missing")
@@ -251,8 +263,10 @@ func TestHooksCleanupRetainsOnInspectionFailure(t *testing.T) {
 }
 
 func TestHooksCleanupForeignWindowsPathsAreAmbiguous(t *testing.T) {
+	t.Parallel()
 	for _, reference := range []string{`C:/custom-hooks`, `C:\custom-hooks`, `C:custom-hooks`, `C:`, `\\server\share\hooks`, `//server/share/hooks`} {
 		t.Run(reference, func(t *testing.T) {
+			t.Parallel()
 			repo := newHookFixture(t)
 			managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
 			runCommand(t, repo, "git", "config", "extensions.worktreeConfig", "true")
@@ -266,6 +280,7 @@ func TestHooksCleanupForeignWindowsPathsAreAmbiguous(t *testing.T) {
 }
 
 func TestHooksUninstallRetainsDefaultHookFileLink(t *testing.T) {
+	t.Parallel()
 	repo, managed, linked := newHookReferenceWorktree(t, hookReferenceCase{})
 	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
 	defaultHooks := testutil.GitOutput(t, linked, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
@@ -284,6 +299,7 @@ func TestHooksUninstallRetainsDefaultHookFileLink(t *testing.T) {
 }
 
 func TestHooksCleanupIgnoresNoSystemConfigSelector(t *testing.T) {
+	t.Parallel()
 	repo := newHookFixture(t)
 	managed := filepath.Join(testutil.GitOutput(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "lopper-hooks")
 	runCommand(t, repo, "git", "config", "--local", "--unset", "core.hooksPath")
