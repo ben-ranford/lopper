@@ -66,6 +66,11 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWindowsDescendantHelper$")
 	cmd.Env = append(os.Environ(), "LOPPER_WINDOWS_DESCENDANT_ROLE=parent", "LOPPER_WINDOWS_DESCENDANT_MARKER="+markerPath)
+	assertWindowsDescendantCancellation(t, ctx, cancel, cmd, markerPath, false)
+}
+
+func assertWindowsDescendantCancellation(t *testing.T, ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, markerPath string, observeReady bool) {
+	t.Helper()
 	var output descendantFailureOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -83,11 +88,14 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 			}
 		}
 	}()
+	observeBeforeCancel := func() {
+		tail, omitted := output.Snapshot()
+		t.Logf("descendant helper before cancellation: elapsed=%s marker={%s} parent={%s} combined_output_tail=%q omitted_bytes=%d",
+			time.Since(started), descendantMarkerSnapshot(markerPath), windowsParentSnapshot(uint32(cmd.Process.Pid)), tail, omitted)
+	}
 	defer func() {
 		if t.Failed() && ctx.Err() == nil {
-			tail, omitted := output.Snapshot()
-			t.Logf("descendant helper before cancellation: elapsed=%s marker={%s} parent={%s} combined_output_tail=%q omitted_bytes=%d",
-				time.Since(started), descendantMarkerSnapshot(markerPath), windowsParentSnapshot(uint32(cmd.Process.Pid)), tail, omitted)
+			observeBeforeCancel()
 		}
 		reapCancelledWindowsHelper(t, cancel, cmd)
 		if t.Failed() {
@@ -107,6 +115,9 @@ func TestStartCommandCancellationTerminatesWindowsDescendant(t *testing.T) {
 		}
 	}()
 
+	if observeReady {
+		observeBeforeCancel()
+	}
 	cancel()
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("expected cancelled command to return an error")
@@ -137,6 +148,7 @@ func reapCancelledWindowsHelper(t *testing.T, cancel context.CancelFunc, cmd *ex
 func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32 {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	var lastReadErr error
 	for time.Now().Before(deadline) {
 		contents, err := os.ReadFile(markerPath)
 		if err == nil {
@@ -146,9 +158,10 @@ func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32
 			}
 			return uint32(pid)
 		}
+		lastReadErr = err
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("child process marker was not created within %s", timeout)
+	t.Fatalf("child process marker was not created within %s (last read error: %v)", timeout, lastReadErr)
 	return 0
 }
 

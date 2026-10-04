@@ -2,6 +2,11 @@ name: windows runtime
 
 on:
   workflow_dispatch:
+    inputs:
+      legacy_shell_diagnostic:
+        description: Run only the bounded historical shell startup diagnostic
+        type: boolean
+        default: false
   pull_request:
     types:
       - opened
@@ -16,6 +21,7 @@ permissions:
 jobs:
   runtime-cancellation:
     runs-on: windows-latest
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.legacy_shell_diagnostic == true && 8 || 360 }}
     permissions:
       contents: read
     steps:
@@ -30,13 +36,35 @@ jobs:
           go-version-file: go.mod
 
       - name: Test Windows preference and console input handoff
+        if: github.event_name != 'workflow_dispatch' || inputs.legacy_shell_diagnostic != true
         shell: pwsh
         run: go test ./internal/ui -run '^(TestPreferenceConsole|TestStaveConsole)' -v -count=1 -timeout 30s
 
       - name: Test Windows failure observations
+        if: github.event_name != 'workflow_dispatch' || inputs.legacy_shell_diagnostic != true
         shell: pwsh
         run: go test ./internal/runtime -run '^TestWindowsParentSnapshot' -v -count=1 -timeout 30s
 
       - name: Test Windows runtime cancellation
+        if: github.event_name != 'workflow_dispatch' || inputs.legacy_shell_diagnostic != true
         shell: pwsh
         run: go test ./internal/runtime -run '^(TestStartCommandConfiguresWindowsJobCancellation|TestWindowsCommandCancellationWithoutProcess|TestStartCommandCancellationTerminatesWindowsDescendant|TestWindowsJobCleanupWaitsForDescendants|TestWindowsJobCleanupIsConcurrentAndRepeatable|TestWindowsJobRepeatedStartPreservesCommand|TestWindowsJobCancellationRacesCleanup|TestWindowsJobPreCanceledStartReleasesCommand)$' -v -count=50 -timeout 2m
+
+      - name: Diagnose historical Windows shell readiness
+        if: github.event_name == 'workflow_dispatch' && inputs.legacy_shell_diagnostic == true
+        shell: pwsh
+        env:
+          LOPPER_WINDOWS_LEGACY_SHELL_DIAGNOSTIC: '1'
+        run: |
+          Write-Output "Runner image: $env:ImageOS $env:ImageVersion"
+          Write-Output "Workflow source: $env:GITHUB_SHA"
+          go version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSVersionTable
+          go test ./internal/runtime -run '^(TestWindowsLegacyShellReadinessDiagnostic|TestStartCommandCancellationTerminatesWindowsDescendant)$' -v -count=1 -timeout 150s
+          exit $LASTEXITCODE
+
+      - name: Record classic PowerShell version after diagnosis
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.legacy_shell_diagnostic == true
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '$PSVersionTable'
