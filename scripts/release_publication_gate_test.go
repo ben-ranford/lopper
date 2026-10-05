@@ -12,9 +12,10 @@ import (
 )
 
 func TestReleaseSonarEvidence(t *testing.T) {
-	successes := []string{"success", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled", "activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled", "historical", "next-page"}
+	successes := []string{"success", "analysis-delayed", "analysis-empty-delayed", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled", "activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled", "historical", "next-page"}
 	for _, scenario := range []string{
 		"success", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled",
+		"analysis-delayed", "analysis-empty-delayed", "analysis-never-ready",
 		"activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled",
 		"no-token", "activity-forbidden", "activity-source-missing", "activity-source-pruned", "activity-source-future", "activity-source-malformed",
 		"activity-main-failed", "activity-main-explicit-failed", "activity-main-canceled", "activity-main-failed-after", "activity-main-equal-time", "activity-malformed", "activity-missing-time", "activity-truncated",
@@ -64,6 +65,17 @@ case "$*" in
   esac
   echo '{"tasks":[]}'; exit ;;
  *project_analyses*)
+  case "$SCENARIO" in
+   analysis-delayed|analysis-empty-delayed|analysis-never-ready)
+    if [[ ! -f "$STATE.ready" ]]; then
+      if [[ "$SCENARIO" == analysis-empty-delayed ]]; then
+        echo '{"paging":{"total":0},"analyses":[]}'
+      else
+        echo '{"paging":{"total":1},"analyses":[{"key":"older","revision":"other","date":"2026-09-22T00:00:00+0000"}]}'
+      fi
+      exit
+    fi ;;
+  esac
   case "$SCENARIO" in
    historical|history-*)
     latest=newer
@@ -175,6 +187,15 @@ esac
 			if err := os.WriteFile(filepath.Join(dir, "date"), []byte("#!/usr/bin/env bash\necho 1790726400\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			sleepMock := `#!/usr/bin/env bash
+set -eu
+[[ "$*" == 15 ]] || exit 23
+printf 'wait\n' >> "$STATE.waits"
+[[ "$SCENARIO" == analysis-never-ready ]] || touch "$STATE.ready"
+`
+			if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(sleepMock), 0700); err != nil {
+				t.Fatal(err)
+			}
 			sha := strings.Repeat("a", 40)
 			if scenario == "invalid-sha" {
 				sha = "main"
@@ -188,6 +209,20 @@ esac
 			output, err := cmd.CombinedOutput()
 			if (err == nil) != slices.Contains(successes, scenario) {
 				t.Fatalf("unexpected result: %v: %s", err, output)
+			}
+			waits, waitErr := os.ReadFile(filepath.Join(dir, "state.waits"))
+			if waitErr != nil && !os.IsNotExist(waitErr) {
+				t.Fatal(waitErr)
+			}
+			wantWaits := 0
+			switch scenario {
+			case "analysis-delayed", "analysis-empty-delayed":
+				wantWaits = 1
+			case "analysis-never-ready", "failed", "pending", "cancelled":
+				wantWaits = 19
+			}
+			if got := strings.Count(string(waits), "wait\n"); got != wantWaits {
+				t.Fatalf("wait count = %d, want %d: %s", got, wantWaits, output)
 			}
 		})
 	}

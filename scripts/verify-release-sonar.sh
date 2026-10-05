@@ -24,6 +24,9 @@ source_analysis() {
   for ((page = 1; page <= 100; page++)); do
     response=$(sonar_api "project_analyses/search?project=ben-ranford_lopper&branch=main&ps=500&p=${page}") || return 1
     if [[ "$page" == 1 ]]; then
+      if jq -e '.analyses == [] and .paging.total == 0' <<< "$response" >/dev/null; then
+        return 2
+      fi
       latest_key=$(jq -er '.analyses[0].key | select(type == "string" and length > 0)' <<< "$response") || return 1
     fi
     match=$(jq -c --arg sha "$SOURCE_SHA" --arg latest "$latest_key" \
@@ -37,7 +40,30 @@ source_analysis() {
       break
     fi
   done
-  echo '::error::No completed analysis found for the requested source SHA.' >&2
+  # A valid history without this revision can mean automatic analysis is still
+  # processing the push. This is not proof, but is eligible for bounded waiting.
+  return 2
+}
+
+wait_for_source_analysis() {
+  local attempt result outcome
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if result=$(source_analysis); then
+      printf '%s\n' "$result"
+      return 0
+    else
+      outcome=$?
+    fi
+    # API errors and malformed evidence are not a scheduling delay.
+    if [[ "$outcome" != 2 ]]; then
+      return "$outcome"
+    fi
+    if ((attempt < 20)); then
+      printf 'Waiting for completed Sonar analysis of %s (attempt %s/20).\n' "$SOURCE_SHA" "$attempt" >&2
+      sleep 15
+    fi
+  done
+  echo '::error::No completed analysis found for the requested source SHA after bounded waiting.' >&2
   return 1
 }
 
@@ -116,7 +142,7 @@ historical_zero_metrics() {
 # current task, so it cannot prove completion of this release's analysis.
 # Require the exact source revision in history and a quality gate for its ID;
 # re-read history after inventories to reject concurrent main-analysis changes.
-before=$(source_analysis)
+before=$(wait_for_source_analysis)
 analysis_id=$(jq -r '.key' <<< "$before")
 latest_id=$(jq -r '.latest' <<< "$before")
 verify_analysis_processing "$latest_id"
