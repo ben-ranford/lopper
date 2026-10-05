@@ -245,6 +245,7 @@
     "name": "stave-tui-preview",
     "description": "Enable the interactive Stave-backed TUI preview with legacy rollback.",
     "lifecycle": "preview",
-    "explicitOnly": true
+    "explicitOnly": true,
+    "firstStableRelease": "v1.8.9"
   }
 ]
