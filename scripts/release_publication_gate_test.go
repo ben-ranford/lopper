@@ -210,21 +210,26 @@ printf 'wait\n' >> "$STATE.waits"
 			if (err == nil) != slices.Contains(successes, scenario) {
 				t.Fatalf("unexpected result: %v: %s", err, output)
 			}
-			waits, waitErr := os.ReadFile(filepath.Join(dir, "state.waits"))
-			if waitErr != nil && !os.IsNotExist(waitErr) {
-				t.Fatal(waitErr)
-			}
-			wantWaits := 0
-			switch scenario {
-			case "analysis-delayed", "analysis-empty-delayed":
-				wantWaits = 1
-			case "analysis-never-ready", "failed", "pending", "cancelled":
-				wantWaits = 19
-			}
-			if got := strings.Count(string(waits), "wait\n"); got != wantWaits {
-				t.Fatalf("wait count = %d, want %d: %s", got, wantWaits, output)
-			}
+			assertReleaseSonarWaits(t, dir, scenario, output)
 		})
+	}
+}
+
+func assertReleaseSonarWaits(t *testing.T, dir, scenario string, output []byte) {
+	t.Helper()
+	waits, err := os.ReadFile(filepath.Join(dir, "state.waits"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	wantWaits := 0
+	switch scenario {
+	case "analysis-delayed", "analysis-empty-delayed":
+		wantWaits = 1
+	case "analysis-never-ready", "failed", "pending", "cancelled":
+		wantWaits = 19
+	}
+	if got := strings.Count(string(waits), "wait\n"); got != wantWaits {
+		t.Fatalf("wait count = %d, want %d: %s", got, wantWaits, output)
 	}
 }
 
