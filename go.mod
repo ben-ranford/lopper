@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	charm.land/bubbletea/v2 v2.0.10
 	github.com/ben-ranford/stave v1.0.0-rc.2
-	github.com/charmbracelet/ultraviolet v0.0.0-20260929091141-666ce5eec9fc
+	github.com/charmbracelet/ultraviolet v0.0.0-20261001125412-878653296cfd
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/windows v0.2.2
