@@ -2,7 +2,7 @@
 
 ## 1.8.9 (2026-10-05)
 
-- async: resolve main Sonar control-flow findings
+- No user-visible VS Code extension changes.
 
 ## 1.8.8 (2026-09-22)
 
