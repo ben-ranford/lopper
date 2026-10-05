@@ -233,6 +233,36 @@ func assertReleaseSonarWaits(t *testing.T, dir, scenario string, output []byte) 
 	}
 }
 
+func TestReleaseSonarPollingDeadline(t *testing.T) {
+	source := readConfig(t, "scripts/verify-release-sonar.sh")
+	functions, _, found := strings.Cut(source, "# Analysis history contains completed analyses")
+	if !found {
+		t.Fatal("missing verifier execution boundary")
+	}
+	for _, scenario := range []struct {
+		name, command string
+		wantSuccess   bool
+	}{
+		{"request-cap", `analysis_deadline=$((SECONDS + 3)); sonar_api 'project_analyses/search'`, true},
+		{"expired-request", `analysis_deadline=$SECONDS; sonar_api 'project_analyses/search'`, false},
+		{"expired-wait", `wait_sleeps=0; source_analysis() { return 2; }; sleep() { wait_sleeps=$((wait_sleeps + 1)); if ((wait_sleeps > 1)); then echo unexpected-sleep; fi; SECONDS=$((SECONDS + 301)); }; wait_for_source_analysis`, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			dir := t.TempDir()
+			mock := "#!/usr/bin/env bash\nset -eu\nwhile [[ $# -gt 0 ]]; do\nif [[ $1 == --max-time ]]; then [[ $2 -gt 0 && $2 -le 3 ]] || exit 23; echo capped-request; exit 0; fi\nshift\ndone\nexit 24\n"
+			if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(mock), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", functions+"\n"+scenario.command)
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "SOURCE_SHA="+strings.Repeat("a", 40), "SONAR_TOKEN=test-token")
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != scenario.wantSuccess || strings.Contains(string(output), "unexpected-sleep") {
+				t.Fatalf("unexpected deadline result: %v: %s", err, output)
+			}
+		})
+	}
+}
+
 func TestPublicationPathsRequireSourceGate(t *testing.T) {
 	for _, path := range []string{"release-orchestration.yml", "docker-ghcr.yml"} {
 		var workflow workflowConfig

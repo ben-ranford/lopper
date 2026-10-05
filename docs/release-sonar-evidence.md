@@ -7,7 +7,9 @@ analysis-specific quality gate to be `OK` with `ignoredConditions` explicitly
 issues, zero accepted or false-positive issues, and zero hotspots in the unfiltered
 inventory, including reviewed `SAFE` or `FIXED` hotspots. Automatic analysis can
 finish after the release job starts. A valid main history without the exact source
-revision is polled up to 20 times, 15 seconds apart, before failing. API errors and
+revision is polled up to 20 times, 15 seconds apart, within a five-minute elapsed
+budget before failing. Lookup request timeouts and sleeps are capped by the
+remaining budget, including pagination. API errors and
 malformed responses fail immediately. The wait grants no approval: all processing,
 task-history, quality-gate, and inventory checks still run after the exact analysis
 appears. A queued, failed, missing, or changing analysis then causes verification

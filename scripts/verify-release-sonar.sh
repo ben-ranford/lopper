@@ -11,8 +11,18 @@ if [[ -z "${SONAR_TOKEN:-}" ]]; then
 fi
 
 sonar_api() {
-  local endpoint="$1"
-  set -- --fail --silent --show-error --connect-timeout 10 --max-time 30
+  local endpoint="$1" request_timeout=30
+  if [[ -n "${analysis_deadline:-}" ]]; then
+    request_timeout=$((analysis_deadline - SECONDS))
+    if ((request_timeout <= 0)); then
+      echo '::error::Sonar analysis polling deadline exhausted.' >&2
+      return 1
+    fi
+    if ((request_timeout > 30)); then
+      request_timeout=30
+    fi
+  fi
+  set -- --fail --silent --show-error --connect-timeout 10 --max-time "$request_timeout"
   if [[ "$endpoint" == ce/activity\?* ]]; then
     set -- "$@" --user "${SONAR_TOKEN}:"
   fi
@@ -46,7 +56,7 @@ source_analysis() {
 }
 
 wait_for_source_analysis() {
-  local attempt result outcome
+  local attempt result outcome remaining delay analysis_deadline=$((SECONDS + 300))
   for ((attempt = 1; attempt <= 20; attempt++)); do
     if result=$(source_analysis); then
       printf '%s\n' "$result"
@@ -59,8 +69,16 @@ wait_for_source_analysis() {
       return "$outcome"
     fi
     if ((attempt < 20)); then
+      remaining=$((analysis_deadline - SECONDS))
+      if ((remaining <= 0)); then
+        break
+      fi
+      delay=15
+      if ((remaining < delay)); then
+        delay=$remaining
+      fi
       printf 'Waiting for completed Sonar analysis of %s (attempt %s/20).\n' "$SOURCE_SHA" "$attempt" >&2
-      sleep 15
+      sleep "$delay"
     fi
   done
   echo '::error::No completed analysis found for the requested source SHA after bounded waiting.' >&2
