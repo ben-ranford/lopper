@@ -12,9 +12,10 @@ import (
 )
 
 func TestReleaseSonarEvidence(t *testing.T) {
-	successes := []string{"success", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled", "activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled", "historical", "next-page"}
+	successes := []string{"success", "analysis-delayed", "analysis-empty-delayed", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled", "activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled", "historical", "next-page"}
 	for _, scenario := range []string{
 		"success", "ce-main-success", "ce-pr-failed", "ce-pr-canceled", "ce-other-branch-failed", "ce-other-branch-canceled",
+		"analysis-delayed", "analysis-empty-delayed", "analysis-never-ready",
 		"activity-old-failure", "activity-pr-failure", "activity-pr-canceled", "activity-other-branch-failed", "activity-other-branch-canceled",
 		"no-token", "activity-forbidden", "activity-source-missing", "activity-source-pruned", "activity-source-future", "activity-source-malformed",
 		"activity-main-failed", "activity-main-explicit-failed", "activity-main-canceled", "activity-main-failed-after", "activity-main-equal-time", "activity-malformed", "activity-missing-time", "activity-truncated",
@@ -64,6 +65,17 @@ case "$*" in
   esac
   echo '{"tasks":[]}'; exit ;;
  *project_analyses*)
+  case "$SCENARIO" in
+   analysis-delayed|analysis-empty-delayed|analysis-never-ready)
+    if [[ ! -f "$STATE.ready" ]]; then
+      if [[ "$SCENARIO" == analysis-empty-delayed ]]; then
+        echo '{"paging":{"total":0},"analyses":[]}'
+      else
+        echo '{"paging":{"total":1},"analyses":[{"key":"older","revision":"other","date":"2026-09-22T00:00:00+0000"}]}'
+      fi
+      exit
+    fi ;;
+  esac
   case "$SCENARIO" in
    historical|history-*)
     latest=newer
@@ -175,6 +187,15 @@ esac
 			if err := os.WriteFile(filepath.Join(dir, "date"), []byte("#!/usr/bin/env bash\necho 1790726400\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			sleepMock := `#!/usr/bin/env bash
+set -eu
+[[ "$*" == 15 ]] || exit 23
+printf 'wait\n' >> "$STATE.waits"
+[[ "$SCENARIO" == analysis-never-ready ]] || touch "$STATE.ready"
+`
+			if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(sleepMock), 0700); err != nil {
+				t.Fatal(err)
+			}
 			sha := strings.Repeat("a", 40)
 			if scenario == "invalid-sha" {
 				sha = "main"
@@ -188,6 +209,55 @@ esac
 			output, err := cmd.CombinedOutput()
 			if (err == nil) != slices.Contains(successes, scenario) {
 				t.Fatalf("unexpected result: %v: %s", err, output)
+			}
+			assertReleaseSonarWaits(t, dir, scenario, output)
+		})
+	}
+}
+
+func assertReleaseSonarWaits(t *testing.T, dir, scenario string, output []byte) {
+	t.Helper()
+	waits, err := os.ReadFile(filepath.Join(dir, "state.waits"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	wantWaits := 0
+	switch scenario {
+	case "analysis-delayed", "analysis-empty-delayed":
+		wantWaits = 1
+	case "analysis-never-ready", "failed", "pending", "cancelled":
+		wantWaits = 19
+	}
+	if got := strings.Count(string(waits), "wait\n"); got != wantWaits {
+		t.Fatalf("wait count = %d, want %d: %s", got, wantWaits, output)
+	}
+}
+
+func TestReleaseSonarPollingDeadline(t *testing.T) {
+	source := readConfig(t, "scripts/verify-release-sonar.sh")
+	functions, _, found := strings.Cut(source, "# Analysis history contains completed analyses")
+	if !found {
+		t.Fatal("missing verifier execution boundary")
+	}
+	for _, scenario := range []struct {
+		name, command string
+		wantSuccess   bool
+	}{
+		{"request-cap", `analysis_deadline=$((SECONDS + 3)); sonar_api 'project_analyses/search'`, true},
+		{"expired-request", `analysis_deadline=$SECONDS; sonar_api 'project_analyses/search'`, false},
+		{"expired-wait", `wait_sleeps=0; source_analysis() { return 2; }; sleep() { wait_sleeps=$((wait_sleeps + 1)); if ((wait_sleeps > 1)); then echo unexpected-sleep; fi; SECONDS=$((SECONDS + 301)); }; wait_for_source_analysis`, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			dir := t.TempDir()
+			mock := "#!/usr/bin/env bash\nset -eu\nwhile [[ $# -gt 0 ]]; do\nif [[ $1 == --max-time ]]; then [[ $2 -gt 0 && $2 -le 3 ]] || exit 23; echo capped-request; exit 0; fi\nshift\ndone\nexit 24\n"
+			if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(mock), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", functions+"\n"+scenario.command)
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "SOURCE_SHA="+strings.Repeat("a", 40), "SONAR_TOKEN=test-token")
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != scenario.wantSuccess || strings.Contains(string(output), "unexpected-sleep") {
+				t.Fatalf("unexpected deadline result: %v: %s", err, output)
 			}
 		})
 	}

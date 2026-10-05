@@ -5,8 +5,15 @@ up to 100 pages of 500 main-branch analyses for that exact revision, checks its
 analysis-specific quality gate to be `OK` with `ignoredConditions` explicitly
 `false`, and requires the current completed main analysis to have zero unresolved
 issues, zero accepted or false-positive issues, and zero hotspots in the unfiltered
-inventory, including reviewed `SAFE` or `FIXED` hotspots. A queued, failed, missing,
-or changing analysis causes verification to fail. Missing or malformed ignored-condition
+inventory, including reviewed `SAFE` or `FIXED` hotspots. Automatic analysis can
+finish after the release job starts. A valid main history without the exact source
+revision is polled up to 20 times, 15 seconds apart, within a five-minute elapsed
+budget before failing. Lookup request timeouts and sleeps are capped by the
+remaining budget, including pagination. API errors and
+malformed responses fail immediately. The wait grants no approval: all processing,
+task-history, quality-gate, and inventory checks still run after the exact analysis
+appears. A queued, failed, missing, or changing analysis then causes verification
+to fail. Missing or malformed ignored-condition
 evidence also fails closed.
 
 An older source can remain eligible after main advances, but a passing historical
