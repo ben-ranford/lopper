@@ -197,6 +197,9 @@ set -m
 		reader_status=0
 		wait "$reader_pid" || reader_status=$?
 	fi
+	# Readers retain their inherited stderr; anchor cleanup must not add Bash
+	# job notices to the Git diagnostics used to distinguish missing settings.
+	exec 2>/dev/null
 	# Keep the group leader alive, without forking during the final group kill.
 	(trap "" HUP INT TERM; exec sleep 60) & hold_pid=$!
 	if [ -z "$reader_interrupted" ] && rmdir "$state_dir/active" 2>/dev/null; then
