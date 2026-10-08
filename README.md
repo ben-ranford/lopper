@@ -54,6 +54,8 @@ Inspect one dependency:
 lopper analyse lodash --repo . --language js-ts
 ```
 
+Place `--` before a dependency name or snapshot key that starts with a dash. Arguments after `--` stay positional; commands such as `features` and `mcp`, which accept no positional arguments, reject them.
+
 Open the terminal UI:
 
 ```bash
