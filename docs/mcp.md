@@ -2,7 +2,7 @@
 
 `lopper mcp` runs a local stdio Model Context Protocol server for agent workflows that need dependency surface analysis without shelling out to parse CLI text.
 
-The server speaks JSON-RPC over stdio using `Content-Length` frames. It writes protocol responses to stdout and does not emit normal CLI output in MCP mode.
+The server speaks JSON-RPC over stdio using `Content-Length` frames. It writes protocol responses to stdout and does not emit normal CLI output in MCP mode. Each frame must contain exactly one JSON value; trailing JSON whitespace is allowed. Additional values or other trailing data return parse error `-32700` with a null request ID before any request is executed. Subsequent valid frames are processed normally.
 
 ## Client Configuration
 
