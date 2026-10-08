@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"flag"
 	"log"
 	"os"
 	"testing"
@@ -11,6 +12,11 @@ import (
 var benchFixtureGoCache string
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	if err := prepareGradleInferenceProof(); err != nil {
+		log.Printf("prepare Gradle inference proof: %v", err)
+		os.Exit(1)
+	}
 	cacheDir, err := os.MkdirTemp("", "lopper-scripts-go-cache-")
 	if err != nil {
 		log.Printf("create benchmark fixture Go cache: %v", err)
