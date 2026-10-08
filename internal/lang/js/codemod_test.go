@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -306,4 +307,23 @@ func applySingleLineUnifiedPatch(content, patch string) (string, error) {
 	}
 	lines[line-1] = newLine
 	return strings.Join(lines, "\n"), nil
+}
+
+func TestSuggestOnlyPatchQuotesNewlineFilename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows forbids POSIX control and quote filename bytes; portable header encoding is tested in shared")
+	}
+	repo, sourcePath, _ := setupLodashFixture(t, mapImportFixtureSource)
+	const filename = "line\nbreak.js"
+	if err := os.Rename(sourcePath, filepath.Join(repo, filename)); err != nil {
+		t.Fatal(err)
+	}
+	result := analyseSuggestOnly(t, repo)
+	if len(result.Dependencies) != 1 || result.Dependencies[0].Codemod == nil || len(result.Dependencies[0].Codemod.Suggestions) != 1 {
+		t.Fatalf("expected one suggestion, got %#v", result.Dependencies)
+	}
+	suggestion := result.Dependencies[0].Codemod.Suggestions[0]
+	if suggestion.File != filename || !strings.HasPrefix(suggestion.Patch, "--- \"a/line\\012break.js\"\n+++ \"b/line\\012break.js\"\n") {
+		t.Fatalf("filename did not round-trip into quoted patch headers: %#v", suggestion)
+	}
 }

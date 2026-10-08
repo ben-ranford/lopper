@@ -80,11 +80,39 @@ func NewCodemodSkip(spec CodemodSkipSpec) report.CodemodSkip {
 }
 
 func BuildSingleLinePatch(file string, line int, oldLine, newLine string) string {
-	return strings.Join([]string{fmt.Sprintf("--- a/%s", file), fmt.Sprintf("+++ b/%s", file), fmt.Sprintf("@@ -%d +%d @@", line, line), "-" + oldLine, "+" + newLine}, "\n")
+	return strings.Join([]string{"--- " + codemodPatchPath("a/"+file), "+++ " + codemodPatchPath("b/"+file), fmt.Sprintf("@@ -%d +%d @@", line, line), "-" + oldLine, "+" + newLine}, "\n")
 }
 
 func BuildDeleteLinePatch(file string, line int, oldLine string) string {
-	return strings.Join([]string{fmt.Sprintf("--- a/%s", file), fmt.Sprintf("+++ b/%s", file), fmt.Sprintf("@@ -%d,1 +%d,0 @@", line, line-1), "-" + oldLine}, "\n")
+	return strings.Join([]string{"--- " + codemodPatchPath("a/"+file), "+++ " + codemodPatchPath("b/"+file), fmt.Sprintf("@@ -%d,1 +%d,0 @@", line, line-1), "-" + oldLine}, "\n")
+}
+
+// codemodPatchPath preserves filename bytes using Git's C-style quoting.
+// Octal escapes avoid Go-only \x and \u escapes that Git cannot decode.
+func codemodPatchPath(path string) string {
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	needsQuote := false
+	for index := 0; index < len(path); index++ {
+		char := path[index]
+		switch {
+		case char == '"' || char == '\\':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(char)
+			needsQuote = true
+		case char < ' ' || char >= 0x7f:
+			fmt.Fprintf(&quoted, "\\%03o", char)
+			needsQuote = true
+		default:
+			quoted.WriteByte(char)
+			needsQuote = needsQuote || char == ' '
+		}
+	}
+	if !needsQuote {
+		return path
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
 }
 
 func LoadCodemodSourceLines(repoPath, filePath string, lineCache map[string][]string) ([]string, string, bool) {
