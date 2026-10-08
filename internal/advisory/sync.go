@@ -886,9 +886,67 @@ func updateManifest(root safeio.Root, snapshot CacheSnapshot, now time.Time) err
 	}
 	payload = append(payload, '\n')
 	if int64(len(payload)) > maxCacheManifestBytes {
+		payload, err = retainManifestHistory(manifest, int64(len(payload)))
+		if err != nil {
+			return err
+		}
+	}
+	if int64(len(payload)) > maxCacheManifestBytes {
 		return fmt.Errorf("write advisory cache manifest: serialized size %d exceeds %d-byte limit: %w", len(payload), maxCacheManifestBytes, safeio.ErrFileTooLarge)
 	}
 	return safeio.WriteFileWithinRoot(root, manifestFileName, payload, 0o640)
+}
+
+// retainManifestHistory removes oldest metadata only; publication owns blob lifetime.
+func retainManifestHistory(manifest CacheManifest, size int64) ([]byte, error) {
+	history := make([]CacheSnapshot, 0, len(manifest.Snapshots))
+	for _, snapshot := range manifest.Snapshots {
+		if snapshot.ID != manifest.Latest {
+			history = append(history, snapshot)
+		}
+	}
+	sort.Slice(history, func(i, j int) bool {
+		left := snapshotRetrievalTime(history[i])
+		right := snapshotRetrievalTime(history[j])
+		if left.Equal(right) {
+			return history[i].ID < history[j].ID
+		}
+		return left.Before(right)
+	})
+	removed := make(map[string]bool)
+	for _, snapshot := range history {
+		if size <= maxCacheManifestBytes {
+			break
+		}
+		encoded, err := json.MarshalIndent(snapshot, "    ", "  ")
+		if err != nil {
+			return nil, err
+		}
+		// A record has four leading spaces, a comma and a newline in the
+		// indented array. The current record always remains in that array.
+		size -= int64(len(encoded) + 6)
+		removed[snapshot.ID] = true
+	}
+	retained := manifest.Snapshots[:0]
+	for _, snapshot := range manifest.Snapshots {
+		if !removed[snapshot.ID] {
+			retained = append(retained, snapshot)
+		}
+	}
+	manifest.Snapshots = retained
+	payload, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(payload, '\n'), nil
+}
+
+func snapshotRetrievalTime(snapshot CacheSnapshot) time.Time {
+	retrieved, err := time.Parse(time.RFC3339, snapshot.RetrievedAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return retrieved
 }
 
 func inferSnapshotSchema(data []byte) string {
