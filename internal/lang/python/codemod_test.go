@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,28 @@ func TestPythonCodemodSmallHelpers(t *testing.T) {
 	}
 	if got := pythonLineModule(imports); got != "requests" {
 		t.Fatalf("expected deduped module, got %q", got)
+	}
+}
+
+func TestUnusedImportPatchQuotesNewlineFilename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows forbids POSIX control and quote filename bytes; portable header encoding is tested in shared")
+	}
+	repo := t.TempDir()
+	const filename = "line\nbreak.py"
+	if err := os.WriteFile(filepath.Join(repo, filename), []byte("import requests\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scan := scanResult{Files: []fileScan{{
+		Path:    filename,
+		Imports: []importBinding{{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests", Location: report.Location{File: filename, Line: 1}}},
+	}}}
+	result, warnings := BuildUnusedImportCodemodReport(repo, "requests", scan)
+	if len(warnings) != 0 || len(result.Suggestions) != 1 {
+		t.Fatalf("expected one suggestion: %#v, warnings: %#v", result, warnings)
+	}
+	suggestion := result.Suggestions[0]
+	if suggestion.File != filename || !strings.HasPrefix(suggestion.Patch, "--- \"a/line\\012break.py\"\n+++ \"b/line\\012break.py\"\n") {
+		t.Fatalf("filename did not round-trip into quoted patch headers: %#v", suggestion)
 	}
 }
