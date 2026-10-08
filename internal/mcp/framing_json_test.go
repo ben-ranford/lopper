@@ -40,24 +40,7 @@ func TestServeRejectsTrailingJSONBeforeDispatch(t *testing.T) {
 		t.Run(request.name, func(t *testing.T) {
 			for _, suffix := range suffixes {
 				t.Run(suffix.name, func(t *testing.T) {
-					runner := &fakeMutationRunner{}
-					server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
-					malformed := append(mustJSON(t, request.req), suffix.data...)
-					recovery := mustJSON(t, rpcRequest{JSONRPC: jsonrpcVersion, ID: json.RawMessage(`3`), Method: methodInitialize})
-					responses := serveJSONFrames(t, server, malformed, recovery)
-					if runner.applyCalled || runner.baselineCalled || runner.dashboardCalled {
-						t.Error("malformed frame dispatched a mutation")
-					}
-					if len(responses) != 2 {
-						t.Fatalf("expected parse error and recovery response, got %#v", responses)
-					}
-					first := responses[0]
-					if first.Error == nil || first.Error.Code != codeParseError || string(first.ID) != "null" || first.Result != nil {
-						t.Errorf("expected parse error with null ID and no result, got %#v", first)
-					}
-					if responses[1].Error != nil || string(responses[1].ID) != "3" || responses[1].Result == nil {
-						t.Errorf("expected successful next frame, got %#v", responses[1])
-					}
+					assertMalformedJSONFrame(t, request.req, suffix.data)
 				})
 			}
 		})
@@ -100,5 +83,27 @@ func serveJSONFrames(t *testing.T, server *Server, payloads ...[]byte) []rpcResp
 			t.Fatalf("decode response: %v", err)
 		}
 		responses = append(responses, response)
+	}
+}
+
+func assertMalformedJSONFrame(t *testing.T, request rpcRequest, suffix string) {
+	t.Helper()
+	runner := &fakeMutationRunner{}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	malformed := append(mustJSON(t, request), suffix...)
+	recovery := mustJSON(t, rpcRequest{JSONRPC: jsonrpcVersion, ID: json.RawMessage(`3`), Method: methodInitialize})
+	responses := serveJSONFrames(t, server, malformed, recovery)
+	if runner.applyCalled || runner.baselineCalled || runner.dashboardCalled {
+		t.Error("malformed frame dispatched a mutation")
+	}
+	if len(responses) != 2 {
+		t.Fatalf("expected parse error and recovery response, got %#v", responses)
+	}
+	first := responses[0]
+	if first.Error == nil || first.Error.Code != codeParseError || string(first.ID) != "null" || first.Result != nil {
+		t.Errorf("expected parse error with null ID and no result, got %#v", first)
+	}
+	if responses[1].Error != nil || string(responses[1].ID) != "3" || responses[1].Result == nil {
+		t.Errorf("expected successful next frame, got %#v", responses[1])
 	}
 }
