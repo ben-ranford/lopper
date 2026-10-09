@@ -164,6 +164,8 @@ class PolicyPathTests(unittest.TestCase):
             ".github/duplication-baseline.json", ".github/workflows/reuse.yml",
             ".github/actions/check/action.yml", "scripts/github-action/action.yaml",
             "scripts/check_reuse.py", "scripts/check_reuse_test.py",
+            "scripts/sonar_maintenance.py", "scripts/sonar_maintenance_verify.js",
+            "scripts/sonar_maintenance_scanner.json",
             "scripts/reuse_policy_review.py", "scripts/reuse_policy_review_test.py",
             "scripts/reuse_event.py", "scripts/reuse_event_test.py",
             "scripts/check_duplication.py", "scripts/duplication_policy.py",

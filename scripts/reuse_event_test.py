@@ -27,7 +27,7 @@ BASE = "a" * 40
 HEAD = "b" * 40
 SIGNAL = ".github/workflows/reuse-review-signal.yml"
 PREFIX = "/repos/" + REPOSITORY
-SNAPSHOT = dict(version=1, repository=REPOSITORY, repository_id=10,
+SNAPSHOT = dict(version=2, policy_source=BASE, repository=REPOSITORY, repository_id=10,
                 head_repository_id=20, pull_number=12, base=BASE, head=HEAD, base_ref="main")
 CI_RUNS = PREFIX + "/actions/workflows/ci.yml/runs?per_page=100&page=1&head_sha=" + HEAD + "&event=pull_request"
 
@@ -54,12 +54,12 @@ def review_document():
 
 
 def result_document(paths=None):
-    return dict(version=1, snapshot=copy.deepcopy(SNAPSHOT), candidate="c" * 40,
+    return dict(version=2, snapshot=copy.deepcopy(SNAPSHOT), candidate="c" * 40,
                 detector_exit=0, policy_paths=paths or [])
 
 
 def suppression_document():
-    return dict(headSHA=HEAD, baseSHA=BASE, runId=41, runAttempt=2, artifactId=101, suppressionCount=0)
+    return dict(version=2, policySHA=BASE, headSHA=HEAD, baseSHA=BASE, runId=41, runAttempt=2, artifactId=101, suppressionCount=0)
 
 
 def ci_document():
@@ -129,6 +129,60 @@ class FakeAPI:
         if (repository, artifact_id) != (REPOSITORY, 99):
             raise AssertionError("Wrong artifact identity")
         return self.archive
+
+
+class StackPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeAPI()
+        self.reference = "codex/v1.8.10-parent"
+        self.parent_sha = "c" * 40
+        self.child = pull_document()
+        self.child["base"].update(ref=self.reference, sha=self.parent_sha)
+        self.child["head"]["repo"]["id"] = 10
+        self.child["head"]["ref"] = "codex/v1.8.10-child"
+        self.parent = pull_document()
+        self.parent["number"] = 13
+        self.parent["head"].update(sha=self.parent_sha, ref=self.reference, repo={"id": 10})
+        self.api.responses[PREFIX + "/pulls/12"] = self.child
+        self.api.responses[PREFIX + "/pulls/13"] = self.parent
+        self.api.responses[PREFIX + "/git/ref/heads/codex%2Fv1.8.10-parent"] = {"object": {"sha": self.parent_sha}}
+        self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent]
+
+    def test_policy_source_is_main_while_actual_target_is_unique_live_parent(self):
+        snapshot = event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        self.assertEqual(snapshot["policy_source"], BASE)
+        self.assertEqual(snapshot["base"], self.parent_sha)
+        self.assertEqual(snapshot["head"], HEAD)
+        event.same_live_pair(self.api, snapshot)
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "d" * 40
+        with self.assertRaisesRegex(event.EventError, "changed"):
+            event.same_live_pair(self.api, snapshot)
+
+    def test_missing_closed_duplicate_or_foreign_parent_cannot_grant_success(self):
+        for parents in ([], [dict(self.parent, state="closed")], [self.parent, self.parent]):
+            with self.subTest(parents=parents):
+                self.api.page_responses[PREFIX + "/pulls"] = [self.child, *parents]
+                with self.assertRaisesRegex(event.EventError, "unique live open parent"):
+                    event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        self.assertEqual(self.api.posts, [])
+
+    def test_closed_and_deleted_parent_still_revoke_authenticated_child(self):
+        self.parent["state"] = "closed"
+        del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fv1.8.10-parent"]
+        payload = {"repository": {"id": 10}, "action": "closed", "number": 13}
+        self.assertEqual(event.invalidate_stack_event(self.api, payload, "pull_request_target", REPOSITORY, 10), 1)
+        deletion = {"repository": {"id": 10}, "ref_type": "branch", "ref": self.reference}
+        self.assertEqual(event.invalidate_stack_event(self.api, deletion, "delete", REPOSITORY, 10), 1)
+        self.assertEqual([entry[0] for entry in self.api.posts], [PREFIX + "/statuses/" + HEAD] * 2)
+        self.assertEqual([entry[1]["state"] for entry in self.api.posts], ["pending", "pending"])
+        with self.assertRaises(event.EventError):
+            event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+
+    def test_policy_push_revokes_stack_even_when_target_disappears(self):
+        del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fv1.8.10-parent"]
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 2)
+        self.assertTrue(all(post[1]["state"] == "pending" for post in self.api.posts))
 
 
 class EventTests(unittest.TestCase):
@@ -889,7 +943,7 @@ class InputBoundaryTests(unittest.TestCase):
 
 class PendingCITests(unittest.TestCase):
     def deferred(self, reason="pending", run_id=41, attempt=2):
-        return dict(version=1, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,
+        return dict(version=2, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,
                     runId=run_id, runAttempt=attempt)
 
     def publish(self, api, **kwargs):
@@ -1139,7 +1193,7 @@ class CandidateTests(unittest.TestCase):
             hook = root / ".git/hooks/post-commit"
             hook.write_text("#!/bin/sh\ntouch EXECUTED\n")
             hook.chmod(0o700)
-            snapshot = dict(SNAPSHOT, base=base, head=head)
+            snapshot = dict(SNAPSHOT, base=base, head=head, policy_source=base)
             original = event.git
 
             def offline_git(directory, *args, **kwargs):

@@ -114,7 +114,7 @@ def has_symlinks(root, revisions, git, environment):
                                      root, environment).split("\0"))
 
 
-def run_detectors(root, base, revision, go, git, environment):
+def run_detectors(root, base, revision, go, git, environment, policy_source=None):
     # Imported only after validating the protected checkout. The candidate's
     # Python modules, Go module/workspace, workflows and Makefile never execute.
     import duplication_policy
@@ -131,6 +131,8 @@ def run_detectors(root, base, revision, go, git, environment):
                        "--version", setting(root, "DUPL_VERSION"),
                        "--threshold", setting(root, "DUPLICATION_TOKEN_THRESHOLD"),
                        "--max", setting(root, "DUPLICATION_MAX"), "--baseline", BASELINE]
+            if policy_source is not None:
+                command.extend(["--policy-source", policy_source])
             detector_environment = dict(environment, LOPPER_DUPLICATION_GO=go,
                                         LOPPER_DUPLICATION_GIT=git)
             duplication = subprocess.run(command, cwd=source, env=detector_environment, check=False)
@@ -150,6 +152,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--policy-source", help="Immutable protected executable and policy commit")
     args = parser.parse_args(argv)
     try:
         base, revision = immutable_sha(args.base), immutable_sha(args.revision)
@@ -163,7 +166,12 @@ def main(argv=None):
         # same credential-free environment as the detector subprocesses.
         os.environ.clear()
         os.environ.update(environment)
-        validate_base(root, base, git, environment)
+        protected = immutable_sha(args.policy_source) if args.policy_source else base
+        validate_base(root, protected, git, environment)
+        if args.policy_source:
+            import duplication_policy
+            with duplication_policy.isolated_checkout(root, base) as comparison:
+                reject_baseline_allowances(comparison / BASELINE)
         checked([git, "cat-file", "-e", f"{revision}^{{commit}}"], root, environment)
         checked([git, "merge-base", "--is-ancestor", base, revision], root, environment)
         paths = changed_paths(root, base, revision, git, environment)
@@ -171,7 +179,7 @@ def main(argv=None):
         if not relevant(paths) and (not paths or not has_symlinks(root, (base, revision), git, environment)):
             print("Reuse check passed: no relevant source or policy changes")
             return 0
-        result = run_detectors(root, base, revision, go, git, environment)
+        result = run_detectors(root, base, revision, go, git, environment, args.policy_source)
         print(f"Reuse check {'passed' if result == 0 else 'failed'}: exit={result}", flush=True)
         return result
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

@@ -10,7 +10,7 @@ const { createVerifier, collectPages, signedArchiveURL, requestArtifact, downloa
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
-const SNAPSHOT = { version: 1, repository: 'owner/repo', repository_id: 12, head_repository_id: 34, pull_number: 56, head: HEAD, base: BASE, base_ref: 'main' };
+const SNAPSHOT = { version: 2, policy_source: BASE, repository: 'owner/repo', repository_id: 12, head_repository_id: 34, pull_number: 56, head: HEAD, base: BASE, base_ref: 'main' };
 const REPO = { owner: 'owner', repo: 'repo' };
 const WORKFLOW = { id: 78, path: '.github/workflows/ci.yml', name: 'ci' };
 
@@ -27,7 +27,7 @@ function makeJob(artifact = 200, run = makeRun()) {
 }
 
 function receipt(run = makeRun(), artifact = 200) {
-  return { headSHA: HEAD, baseSHA: BASE, runId: run.id, runAttempt: run.run_attempt, artifactId: artifact, suppressionCount: 0 };
+  return { version: 2, policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: run.id, runAttempt: run.run_attempt, artifactId: artifact, suppressionCount: 0 };
 }
 
 function harness() {
@@ -83,7 +83,7 @@ test('binds the adapter to the exact run attempt and locator, then rechecks both
   const fixture = harness();
   assert.deepEqual(await fixture.verify(), receipt());
   const input = fixture.adapterCalls[0];
-  assert.deepEqual(input.expected, { repoId: 12, headRepoId: 34, pullNumber: 56, headSHA: HEAD, baseSHA: BASE, runId: 100, runAttempt: 2 });
+  assert.deepEqual(input.expected, { policySHA: BASE, repoId: 12, headRepoId: 34, pullNumber: 56, headSHA: HEAD, baseSHA: BASE, runId: 100, runAttempt: 2 });
   assert.equal(input.artifactId, 200);
   assert.equal(input.archive.toString(), 'archive');
   assert.deepEqual(fixture.calls.filter((call) => call.method === 'jobs').map((call) => call.attempt_number), [2, 2]);
@@ -150,7 +150,7 @@ function assertDeferred(reason, run = makeRun()) {
     assert.equal(verifyReuseSuppression.isDeferred(error), true);
     assert.equal(error.code, 'REUSE_CI_DEFERRED');
     assert.deepEqual(error.deferred, {
-      version: 1, snapshot: SNAPSHOT, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
+      version: 2, snapshot: SNAPSHOT, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
     });
     assert.equal(Object.isFrozen(error.deferred), true);
     assert.equal(Object.isFrozen(error.deferred.snapshot), true);
@@ -244,11 +244,13 @@ test('rejects malformed snapshots before any API access', async () => {
   for (const change of [
     (snapshot) => { snapshot.extra = true; },
     (snapshot) => { delete snapshot.version; },
-    (snapshot) => { snapshot.version = 2; },
+    (snapshot) => { snapshot.version = 1; },
     (snapshot) => { snapshot.repository = 'elsewhere/repo'; },
     (snapshot) => { snapshot.head = 'abc'; },
     (snapshot) => { snapshot.pull_number = -1; },
     (snapshot) => { snapshot.base_ref = ''; },
+    (snapshot) => { delete snapshot.policy_source; },
+    (snapshot) => { snapshot.policy_source = 'bad'; },
   ]) {
     const fixture = harness();
     change(fixture.arguments.snapshot);

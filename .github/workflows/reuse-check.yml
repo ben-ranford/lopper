@@ -2,7 +2,7 @@ name: Protected reuse controller
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    types: [opened, synchronize, reopened, edited, ready_for_review, closed]
   workflow_run:
     workflows: [Reuse review signal, ci]
     types: [requested, in_progress, completed]
@@ -10,6 +10,7 @@ on:
     types: [created, edited]
   push:
     branches: [main]
+  delete:
 
 permissions: {}
 
@@ -19,7 +20,7 @@ concurrency:
 
 jobs:
   invalidate-base:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,11 +58,16 @@ jobs:
       - name: Invalidate previous base evidence
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -E -S -B scripts/reuse_event.py invalidate-base
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            python3 -E -S -B scripts/reuse_event.py invalidate-base
+          else
+            python3 -E -S -B scripts/reuse_event.py invalidate-stack
+          fi
 
   prepare:
     if: >-
-      ${{ github.event_name != 'push' &&
+      ${{ github.event_name != 'push' && github.event_name != 'delete' && github.event.action != 'closed' &&
           (github.event_name != 'issue_comment' ||
            (github.event.issue.pull_request &&
             github.event.comment.user.login == 'ben-ranford' &&
@@ -76,6 +82,7 @@ jobs:
     outputs:
       snapshot: ${{ steps.prepare.outputs.snapshot }}
       base: ${{ steps.prepare.outputs.base }}
+      policy_source: ${{ steps.prepare.outputs.policy_source }}
       head: ${{ steps.prepare.outputs.head }}
       pull_number: ${{ steps.prepare.outputs.pull_number }}
       readiness: ${{ steps.prepare.outputs.readiness }}
@@ -111,6 +118,7 @@ jobs:
       - name: Bind current revisions and invalidate prior result
         id: prepare
         env:
+          REUSE_SOURCE_SHA: ${{ github.workflow_sha }}
           GH_TOKEN: ${{ github.token }}
         run: >-
           python3 -E -S -B scripts/reuse_event.py prepare
@@ -135,7 +143,7 @@ jobs:
           persist-credentials: false
       - name: Pin immutable protected source
         env:
-          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.base }}
+          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.policy_source }}
         run: |
           python3 -I -S -B - <<'PY'
           import os
@@ -198,7 +206,7 @@ jobs:
           persist-credentials: false
       - name: Pin immutable protected source
         env:
-          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.base }}
+          REUSE_SOURCE_SHA: ${{ needs.prepare.outputs.policy_source }}
         run: |
           python3 -I -S -B - <<'PY'
           import os

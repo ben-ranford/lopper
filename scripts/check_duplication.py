@@ -313,9 +313,29 @@ def repository_path(repo, value, label):
     return resolved
 
 
+def selected_policy(repo, requested, comparison):
+    if requested is None:
+        return comparison
+    if not re.fullmatch(r"[0-9a-f]{40}", requested):
+        raise AnalysisError("Policy source must be a full immutable commit SHA")
+    actual = checked(["git", "rev-parse", "--verify", "--end-of-options", requested + "^{commit}"], repo).stdout.strip()
+    if actual != requested:
+        raise AnalysisError("Policy source is not the selected immutable commit")
+    return actual
+
+
+def validate_comparison_baseline(repo, comparison):
+    entry = checked(["git", "ls-tree", "-z", comparison, "--", CANONICAL_BASELINE], repo).stdout
+    if not entry.startswith("100644 blob ") or len(entry.split("\0")) != 2:
+        raise AnalysisError("Comparison baseline must be a regular tracked policy file")
+    baseline = json.loads(checked(["git", "show", f"{comparison}:{CANONICAL_BASELINE}"], repo).stdout)
+    policy.validate_initial_baseline([], baseline)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="")
+    parser.add_argument("--policy-source", help="Immutable protected settings and baseline commit")
     parser.add_argument("--go", default="go")
     parser.add_argument("--version", required=True)
     parser.add_argument("--threshold", type=int, default=55)
@@ -331,8 +351,12 @@ def main(argv=None):
             raise AnalysisError("Threshold must be positive and maximum percentage must be finite within 0..100")
         repo = Path(checked(["git", "rev-parse", "--show-toplevel"], Path.cwd()).stdout.strip()).resolve()
         base, policy_base, merge_base = comparison_base(repo, args.base, os.environ)
+        protected = selected_policy(repo, args.policy_source, policy_base)
         if args.baseline is not None:
-            return occurrence_gate(repo, policy_base, args)
+            if args.policy_source is not None:
+                validate_comparison_baseline(repo, policy_base)
+                validate_comparison_baseline(repo, protected)
+            return occurrence_gate(repo, protected, args)
         added = added_lines(repo, merge_base)
         if not added:
             print(f"New-code duplication: no changed Go lines (base: {base}, merge base: {merge_base}); detector not required")

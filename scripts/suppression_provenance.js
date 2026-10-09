@@ -98,12 +98,12 @@ function positiveID(value) {
 function trustedInputs(context, expected, artifactId, archive) {
   requireCondition(expected && typeof expected === 'object', 'expected snapshot is required');
   const ids = ['repoId', 'headRepoId', 'pullNumber', 'runId', 'runAttempt'];
-  const fields = [...ids, 'headSHA', 'baseSHA'];
+  const fields = [...ids, 'headSHA', 'baseSHA', 'policySHA'];
   requireCondition(Object.keys(expected).length === fields.length, 'unexpected snapshot fields');
   for (const field of ids) {
     requireCondition(positiveID(expected[field]), `invalid ${field}`);
   }
-  for (const field of ['headSHA', 'baseSHA']) {
+  for (const field of ['headSHA', 'baseSHA', 'policySHA']) {
     requireCondition(typeof expected[field] === 'string' && /^[a-f0-9]{40}$/.test(expected[field]), `invalid ${field}`);
   }
   for (const field of ['owner', 'repo']) {
@@ -182,6 +182,7 @@ function decodeDetector(data) {
   const source = Buffer.from(encoded, 'base64');
   requireCondition(source.length > 0 && source.length <= MAX_SOURCE_BYTES && source.toString('base64') === encoded, 'invalid detector source encoding');
   requireCondition(typeof data.sha === 'string' && /^[a-f0-9]{40}$/.test(data.sha) && data.size === source.length, 'detector source metadata mismatch');
+  requireCondition(createHash('sha1').update(`blob ${source.length}\0`).update(source).digest('hex') === data.sha, 'detector source blob mismatch');
   return source;
 }
 
@@ -197,7 +198,7 @@ function readOnlyClient(github) {
 }
 
 async function recomputeFromTrustedSource(github, repo, pull, expected) {
-  const { data } = await github.rest.repos.getContent({ ...repo, path: DETECTOR_PATH, ref: expected.baseSHA });
+  const { data } = await github.rest.repos.getContent({ ...repo, path: DETECTOR_PATH, ref: expected.policySHA });
   const source = decodeDetector(data);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lopper-suppression-provenance-'));
   const filename = path.join(directory, 'detector.cjs');
@@ -243,7 +244,7 @@ async function verifySuppressionProvenance({ github, context, expected: supplied
   assertPull(currentPull.data, expected);
   const currentDeferred = assertRun(currentRun.data, workflow.data, expected, currentPull.data);
   if (currentDeferred) throw currentDeferred;
-  return { headSHA: expected.headSHA, baseSHA: expected.baseSHA, runId: expected.runId, runAttempt: expected.runAttempt, artifactId, suppressionCount: 0 };
+  return { version: 2, policySHA: expected.policySHA, headSHA: expected.headSHA, baseSHA: expected.baseSHA, runId: expected.runId, runAttempt: expected.runAttempt, artifactId, suppressionCount: 0 };
 }
 
 module.exports = verifySuppressionProvenance;

@@ -186,6 +186,28 @@ binary.chmod(0o755)
     def assert_exit(self, result, expected):
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
+    def test_explicit_policy_source_keeps_parent_programs_inert(self):
+        protected = self.base
+        self.write("Makefile", "GO ?= hostile-parent\nDUPL_VERSION ?= parent\nDUPLICATION_TOKEN_THRESHOLD ?= 99\nDUPLICATION_MAX ?= 99\n")
+        self.write("scripts/check_duplication.py", "from pathlib import Path\nPath(" + repr(str(self.marker)) + ").touch()\n")
+        parent = self.commit()
+        self.write("source.go", 'package fixture\nconst Revision = "child"\n')
+        child = self.commit()
+        self.git("checkout", "--detach", protected)
+        command = [sys.executable, "-E", "-S", "-B", str(self.root / "scripts/check_reuse.py"),
+                   "--policy-source", protected, "--base", parent, "--revision", child]
+        result = subprocess.run(command, cwd=self.directory, env=self.environment,
+                                capture_output=True, text=True)
+        self.assert_exit(result, 0)
+        build, duplicate, helper = self.events()
+        self.assertEqual(build["revision"], protected)
+        self.assertEqual(duplicate["revision"], child)
+        self.assertEqual(helper["revision"], child)
+        self.assertEqual(duplicate["args"][duplicate["args"].index("--base") + 1], parent)
+        self.assertEqual(duplicate["args"][duplicate["args"].index("--policy-source") + 1], protected)
+        self.assertEqual(duplicate["args"][duplicate["args"].index("--threshold") + 1], "55")
+        self.assertFalse(self.marker.exists(), "parent detector executed")
+
     def test_both_detectors_use_requested_commit_and_protected_tooling(self):
         attack = "from pathlib import Path\nPath(" + repr(str(self.marker)) + ").touch()\nraise SystemExit(0)\n"
         revision = self.candidate({
