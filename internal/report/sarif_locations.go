@@ -94,11 +94,14 @@ func sarifLocationKey(location sarifLocation) string {
 }
 
 func toSARIFLocation(location Location) (sarifLocation, bool) {
-	file := strings.TrimSpace(location.File)
-	if file == "" {
+	file := location.File
+	if strings.TrimSpace(file) == "" {
 		return sarifLocation{}, false
 	}
 	file = toSARIFArtifactURI(file)
+	if file == "" {
+		return sarifLocation{}, false
+	}
 	loc := sarifLocation{
 		PhysicalLocation: sarifPhysicalLocation{
 			ArtifactLocation: sarifArtifactLocation{URI: file},
@@ -120,10 +123,15 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 func toSARIFArtifactURI(file string) string {
 	file = strings.ReplaceAll(file, "\\", "/")
 	file = path.Clean(file)
-	if isWindowsDriveAbsolutePath(file) || filepath.IsAbs(file) {
+	if isWindowsDriveAbsolutePath(file) || path.IsAbs(file) {
 		return fileURLFromPath(file)
 	}
-	return file
+	if file == "." || file == ".." || strings.HasPrefix(file, "../") {
+		return ""
+	}
+	// URL path encoding preserves literal filename bytes and prevents a colon in
+	// the first segment from becoming a scheme. RawPath must remain unset.
+	return (&url.URL{Path: file}).String()
 }
 
 func fileURLFromPath(pathValue string) string {
