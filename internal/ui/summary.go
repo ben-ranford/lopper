@@ -411,7 +411,7 @@ func pageCount(total, pageSize int) int {
 	if total <= 0 {
 		return 1
 	}
-	return (total + pageSize - 1) / pageSize
+	return 1 + (total-1)/pageSize
 }
 
 func paginateDependencies(deps []summaryDependencyView, page int, pageSize int) []summaryDependencyView {
@@ -421,13 +421,13 @@ func paginateDependencies(deps []summaryDependencyView, page int, pageSize int) 
 	if page < 1 {
 		page = 1
 	}
-	start := (page - 1) * pageSize
-	if start >= len(deps) {
+	if len(deps) == 0 || page > pageCount(len(deps), pageSize) {
 		return nil
 	}
-	end := start + pageSize
-	if end > len(deps) {
-		end = len(deps)
+	start := (page - 1) * pageSize
+	end := len(deps)
+	if pageSize < end-start {
+		end = start + pageSize
 	}
 	return deps[start:end]
 }
