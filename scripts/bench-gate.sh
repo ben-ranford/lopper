@@ -271,34 +271,51 @@ benchmark_harness_append_file() {
 	fi;
 	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash" >> "$fingerprint_manifest_tmp";
 };
+cleanup_harness_fingerprint() {
+	rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp" "$fingerprint_metadata_tmp" "$fingerprint_envelope_tmp" "$fingerprint_validated_tmp";
+	rmdir "$fingerprint_tmp_dir";
+};
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";
-	fingerprint_go_files_tmp=$(mktemp) || return 1;
-	fingerprint_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp"; return 1; };
-	fingerprint_kind_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp"; return 1; };
-	fingerprint_manifest_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp"; return 1; };
+	fingerprint_tmp_dir=$(mktemp -d) || return 1;
+	fingerprint_go_files_tmp="$fingerprint_tmp_dir/go-files";
+	fingerprint_files_tmp="$fingerprint_tmp_dir/rows";
+	fingerprint_kind_files_tmp="$fingerprint_tmp_dir/kind-files";
+	fingerprint_manifest_tmp="$fingerprint_tmp_dir/manifest";
+	fingerprint_metadata_tmp="$fingerprint_tmp_dir/normal.json";
+	fingerprint_envelope_tmp="$fingerprint_tmp_dir/envelope";
+	fingerprint_validated_tmp="$fingerprint_tmp_dir/validated";
+	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark normal package metadata for '$fingerprint_pkg'" list -json "$fingerprint_pkg" > "$fingerprint_metadata_tmp"; then
+		cleanup_harness_fingerprint;
+		return 1;
+	fi;
+	if ! fingerprint_import_path=$(GOFLAGS=-buildvcs=false run_validated_go "benchmark package identity for '$fingerprint_pkg'" list -f '{{.ImportPath}}' "$fingerprint_pkg"); then
+		cleanup_harness_fingerprint;
+		return 1;
+	fi;
 	if ! fingerprint_dir=$(GOFLAGS=-buildvcs=false run_validated_go "benchmark harness directory resolution for '$fingerprint_pkg'" list -f '{{.Dir}}' "$fingerprint_pkg" 2>/dev/null); then
-		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		cleanup_harness_fingerprint;
 		return 1;
 	fi;
 	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_go_files_tmp" 2>/dev/null; then
-		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		cleanup_harness_fingerprint;
 		return 1;
 	fi;
 	if ! LC_ALL=C sort -u -o "$fingerprint_go_files_tmp" "$fingerprint_go_files_tmp"; then
-		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		cleanup_harness_fingerprint;
 		return 1;
 	fi;
 	: > "$fingerprint_files_tmp";
 	for fingerprint_kind in test xtest; do
 		awk -F "$(printf '\t')" -v kind="$fingerprint_kind" '$1 == kind { print $2 }' "$fingerprint_go_files_tmp" > "$fingerprint_kind_files_tmp";
-		if ! "$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind" < "$fingerprint_kind_files_tmp" >> "$fingerprint_files_tmp"; then
-			rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		if ! "$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind" "$fingerprint_metadata_tmp" "$fingerprint_import_path" < "$fingerprint_kind_files_tmp" > "$fingerprint_envelope_tmp" || ! "$benchmark_harness_selector_bin" validate "$fingerprint_kind" < "$fingerprint_envelope_tmp" > "$fingerprint_validated_tmp"; then
+			cleanup_harness_fingerprint;
 			return 1;
 		fi;
+		cat "$fingerprint_validated_tmp" >> "$fingerprint_files_tmp" || { cleanup_harness_fingerprint; return 1; };
 	done;
 	if ! LC_ALL=C sort -u -o "$fingerprint_files_tmp" "$fingerprint_files_tmp"; then
-		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		cleanup_harness_fingerprint;
 		return 1;
 	fi;
 	: > "$fingerprint_manifest_tmp";
@@ -306,9 +323,9 @@ benchmark_harness_fingerprint() {
 	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file fingerprint_hash; do
 		[ -n "$fingerprint_file" ] || continue;
 		case "$fingerprint_kind" in
-			test|xtest) ;;
+			test|xtest|test-init|xtest-init) ;;
 			test-embed|xtest-embed) ;;
-			*) continue ;;
+			*) cleanup_harness_fingerprint; return 1 ;;
 		esac;
 		if ! benchmark_harness_append_file "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash"; then
 			fingerprint_failed=1;
@@ -317,10 +334,10 @@ benchmark_harness_fingerprint() {
 	done < "$fingerprint_files_tmp";
 	LC_ALL=C sort -u -o "$fingerprint_manifest_tmp" "$fingerprint_manifest_tmp" || fingerprint_failed=1;
 	if [ "$fingerprint_failed" -ne 0 ] || ! fingerprint_value=$(git hash-object -- "$fingerprint_manifest_tmp" 2>/dev/null); then
-		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		cleanup_harness_fingerprint;
 		return 1;
 	fi;
-	rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+	cleanup_harness_fingerprint;
 	printf "git-hash-object:%s\n" "$fingerprint_value";
 };
 format_benchmark_definition() {
@@ -384,10 +401,13 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -405,24 +425,45 @@ type harnessDecl struct {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: benchharness <package-dir> <test|xtest>")
+	if err := runHarness(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
-	}
-
-	manifest, err := benchmarkHarnessManifest(os.Args[1], os.Args[2], os.Stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve benchmark harness files: %v\n", err)
-		os.Exit(2)
-	}
-	for _, line := range manifest {
-		fmt.Println(line)
 	}
 }
 
-func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error) {
+func runHarness() error {
+	if len(os.Args) == 3 && os.Args[1] == "validate" {
+		rows, err := validateHarnessEnvelope(os.Stdin, os.Args[2])
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if _, err := fmt.Fprintln(os.Stdout, row); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if len(os.Args) != 5 {
+		return fmt.Errorf("usage: benchharness <package-dir> <test|xtest> <normal-metadata> <import-path>")
+	}
+	metadata, err := readHarnessPackage(os.Args[3], os.Args[1], os.Args[4])
+	if err != nil {
+		return err
+	}
+	rows, err := benchmarkHarnessManifest(os.Args[1], os.Args[2], os.Stdin, metadata)
+	if err != nil {
+		return err
+	}
+	return writeHarnessEnvelope(os.Stdout, os.Args[2], rows)
+}
+
+func benchmarkHarnessManifest(dir, kind string, stdin *os.File, metadata harnessPackage) ([]string, error) {
 	files, err := readFileList(stdin)
 	if err != nil {
+		return nil, err
+	}
+	if err := metadata.validateTests(kind, files); err != nil {
 		return nil, err
 	}
 	parsed := make(map[string]*ast.File, len(files))
@@ -445,23 +486,43 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 		parsed[rel] = file
 		filesets[rel] = fset
 		sources[rel] = src
-		for _, decl := range file.Decls {
-			for _, name := range declaredNames(decl) {
-				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
-			}
-			if recvType := methodReceiverTypeName(decl); recvType != "" {
-				decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
-			}
-			for _, name := range importLocalNames(decl) {
-				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
-			}
-			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
-				roots = append(roots, harnessDecl{file: rel, decl: decl})
-			}
-		}
+		roots = registerHarnessDeclarations(decls, roots, rel, file, modInfo)
 	}
 
 	selectedDecls, seenNames := selectedBenchmarkHarnessFiles(roots, decls)
+	selectedDecls = protectHarnessImports(parsed, selectedDecls)
+	manifest, err := selectedHarnessRows(dir, kind, files, parsed, filesets, sources, selectedDecls, seenNames)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := harnessInitializationRows(dir, kind, metadata, parsed, modInfo)
+	if err != nil {
+		return nil, err
+	}
+	manifest = append(manifest, edges...)
+	sort.Strings(manifest)
+	return manifest, nil
+}
+
+func registerHarnessDeclarations(decls map[string][]harnessDecl, roots []harnessDecl, rel string, file *ast.File, modInfo moduleInfo) []harnessDecl {
+	for _, decl := range file.Decls {
+		for _, name := range declaredNames(decl) {
+			decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+		}
+		if recvType := methodReceiverTypeName(decl); recvType != "" {
+			decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
+		}
+		for _, name := range importLocalNames(decl) {
+			decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+		}
+		if rootDeclarationCanAffectBenchmark(decl, modInfo) {
+			roots = append(roots, harnessDecl{file: rel, decl: decl})
+		}
+	}
+	return roots
+}
+
+func selectedHarnessRows(dir, kind string, files []string, parsed map[string]*ast.File, filesets map[string]*token.FileSet, sources map[string][]byte, selectedDecls map[string][]ast.Decl, seenNames map[string]struct{}) ([]string, error) {
 	manifest := make([]string, 0, len(selectedDecls))
 	seen := make(map[string]struct{})
 	for _, rel := range files {
@@ -469,8 +530,10 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 		if !ok {
 			continue
 		}
-		declHash := selectedDeclarationsSourceHash(sources[rel], filesets[rel], fileDecls)
-		appendManifestLine(&manifest, seen, kind, rel, declHash)
+		if len(fileDecls) > 0 {
+			declHash := selectedDeclarationsSourceHash(sources[rel], filesets[rel], fileDecls)
+			appendManifestLine(&manifest, seen, kind, rel, declHash)
+		}
 		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenNames)
 		if err != nil {
 			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
@@ -479,8 +542,231 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			appendManifestLine(&manifest, seen, kind+"-embed", embedFile, "")
 		}
 	}
-	sort.Strings(manifest)
 	return manifest, nil
+}
+
+type harnessPackage struct {
+	Dir, ImportPath, ForTest                     string
+	GoFiles, CgoFiles, TestGoFiles, XTestGoFiles []string
+}
+
+func readHarnessPackage(name, dir, importPath string) (_ harnessPackage, err error) {
+	var metadata harnessPackage
+	file, err := os.Open(name)
+	if err != nil {
+		return metadata, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&metadata); err != nil {
+		return metadata, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return metadata, fmt.Errorf("invalid trailing package metadata")
+	}
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return metadata, err
+	}
+	if metadata.Dir != absolute || metadata.ImportPath != importPath || importPath == "" || metadata.ForTest != "" {
+		return metadata, fmt.Errorf("normal package metadata identity mismatch")
+	}
+	return metadata, nil
+}
+
+func (hp *harnessPackage) validateTests(kind string, files []string) error {
+	expected := hp.TestGoFiles
+	if kind == "xtest" {
+		expected = hp.XTestGoFiles
+	} else if kind != "test" {
+		return fmt.Errorf("invalid harness kind %q", kind)
+	}
+	left, right := append([]string(nil), files...), append([]string(nil), expected...)
+	sort.Strings(left)
+	sort.Strings(right)
+	if strings.Join(left, "\n") != strings.Join(right, "\n") {
+		return fmt.Errorf("test inventory does not match normal package metadata")
+	}
+	return nil
+}
+
+// Keep the old closure and embed names; only import emission has new provenance.
+func protectHarnessImports(parsed map[string]*ast.File, selected map[string][]ast.Decl) map[string][]ast.Decl {
+	references, codeFiles := harnessBindingOrigins(selected)
+	result := make(map[string][]ast.Decl, len(selected))
+	for file, declarations := range selected {
+		result[file] = nil // Retain original selected-file eligibility for embeds.
+		for _, decl := range declarations {
+			if !isImportDeclaration(decl) {
+				result[file] = append(result[file], decl)
+			}
+		}
+	}
+	for file, node := range parsed {
+		for _, decl := range node.Decls {
+			if isImportDeclaration(decl) && retainHarnessImport(decl, codeFiles[file], references) {
+				result[file] = append(result[file], decl)
+			}
+		}
+	}
+	return result
+}
+
+func harnessBindingOrigins(selected map[string][]ast.Decl) (map[string]bool, map[string]bool) {
+	references := make(map[string]bool)
+	codeFiles := make(map[string]bool)
+	for file, declarations := range selected {
+		for _, decl := range declarations {
+			if isImportDeclaration(decl) {
+				continue
+			}
+			codeFiles[file] = true
+			for name := range referencedPackageNames(decl) {
+				references[name] = true
+			}
+		}
+	}
+	return references, codeFiles
+}
+
+func isImportDeclaration(decl ast.Decl) bool {
+	group, ok := decl.(*ast.GenDecl)
+	return ok && group.Tok == token.IMPORT
+}
+
+func retainHarnessImport(decl ast.Decl, codeFile bool, references map[string]bool) bool {
+	if codeFile {
+		return true
+	}
+	group := decl.(*ast.GenDecl)
+	for _, spec := range group.Specs {
+		imported := spec.(*ast.ImportSpec)
+		if imported.Name == nil {
+			continue
+		}
+		name := imported.Name.Name
+		if name == "_" || name == "." || references[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func harnessInitializationRows(dir, kind string, metadata harnessPackage, parsed map[string]*ast.File, mod moduleInfo) ([]string, error) {
+	paths := make(map[string]bool)
+	for _, file := range parsed {
+		collectHarnessInitialization(paths, file, mod)
+	}
+	if kind == "test" {
+		for _, name := range append(append([]string(nil), metadata.GoFiles...), metadata.CgoFiles...) {
+			if !fs.ValidPath(name) || filepath.Base(name) != name || !strings.HasSuffix(name, ".go") {
+				return nil, fmt.Errorf("invalid normal package source %q", name)
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.ImportsOnly)
+			if err != nil {
+				return nil, err
+			}
+			collectHarnessInitialization(paths, file, mod)
+		}
+	}
+	rows := make([]string, 0, len(paths))
+	for path := range paths {
+		rows = append(rows, kind+"-init\t"+path+"\t"+harnessInitializationHash(kind, path))
+	}
+	return rows, nil
+}
+
+func collectHarnessInitialization(paths map[string]bool, file *ast.File, mod moduleInfo) {
+	for _, spec := range file.Imports {
+		if importCanAffectBenchmark(spec, mod) {
+			paths[importPath(spec)] = true
+		}
+	}
+}
+
+func harnessInitializationHash(kind, path string) string {
+	sum := sha256.Sum256([]byte("harness-init-v1\n" + kind + "\n" + path + "\n"))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func harnessPayload(rows []string) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n") + "\n"
+}
+
+func writeHarnessEnvelope(writer io.Writer, kind string, rows []string) error {
+	payload := harnessPayload(rows)
+	digest := sha256.Sum256([]byte(payload))
+	_, err := fmt.Fprintf(writer, "harness-v1\t%s\n%sharness-end\t%s\t%d\tsha256:%x\n", kind, payload, kind, len(rows), digest)
+	return err
+}
+
+func validateHarnessEnvelope(reader io.Reader, kind string) ([]string, error) {
+	if kind != "test" && kind != "xtest" {
+		return nil, fmt.Errorf("invalid expected harness kind")
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(data) || len(data) == 0 || data[len(data)-1] != '\n' {
+		return nil, fmt.Errorf("incomplete harness envelope")
+	}
+	lines := strings.Split(string(data[:len(data)-1]), "\n")
+	if len(lines) < 2 || lines[0] != "harness-v1\t"+kind {
+		return nil, fmt.Errorf("invalid harness header")
+	}
+	rows := lines[1 : len(lines)-1]
+	if err := validateHarnessRows(rows, kind); err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256([]byte(harnessPayload(rows)))
+	expected := fmt.Sprintf("harness-end\t%s\t%d\tsha256:%x", kind, len(rows), digest)
+	if lines[len(lines)-1] != expected {
+		return nil, fmt.Errorf("invalid harness completion")
+	}
+	return rows, nil
+}
+
+func validateHarnessRows(rows []string, kind string) error {
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if seen[row] {
+			return fmt.Errorf("duplicate harness row")
+		}
+		seen[row] = true
+		fields := strings.Split(row, "\t")
+		if len(fields) != 3 || fields[1] == "" || strings.ContainsAny(row, "\r\n") {
+			return fmt.Errorf("invalid harness row fields")
+		}
+		if err := validateHarnessRow(fields, kind); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHarnessRow(fields []string, kind string) error {
+	switch fields[0] {
+	case kind + "-embed":
+		if fields[2] == "" && fs.ValidPath(fields[1]) {
+			return nil
+		}
+	case kind + "-init":
+		if fields[2] == harnessInitializationHash(kind, fields[1]) {
+			return nil
+		}
+	case kind:
+		hash := strings.TrimPrefix(fields[2], "sha256:")
+		decoded, err := hex.DecodeString(hash)
+		if err == nil && len(decoded) == sha256.Size && fields[2] == "sha256:"+hex.EncodeToString(decoded) && fs.ValidPath(fields[1]) {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid harness row kind, identity or hash")
 }
 
 // selectedDeclarationsSourceHash hashes only the source text of the
