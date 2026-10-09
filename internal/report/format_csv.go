@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"github.com/ben-ranford/lopper/internal/csvsanitize"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,15 +117,50 @@ func hasCSVIdentity(dependencies []DependencyReport) bool {
 	return false
 }
 
+// CSV and SPDX share this order so duplicate identities receive stable rows and IDs.
 func sortedDependenciesForCSV(dependencies []DependencyReport) []DependencyReport {
-	items := append([]DependencyReport{}, dependencies...)
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Language == items[j].Language {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Language < items[j].Language
+	type orderedDependency struct {
+		dependency DependencyReport
+		key        [8]string
+	}
+	ordered := make([]orderedDependency, len(dependencies))
+	for i, dep := range dependencies {
+		ordered[i] = orderedDependency{dependency: dep, key: dependencyCSVOrderKey(dep)}
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return slices.Compare(ordered[i].key[:], ordered[j].key[:]) < 0
 	})
+	items := make([]DependencyReport, len(ordered))
+	for i, item := range ordered {
+		items[i] = item.dependency
+	}
 	return items
+}
+
+func dependencyCSVOrderKey(dep DependencyReport) [8]string {
+	key := [8]string{dep.Language, dep.Name}
+	if identity := dep.Identity; identity != nil {
+		key[2] = CanonicalPackageEcosystem(identity.Ecosystem)
+		key[3] = strings.TrimSpace(identity.Namespace)
+		key[4] = CanonicalPackageNameForEcosystem(key[2], identity.Name)
+		key[5] = strings.TrimSpace(identity.Version)
+		key[6] = CanonicalPURL(identity.PURL)
+	}
+	// Quote rendered fields independently to avoid delimiter collisions. These
+	// fields include the visible SPDX package data as well as all CSV columns;
+	// report-wide context is constant and does not need to participate.
+	fields := formatDependencyCSVRow(Report{}, dep)
+	fields = append(fields, formatDependencyIdentityCSVRow(dep.Identity)...)
+	var fallback strings.Builder
+	for _, field := range fields {
+		fallback.WriteString(strconv.Quote(field))
+		fallback.WriteByte('\n')
+	}
+	// SPDX namespace seeding observes identity presence even when all identity
+	// fields are empty, so retain that distinction after the visible fields.
+	fallback.WriteString(strconv.FormatBool(dep.Identity != nil))
+	key[7] = fallback.String()
+	return key
 }
 
 func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
