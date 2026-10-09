@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -22,7 +23,16 @@ func TestWindowsRuntimeCompatibilityProofRequiresPublishedBaseline(t *testing.T)
 	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
 		t.Fatal("runtime compatibility proof must run natively and fail closed for build titles too")
 	}
-	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Resolve native Go toolchain", "Test native Windows proof tools", stepName, "Prove Windows regression tests for fix PRs")
+	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Provision restricted regression proof runtime", "Test native Windows proof tools", "Verify restricted regression proof runtime", stepName, "Prove Windows regression tests for fix PRs")
+	assertPinnedNodeConsumerEnvironment(t, step)
+	if step.Env["REGRESSION_PROOF_GO_ROOT"] != "${{ steps.proof_runtime.outputs.go_root }}" {
+		t.Fatal("runtime compatibility proof must select the authenticated compiler root")
+	}
+	index := workflowStepIndexByName(t, workflow.Jobs, jobName, stepName)
+	verifier := workflowStepByName(t, workflow.Jobs, "verify-checks", "Verify restricted regression proof runtime")
+	if index == 0 || !reflect.DeepEqual(workflow.Jobs[jobName].Steps[index-1], verifier) {
+		t.Fatal("runtime compatibility proof must immediately follow the reviewed authenticated verifier")
+	}
 	script := readConfig(t, "scripts/verify-windows-runtime-paths.ps1")
 	assertWindowsRuntimeProofBoundaries(t, script)
 }
