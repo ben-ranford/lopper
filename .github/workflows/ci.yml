@@ -921,6 +921,10 @@ jobs:
         shell: pwsh
         run: go test ./tools/regressionproof -run '^TestWindowsProof' -count=1
 
+      - name: Verify native Windows runtime path compatibility
+        shell: pwsh
+        run: ./scripts/verify-windows-runtime-paths.ps1
+
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
