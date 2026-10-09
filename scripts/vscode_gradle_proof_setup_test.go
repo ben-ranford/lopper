@@ -130,3 +130,26 @@ func TestVSCodeGradleProofUnrelatedSelections(t *testing.T) {
 		})
 	}
 }
+
+func TestVSCodeGradleProofNpmCommandShim(t *testing.T) {
+	root := t.TempDir()
+	writeFixtureFileMode(t, root, "bin/npm.cmd", "@echo off\r\nexit /b 9\r\n", 0o755)
+	writeFixtureFile(t, root, "bin/node_modules/npm/bin/npm-cli.js", `
+const fs = require('node:fs');
+fs.writeFileSync('install.args', JSON.stringify(process.argv.slice(2)));
+fs.mkdirSync('node_modules/typescript/bin', { recursive: true });
+fs.writeFileSync('node_modules/typescript/bin/tsc', '// compiler fixture');
+`)
+	if err := os.Symlink(filepath.Join(root, "bin/npm.cmd"), filepath.Join(root, "bin/npm")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	compiler, err := gradleProofCompiler(t.Context(), root)
+	if err != nil || compiler != filepath.Join(root, "node_modules/typescript/bin/tsc") {
+		t.Fatalf("provision npm through its JavaScript CLI: %s, %v", compiler, err)
+	}
+	arguments, err := os.ReadFile(filepath.Join(root, "install.args"))
+	if err != nil || string(arguments) != `["ci","--ignore-scripts","--no-audit","--no-fund"]` {
+		t.Fatalf("npm CLI arguments = %s, %v", arguments, err)
+	}
+}

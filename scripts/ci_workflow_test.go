@@ -451,8 +451,9 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		{label: "regression proof base env", got: proof.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
 		{label: "regression proof exemption label env", got: proof.Env["PR_REGRESSION_EXEMPT_LABEL"], want: "${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}"},
 	})
+	assertPinnedNodeConsumerEnvironment(t, proof)
 	assertWorkflowStepRunContainsAll(t, proof, "regression proof step", []string{
-		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+		`"${LOPPER_PROOF_GO}" run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
 	})
 }
 
