@@ -27,6 +27,7 @@ func TestInstalledPreCommitStagedAttributePolicy(t *testing.T) {
 		{name: "configured allowance", whitespace: "-trailing-space"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			checkStagedAttributePolicy(t, tc)
 		})
 	}

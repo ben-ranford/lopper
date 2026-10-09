@@ -1515,7 +1515,7 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 GOEOF
-if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -trimpath -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
 	fail_invalid_memory_gate "benchmark harness selector could not be built.";
 fi;
 echo "Running memory benchmark delta against $base_ref.";
