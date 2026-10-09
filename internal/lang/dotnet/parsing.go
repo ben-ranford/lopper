@@ -111,7 +111,7 @@ func parseFSharpImportLine(line []byte, relativePath string, lineNumber, column 
 	if !ok {
 		return nil
 	}
-	dependency, resolved := resolveImportDependency(module, mapper, meta)
+	dependency, resolved := resolveImportDependency(strings.TrimPrefix(module, "global."), mapper, meta)
 	if !resolved {
 		return nil
 	}
@@ -197,7 +197,13 @@ func parseCSharpUsingBytes(line []byte) (module string, alias string, ok bool) {
 func parseFSharpOpenBytes(line []byte) (module string, ok bool) {
 	line = bytes.TrimSpace(line)
 	next, matched := consumeKeyword(line, "open")
-	if !matched || len(next) == 0 || !isNamespaceStartByte(next[0]) {
+	if !matched || bytes.Equal(next, []byte("type")) {
+		return "", false
+	}
+	if target, hasTypeModifier := consumeKeyword(next, "type"); hasTypeModifier {
+		next = target
+	}
+	if len(next) == 0 || !isNamespaceStartByte(next[0]) {
 		return "", false
 	}
 	end := 1
