@@ -37,6 +37,7 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "diagnostic without owned group", noGroup: true, notice: "expected", wantStatus: 1},
 		{name: "interrupted startup", interrupt: true, wantStatus: 124},
 		{name: "anchor exits before permit", notice: "exited", wantStatus: 1},
+		{name: "exited anchor forwards unverified diagnostic", notice: "exited diagnostic", wantStatus: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertPreflightStartup(t, tc) })
 	}
@@ -78,6 +79,7 @@ run_preflight_git sh -c 'printf x >"$1"; printf "reader output\n"; printf "reade
 	if ctx.Err() != nil || status != tc.wantStatus {
 		t.Fatalf("status=%d want=%d context=%v stderr=%q", status, tc.wantStatus, ctx.Err(), stderr)
 	}
+	assertPreflightExitWitness(t, tc.notice, pidFile)
 	assertPreflightStartupStreams(t, tc, marker, stdout, stderr)
 	pidBytes, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -151,7 +153,7 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 		injection += "\texec 2>\"$state_dir/launch-error\"\n"
 	}
 	switch notice {
-	case "expected", "multiline", "nul", "unterminated":
+	case "expected", "multiline", "nul", "unterminated", "exited diagnostic":
 		format := "%s\\n"
 		if notice == "unterminated" {
 			format = "%s"
@@ -166,7 +168,7 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	case "duplicate":
 		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " " + diagnostic + " >&2\n"
 	case "exited":
-		injection += "\texit 1\n"
+		injection += "\tprintf \"%s\\n\" \"$test_anchor_pid\" >" + shellQuote(pidFile+".reached") + "\n\texit 1\n"
 	case "unknown":
 		injection += "\tprintf \"unknown startup diagnostic\\n\" >&2\n"
 	case "other":
@@ -181,10 +183,14 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	}
 	source = strings.Replace(source, restore, injection+restore, 1)
 	source = strings.Replace(source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n", 1)
-	if noGroup {
+	exited := notice == "exited" || notice == "exited diagnostic"
+	if exited {
+		source = preflightExitObserver(t, source, pidFile)
+	}
+	if noGroup || exited {
 		// Disable job-control group creation in this fixture. The real kernel
 		// negative-PGID probe must fail; no fake kill implementation is involved.
-		source = strings.Replace(source, "\nset -m\n", "\nset +m\n", 1)
+		source = preflightDisableJobControl(t, source)
 	}
 	return source
 }
@@ -193,7 +199,7 @@ func preflightStartupNotice(notice string, pid int) string {
 	number := strconv.Itoa(pid)
 	expected := "--: child setpgid (" + number + " to " + number + "): Operation not permitted"
 	switch notice {
-	case "expected":
+	case "expected", "exited diagnostic":
 		return expected + "\n"
 	case "multiline":
 		return expected + "\nadditional diagnostic\n"
@@ -210,4 +216,49 @@ func preflightStartupNotice(notice string, pid int) string {
 	default:
 		return ""
 	}
+}
+
+// Only deliberately exited fixtures observe the actual child before cleanup.
+// Keeping launch job control off isolates child-exit admission from host launch
+// diagnostics; the established-group cases still exercise real process groups.
+func preflightExitObserver(t *testing.T, source, pidFile string) string {
+	t.Helper()
+	const rejection = "\t\tcat \"$state_dir/launch-error\" >&2\n\t\texit 1\n"
+	if strings.Count(source, rejection) != 1 {
+		t.Fatal("unique early anchor rejection boundary unavailable")
+	}
+	observer := `		test_exit_status=0
+		wait "$reader_group" || test_exit_status=$?
+		printf "%s\n" "$test_exit_status" >` + shellQuote(pidFile+".joined") + "\n" +
+		`\t\tif [ ! -f "$state_dir/ready" ] && [ ! -f "$state_dir/start" ]; then
+			printf x >` + shellQuote(pidFile+".unready") + "\n\t\tfi\n"
+	return strings.Replace(source, rejection, observer+rejection, 1)
+}
+
+func assertPreflightExitWitness(t *testing.T, notice, pidFile string) {
+	t.Helper()
+	if notice != "exited" && notice != "exited diagnostic" {
+		return
+	}
+	pid, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for suffix, want := range map[string]string{
+		".reached": string(pid), ".joined": "1\n", ".unready": "x",
+	} {
+		got, err := os.ReadFile(pidFile + suffix)
+		if err != nil || string(got) != want {
+			t.Fatalf("anchor exit witness %s: got=%q want=%q err=%v", suffix, got, want, err)
+		}
+	}
+}
+
+func preflightDisableJobControl(t *testing.T, source string) string {
+	t.Helper()
+	const launch = "\nset -m\n"
+	if strings.Count(source, launch) != 1 {
+		t.Fatal("unique job-control launch boundary unavailable")
+	}
+	return strings.Replace(source, launch, "\nset +m\n", 1)
 }
