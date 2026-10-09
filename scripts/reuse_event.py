@@ -284,7 +284,7 @@ def live_repository(api, repository, identifier):
 
 
 def branch_sha(api, repository, reference):
-    if (not isinstance(reference, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", reference)
+    if (not isinstance(reference, str) or not re.fullmatch(r"\w[\w./-]*", reference, flags=re.ASCII)
             or ".." in reference or "//" in reference or reference.endswith(("/", ".lock", "."))):
         raise EventError("Invalid target branch")
     branch = urllib.parse.quote(reference, safe="")

@@ -1,5 +1,7 @@
 'use strict';
 
+const { gitBlobIdentity } = require('./queue_me_git_object');
+
 // This is an unactivated verifier, not a check publisher. Its source and expected
 // snapshot must be supplied by an immutable trusted runner. Workflow ID/path
 // identify the producer; they do not prove approval of PR-edited workflow code.
@@ -182,7 +184,11 @@ function decodeDetector(data) {
   const source = Buffer.from(encoded, 'base64');
   requireCondition(source.length > 0 && source.length <= MAX_SOURCE_BYTES && source.toString('base64') === encoded, 'invalid detector source encoding');
   requireCondition(typeof data.sha === 'string' && /^[a-f0-9]{40}$/.test(data.sha) && data.size === source.length, 'detector source metadata mismatch');
-  requireCondition(createHash('sha1').update(`blob ${source.length}\0`).update(source).digest('hex') === data.sha, 'detector source blob mismatch');
+  let identity;
+  try { identity = gitBlobIdentity(source); } catch {
+    requireCondition(false, 'detector source blob mismatch');
+  }
+  requireCondition(identity === data.sha, 'detector source blob mismatch');
   return source;
 }
 

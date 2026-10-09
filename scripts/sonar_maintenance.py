@@ -22,6 +22,11 @@ REGEX_KEY = "sonar.branch.longLivedBranches.regex"
 AUTOSCAN_KEY = "sonar.autoscan.enabled"
 SETTING_KEYS = (REGEX_KEY, AUTOSCAN_KEY)
 MAX_BODY = 4 * 1024 * 1024
+CE_ACTIVITY = "ce/activity"
+CE_TASK = "ce/task"
+SETTINGS_SET = "settings/set"
+SETTINGS_RESET = "settings/reset"
+SHA_PATTERN = r"[a-f0-9]{40}"
 
 
 class MaintenanceError(ValueError):
@@ -47,10 +52,10 @@ class SonarClient:
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def request(self, endpoint, parameters, *, authenticated=True, write=False):
-        allowed = {"components/show", "ce/component", "ce/task", "ce/activity",
-                   "settings/values", "settings/set", "settings/reset", "project_branches/list",
+        allowed = {"components/show", "ce/component", CE_TASK, CE_ACTIVITY,
+                   "settings/values", SETTINGS_SET, SETTINGS_RESET, "project_branches/list",
                    "project_analyses/search"}
-        if endpoint not in allowed or write != (endpoint in ("settings/set", "settings/reset")):
+        if endpoint not in allowed or write != (endpoint in (SETTINGS_SET, SETTINGS_RESET)):
             raise MaintenanceError("Unsupported maintenance endpoint")
         query = urllib.parse.urlencode(parameters).encode("ascii")
         url = ORIGIN + "/api/" + endpoint
@@ -131,9 +136,9 @@ def probe_permissions(client):
     inventory = client.request("ce/component", {"component": PROJECT})
     current = inventory.get("current")
     task_id, component_id = task_identity(current)
-    analysis = private_read(client, "ce/task", {"id": task_id}).get("task")
+    analysis = private_read(client, CE_TASK, {"id": task_id}).get("task")
     require(task_identity(analysis) == (task_id, component_id), "Permission task identity changed")
-    activity = private_read(client, "ce/activity", {"component": PROJECT, "type": "REPORT", "ps": 1000})
+    activity = private_read(client, CE_ACTIVITY, {"component": PROJECT, "type": "REPORT", "ps": 1000})
     tasks = activity_tasks(activity)
     require(all(task_identity(task)[1] == component_id for task in tasks), "Administration task project changed")
     require(component_mapping(client) == mapping, "Project mapping changed during permission probe")
@@ -170,7 +175,7 @@ def settings_snapshot(client):
 def drain(client, *, timeout=300, clock=time.monotonic, wait=time.sleep):
     deadline = clock() + timeout
     while clock() < deadline:
-        response = client.request("ce/activity", {"component": PROJECT, "type": "REPORT",
+        response = client.request(CE_ACTIVITY, {"component": PROJECT, "type": "REPORT",
                                                    "status": "PENDING,IN_PROGRESS", "ps": 1000})
         tasks = activity_tasks(response)
         require(all(task.get("status") in ("PENDING", "IN_PROGRESS") for task in tasks),
@@ -186,7 +191,7 @@ def owned_write(client, state, key, value, save):
     require(settings_snapshot(client) == state["expected"], "Settings changed before owned write")
     state["unresolvedWrite"] = {"key": key, "value": value}
     save(state)
-    client.request("settings/set", {"component": PROJECT, "key": key, "value": value}, write=True)
+    client.request(SETTINGS_SET, {"component": PROJECT, "key": key, "value": value}, write=True)
     # Record attempted ownership before reread: a lost response is never rollback permission.
     expected = dict(state["expected"])
     expected[key] = {"value": value, "inherited": False}
@@ -250,12 +255,12 @@ def restore(client, state, *, save):
     require(state.get("unresolvedWrite") is None, "A settings write remains unresolved")
     require(state.get("submissionUnresolved") is False, "A submission may still be running")
     drain(client)
-    for key in list(state["changed"]):
+    for key in state["changed"].copy():
         if key == AUTOSCAN_KEY:
             drain(client)
         require(settings_snapshot(client) == state["expected"], "External settings change prevents restoration")
         previous = state["before"][key]
-        endpoint = "settings/reset" if previous["inherited"] else "settings/set"
+        endpoint = SETTINGS_RESET if previous["inherited"] else SETTINGS_SET
         parameters = {"component": PROJECT, "key": key}
         if not previous["inherited"]:
             parameters["value"] = previous["value"]
@@ -321,7 +326,7 @@ def git_read(root, *arguments):
 
 def verify_checkout(root, revision):
     from pathlib import Path
-    require(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{40}", revision), "Full immutable source SHA required")
+    require(isinstance(revision, str) and re.fullmatch(SHA_PATTERN, revision), "Full immutable source SHA required")
     root = Path(root)
     require(not root.is_symlink() and root.resolve(strict=True) == root.absolute(), "Source root must be canonical")
     require(git_read(root, "rev-parse", "HEAD") == revision, "Source checkout revision changed")
@@ -332,15 +337,15 @@ def verify_checkout(root, revision):
 
 
 def scan_properties(scope, *, reference, revision, pull_number=None, head_ref=None):
-    require(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{40}", revision), "Actual revision is missing")
-    require(isinstance(reference, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", reference), "Unsafe target ref")
+    require(isinstance(revision, str) and re.fullmatch(SHA_PATTERN, revision), "Actual revision is missing")
+    require(isinstance(reference, str) and re.fullmatch(r"\w[\w./-]*", reference, flags=re.ASCII), "Unsafe target ref")
     properties = dict(scope["properties"])
     properties.update({"sonar.host.url": ORIGIN, "sonar.projectKey": PROJECT, "sonar.organization": ORGANIZATION})
     if pull_number is None:
         properties["sonar.branch.name"] = reference
     else:
         require(type(pull_number) is int and pull_number > 0 and isinstance(head_ref, str) and
-                re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", head_ref), "Unsafe actual PR identity")
+                re.fullmatch(r"\w[\w./-]*", head_ref, flags=re.ASCII), "Unsafe actual PR identity")
         properties.update({"sonar.pullrequest.key": str(pull_number), "sonar.pullrequest.branch": head_ref,
                            "sonar.pullrequest.base": reference})
     return properties
@@ -447,7 +452,7 @@ def stop_scanner(process, term, kill):
 def completed_task(client, task_id, *, timeout=300, clock=time.monotonic, wait=time.sleep):
     deadline = clock() + timeout
     while clock() < deadline:
-        task = client.request("ce/task", {"id": task_id}).get("task")
+        task = client.request(CE_TASK, {"id": task_id}).get("task")
         require(task_identity(task)[0] == task_id, "Submitted task identity changed")
         require(clock() < deadline, "Task deadline expired during inspection")
         if task.get("status") == "SUCCESS":
@@ -464,7 +469,7 @@ def verify_bootstrap(context, expected_workflow, expected_ref, driver_root, driv
     require(context.get("event") == "workflow_dispatch" and context.get("repository") == "ben-ranford/lopper" and
             context.get("repositoryId") == 1155023607 and context.get("ref") == expected_ref,
             "Unexpected maintenance dispatch context")
-    require(isinstance(expected_workflow, str) and re.fullmatch(r"[a-f0-9]{40}", expected_workflow) and
+    require(isinstance(expected_workflow, str) and re.fullmatch(SHA_PATTERN, expected_workflow) and
             context.get("workflowSHA") == expected_workflow, "Workflow source changed from the independent review binding")
     require(type(context.get("runId")) is int and context["runId"] > 0 and
             type(context.get("runAttempt")) is int and context["runAttempt"] > 0, "Missing dispatch generation")
@@ -483,10 +488,11 @@ def current_parent(client, pair):
                            pair["base_ref"], pair["base"])
 
 
-def submit_analysis(client, pair, state, source, archive, workspace, scope_bytes, scope_digest,
+def submit_analysis(client, pair, state, source, archive, workspace, scope_material,
                     *, is_child, head_ref, save, live_pair, manifest, scanner=run_scanner):
     require(state.get("unresolvedWrite") is None and state.get("submissionUnresolved") is False,
             "Earlier transition or submission is unresolved")
+    scope_bytes, scope_digest = scope_material
     require(state.get("scopeDigest") == scope_digest, "Scope differs from the configured operation")
     scope = verified_scope(scope_bytes, scope_digest)
     require(live_pair() == pair, "Actual base/head pair changed before analysis")
