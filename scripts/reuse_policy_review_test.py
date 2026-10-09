@@ -186,7 +186,7 @@ class PolicyPathTests(unittest.TestCase):
     def test_queue_callers_and_all_admission_dependencies_require_review(self):
         for path in ("scripts/queue_me_controller.js", "scripts/queue_me_reuse.js",
                      "scripts/queue_me_reuse.py", "scripts/queue_me_ci.js",
-                     "scripts/queue_me_ci_intent.js", "scripts/queue_me_public_api.js",
+                     "scripts/queue_me_git_object.js", "scripts/queue_me_ci_intent.js", "scripts/queue_me_public_api.js",
                      "scripts/queue_me_reviews.js", "scripts/queue_me_sonar.js",
                      "scripts/queue_me_suppressions.js"):
             with self.subTest(path=path):

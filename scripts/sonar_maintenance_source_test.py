@@ -119,7 +119,7 @@ print(os.environ['SONAR_TOKEN'])
         with patch.object(maintenance, "scanner_archive", return_value=self.directory / "trusted-scanner"):
             with self.assertRaisesRegex(maintenance.MaintenanceError, "lost task ID"):
                 maintenance.submit_analysis(client, pair, state, self.root, self.directory / "archive",
-                                            self.directory, SCOPE, SCOPE_SHA, is_child=False,
+                                            self.directory, (SCOPE, SCOPE_SHA), is_child=False,
                                             head_ref=None, save=client.save, live_pair=lambda: copy.deepcopy(pair),
                                             manifest={}, scanner=unavailable)
         self.assertTrue(client.saved[-1]["submissionUnresolved"])
@@ -137,13 +137,15 @@ class ScopeTests(unittest.TestCase):
             scope = json.loads(SCOPE)
             scope["properties"][field] = "candidate-controlled"
             data = json.dumps(scope).encode()
+            digest = hashlib.sha256(data).hexdigest()
             with self.subTest(field=field), self.assertRaises(maintenance.MaintenanceError):
-                maintenance.verified_scope(data, hashlib.sha256(data).hexdigest())
+                maintenance.verified_scope(data, digest)
         scope = json.loads(SCOPE)
         del scope["inventory"]["coverage"]
         data = json.dumps(scope).encode()
+        digest = hashlib.sha256(data).hexdigest()
         with self.assertRaisesRegex(maintenance.MaintenanceError, "Complete reviewed"):
-            maintenance.verified_scope(data, hashlib.sha256(data).hexdigest())
+            maintenance.verified_scope(data, digest)
 
     def test_modes_use_truthful_branch_or_pr_without_revision_override(self):
         scope = maintenance.verified_scope(SCOPE, SCOPE_SHA)

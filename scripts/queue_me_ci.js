@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash } = require('node:crypto');
+const { gitBlobIdentity } = require('./queue_me_git_object');
 const { createPublicAPI } = require('./queue_me_public_api');
 
 const REPOSITORY = 'ben-ranford/lopper';
@@ -238,7 +238,10 @@ async function assertMaintenanceSource(input, sources) {
     typeof data.content === 'string' && data.content.length <= 2 * 1024 * 1024, 'missing bounded maintenance workflow source.');
   const encoded = data.content.replaceAll('\n', '');
   const bytes = Buffer.from(encoded, 'base64');
-  const digest = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  let digest;
+  try { digest = gitBlobIdentity(bytes); } catch {
+    requireEvidence(false, 'maintenance workflow source identity changed.');
+  }
   requireEvidence(bytes.toString('base64') === encoded && data.sha === digest &&
     sources.find(source => source.path === path)?.sha === digest, 'maintenance workflow source identity changed.');
   const text = bytes.toString('utf8');
@@ -285,8 +288,9 @@ function selectedJobs(jobs, run, workflow, input, pull) {
     assertSuccessfulJob(job, workflow, workflow.jobs[name] ?? workflow.suppressionLocator.runnerLabel);
     return { name, id: job.id, runAttempt: job.run_attempt, runnerLabel: job.labels[0] };
   });
+  maintenance.sort((a, b) => a.runAttempt - b.runAttempt);
   return { jobs: selected, ...(locator ? { artifactId: locator.artifactId } : {}),
-    ...(maintenance.length ? { maintenance: maintenance.sort((a, b) => a.runAttempt - b.runAttempt) } : {}) };
+    ...(maintenance.length ? { maintenance } : {}) };
 }
 
 function sourceReader(input) {

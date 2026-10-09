@@ -410,7 +410,8 @@ class DuplicationRunnerTest(unittest.TestCase):
                 runner, "scan", return_value=set()) as scan, mock.patch.object(
                 runner.policy, "function_index", return_value=[]), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(runner.main(command), 0)
-        self.assertEqual(scan.call_args.args[1:4], ("go", "pinned", 56))
+        expected_go = os.environ.get("LOPPER_DUPLICATION_GO", "go")
+        self.assertEqual(scan.call_args.args[1:4], (expected_go, "pinned", 56))
         self.assertEqual(runner.added_lines(self.repo, parent), {("child.go", 1), ("child.go", 2)})
 
     def test_occurrence_gate_uses_target_policy_and_rejects_pr_expansion(self):
