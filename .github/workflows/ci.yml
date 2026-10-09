@@ -74,6 +74,176 @@ jobs:
           fi
           go version
 
+      - &ci_proof_node_setup
+        name: Setup regression proof Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Keep Node/npm available inside regressionproof's restricted Go-bin PATH.
+      # Capture the action-provisioned distribution before any repository Make runs.
+      - &ci_proof_node_provision
+        name: Provision restricted regression proof runtime
+        id: proof_runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          LOPPER_RUNTIME_MODE: capture
+        with: &ci_proof_runtime_bootstrap
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const crypto = require('node:crypto');
+            const { execFileSync } = require('node:child_process');
+            function confined(root, entry) {
+              const resolved = fs.realpathSync(entry);
+              const relative = path.relative(root, resolved);
+              if (path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)) {
+                throw new Error('Runtime executable is outside the trusted distribution: ' + entry);
+              }
+              return resolved;
+            }
+            function digest(file) {
+              return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+            }
+            function copyVerified(source, destination) {
+              if (!fs.statSync(source).isFile()) throw new Error('Runtime source is not a regular file');
+              fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+              if (digest(source) !== digest(destination)) throw new Error('Runtime copy hash mismatch');
+              core.info(path.basename(destination) + ' SHA256: ' + digest(destination));
+            }
+            function runtimeInventory(root, followLinks = false) {
+              const fs = require('node:fs');
+              const path = require('node:path');
+              const crypto = require('node:crypto');
+              const result = [];
+              function visit(directory) {
+                for (const name of fs.readdirSync(directory).sort()) {
+                  const entry = path.join(directory, name);
+                  const relative = path.relative(root, entry);
+                  const info = fs.lstatSync(entry);
+                  const resolved = fs.realpathSync(entry);
+                  const target = path.relative(root, resolved);
+                  if (target === '..' || target.startsWith('..' + path.sep) || path.isAbsolute(target)) throw new Error('Runtime custody: inventory escape');
+                  if (info.isSymbolicLink() && !followLinks) throw new Error('Runtime custody: inventory symlink');
+                  const actual = fs.statSync(entry);
+                  if (actual.isDirectory()) {
+                    result.push([relative, 'directory']);
+                    visit(entry);
+                  } else {
+                    if (!actual.isFile()) throw new Error('Runtime custody: nonregular inventory entry');
+                    result.push([relative, crypto.createHash('sha256').update(fs.readFileSync(entry)).digest('hex')]);
+                  }
+                }
+              }
+              visit(root);
+              return result;
+            }
+            function verifyRuntime(receiptFile, expectedDigest, expectedGo) {
+              const fs = require('node:fs');
+              const path = require('node:path');
+              const crypto = require('node:crypto');
+              function digest(file) {
+                if (!fs.lstatSync(file).isFile()) throw new Error('Runtime custody: expected regular file');
+                return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+              }
+              if (!path.isAbsolute(receiptFile || '') || !/^[a-f0-9]{64}$/.test(expectedDigest || '')) throw new Error('Runtime custody: missing receipt anchor');
+              if (!fs.lstatSync(receiptFile).isFile()) throw new Error('Runtime custody: nonregular receipt');
+              const receiptBytes = fs.readFileSync(receiptFile);
+              if (crypto.createHash('sha256').update(receiptBytes).digest('hex') !== expectedDigest) throw new Error('Runtime custody: receipt anchor mismatch');
+              const receipt = JSON.parse(receiptBytes.toString('utf8'));
+              if (fs.realpathSync(receipt.bin) !== receipt.bin) throw new Error('Runtime custody: runtime directory changed');
+              if (receipt.go !== expectedGo.executable || receipt.goRoot !== expectedGo.root || receipt.goHash !== expectedGo.sha256) throw new Error('Runtime custody: compiler anchor mismatch');
+              if (receipt.bin !== path.dirname(expectedGo.executable) || fs.realpathSync(expectedGo.root) !== expectedGo.root || digest(expectedGo.executable) !== expectedGo.sha256) throw new Error('Runtime custody: compiler identity changed');
+              if (digest(receipt.node) !== receipt.nodeHash) throw new Error('Runtime custody: Node changed');
+              if (JSON.stringify(runtimeInventory(path.join(receipt.bin, 'node_modules'))) !== JSON.stringify(receipt.inventory)) throw new Error('Runtime custody: npm inventory changed');
+              const adapter = fs.lstatSync(receipt.adapter);
+              const value = receipt.adapterLink ? (adapter.isSymbolicLink() && fs.readlinkSync(receipt.adapter)) : digest(receipt.adapter);
+              if (value !== receipt.adapterHash) throw new Error('Runtime custody: npm adapter changed');
+            }
+            const verifierSource = runtimeInventory.toString() + '\n' + verifyRuntime.toString() + '\nmodule.exports = verifyRuntime;\n';
+            if (process.env.LOPPER_RUNTIME_MODE === 'verify') {
+              const expected = process.env.LOPPER_RUNTIME_VERIFIER_SHA256;
+              const verifier = process.env.LOPPER_RUNTIME_VERIFIER;
+              if (!path.isAbsolute(verifier || '') || !/^[a-f0-9]{64}$/.test(expected || '')) throw new Error('Runtime custody: missing verifier anchor');
+              if (!fs.lstatSync(verifier).isFile()) throw new Error('Runtime custody: nonregular verifier');
+              const inlineHash = crypto.createHash('sha256').update(verifierSource).digest('hex');
+              if (digest(verifier) !== expected || inlineHash !== expected) throw new Error('Runtime custody: verifier anchor mismatch');
+              // Execute only these reviewed inline functions, never the mutable file.
+              verifyRuntime(process.env.LOPPER_RUNTIME_RECEIPT, process.env.LOPPER_RUNTIME_SHA256, { executable: process.env.LOPPER_PROOF_GO, root: process.env.GOROOT, sha256: process.env.LOPPER_PROOF_GO_SHA256 });
+              core.info('Runtime custody verified against pre-execution anchors');
+              return;
+            }
+            if (process.env.LOPPER_RUNTIME_MODE !== 'capture') throw new Error('Runtime custody: invalid bootstrap mode');
+            const cache = fs.realpathSync(process.env.RUNNER_TOOL_CACHE);
+            const node = confined(fs.realpathSync(path.join(cache, 'node')), await io.which('node', true));
+            const windows = process.platform === 'win32';
+            const distribution = windows ? path.dirname(node) : path.dirname(path.dirname(node));
+            const npm = confined(distribution, path.join(distribution, windows ? 'node_modules/npm' : 'lib/node_modules/npm'));
+            const launcher = fs.realpathSync(await io.which('go', true));
+            const selectionEnv = { ...process.env, GOENV: 'off', GOWORK: 'off', GOFLAGS: '', GOTOOLCHAIN: 'auto', GOCACHEPROG: '', GOAUTH: 'off' };
+            delete selectionEnv.GOROOT;
+            const goRoot = fs.realpathSync(execFileSync(launcher, ['env', 'GOROOT'], { encoding: 'utf8', env: selectionEnv }).trim());
+            const bin = fs.realpathSync(path.join(goRoot, 'bin'));
+            const go = confined(goRoot, path.join(bin, windows ? 'go.exe' : 'go'));
+            if (path.dirname(go) !== bin || !fs.statSync(go).isFile()) throw new Error('Runtime custody: effective compiler escaped its bin');
+            const compilerEnv = { ...selectionEnv, GOROOT: goRoot, GOTOOLCHAIN: 'local' };
+            const confirmedRoot = execFileSync(go, ['env', 'GOROOT'], { encoding: 'utf8', env: compilerEnv }).trim();
+            if (fs.realpathSync(confirmedRoot) !== goRoot) throw new Error('Runtime custody: effective compiler root mismatch');
+            const goHash = digest(go);
+            const targetNode = path.join(bin, windows ? 'node.exe' : 'node');
+            const targetModules = path.join(bin, 'node_modules');
+            const targetNpm = path.join(targetModules, 'npm');
+            if (fs.existsSync(targetModules)) throw new Error('Proof npm destination already exists');
+            const sourceInventory = runtimeInventory(npm, true);
+            copyVerified(node, targetNode);
+            if (fs.existsSync(targetNpm)) throw new Error('Proof npm destination already exists');
+            fs.cpSync(npm, targetNpm, { recursive: true, dereference: true, errorOnExist: true, force: false });
+            if (JSON.stringify(sourceInventory) !== JSON.stringify(runtimeInventory(targetNpm))) throw new Error('Runtime copy inventory mismatch');
+            const npmCLI = path.join(npm, 'bin/npm-cli.js');
+            const targetCLI = path.join(targetNpm, 'bin/npm-cli.js');
+            if (digest(npmCLI) !== digest(targetCLI)) throw new Error('npm CLI copy hash mismatch');
+            core.info('npm CLI SHA256: ' + digest(targetCLI));
+            if (windows) {
+              copyVerified(confined(distribution, path.join(distribution, 'npm.cmd')), path.join(bin, 'npm.cmd'));
+            } else {
+              fs.symlinkSync(targetCLI, path.join(bin, 'npm'));
+            }
+            const systemPath = windows
+              ? String.raw`C:\mingw64\bin;C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Windows\System32;C:\Windows`
+              : '/usr/bin:/bin:/usr/sbin:/sbin';
+            const env = { ...process.env, PATH: bin + path.delimiter + systemPath };
+            delete env.NODE_OPTIONS;
+            delete env.NODE_PATH;
+            const sourceVersion = execFileSync(node, ['--version'], { encoding: 'utf8', env, cwd: bin }).trim();
+            const version = execFileSync(targetNode, ['--version'], { encoding: 'utf8', env, cwd: bin }).trim();
+            if (!/^v24\./.test(version) || version !== sourceVersion) throw new Error('Proof Node version mismatch');
+            const npmVersion = execFileSync(targetNode, [targetCLI, '--version'], { encoding: 'utf8', env, cwd: bin }).trim();
+            if (npmVersion !== execFileSync(node, [npmCLI, '--version'], { encoding: 'utf8', env, cwd: bin }).trim()) {
+              throw new Error('Proof npm version mismatch');
+            }
+            core.info('Restricted proof PATH: ' + env.PATH);
+            core.info('Provisioned Node ' + version + ', npm ' + npmVersion);
+            const custody = fs.mkdtempSync(path.join(fs.realpathSync(process.env.RUNNER_TEMP), 'lopper-runtime-'));
+            const verifier = path.join(custody, 'verify.cjs');
+            fs.writeFileSync(verifier, verifierSource, { flag: 'wx' });
+            const adapter = path.join(bin, windows ? 'npm.cmd' : 'npm');
+            const receipt = path.join(custody, 'runtime.json');
+            fs.writeFileSync(receipt, JSON.stringify({
+              bin, go, goRoot, goHash, node: targetNode, nodeHash: digest(targetNode), adapter,
+              adapterLink: !windows, adapterHash: windows ? digest(adapter) : fs.readlinkSync(adapter),
+              inventory: runtimeInventory(targetModules), version, npmVersion,
+              sourceRoot: distribution, verifierHash: digest(verifier)
+            }), { flag: 'wx' });
+            verifyRuntime(receipt, digest(receipt), { executable: go, root: goRoot, sha256: goHash });
+            core.setOutput('receipt', receipt);
+            core.setOutput('sha256', digest(receipt));
+            core.setOutput('verifier', verifier);
+            core.setOutput('verifier_sha256', digest(verifier));
+            core.setOutput('go', go);
+            core.setOutput('go_root', goRoot);
+            core.setOutput('go_sha256', goHash);
+
       - name: Install shellcheck
         if: ${{ !env.ACT }}
         run: |
@@ -228,14 +398,38 @@ jobs:
             "${LOPPER_CI_MAKE}" ci-checks
           fi
 
+      # Expected identities come from the pre-Make action outputs, never disk.
+      - &ci_proof_node_verify
+        name: Verify restricted regression proof runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          LOPPER_RUNTIME_MODE: verify
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          LOPPER_PROOF_GO_SHA256: ${{ steps.proof_runtime.outputs.go_sha256 }}
+          LOPPER_RUNTIME_RECEIPT: ${{ steps.proof_runtime.outputs.receipt }}
+          LOPPER_RUNTIME_SHA256: ${{ steps.proof_runtime.outputs.sha256 }}
+          LOPPER_RUNTIME_VERIFIER: ${{ steps.proof_runtime.outputs.verifier }}
+          LOPPER_RUNTIME_VERIFIER_SHA256: ${{ steps.proof_runtime.outputs.verifier_sha256 }}
+        with: *ci_proof_runtime_bootstrap
+
       - name: Prove regression tests for fix PRs
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
+        shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: |
-          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL" --target-os linux
+          "${LOPPER_PROOF_GO}" run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL" --target-os linux
 
       - name: Fail on unapproved memory regression
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
@@ -910,19 +1104,39 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Resolve native Go toolchain
-        shell: pwsh
-        run: |
-          $goRoot = go env GOROOT
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "REGRESSION_PROOF_GO_ROOT=$goRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - *ci_proof_node_setup
+
+      - *ci_proof_node_provision
 
       - name: Test native Windows proof tools
         shell: pwsh
-        run: go test ./tools/regressionproof -run '^TestWindowsProof' -count=1
+        env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+          REGRESSION_PROOF_GO_ROOT: ${{ steps.proof_runtime.outputs.go_root }}
+        run: |
+          & $env:LOPPER_PROOF_GO test ./tools/regressionproof -run '^TestWindowsProof' -count=1
+
+      - *ci_proof_node_verify
 
       - name: Verify native Windows runtime path compatibility
         shell: pwsh
+        env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+          REGRESSION_PROOF_GO_ROOT: ${{ steps.proof_runtime.outputs.go_root }}
         run: ./scripts/verify-windows-runtime-paths.ps1
 
       - name: Write PR body for regression proof
@@ -936,14 +1150,26 @@ jobs:
             fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
+      - *ci_proof_node_verify
+
       - name: Prove Windows regression tests for fix PRs
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: pwsh
         env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+          REGRESSION_PROOF_GO_ROOT: ${{ steps.proof_runtime.outputs.go_root }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
-        run: go run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
+        run: |
+          & $env:LOPPER_PROOF_GO run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
 
   verify:
     if: ${{ always() }}

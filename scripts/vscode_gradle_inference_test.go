@@ -62,7 +62,18 @@ func gradleProofCompiler(ctx context.Context, extension string) (string, error) 
 	if _, err := os.Stat(compiler); err == nil {
 		return compiler, nil
 	}
-	cmd := exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund")
+	npm, err := exec.LookPath("npm")
+	if err != nil {
+		return "", fmt.Errorf("provision existing extension tooling: %w", err)
+	}
+	npm, err = filepath.EvalSymlinks(npm)
+	if err != nil {
+		return "", fmt.Errorf("resolve npm CLI: %w", err)
+	}
+	if strings.EqualFold(filepath.Ext(npm), ".cmd") {
+		npm = filepath.Join(filepath.Dir(npm), "node_modules", "npm", "bin", "npm-cli.js")
+	}
+	cmd := exec.CommandContext(ctx, "node", npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund")
 	cmd.Dir = extension
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("provision existing extension tooling: %w\n%s", err, output)

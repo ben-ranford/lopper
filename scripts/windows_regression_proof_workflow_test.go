@@ -11,11 +11,11 @@ func TestCIRequiresNativeWindowsRegressionProof(t *testing.T) {
 		t.Fatal("Windows proof must execute on a required native Windows job")
 	}
 	assertWorkflowJobPermissions(t, job, "Windows regression proof", map[string]string{"contents": "read"})
-	assertWorkflowStepOrder(t, job, "Setup Go", "Resolve native Go toolchain", "Test native Windows proof tools", "Prove Windows regression tests for fix PRs")
-	toolchain := workflowStepByName(t, workflow.Jobs, "regression-proof-windows", "Resolve native Go toolchain")
-	assertWorkflowStepRunContainsAll(t, toolchain, "Windows toolchain resolution", []string{
-		"go env GOROOT", "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", "REGRESSION_PROOF_GO_ROOT=$goRoot",
-	})
+	assertWorkflowStepOrder(t, job, "Setup Go", "Provision restricted regression proof runtime", "Test native Windows proof tools", "Prove Windows regression tests for fix PRs")
+	toolchain := workflowStepByName(t, workflow.Jobs, "regression-proof-windows", "Provision restricted regression proof runtime")
+	if toolchain.ID != "proof_runtime" || toolchain.Env["LOPPER_RUNTIME_MODE"] != "capture" {
+		t.Fatal("Windows compiler root must come from the authenticated pre-execution capture")
+	}
 	checkout := workflowStepByName(t, workflow.Jobs, "regression-proof-windows", "Checkout")
 	if checkout.With["ref"] != "${{ github.sha }}" || checkout.With["fetch-depth"] != "0" || checkout.With["persist-credentials"] != "false" {
 		t.Fatal("Windows proof must use the same event source and full history without saved credentials")
@@ -25,9 +25,13 @@ func TestCIRequiresNativeWindowsRegressionProof(t *testing.T) {
 	if windows.If != linux.If || windows.ContinueOnError || windows.Shell != "pwsh" {
 		t.Fatal("Windows proof must enforce the same PR scope and fail on errors")
 	}
+	assertPinnedNodeConsumerEnvironment(t, windows)
+	if windows.Env["REGRESSION_PROOF_GO_ROOT"] != "${{ steps.proof_runtime.outputs.go_root }}" {
+		t.Fatal("Windows proof must bind its root to the authenticated compiler output")
+	}
 	assertWorkflowStepRunContainsAll(t, linux, "Linux proof partition", []string{"--target-os linux"})
 	assertWorkflowStepRunContainsAll(t, windows, "Windows proof partition", []string{
-		"go run ./tools/regressionproof", "--target-os windows", `--body-file "$env:PR_BODY_FILE"`, `--base-sha "$env:PR_BASE_SHA"`,
+		"& $env:LOPPER_PROOF_GO run ./tools/regressionproof", "--target-os windows", `--body-file "$env:PR_BODY_FILE"`, `--base-sha "$env:PR_BASE_SHA"`,
 	})
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Require every verification job")
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
