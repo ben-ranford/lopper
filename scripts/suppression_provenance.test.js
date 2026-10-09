@@ -17,7 +17,9 @@ const OTHER = 'c'.repeat(40);
 const DETECTOR_PATH = 'scripts/inline_suppression_tracker.js';
 const detectorSource = fs.readFileSync(path.join(__dirname, 'inline_suppression_tracker.js'));
 const detectorOID = '6aa469c7936ee0e16eef545a2c07534f313f2de1';
-assert.equal(createHash('sha256').update(detectorSource).digest('hex'), '03f9a96a9d3e915182e451adeba397966381b89d6814fbfcaaf261f8d5364b5d');
+test.before(() => {
+  assert.equal(createHash('sha256').update(detectorSource).digest('hex'), '03f9a96a9d3e915182e451adeba397966381b89d6814fbfcaaf261f8d5364b5d');
+});
 const hostileSource = "require('node:fs').writeFileSync(process.env.LOPPER_G038_TEST_PARENT_MARKER, 'executed'); module.exports.testables = {recomputeSuppressionRecords: async () => ({records: new Map()})};";
 const hostileOID = '07f3e86e1e5f9becb0c37dc4946ffb037a0dde25';
 const markerKey = 'LOPPER_G038_TEST_PARENT_MARKER';
