@@ -44,8 +44,10 @@ function simulateMaintenanceBackend(t) {
     assert.deepEqual(options.env, { PATH: '/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1',
       GIT_CEILING_DIRECTORIES: path.dirname(options.cwd) });
-    assert.deepEqual(Object.keys(options).sort(), ['cwd', 'shell', 'stdio', 'timeout', 'killSignal', 'maxBuffer', 'env',
-      ...(argv[0] === 'version' ? [] : ['input'])].sort());
+    const actualKeys = Object.keys(options).sort((left, right) => left.localeCompare(right));
+    const expectedKeys = ['cwd', 'shell', 'stdio', 'timeout', 'killSignal', 'maxBuffer', 'env',
+      ...(argv[0] === 'version' ? [] : ['input'])].sort((left, right) => left.localeCompare(right));
+    assert.deepEqual(actualKeys, expectedKeys);
     if (['linux', 'darwin'].includes(process.platform)) assert.equal(fs.statSync(options.cwd).mode & 0o777, 0o700);
     assert.equal(options.shell, false);
     assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);

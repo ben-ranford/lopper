@@ -30,7 +30,7 @@ function environment(cwd) {
 
 function checkResult(result, limit) {
   if (!Buffer.isBuffer(result.stdout) || !Buffer.isBuffer(result.stderr)) {
-    throw new Error('Git returned non-buffer output');
+    throw new TypeError('Git returned non-buffer output');
   }
   if (result.error || result.signal || result.status !== 0) {
     throw new Error('Git process did not complete successfully');
