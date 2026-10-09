@@ -505,3 +505,56 @@ test('rejects incomplete hotspot paging instead of treating it as zero', async (
     ? { ...body, paging: { ...body.paging, total: 1 } } : body,
   }, /truncated or inconsistent/);
 });
+
+function maintenanceAudit(changeParent = value => value, auditOptions = {}) {
+  const reference = 'codex/v1.8.10-parent';
+  const linked = associatedPull();
+  linked.base.ref = reference;
+  const audit = harness({ pulls: [{ ...analysis(), base: reference, target: reference }],
+    checks: [{ ...check(), pull_requests: [linked] }], suites: [{ ...suite(), pull_requests: [linked] }], ...auditOptions });
+  let reads = 0;
+  const fetchImpl = async (raw, options) => {
+    const url = new URL(raw);
+    let body;
+    if (url.pathname === '/api/project_branches/list') {
+      body = { branches: [{ name: reference, type: 'LONG' }] };
+    } else if (url.pathname === '/api/project_analyses/search') {
+      assert.equal(url.searchParams.get('branch'), reference);
+      body = { analyses: [{ key: 'parent-analysis', revision: 'b'.repeat(40), date: '2026-09-30T14:00:00Z' }],
+        paging: { pageIndex: 1, pageSize: 1000, total: 1 } };
+      reads++;
+    } else return audit.fetchImpl(raw, options);
+    return new Response(JSON.stringify(changeParent(body, url.pathname, reads)), { headers: { 'content-type': 'application/json' } });
+  };
+  return () => require('./sonar_maintenance_verify').verifyMaintenanceAnalysis({ ...INPUT, baseRef: reference,
+    baseSHA: 'b'.repeat(40), fetchImpl });
+}
+
+test('maintenance adds actual committed LONG parent to unchanged strict child verification', async () => {
+  const result = await maintenanceAudit()();
+  assert.equal(result.parent.branch, 'codex/v1.8.10-parent');
+  assert.equal(result.parent.revision, 'b'.repeat(40));
+  assert.equal(result.child.qualityGate, 'OK');
+  assert.equal(result.child.activeOrWaivedIssues, 0);
+  assert.equal(result.child.hotspots, 0);
+});
+
+test('maintenance rejects wrong, partial, newer, or moving parent baseline', async () => {
+  const cases = [
+    ['project_branches', body => ({ ...body, branches: [] })],
+    ['project_branches', body => ({ ...body, branches: body.branches.map(row => ({ ...row, type: 'SHORT' })) })],
+    ['project_analyses', body => ({ ...body, analyses: body.analyses.map(row => ({ ...row, revision: 'c'.repeat(40) })) })],
+    ['project_analyses', body => ({ ...body, analyses: body.analyses.map(row => ({ ...row, date: '2026-10-01T00:00:00Z' })) })],
+    ['project_analyses', body => ({ ...body, paging: { ...body.paging, total: 2 } })],
+  ];
+  for (const [route, mutate] of cases) {
+    await assert.rejects(maintenanceAudit((body, endpoint) => endpoint.includes(route) ? mutate(body) : body)());
+  }
+  await assert.rejects(maintenanceAudit((body, endpoint, count) => count > 1 && body.analyses
+    ? { ...body, analyses: body.analyses.map(row => ({ ...row, key: 'moved' })) } : body)(), /changed/);
+});
+
+test('maintenance never converts findings or a main-based child into success', async () => {
+  await assert.rejects(maintenanceAudit(undefined, { hotspots: [{ status: 'TO_REVIEW' }] })());
+  await assert.rejects(maintenanceAudit(undefined, { pulls: [analysis()] })(), /base identity/);
+});

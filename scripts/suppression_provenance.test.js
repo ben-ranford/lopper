@@ -51,7 +51,7 @@ const validArchive = reportZip();
 function harness(options = {}) {
   const expected = {
     repoId: 11, headRepoId: 22, pullNumber: 1750,
-    headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2,
+    policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2,
   };
   const context = { repo: { owner: 'owner', repo: 'lopper' } };
   const pull = {
@@ -77,7 +77,7 @@ function harness(options = {}) {
   };
   const detector = {
     type: 'file', path: DETECTOR_PATH, encoding: 'base64',
-    content: detectorSource.toString('base64'), size: detectorSource.length, sha: 'd'.repeat(40),
+    content: detectorSource.toString('base64'), size: detectorSource.length, sha: createHash('sha1').update(`blob ${detectorSource.length}\0`).update(detectorSource).digest('hex'),
   };
   const files = options.files ?? [{
     filename: 'clean.go', status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+package clean\n',
@@ -140,7 +140,7 @@ function harness(options = {}) {
 test('accepts late production on the exact completed attempt and recomputes with the real base detector', async () => {
   const fixture = harness();
   assert.deepEqual(await verifySuppressionProvenance(fixture.args), {
-    headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2, artifactId: 55, suppressionCount: 0,
+    version: 2, policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2, artifactId: 55, suppressionCount: 0,
   });
   assert.equal(fixture.calls.runs, 2);
   assert.equal(fixture.calls.pulls, 4);
@@ -281,6 +281,36 @@ test('rejects invalid trusted detector source metadata', async (t) => {
   }
 });
 
+test('stack recomputation loads protected tracker while hostile parent remains data', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lopper-stacked-tracker-'));
+  const markerPath = path.join(directory, 'parent-executed');
+  try {
+    const marker = 'no' + 'lint';
+    const line = `var unsafe = 1 //${marker} rationale=temporary; owner=@owner; remove-when=resolved`;
+    const fixture = harness({ headContent: `package main\n${line}\n`, files: [{
+      filename: 'main.go', status: 'added', additions: 2, deletions: 0,
+      patch: `@@ -0,0 +1,2 @@\n+package main\n+${line}\n`,
+    }] });
+    fixture.expected.policySHA = OTHER;
+    const original = fixture.args.github.rest.repos.getContent;
+    const selected = [];
+    fixture.args.github.rest.repos.getContent = async (input) => {
+      if (input.path !== DETECTOR_PATH) return original(input);
+      selected.push(input.ref);
+      if (input.ref === OTHER) return { data: structuredClone(fixture.detector) };
+      assert.equal(input.ref, BASE);
+      const hostile = Buffer.from(`require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'executed'); module.exports.testables = {recomputeSuppressionRecords: async () => ({records: new Map()})};`);
+      return { data: { ...fixture.detector, content: hostile.toString('base64'), size: hostile.length,
+        sha: createHash('sha1').update(`blob ${hostile.length}\0`).update(hostile).digest('hex') } };
+    };
+    await assert.rejects(verifySuppressionProvenance(fixture.args), /trusted diff contains inline suppressions/);
+    assert.deepEqual(selected, [OTHER]);
+    assert.equal(fs.existsSync(markerPath), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('real trusted detector finds an omitted suppression despite clean artifact', async () => {
   const marker = 'no' + 'lint';
   const line = `var unsafe = 1 //${marker} rationale=temporary; owner=@owner; remove-when=resolved`;
@@ -397,7 +427,7 @@ function verifyThroughOuter(fixture, listRuns) {
   }] } });
   const verify = verifyReuseSuppression.testables.createVerifier(() => verifySuppressionProvenance, async () => fixture.args.archive);
   return verify({ github, context: fixture.context, token: 'test', snapshot: {
-    version: 1, repository: 'owner/lopper', repository_id: 11, head_repository_id: 22,
+    version: 2, policy_source: BASE, repository: 'owner/lopper', repository_id: 11, head_repository_id: 22,
     pull_number: 1750, head: HEAD, base: BASE, base_ref: 'main',
   } });
 }
@@ -491,6 +521,7 @@ test('removes private source files and module cache if the trusted detector thro
   const throwingSource = Buffer.from('module.exports = { testables: { recomputeSuppressionRecords: async () => { throw new Error("detector unavailable"); } } };');
   fixture.detector.content = throwingSource.toString('base64');
   fixture.detector.size = throwingSource.length;
+  fixture.detector.sha = createHash('sha1').update(`blob ${throwingSource.length}\0`).update(throwingSource).digest('hex');
   await assert.rejects(verifySuppressionProvenance(fixture.args), /detector unavailable/);
   assert.deepEqual(temporarySources(), before);
   assert.equal(Object.keys(require.cache).filter((filename) => filename.includes('lopper-suppression-provenance-')).length, 0);

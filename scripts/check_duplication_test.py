@@ -393,6 +393,26 @@ class DuplicationRunnerTest(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0], (("dir with spaces/a.go", 1, 2), ("b.go", 1, 2)))
 
+    def test_explicit_policy_source_separates_parent_settings_and_changed_lines(self):
+        self.write(runner.CANONICAL_BASELINE, json.dumps({"version": 1, "families": [], "exceptions": []}))
+        self.write("Makefile", "GO ?= go\nDUPL_VERSION ?= pinned\nDUPLICATION_TOKEN_THRESHOLD ?= 56\n")
+        self.commit()
+        protected = self.git("rev-parse", "HEAD").strip()
+        self.write("Makefile", "GO ?= hostile-parent\nDUPL_VERSION ?= parent\nDUPLICATION_TOKEN_THRESHOLD ?= 99\n")
+        self.write("parent.go", "package fixture\nvar Parent = 1\n")
+        self.commit()
+        parent = self.git("rev-parse", "HEAD").strip()
+        self.write("child.go", "package fixture\nvar Child = 1\n")
+        self.commit()
+        command = ["--version", "pinned", "--threshold", "56", "--base", parent,
+                   "--policy-source", protected, "--baseline", runner.CANONICAL_BASELINE]
+        with mock.patch.object(runner.Path, "cwd", return_value=self.repo), mock.patch.object(
+                runner, "scan", return_value=set()) as scan, mock.patch.object(
+                runner.policy, "function_index", return_value=[]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(command), 0)
+        self.assertEqual(scan.call_args.args[1:4], ("go", "pinned", 56))
+        self.assertEqual(runner.added_lines(self.repo, parent), {("child.go", 1), ("child.go", 2)})
+
     def test_occurrence_gate_uses_target_policy_and_rejects_pr_expansion(self):
         empty = {"version": 1, "families": [], "exceptions": []}
         baseline_path = ".github/duplication-baseline.json"

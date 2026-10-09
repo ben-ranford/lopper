@@ -1,5 +1,6 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { createPublicAPI } = require('./queue_me_public_api');
 
 const REPOSITORY = 'ben-ranford/lopper';
@@ -219,13 +220,48 @@ function assertSuccessfulJob(job, workflow, runnerLabel) {
   requireEvidence(timestamp(job.completed_at) >= timestamp(job.started_at) && timestamp(job.started_at) >= timestamp(job.created_at), `invalid job timestamps for ${job.name}.`);
 }
 
+function skippedMaintenance(job, workflow) {
+  requireEvidence(workflow.id === 232814257 && workflow.path === SOURCE_PATHS[0] &&
+    job.status === 'completed' && job.conclusion === 'skipped', 'maintenance is not a skipped ordinary CI record.');
+  const times = ['created_at', 'started_at', 'completed_at'].map(key => job[key] == null ? null : timestamp(job[key]));
+  const present = times.filter(value => value !== null);
+  requireEvidence(present.every((value, index) => index === 0 || value >= present[index - 1]), 'invalid skipped maintenance timestamps.');
+  return { name: job.name, id: job.id, runAttempt: job.run_attempt, status: job.status,
+    conclusion: job.conclusion, createdAt: times[0], startedAt: times[1], completedAt: times[2] };
+}
+
+async function assertMaintenanceSource(input, sources) {
+  const path = SOURCE_PATHS[0];
+  const { data } = await input.github.rest.repos.getContent({ owner: input.owner, repo: input.repo,
+    path, ref: input.trustedPolicySHA });
+  requireEvidence(data?.type === 'file' && data.path === path && data.encoding === 'base64' &&
+    typeof data.content === 'string' && data.content.length <= 2 * 1024 * 1024, 'missing bounded maintenance workflow source.');
+  const encoded = data.content.replaceAll('\n', '');
+  const bytes = Buffer.from(encoded, 'base64');
+  const digest = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  requireEvidence(bytes.toString('base64') === encoded && data.sha === digest &&
+    sources.find(source => source.path === path)?.sha === digest, 'maintenance workflow source identity changed.');
+  const text = bytes.toString('utf8');
+  const guard = "  sonar-maintenance:\n    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sonar_operation != 'none' }}\n";
+  requireEvidence(text.split('  sonar-maintenance:').length === 2 && text.includes(guard),
+    'protected workflow does not define the canonical guarded maintenance job.');
+}
+
 function selectedJobs(jobs, run, workflow, input, pull) {
   // Partial reruns retain successful jobs from earlier attempts of this run only.
   const latest = new Map();
   const attempts = new Set();
   const locators = new Map();
+  const maintenance = [];
   for (const job of jobs) {
     assertJobIdentity(job, run, workflow, input, pull);
+    if (job.name === 'sonar-maintenance') {
+      const key = `${job.name}:${job.run_attempt}`;
+      requireEvidence(!attempts.has(key), 'duplicate maintenance job in one run attempt.');
+      attempts.add(key);
+      maintenance.push(skippedMaintenance(job, workflow));
+      continue;
+    }
     const artifactId = jobArtifactID(job, run, workflow);
     if (artifactId !== undefined) {
       requireEvidence(!locators.has(job.run_attempt), 'duplicate suppression artifact locator in one run attempt.');
@@ -249,7 +285,8 @@ function selectedJobs(jobs, run, workflow, input, pull) {
     assertSuccessfulJob(job, workflow, workflow.jobs[name] ?? workflow.suppressionLocator.runnerLabel);
     return { name, id: job.id, runAttempt: job.run_attempt, runnerLabel: job.labels[0] };
   });
-  return { jobs: selected, ...(locator ? { artifactId: locator.artifactId } : {}) };
+  return { jobs: selected, ...(locator ? { artifactId: locator.artifactId } : {}),
+    ...(maintenance.length ? { maintenance: maintenance.sort((a, b) => a.runAttempt - b.runAttempt) } : {}) };
 }
 
 function sourceReader(input) {
@@ -376,6 +413,7 @@ async function verifyWorkflow(api, workflow, input, pull, read, sources) {
   assertSuccessfulRun(run, workflow, input, pull);
   const jobs = await inventory(api, `actions/runs/${run.id}/jobs`, { filter: 'all' }, 'jobs');
   const selected = selectedJobs(jobs, run, workflow, input, pull);
+  if (selected.maintenance) await assertMaintenanceSource(input, sources);
   const current = await api(`actions/runs/${run.id}`, {}, true);
   requireEvidence(current?.id === run.id, 'workflow reread returned another run identity.');
   assertRunIdentity(current, workflow, input, pull);

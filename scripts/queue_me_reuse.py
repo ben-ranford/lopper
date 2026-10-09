@@ -40,7 +40,7 @@ def execute(command, value, api, root):
     if command not in ("analyze", "validate") or set(value) != fields:
         raise shared.EventError("Invalid queue reuse command or schema")
     snapshot = shared.validate_snapshot(value["snapshot"])
-    if snapshot["repository"] != "ben-ranford/lopper" or snapshot["base_ref"] != "main":
+    if snapshot["repository"] != "ben-ranford/lopper" or snapshot["base_ref"] != "main" or snapshot["policy_source"] != snapshot["base"]:
         raise shared.EventError("Queue reuse must target the protected repository")
     shared.same_live_pair(api, snapshot)
     if command == "analyze":
@@ -77,7 +77,7 @@ def main(argv=None):
                 raise shared.EventError("Analysis cannot defer suppression validation") from None
             snapshot = shared.validate_snapshot(value["snapshot"])
             shared.same_live_pair(api, snapshot)
-            print(json.dumps({"version": 1, "kind": "ci-deferred", "snapshot": snapshot},
+            print(json.dumps({"version": 2, "kind": "ci-deferred", "snapshot": snapshot},
                              sort_keys=True, separators=(",", ":")))
             return 75
         encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
