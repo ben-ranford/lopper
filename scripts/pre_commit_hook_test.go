@@ -553,6 +553,9 @@ func newHookFixture(t *testing.T) string {
 	t.Helper()
 	repoDir := filepath.Join(t.TempDir(), "repo")
 	runCommand(t, filepath.Dir(repoDir), "git", "init", "-b", "main", repoDir)
+	// Keep maintenance owned by each command before TempDir removes the repository.
+	testutil.RunGit(t, repoDir, "config", "--local", "maintenance.autoDetach", "false")
+	testutil.RunGit(t, repoDir, "config", "--local", "gc.autoDetach", "false")
 	testutil.RunGit(t, repoDir, "config", "user.name", "Hook Test")
 	testutil.RunGit(t, repoDir, "config", "user.email", "hook-test@example.com")
 	cwd, err := os.Getwd()

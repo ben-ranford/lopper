@@ -6,7 +6,7 @@ Thanks for contributing to Lopper.
 
 Requirements:
 
-- Go `1.27.1` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
+- Go `1.27.2` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
 - `zig` (required for cross-CGO release builds)
 - `shellcheck` (required for `make ci`)
 - Ruby (required for automation integrity YAML/JSON checks in `make ci`)
@@ -194,3 +194,22 @@ regression's permission, output, and failure boundaries.
 Repository size and advisory test-clone reports are available with
 `make --silent source-size-report DUPLICATION_BASE=origin/main`. See
 [the methodology and helper ownership guidance](docs/source-size-report.md).
+
+### Protected policy and stacked comparisons
+
+Protected reuse snapshots, analysis results and protected suppression receipts use
+version 2. `policy_source` (P) is the authenticated default-branch executable and
+policy revision. The actual target B, child H and prospective merge M are data;
+parent branch scripts, detector settings and baseline allowances are never adopted
+as executable policy. The candidate inline-suppression report remains version 1.
+Only same-repository `codex/v1.8.10-` targets with one live open parent are eligible
+for stacked reuse analysis. Parent closure/deletion or policy movement revokes
+existing evidence even when new success is no longer eligible. Queue merge
+admission remains main-only and requires P=B.
+
+The canonical `sonar-maintenance` job, when subsequently deployed in reviewed CI
+source, may appear only as completed/skipped in an ordinary PR inventory. It is
+separate reread evidence, never a required-success job or suppression producer.
+A maintenance dispatch cannot substitute for ordinary PR CI. See
+[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the separate source,
+permission, scope, baseline and publication prerequisites.

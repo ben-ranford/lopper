@@ -41,9 +41,9 @@ class _CIBlocked(EventError):
 
 
 SNAPSHOT_KEYS = frozenset(("version", "repository", "repository_id", "head_repository_id",
-                           "pull_number", "base", "head", "base_ref"))
+                           "pull_number", "base", "head", "base_ref", "policy_source"))
 RESULT_KEYS = frozenset(("version", "snapshot", "candidate", "detector_exit", "policy_paths"))
-SUPPRESSION_KEYS = frozenset(("headSHA", "baseSHA", "runId", "runAttempt", "artifactId", "suppressionCount"))
+SUPPRESSION_KEYS = frozenset(("version", "policySHA", "headSHA", "baseSHA", "runId", "runAttempt", "artifactId", "suppressionCount"))
 DEFERRED_KEYS = frozenset(("version", "snapshot", "reason", "runId", "runAttempt"))
 CI_WORKFLOW = ".github/workflows/ci.yml"
 CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
@@ -65,14 +65,14 @@ def repository_name(value):
 
 
 def validate_snapshot(snapshot):
-    if not isinstance(snapshot, dict) or set(snapshot) != SNAPSHOT_KEYS or snapshot["version"] != 1:
+    if not isinstance(snapshot, dict) or set(snapshot) != SNAPSHOT_KEYS or snapshot["version"] != 2:
         raise EventError("Invalid event snapshot schema")
     if type(snapshot["version"]) is not int:
         raise EventError("Invalid event snapshot version")
     repository_name(snapshot["repository"])
     for key in ("repository_id", "head_repository_id", "pull_number"):
         number(snapshot[key])
-    for key in ("base", "head"):
+    for key in ("base", "head", "policy_source"):
         policy.immutable_sha(snapshot[key])
     if not isinstance(snapshot["base_ref"], str) or not snapshot["base_ref"]:
         raise EventError("Missing protected target branch")
@@ -283,24 +283,55 @@ def live_repository(api, repository, identifier):
     return document
 
 
+def branch_sha(api, repository, reference):
+    if (not isinstance(reference, str) or not re.fullmatch(r"\w[\w./-]*", reference, flags=re.ASCII)
+            or ".." in reference or "//" in reference or reference.endswith(("/", ".lock", "."))):
+        raise EventError("Invalid target branch")
+    branch = urllib.parse.quote(reference, safe="")
+    target = api.request(f"/repos/{repository}/git/ref/heads/{branch}")
+    return policy.immutable_sha(target["object"]["sha"])
+
+
+def stack_target(reference):
+    return isinstance(reference, str) and reference.startswith("codex/v1.8.10-")
+
+
+def require_stack_parent(api, repository, identifier, pull):
+    if repository != "ben-ranford/lopper" or not stack_target(pull["base"]["ref"]):
+        raise InactivePull("Pull request target is outside the protected batch")
+    if pull["head"]["repo"]["id"] != identifier:
+        raise EventError("Stack head must belong to the protected repository")
+    parents = [row for row in api.pages(f"/repos/{repository}/pulls")
+               if row["state"] == "open" and row["head"]["ref"] == pull["base"]["ref"]
+               and row["head"]["sha"] == pull["base"]["sha"]
+               and row["head"]["repo"]["id"] == identifier
+               and row["base"]["repo"]["id"] == identifier and row["number"] != pull["number"]]
+    if len(parents) != 1:
+        raise EventError("Stack target requires one unique live open parent")
+
+
 def pull_snapshot(api, repository, identifier, pull_number, *, require_current_base=True):
     document = live_repository(api, repository, identifier)
     pull = api.request(f"/repos/{repository}/pulls/{number(pull_number)}")
     if (pull["number"] != pull_number or pull["base"]["repo"]["id"] != identifier
             or pull["base"]["repo"]["full_name"].casefold() != repository.casefold()):
         raise EventError("Live pull request repository or number does not match")
-    if pull["state"] != "open" or pull["base"]["ref"] != document["default_branch"]:
-        raise InactivePull("Pull request is not open against this repository's default branch")
+    if pull["state"] != "open":
+        raise InactivePull("Pull request is not open")
+    protected = branch_sha(api, repository, document["default_branch"])
     if require_current_base:
-        branch = urllib.parse.quote(document["default_branch"], safe="")
-        target = api.request(f"/repos/{repository}/git/ref/heads/{branch}")
-        if policy.immutable_sha(target["object"]["sha"]) != pull["base"]["sha"]:
+        if pull["base"]["ref"] != document["default_branch"]:
+            require_stack_parent(api, repository, identifier, pull)
+        target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
+        if target != pull["base"]["sha"]:
             raise EventError("Pull request base does not match the current protected target")
-    snapshot = validate_snapshot({
-        "version": 1, "repository": repository, "repository_id": identifier,
+    elif pull["base"]["ref"] != document["default_branch"] and not stack_target(pull["base"]["ref"]):
+        raise InactivePull("Pull request is outside the revocation batch")
+    return validate_snapshot({
+        "version": 2, "repository": repository, "repository_id": identifier,
         "head_repository_id": pull["head"]["repo"]["id"], "pull_number": pull_number,
-        "base": pull["base"]["sha"], "head": pull["head"]["sha"], "base_ref": pull["base"]["ref"]})
-    return snapshot
+        "base": pull["base"]["sha"], "head": pull["head"]["sha"], "base_ref": pull["base"]["ref"],
+        "policy_source": protected})
 
 
 def same_live_pair(api, snapshot):
@@ -320,8 +351,8 @@ def signal_pull_number(api, event, repository, identifier, workflow, actor):
     try:
         pull_number = resolve_signal_pull(api, repository, identifier, run)
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
-        document = live_repository(api, repository, identifier)
-        invalidate_pulls(api, repository, identifier, document["default_branch"],
+        live_repository(api, repository, identifier)
+        invalidate_pulls(api, repository, identifier, None,
                          "Review wakeup unresolved; refresh exact-revision reuse analysis",
                          dismissed_reviewer=None if owner_wakeup else actor)
         raise EventError("Authenticated review wakeup could not resolve a PR; "
@@ -393,8 +424,8 @@ def ci_pull_number(api, event, repository, identifier):
     try:
         return resolve_ci_pull(api, run, repository, identifier)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        document = live_repository(api, repository, identifier)
-        invalidate_pulls(api, repository, identifier, document["default_branch"],
+        live_repository(api, repository, identifier)
+        invalidate_pulls(api, repository, identifier, None,
                          "CI wakeup unresolved; refresh exact-revision reuse analysis")
         raise EventError("Authenticated CI wakeup could not resolve its current exact pair; "
                          "invalidated open target PRs pending explicit refresh") from error
@@ -479,6 +510,8 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
                 or pull["base"]["repo"]["id"] != identifier
                 or pull["head"]["repo"]["id"] != snapshot["head_repository_id"]):
             raise EventError("Event revisions do not match the live pull request")
+    if os.environ.get("REUSE_SOURCE_SHA") not in (None, snapshot["policy_source"]):
+        raise EventError("Protected policy moved; rerun from the current source")
     status(api, snapshot, "pending", "Protected reuse analysis and policy review pending")
     return snapshot
 
@@ -494,7 +527,29 @@ def invalidate_base(api, event, event_name, repository, identifier):
     policy.immutable_sha(current["object"]["sha"])
     # If another push won the race, invalidate conservatively for that newer
     # base too. This event never grants a success or dispatches candidate code.
-    return invalidate_pulls(api, repository, identifier, document["default_branch"])
+    return invalidate_pulls(api, repository, identifier, None)
+
+
+def invalidate_stack_event(api, event, event_name, repository, identifier):
+    live_repository(api, repository, identifier)
+    if event["repository"]["id"] != identifier:
+        raise EventError("Revocation event repository mismatch")
+    if event_name == "delete":
+        if event.get("ref_type") != "branch" or not stack_target(event.get("ref")):
+            raise EventError("Unsupported branch deletion")
+        return invalidate_pulls(api, repository, identifier, event["ref"])
+    if event_name != "pull_request_target" or event.get("action") not in (
+            "opened", "synchronize", "edited", "closed", "reopened", "ready_for_review"):
+        raise EventError("Unsupported parent wakeup")
+    pull = api.request(f"/repos/{repository}/pulls/{number(event['number'])}")
+    if pull["number"] != event["number"] or pull["head"]["repo"]["id"] != identifier:
+        raise EventError("Parent wakeup is not from this repository")
+    reference = pull["head"].get("ref")
+    if not stack_target(reference):
+        return 0
+    # Revocation deliberately does not require an open parent, a resolvable
+    # target, or an unchanged parent SHA. It can only remove certification.
+    return invalidate_pulls(api, repository, identifier, reference)
 
 
 def invalidate_pulls(api, repository, identifier, branch,
@@ -503,7 +558,7 @@ def invalidate_pulls(api, repository, identifier, branch,
     count, failures = 0, 0
     for pull in api.pages(f"/repos/{repository}/pulls"):
         try:
-            if pull["state"] != "open" or pull["base"]["ref"] != branch:
+            if pull["state"] != "open" or (branch is not None and pull["base"]["ref"] != branch):
                 continue
             # Invalidation must still erase old success while PR base metadata
             # catches up with a main push. This branch can only publish pending.
@@ -555,7 +610,7 @@ def git(root, *arguments, token=None, input_text=None):
 
 
 def candidate_commit(root, snapshot, token):
-    if git(root, "rev-parse", "HEAD") != snapshot["base"]:
+    if git(root, "rev-parse", "HEAD") != snapshot["policy_source"]:
         raise EventError("Analysis must execute from the exact protected base checkout")
     configuration = git(root, "config", "--local", "--list")
     if re.search(r"^merge\..*\.driver=", configuration, re.MULTILINE):
@@ -565,6 +620,12 @@ def candidate_commit(root, snapshot, token):
         f"+refs/pull/{snapshot['pull_number']}/head:refs/reuse/event-head", token=token)
     if git(root, "rev-parse", "refs/reuse/event-head") != snapshot["head"]:
         raise EventError("Fetched PR ref does not equal the selected immutable head")
+    if snapshot["policy_source"] != snapshot["base"]:
+        git(root, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
+            f"https://github.com/{snapshot['repository']}.git",
+            f"+refs/heads/{snapshot['base_ref']}:refs/reuse/event-base", token=token)
+        if git(root, "rev-parse", "refs/reuse/event-base") != snapshot["base"]:
+            raise EventError("Fetched target does not equal the selected immutable base")
     tree = git(root, "merge-tree", "--write-tree", snapshot["base"], snapshot["head"])
     policy.immutable_sha(tree)
     return git(root, "-c", "user.name=Reuse check", "-c", "user.email=reuse-check@users.noreply.github.com",
@@ -582,20 +643,20 @@ def analyze(api, snapshot, root):
         cwd=root, env=git_environment(), capture_output=True, check=True).stdout
     policy_paths = list(policy.changed_policy_paths(policy.parse_changed_paths(paths)))
     command = [sys.executable, "-E", "-S", "-B", str(root / "scripts/check_reuse.py"),
-               "--base", base, "--revision", candidate]
+               "--policy-source", snapshot["policy_source"], "--base", base, "--revision", candidate]
     completed = subprocess.run(command, cwd=root, env=git_environment(), capture_output=True, text=True)
     # Prefix captured candidate-derived diagnostics so they cannot become
     # GitHub workflow commands, and do not expose writable output-file paths.
     for line in (completed.stdout + completed.stderr).splitlines():
         print("reuse analysis | " + line)
     same_live_pair(api, snapshot)
-    return {"version": 1, "snapshot": snapshot, "candidate": candidate,
+    return {"version": 2, "snapshot": snapshot, "candidate": candidate,
             "detector_exit": completed.returncode, "policy_paths": policy_paths}
 
 
 def validate_result(result, snapshot):
     if (not isinstance(result, dict) or set(result) != RESULT_KEYS
-            or type(result["version"]) is not int or result["version"] != 1
+            or type(result["version"]) is not int or result["version"] != 2
             or result["snapshot"] != snapshot or type(result["detector_exit"]) is not int):
         raise EventError("Analysis outputs do not match the selected snapshot")
     policy.immutable_sha(result["candidate"])
@@ -620,7 +681,9 @@ def review_evidence(api, snapshot, result, reviewers):
 def validate_suppression(receipt, snapshot):
     if not isinstance(receipt, dict) or set(receipt) != SUPPRESSION_KEYS:
         raise EventError("Missing or malformed suppression provenance receipt")
-    if (receipt["headSHA"] != snapshot["head"] or receipt["baseSHA"] != snapshot["base"]
+    if (type(receipt["version"]) is not int or receipt["version"] != 2
+            or receipt["policySHA"] != snapshot["policy_source"]
+            or receipt["headSHA"] != snapshot["head"] or receipt["baseSHA"] != snapshot["base"]
             or type(receipt["suppressionCount"]) is not int or receipt["suppressionCount"] != 0):
         raise EventError("Suppression provenance receipt does not establish this exact pair is clean")
     for key in ("runId", "runAttempt", "artifactId"):
@@ -730,7 +793,7 @@ def prepare_readiness(api, snapshot):
 
 def validate_deferred(document, snapshot):
     if (not isinstance(document, dict) or set(document) != DEFERRED_KEYS
-            or type(document["version"]) is not int or document["version"] != 1
+            or type(document["version"]) is not int or document["version"] != 2
             or validate_snapshot(document["snapshot"]) != snapshot
             or document["reason"] not in ("registration", "pending", "superseded")):
         raise EventError("Malformed suppression deferral")
@@ -842,7 +905,7 @@ def emit(path, name, document):
         with open(output, "a", encoding="utf-8") as stream:
             stream.write(name + "=" + encoded + "\n")
             if name == "snapshot":
-                for key in ("base", "head", "pull_number"):
+                for key in ("base", "head", "pull_number", "policy_source"):
                     stream.write(f"{key}={document[key]}\n")
 
 
@@ -875,6 +938,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("invalidate-base")
+    commands.add_parser("invalidate-stack")
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument("--snapshot", required=True)
     prepare_parser.add_argument("--signal-workflow", default=".github/workflows/reuse-review-signal.yml")
@@ -893,12 +957,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         api = GitHub(os.environ.get("GH_TOKEN"))
-        if args.command in ("prepare", "invalidate-base"):
+        if args.command in ("prepare", "invalidate-base", "invalidate-stack"):
             event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
             event_arguments = (api, event, os.environ["GITHUB_EVENT_NAME"],
                                os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_REPOSITORY_ID"]))
             if args.command == "invalidate-base":
                 print(f"Invalidated {invalidate_base(*event_arguments)} open PR statuses")
+            elif args.command == "invalidate-stack":
+                print(f"Invalidated {invalidate_stack_event(*event_arguments)} dependent PR statuses")
             else:
                 snapshot = prepare(*event_arguments, args.signal_workflow, args.refresh_actor)
                 emit(args.snapshot, "snapshot", snapshot)

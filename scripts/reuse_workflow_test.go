@@ -25,7 +25,7 @@ func TestReuseWorkflowReceivesEvidenceInvalidationEvents(t *testing.T) {
 	var workflow reuseWorkflowConfig
 	readYAMLConfig(t, ".github/workflows/reuse-check.yml", &workflow)
 	for event, actions := range map[string][]string{
-		"pull_request_target": {"opened", "synchronize", "reopened", "edited", "ready_for_review"},
+		"pull_request_target": {"opened", "synchronize", "reopened", "edited", "ready_for_review", "closed"},
 		"issue_comment":       {"created", "edited"},
 		"workflow_run":        {"requested", "in_progress", "completed"},
 	} {
@@ -40,7 +40,7 @@ func TestReuseWorkflowReceivesEvidenceInvalidationEvents(t *testing.T) {
 		t.Fatal("base invalidation and review wakeups must come from the selected protected sources")
 	}
 	invalidate := workflowJobByName(t, workflow.Jobs, "invalidate-base")
-	if invalidate.If != "${{ github.event_name == 'push' }}" || invalidate.Permissions["statuses"] != "write" {
+	if invalidate.If != "${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' }}" || invalidate.Permissions["statuses"] != "write" {
 		t.Fatal("main updates must have a trusted writer to invalidate old base evidence")
 	}
 }
@@ -58,7 +58,7 @@ sys.path.insert(0, sys.argv[1])
 import reuse_event as event
 prefix = '/repos/ben-ranford/lopper'
 head, base = 'b' * 40, 'a' * 40
-snapshot = dict(version=1, repository='ben-ranford/lopper', repository_id=10,
+snapshot = dict(version=2, policy_source=base, repository='ben-ranford/lopper', repository_id=10,
     head_repository_id=20, pull_number=12, head=head, base=base, base_ref='main')
 pull = dict(number=12, state='open',
     head=dict(sha=head, repo=dict(id=20)),
@@ -66,9 +66,9 @@ pull = dict(number=12, state='open',
 run = dict(id=41, workflow_id=6, run_attempt=3, path='.github/workflows/ci.yml',
     name='ci', event='pull_request', status='in_progress', conclusion=None,
     head_sha=head, repository=dict(id=10), head_repository=dict(id=20), pull_requests=[pull])
-receipt = dict(headSHA=head, baseSHA=base, runId=41, runAttempt=2,
+receipt = dict(version=2, policySHA=base, headSHA=head, baseSHA=base, runId=41, runAttempt=2,
     artifactId=101, suppressionCount=0)
-result = dict(version=1, snapshot=snapshot, candidate='c' * 40,
+result = dict(version=2, snapshot=snapshot, candidate='c' * 40,
     detector_exit=0, policy_paths=[])
 class API:
     def __init__(self, terminal):
@@ -161,13 +161,13 @@ func TestReuseWorkflowProtectsExecutableSourceAndCredentials(t *testing.T) {
 		t.Fatal("controller must deny permissions by default and grant them per job")
 	}
 	prepare := workflowJobByName(t, workflow.Jobs, "prepare")
-	for _, field := range []string{"snapshot", "base", "head", "pull_number", "readiness"} {
+	for _, field := range []string{"snapshot", "base", "head", "pull_number", "readiness", "policy_source"} {
 		if prepare.Outputs[field] != "${{ steps.prepare.outputs."+field+" }}" {
 			t.Fatalf("prepared %s must retain its own trusted output binding", field)
 		}
 	}
 	for event := range workflow.On {
-		if !slices.Contains([]string{"pull_request_target", "workflow_run", "issue_comment", "push"}, event) {
+		if !slices.Contains([]string{"pull_request_target", "workflow_run", "issue_comment", "push", "delete"}, event) {
 			t.Fatalf("controller cannot execute from candidate-owned event %q", event)
 		}
 	}
@@ -212,7 +212,7 @@ func assertReuseJobPinsProtectedRevision(t *testing.T, name string, job workflow
 	}
 	wantRevision := "${{ github.workflow_sha }}"
 	if name == "analyze" || name == "suppression" {
-		wantRevision = "${{ needs.prepare.outputs.base }}"
+		wantRevision = "${{ needs.prepare.outputs.policy_source }}"
 	}
 	pin := job.Steps[1]
 	if !maps.Equal(pin.Env, map[string]string{"REUSE_SOURCE_SHA": wantRevision}) {
@@ -422,6 +422,7 @@ func TestReuseWorkflowDriverArgumentsPreservePathsAndJobOutcome(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/reuse-check.yml", &workflow)
 	for _, target := range []struct{ job, step, mode string }{
 		{"invalidate-base", "Invalidate previous base evidence", "invalidate-base"},
+		{"invalidate-base", "Invalidate previous base evidence", "invalidate-stack"},
 		{"prepare", "Bind current revisions and invalidate prior result", "prepare"},
 		{"analyze", "Analyze exact prospective merge", "analyze"},
 		{"publish", "Revalidate review and publish exact-head result", "publish"},
@@ -442,9 +443,14 @@ func assertReuseDriverArguments(t *testing.T, step workflowStepConfig, mode stri
 		t.Fatal(err)
 	}
 	temporary := filepath.Join(directory, "runner temp")
+	eventName := "push"
+	if mode == "invalidate-stack" {
+		eventName = "delete"
+	}
 	output, err := runShellCommand(directory, step.Run, map[string]string{
-		"PATH":        directory + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"RUNNER_TEMP": temporary, "REUSE_CAPTURE": capture, "REUSE_ANALYSIS_RESULT": "cancelled",
+		"GITHUB_EVENT_NAME": eventName,
+		"PATH":              directory + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"RUNNER_TEMP":       temporary, "REUSE_CAPTURE": capture, "REUSE_ANALYSIS_RESULT": "cancelled",
 		"REUSE_SUPPRESSION_RESULT": "failure",
 	})
 	if err != nil {

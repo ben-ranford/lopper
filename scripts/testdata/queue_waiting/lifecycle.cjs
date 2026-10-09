@@ -272,7 +272,7 @@ for (const deferredBoundary of [2, 3]) {
       validations++;
       if (validations === deferredBoundary) {
         return reuse.testables.validatorResult({ status: 75,
-          stdout: JSON.stringify({ version: 1, kind: 'ci-deferred', snapshot: document.snapshot }) }, document);
+          stdout: JSON.stringify({ version: 2, kind: 'ci-deferred', snapshot: document.snapshot }) }, document);
       }
       return { reviews: [], producer: { id: ARTIFACT_ID } };
     }));

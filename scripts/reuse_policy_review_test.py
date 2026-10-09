@@ -164,6 +164,8 @@ class PolicyPathTests(unittest.TestCase):
             ".github/duplication-baseline.json", ".github/workflows/reuse.yml",
             ".github/actions/check/action.yml", "scripts/github-action/action.yaml",
             "scripts/check_reuse.py", "scripts/check_reuse_test.py",
+            "scripts/sonar_maintenance.py", "scripts/sonar_maintenance_verify.js",
+            "scripts/sonar_maintenance_scanner.json",
             "scripts/reuse_policy_review.py", "scripts/reuse_policy_review_test.py",
             "scripts/reuse_event.py", "scripts/reuse_event_test.py",
             "scripts/check_duplication.py", "scripts/duplication_policy.py",
@@ -184,7 +186,7 @@ class PolicyPathTests(unittest.TestCase):
     def test_queue_callers_and_all_admission_dependencies_require_review(self):
         for path in ("scripts/queue_me_controller.js", "scripts/queue_me_reuse.js",
                      "scripts/queue_me_reuse.py", "scripts/queue_me_ci.js",
-                     "scripts/queue_me_ci_intent.js", "scripts/queue_me_public_api.js",
+                     "scripts/queue_me_git_object.js", "scripts/queue_me_ci_intent.js", "scripts/queue_me_public_api.js",
                      "scripts/queue_me_reviews.js", "scripts/queue_me_sonar.js",
                      "scripts/queue_me_suppressions.js"):
             with self.subTest(path=path):
