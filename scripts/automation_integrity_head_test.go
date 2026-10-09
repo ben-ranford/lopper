@@ -98,7 +98,7 @@ jobs:
 	if err == nil {
 		t.Fatalf("expected mutable action ref to fail, got success:\n%s", output)
 	}
-	assertOutputContainsAll(t, string(output), []string{
+	assertOutputContainsAll(t, string(output)+"\n"+automationFixtureCommandDiagnostics(cmd, err), []string{
 		"GitHub Actions pinning check failed",
 		"actions/checkout@v7",
 		"pin external GitHub Actions to a 40-character commit SHA",
@@ -580,9 +580,29 @@ func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, 
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil && len(output) == 0 {
-		return fmt.Sprintf("automation examples fixture command failed before producing output: %v", err), err
+		return "automation examples fixture command failed before producing output: " + automationFixtureCommandDiagnostics(cmd, err), err
 	}
 	return string(output), err
+}
+
+// Bound each field without dumping the inherited environment. Keep the original
+// child error as the return value; this text supplements diagnostic assertions.
+func automationFixtureCommandDiagnostics(cmd *exec.Cmd, err error) string {
+	status := "not started"
+	if cmd.ProcessState != nil {
+		status = cmd.ProcessState.String()
+	}
+	return fmt.Sprintf("command=%q dir=%q status=%q child error=%q",
+		boundedAutomationFixtureContext(cmd.String()), boundedAutomationFixtureContext(cmd.Dir),
+		boundedAutomationFixtureContext(status), boundedAutomationFixtureContext(fmt.Sprint(err)))
+}
+
+func boundedAutomationFixtureContext(value string) string {
+	const maxBytes = 512
+	if len(value) > maxBytes {
+		return value[:maxBytes] + "[truncated]"
+	}
+	return value
 }
 
 func TestRunAutomationExamplesFixturePreservesLaunchError(t *testing.T) {
