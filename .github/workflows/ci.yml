@@ -1171,9 +1171,76 @@ jobs:
         run: |
           & $env:LOPPER_PROOF_GO run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
 
+  regression-proof-darwin:
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - *ci_proof_node_setup
+
+      - *ci_proof_node_provision
+
+      - name: Test native Darwin proof tools
+        shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+        run: |
+          "${LOPPER_PROOF_GO}" test ./tools/regressionproof -run '^TestDarwinProof' -count=1
+
+      - name: Write PR body for regression proof
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-regression-body.md');
+            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            core.exportVariable('PR_BODY_FILE', bodyPath);
+
+      - *ci_proof_node_verify
+
+      - name: Prove Darwin regression tests for fix PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
+        shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
+        run: |
+          "${LOPPER_PROOF_GO}" run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL" --target-os darwin
+
   verify:
     if: ${{ always() }}
-    needs: [verify-checks, verify-tests, regression-proof-windows]
+    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1189,8 +1256,9 @@ jobs:
           CHECKS_RESULT: ${{ needs.verify-checks.result }}
           TESTS_RESULT: ${{ needs.verify-tests.result }}
           WINDOWS_PROOF_RESULT: ${{ needs.regression-proof-windows.result }}
+          DARWIN_PROOF_RESULT: ${{ needs.regression-proof-darwin.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success
 
       - name: Initialize suppression verification
         id: suppression_verification
