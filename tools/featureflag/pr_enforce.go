@@ -136,6 +136,15 @@ func readCurrentCatalogForPREnforcement(root string) ([]featureflags.Flag, []str
 	if decodeErr != nil {
 		return nil, nil, err
 	}
+	// ParseCatalog stops at the first duplicate. Validate each fallback entry
+	// independently before allowing its identifiers into the Markdown report.
+	for i, flag := range decodedFlags {
+		registry, validationErr := featureflags.NewRegistry([]featureflags.Flag{flag})
+		if validationErr != nil {
+			return nil, nil, validationErr
+		}
+		decodedFlags[i] = registry.Flags()[0]
+	}
 	violations := duplicateFeatureFlagViolations(decodedFlags)
 	if len(violations) == 0 {
 		return nil, nil, err
