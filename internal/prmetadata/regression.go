@@ -10,13 +10,14 @@ import (
 var (
 	fixTitlePattern             = regexp.MustCompile(`^fix(?:\([a-z0-9][a-z0-9._/-]*\))?!?:`)
 	regressionDeclarationLineRE = regexp.MustCompile(`^Regression-Test:\s*(.+?)\s*$`)
-	regressionDeclarationRE     = regexp.MustCompile(`^(\./[A-Za-z0-9._/-]+)::(Test[A-Za-z0-9_]+)$`)
+	regressionDeclarationRE     = regexp.MustCompile(`^(\./[A-Za-z0-9._/-]+)::(Test[A-Za-z0-9_]+)(?: \[([^\]]*)\])?$`)
 	regressionExemptionLineRE   = regexp.MustCompile(`^Regression-Test-Exemption:\s*(.+?)\s*$`)
 )
 
 type RegressionDeclaration struct {
 	PackagePath string
 	TestName    string
+	TargetOS    string
 }
 
 type RegressionMetadata struct {
@@ -50,7 +51,7 @@ func ParseRegressionExemptionLabel(value string) (bool, error) {
 
 func ParseRegressionProof(body string) (RegressionMetadata, error) {
 	var metadata RegressionMetadata
-	seen := make(map[RegressionDeclaration]struct{})
+	seen := make(map[string]struct{})
 
 	for _, rawLine := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -64,10 +65,11 @@ func ParseRegressionProof(body string) (RegressionMetadata, error) {
 		}
 		switch kind {
 		case regressionProofLineDeclaration:
-			if _, ok := seen[declaration]; ok {
+			identity := declaration.PackagePath + "::" + declaration.TestName
+			if _, ok := seen[identity]; ok {
 				return RegressionMetadata{}, fmt.Errorf("duplicate regression-test declaration %q", declaration.PackagePath+"::"+declaration.TestName)
 			}
-			seen[declaration] = struct{}{}
+			seen[identity] = struct{}{}
 			metadata.Declarations = append(metadata.Declarations, declaration)
 		case regressionProofLineExemption:
 			if metadata.ExemptionReason != "" {
@@ -133,8 +135,15 @@ func ValidateRegressionRequirements(title, body string, hasExemptionLabel bool) 
 
 func parseRegressionDeclaration(value string) (RegressionDeclaration, error) {
 	match := regressionDeclarationRE.FindStringSubmatch(strings.TrimSpace(value))
-	if len(match) != 3 {
+	if len(match) != 4 {
 		return RegressionDeclaration{}, fmt.Errorf("invalid Regression-Test declaration %q", value)
+	}
+
+	if err := ValidateRegressionPlatform(match[3]); err != nil {
+		return RegressionDeclaration{}, err
+	}
+	if strings.HasSuffix(strings.TrimSpace(value), "[]") {
+		return RegressionDeclaration{}, fmt.Errorf("regression-test platform must not be empty")
 	}
 
 	packagePath := match[1]
@@ -153,5 +162,16 @@ func parseRegressionDeclaration(value string) (RegressionDeclaration, error) {
 	return RegressionDeclaration{
 		PackagePath: canonical,
 		TestName:    match[2],
+		TargetOS:    match[3],
 	}, nil
+}
+
+// ValidateRegressionPlatform limits declarations to the required native CI jobs.
+func ValidateRegressionPlatform(platform string) error {
+	switch platform {
+	case "", "linux", "windows", "darwin":
+		return nil
+	default:
+		return fmt.Errorf("unsupported regression proof target %q: expected linux, windows or darwin", platform)
+	}
 }

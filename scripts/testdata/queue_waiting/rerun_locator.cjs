@@ -38,7 +38,7 @@ test('successful rerun retains cancelled unresolved locator history without appr
     const ci = evidence.workflows[0];
     assert.equal(ci.runAttempt, 3);
     assert.equal(ci.artifactId, ARTIFACT_ID);
-    assert.equal(ci.jobs.length, 14);
+    assert.equal(ci.jobs.length, 15);
     assert.ok(ci.jobs.every((job) => job.runAttempt === 3 && job.id !== 99000));
     assert.equal(ci.jobs.filter((job) => job.name.startsWith('suppression-artifact-')).length, 1);
   });
