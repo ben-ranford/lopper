@@ -80,6 +80,19 @@
       "datasourceTemplate": "npm",
       "depNameTemplate": "@vscode/vsce",
       "versioningTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the independent Marketplace tooling test expectation",
+      "managerFilePatterns": [
+        "/^scripts/release_workflow_config_test\\.go$/"
+      ],
+      "matchStrings": [
+        "(?:^|\\r?\\n)const expectedMarketplaceVSCEVersion = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"(?:\\r?\\n|$)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@vscode/vsce",
+      "versioningTemplate": "npm"
     }
   ]
 }
