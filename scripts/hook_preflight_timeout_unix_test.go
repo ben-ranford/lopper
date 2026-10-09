@@ -154,19 +154,7 @@ exit 7
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sentinel := exec.Command("sleep", "60")
-	if err := sentinel.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := sentinel.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			t.Errorf("clean up unrelated sentinel: %v", err)
-		}
-		var exitErr *exec.ExitError
-		if err := sentinel.Wait(); err != nil && !errors.As(err, &exitErr) {
-			t.Errorf("wait for unrelated sentinel: %v", err)
-		}
-	})
+	sentinel := preflightSentinel(t, "unrelated")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	argument := "literal $(exit 88) 'argument'"
