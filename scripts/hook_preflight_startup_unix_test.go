@@ -54,19 +54,7 @@ func assertPreflightStartup(t *testing.T, tc preflightStartupCase) {
 	source := preflightStartupFixture(t, tc.notice, tc.noGroup, tc.interrupt, pidFile, tc.nativeNotice)
 	helper := filepath.Join(tmp, "preflight.sh")
 	writeFile(t, helper, source)
-	sentinel := exec.Command("sleep", "60")
-	if err := sentinel.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := sentinel.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			t.Errorf("clean up startup sentinel: %v", err)
-		}
-		var exitErr *exec.ExitError
-		if err := sentinel.Wait(); err != nil && !errors.As(err, &exitErr) {
-			t.Errorf("wait for startup sentinel: %v", err)
-		}
-	})
+	sentinel := preflightSentinel(t, "startup")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "sh", "-c", `. "$1"
@@ -168,11 +156,15 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	case "duplicate":
 		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " " + diagnostic + " >&2\n"
 	case "exited":
-		injection += "\tprintf \"%s\\n\" \"$test_anchor_pid\" >" + shellQuote(pidFile+".reached") + "\n\texit 1\n"
+		// The child exits before publishing its readiness permit.
 	case "unknown":
 		injection += "\tprintf \"unknown startup diagnostic\\n\" >&2\n"
 	case "other":
 		injection += "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
+	}
+	exited := notice == "exited" || notice == "exited diagnostic"
+	if exited {
+		injection += "\tprintf \"%s\\n\" \"$test_anchor_pid\" >" + shellQuote(pidFile+".reached") + "\n\texit 1\n"
 	}
 	if interrupt {
 		injection += "\tkill -TERM \"$supervisor_pid\"\n"
@@ -183,7 +175,6 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	}
 	source = strings.Replace(source, restore, injection+restore, 1)
 	source = strings.Replace(source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n", 1)
-	exited := notice == "exited" || notice == "exited diagnostic"
 	if exited {
 		source = preflightExitObserver(t, source, pidFile)
 	}
@@ -223,14 +214,14 @@ func preflightStartupNotice(notice string, pid int) string {
 // diagnostics; the established-group cases still exercise real process groups.
 func preflightExitObserver(t *testing.T, source, pidFile string) string {
 	t.Helper()
-	const rejection = "\t\tcat \"$state_dir/launch-error\" >&2\n\t\texit 1\n"
+	const rejection = "\tcat \"$state_dir/launch-error\" >&2\n\t\texit 1\n"
 	if strings.Count(source, rejection) != 1 {
 		t.Fatal("unique early anchor rejection boundary unavailable")
 	}
 	observer := `		test_exit_status=0
 		wait "$reader_group" || test_exit_status=$?
 		printf "%s\n" "$test_exit_status" >` + shellQuote(pidFile+".joined") + "\n" +
-		`\t\tif [ ! -f "$state_dir/ready" ] && [ ! -f "$state_dir/start" ]; then
+		`		if [ ! -f "$state_dir/ready" ] && [ ! -f "$state_dir/start" ]; then
 			printf x >` + shellQuote(pidFile+".unready") + "\n\t\tfi\n"
 	return strings.Replace(source, rejection, observer+rejection, 1)
 }
@@ -261,4 +252,22 @@ func preflightDisableJobControl(t *testing.T, source string) string {
 		t.Fatal("unique job-control launch boundary unavailable")
 	}
 	return strings.Replace(source, launch, "\nset +m\n", 1)
+}
+
+func preflightSentinel(t *testing.T, label string) *exec.Cmd {
+	t.Helper()
+	sentinel := exec.Command("sleep", "60")
+	if err := sentinel.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := sentinel.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("clean up %s sentinel: %v", label, err)
+		}
+		var exitErr *exec.ExitError
+		if err := sentinel.Wait(); err != nil && !errors.As(err, &exitErr) {
+			t.Errorf("wait for %s sentinel: %v", label, err)
+		}
+	})
+	return sentinel
 }
