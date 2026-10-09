@@ -48,7 +48,7 @@ async function checkSpecialFiles({ gradle, external, infer }) {
   assert.equal(await infer(), 'jvm', 'Gradle symlink must not be followed');
   await fs.rm(gradle);
   if (process.platform !== 'win32') {
-    execFileSync('mkfifo', [gradle]);
+    execFileSync('/usr/bin/mkfifo', [gradle]);
     assert.equal(await infer(), 'jvm', 'FIFO must not block inference');
     await fs.rm(gradle);
   }
@@ -79,7 +79,7 @@ async function replaceGradle({ gradle, marker, external }, replacement) {
     await fs.rename(gradle, gradle + '.old');
     if (replacement === 'regular') await fs.writeFile(gradle, marker);
     else if (replacement === 'symlink') await fs.symlink(external, gradle);
-    else execFileSync('mkfifo', [gradle]);
+    else execFileSync('/usr/bin/mkfifo', [gradle]);
   }
 }
 
@@ -134,7 +134,7 @@ async function checkAncestors({ root, gradle, marker, infer }) {
     assert.equal(await infer(undefined, path.join(linkedDir, 'Main.kt')), 'jvm', 'ancestor symlink');
   } finally { await fs.rm(outside, { recursive: true, force: true }); }
   await fs.writeFile(gradle, marker);
-  const deep = path.join(root, ...Array(40).fill('nested'));
+  const deep = path.join(root, ...new Array(40).fill('nested'));
   await fs.mkdir(deep, { recursive: true });
   assert.equal(await infer(undefined, path.join(deep, 'Main.kt')), 'jvm', 'ancestor work bound');
 }
@@ -154,7 +154,8 @@ async function main() {
     await checkSpecialFiles(fixture);
     const replacements = ['regular', 'symlink', 'cancel', 'error', 'growth', 'short-read', 'read-error'];
     if (process.platform !== 'win32') replacements.push('fifo');
-    for (const replacement of replacements) await checkReplacement(fixture, replacement);
+    await replacements.reduce((pending, replacement) =>
+      pending.then(() => checkReplacement(fixture, replacement)), Promise.resolve());
     await checkReplacedAncestor(fixture);
     await checkAncestors(fixture);
     console.log('Gradle bounds: normal, exact/+1 size, symlink, special file, replacement, cancellation, errors, growth and ancestors passed');
