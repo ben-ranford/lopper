@@ -18,6 +18,7 @@ const JOBS = [
   ['verify-checks', 'ubuntu-latest'], ['publish-pr-reports', 'ubuntu-latest'],
   ['verification checks (rolling)', 'ubuntu-latest'], ['verify-tests / tests', 'ubuntu-latest'],
   ['verify-rolling-tests / tests', 'ubuntu-latest'], ['regression-proof-windows', 'windows-latest'],
+  ['regression-proof-darwin', 'macos-26'],
   ['verify', 'ubuntu-latest'], ['verify (rolling)', 'ubuntu-latest'],
   ['os-smoke (ubuntu-latest)', 'ubuntu-latest'], ['os-smoke (macos-26)', 'macos-26'],
   ['vscode-smoke (ubuntu-latest)', 'ubuntu-latest'], ['vscode-smoke (macos-26)', 'macos-26'],
