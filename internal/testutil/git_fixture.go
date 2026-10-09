@@ -152,7 +152,7 @@ func fixtureLocal(value string) bool {
 
 func fixtureConfigKey(value string) bool {
 	switch value {
-	case "user.name", "user.email", "core.bare", "core.hooksPath", "core.fsmonitor", "include.path":
+	case "user.name", "user.email", "core.bare", "core.hooksPath", "core.fsmonitor", "include.path", "maintenance.autoDetach", "gc.autoDetach":
 		return true
 	}
 	if !strings.HasPrefix(value, "filter.") || strings.ContainsAny(value, "\x00\r\n") {
