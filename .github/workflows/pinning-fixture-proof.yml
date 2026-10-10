@@ -1,0 +1,129 @@
+name: pinning-fixture-proof
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  native-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Initialise incomplete receipt
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof_root=$(mktemp -d "${RUNNER_TEMP}/pinning-proof.XXXXXXXX")
+          chmod 700 "$proof_root"
+          mkdir -m 700 "$proof_root/receipts"
+          printf '%s\n' '{"status":"INCOMPLETE","native_windows":"UNRUN","external_review_binding":"REQUIRED"}' > "$proof_root/receipts/result.json"
+          printf 'PINNING_PROOF_ROOT=%s\n' "$proof_root" >> "$GITHUB_ENV"
+          printf 'path=%s/receipts\n' "$proof_root" >> "$GITHUB_OUTPUT"
+      - name: Checkout the actual merge candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Authenticate source before setup or driver loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -S -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          O = "6ce1817515bd9d84437804925407493d1b6f0e12"
+          F = "f0da6e1200f4e9f190932a2cb241d8c4ae6f21d8"
+          PATHS = [".github/workflows/pinning-fixture-proof.yml", "scripts/check_pinning_fixture_proof.py"]
+          SUBJECTS = {
+              "scripts/automation_integrity_head_test.go": "c98ba1b32aae742bd4f7c3ec19873dc08deb6ba4c0e2eb16badbe937ad9db146",
+              "scripts/check-github-actions-pinning.sh": "2ef9261bbbe92eb0f95a043689d70eb16d36c9b698e44e052b30a05cc4612969",
+              "go.mod": "de58e60e54a1c52045a40b6e5086db6fad6c5fffc4f3a69295fac6f395b69111",
+              "go.sum": "243ba6e05faeb2c4328d1d550617c77f0c343a6f276d1b64848b143ac47b954d",
+          }
+
+          def require(value, message):
+              if not value:
+                  raise RuntimeError(message)
+
+          def git(*args):
+              env = {"PATH": "/usr/bin:/bin", "HOME": os.environ["PINNING_PROOF_ROOT"],
+                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                     "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+              return subprocess.check_output(["/usr/bin/git", *args], env=env, timeout=10)
+
+          receipt = Path(os.environ["PINNING_PROOF_ROOT"]) / "receipts" / "bootstrap.json"
+          record = {"status": "REJECTED", "O": O, "F": F}
+          try:
+              require(Path.cwd().resolve() == Path(os.environ["GITHUB_WORKSPACE"]).resolve(), "wrong bootstrap cwd")
+              require(os.environ["GITHUB_EVENT_NAME"] == "pull_request", "wrong event")
+              event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+              require(event["action"] in ("opened", "synchronize"), "wrong action")
+              pr = event["pull_request"]
+              number = event["number"]
+              require(type(number) is int and number > 0 and pr["number"] == number, "wrong PR number")
+              require(os.environ["GITHUB_REPOSITORY"] == "ben-ranford/lopper", "wrong repository")
+              for side in ("head", "base"):
+                  require(pr[side]["repo"]["full_name"] == "ben-ranford/lopper", "foreign repository")
+              require(pr["base"]["ref"] == "codex/v1.8.10-pinning-fixture-interpreter"
+                      and pr["base"]["sha"] == O, "wrong pinned base")
+              H = pr["head"]["sha"]
+              M = os.environ["GITHUB_SHA"]
+              require(re.fullmatch(r"[0-9a-f]{40}", H) and re.fullmatch(r"[0-9a-f]{40}", M), "malformed revision")
+              require(os.environ["GITHUB_REF"] == "refs/pull/" + str(number) + "/merge", "wrong merge ref")
+              require(git("rev-parse", "HEAD").decode().strip() == M, "wrong checkout")
+              require(git("show", "-s", "--format=%P", M).decode().split() == [O, H], "wrong ordered merge parents")
+              require(git("rev-parse", M + "^{tree}") == git("rev-parse", H + "^{tree}"), "merge tree differs from reviewed W")
+              require(git("show", "-s", "--format=%P", H).decode().split() == [O], "W is not direct child")
+              require(git("show", "-s", "--format=%P", O).decode().split() == [F], "wrong O parent")
+              require(git("diff", "--name-only", O, H).decode().splitlines() == PATHS, "wrong W path set")
+              require(git("diff", "--name-only", F, O).decode().splitlines() == ["scripts/automation_integrity_head_test.go"], "wrong O scope")
+              require(not git("status", "--porcelain", "--untracked-files=all"), "checkout is not pristine")
+              for path in PATHS:
+                  require(git("show", M + ":" + path) == git("show", H + ":" + path) == Path(path).read_bytes(), "W bytes differ")
+                  require(git("ls-tree", H, "--", path).split()[0] == b"100644", "W mode differs")
+              for path, expected in SUBJECTS.items():
+                  data = Path(path).read_bytes()
+                  require(hashlib.sha256(data).hexdigest() == expected and data == git("show", O + ":" + path)
+                          == git("show", M + ":" + path), "subject/manifests differ")
+              require(re.fullmatch(r"[0-9a-f]{40}", os.environ["GITHUB_WORKFLOW_SHA"]), "malformed workflow revision")
+              require(os.environ["GITHUB_WORKFLOW_REF"] == "ben-ranford/lopper/.github/workflows/pinning-fixture-proof.yml@" + os.environ["GITHUB_REF"], "wrong workflow ref")
+              require(all(re.fullmatch(r"[1-9]\d*", os.environ[key], flags=re.ASCII) for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+                      and os.environ["GITHUB_JOB"] == "native-proof", "wrong run identity")
+              record.update(status="ADMITTED", H=H, M=M, number=number,
+                            workflow_ref=os.environ["GITHUB_WORKFLOW_REF"], workflow_sha=os.environ["GITHUB_WORKFLOW_SHA"],
+                            run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"], job=os.environ["GITHUB_JOB"],
+                            external_review_binding="REQUIRED", subject_hashes=SUBJECTS,
+                            workflow_sha256=hashlib.sha256(Path(PATHS[0]).read_bytes()).hexdigest(),
+                            driver_sha256=hashlib.sha256(Path(PATHS[1]).read_bytes()).hexdigest())
+          except BaseException as error:
+              record["error"] = str(error)
+              raise
+          finally:
+              receipt.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Provision the existing pinned official Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run the fixed native proof
+        shell: bash
+        run: python3 -I -S -B scripts/check_pinning_fixture_proof.py
+      - name: Retain complete or incomplete evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pinning-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.receipt.outputs.path }}
+          retention-days: 7
+          if-no-files-found: error
