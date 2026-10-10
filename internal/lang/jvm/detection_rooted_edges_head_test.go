@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -43,12 +44,12 @@ func TestJVMDetectWithConfidencePropagatesTraversalLimitCloseError(t *testing.T)
 		closeErr:     closeErr,
 	}
 	root := &jvmDetectionLimitTestRoot{info: info, directory: directory}
-	withOpenJVMDetectionRootHook(t, func(string) (jvmDetectionRoot, error) {
+	withOpenJVMDetectionRootHook(t, func(string) (safeio.Root, error) {
 		return root, nil
 	})
 
 	_, err = NewAdapter().DetectWithConfidence(context.Background(), repo)
-	if !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, closeErr) {
+	if !jvmDetectionTraversalLimited(err) || !errors.Is(err, closeErr) {
 		t.Fatalf("expected joined detection traversal-limit and close error, got %v", err)
 	}
 	if directory.closeCalls != 1 || root.closeCalls != 1 {
@@ -101,7 +102,7 @@ func TestOSJVMDetectionRootOpenRejectsNonDirectoryAndCloseErrors(t *testing.T) {
 		t.Fatalf("stat temp file: %v", err)
 	}
 	closeErr := errors.New("close non-directory")
-	root := &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	root := &jvmRootedTestRoot{
 		info: rootInfo,
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name == "child" {
@@ -115,13 +116,13 @@ func TestOSJVMDetectionRootOpenRejectsNonDirectoryAndCloseErrors(t *testing.T) {
 				stat:  func() (fs.FileInfo, error) { return fileInfo, nil },
 			}, nil
 		},
-	}}
+	}
 
-	if _, err := root.Open("child"); !errors.Is(err, fs.ErrInvalid) {
+	if _, err := safeio.OpenPinnedDirectory(root, "child"); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected invalid-directory error from non-directory open, got %v", err)
 	}
 
-	root = &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	root = &jvmRootedTestRoot{
 		info: rootInfo,
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name == "child" {
@@ -134,8 +135,8 @@ func TestOSJVMDetectionRootOpenRejectsNonDirectoryAndCloseErrors(t *testing.T) {
 				stat: func() (fs.FileInfo, error) { return fileInfo, nil },
 			}, nil
 		},
-	}}
-	_, err = root.Open("child")
+	}
+	_, err = safeio.OpenPinnedDirectory(root, "child")
 	if !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected non-directory error, got %v", err)
 	}
@@ -151,15 +152,15 @@ func TestOSJVMDetectionRootOpenReturnsDirectory(t *testing.T) {
 			stat: func() (fs.FileInfo, error) { return info, nil },
 		},
 	}
-	root := &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	root := &jvmRootedTestRoot{
 		info:  info,
 		lstat: func(string) (fs.FileInfo, error) { return info, nil },
 		open: func(string) (safeio.File, error) {
 			return directory, nil
 		},
-	}}
+	}
 
-	opened, err := root.Open("child")
+	opened, err := safeio.OpenPinnedDirectory(root, "child")
 	if err != nil {
 		t.Fatalf("expected directory open to succeed, got %v", err)
 	}
@@ -174,13 +175,13 @@ func TestOSJVMDetectionRootOpenPropagatesOpenError(t *testing.T) {
 		t.Fatalf("stat temp dir: %v", err)
 	}
 	openErr := errors.New("open rooted directory")
-	root := &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	root := &jvmRootedTestRoot{
 		info:  info,
 		lstat: func(string) (fs.FileInfo, error) { return info, nil },
 		open:  func(string) (safeio.File, error) { return nil, openErr },
-	}}
+	}
 
-	opened, err := root.Open("child")
+	opened, err := safeio.OpenPinnedDirectory(root, "child")
 	if opened != nil {
 		t.Fatal("expected open failure to return no directory handle")
 	}
@@ -191,9 +192,9 @@ func TestOSJVMDetectionRootOpenPropagatesOpenError(t *testing.T) {
 
 func TestOSJVMDetectionRootOpenRootPropagatesOpenError(t *testing.T) {
 	openErr := errors.New("open pinned child root")
-	root := &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	root := &jvmRootedTestRoot{
 		openRoot: func(string) (safeio.Root, error) { return nil, openErr },
-	}}
+	}
 
 	opened, err := root.OpenRoot("child")
 	if opened != nil || !errors.Is(err, openErr) {
@@ -207,9 +208,9 @@ func TestJVMDetectionWalkerRejectsDirectoryReplacementBetweenEnumerationAndOpen(
 	testutil.MustWriteFile(t, filepath.Join(originalDir, "main", "java", "pkg", "Main.java"), "class Main {}\n")
 	root := newReplacingJVMDetectionRoot(t, repo, originalDir)
 
-	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker := newJVMDetectionTestWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
 	err := walker.walkPinned(context.Background(), root)
-	if err == nil || !strings.Contains(err.Error(), "path changed while opening: src") {
+	if err == nil || !strings.Contains(err.Error(), "root changed while opening: src") {
 		t.Fatalf("expected pinned directory replacement error, got %v", err)
 	}
 }
@@ -231,7 +232,7 @@ type jvmDetectionDirectoryReplacement struct {
 	swapped     bool
 }
 
-func newReplacingJVMDetectionRoot(t *testing.T, repo, originalDir string) jvmDetectionRoot {
+func newReplacingJVMDetectionRoot(t *testing.T, repo, originalDir string) safeio.Root {
 	t.Helper()
 	realRoot := openJVMTestRoot(t, repo)
 	repoInfo, err := os.Stat(repo)
@@ -244,13 +245,13 @@ func newReplacingJVMDetectionRoot(t *testing.T, repo, originalDir string) jvmDet
 		originalDir: originalDir,
 		realRoot:    realRoot,
 	}
-	return &osJVMDetectionRoot{root: &jvmRootedTestRoot{
+	return &jvmRootedTestRoot{
 		Root:     realRoot,
 		info:     repoInfo,
 		open:     realRoot.Open,
 		openRoot: replacement.openRoot,
 		lstat:    realRoot.Lstat,
-	}}
+	}
 }
 
 func (r *jvmDetectionDirectoryReplacement) openRoot(name string) (safeio.Root, error) {
@@ -275,7 +276,7 @@ func (r *jvmDetectionDirectoryReplacement) replace() {
 
 type jvmDetectionChildRootCase struct {
 	name       string
-	root       jvmDetectionRoot
+	root       safeio.Root
 	wantErr    error
 	wantText   string
 	wantJoined error
@@ -349,7 +350,7 @@ func (f *jvmDetectionChildRootFixture) cases() []jvmDetectionChildRootCase {
 			name: "open error",
 			root: &jvmDetectionChildTestRoot{
 				lstat:    func(string) (fs.FileInfo, error) { return f.dirInfo, nil },
-				openRoot: func(string) (jvmDetectionRoot, error) { return nil, f.openErr },
+				openRoot: func(string) (safeio.Root, error) { return nil, f.openErr },
 			},
 			wantErr: f.openErr,
 		},
@@ -357,7 +358,7 @@ func (f *jvmDetectionChildRootFixture) cases() []jvmDetectionChildRootCase {
 			name: "opened lookup and close errors",
 			root: &jvmDetectionChildTestRoot{
 				lstat: func(string) (fs.FileInfo, error) { return f.dirInfo, nil },
-				openRoot: func(string) (jvmDetectionRoot, error) {
+				openRoot: func(string) (safeio.Root, error) {
 					return &jvmDetectionChildTestRoot{
 						lstat: func(string) (fs.FileInfo, error) { return nil, f.openedLookupErr },
 						close: func() error { return f.closeErr },
@@ -372,7 +373,7 @@ func (f *jvmDetectionChildRootFixture) cases() []jvmDetectionChildRootCase {
 
 func assertOpenJVMDetectionChildRootFailure(t *testing.T, test jvmDetectionChildRootCase) {
 	t.Helper()
-	child, err := openJVMDetectionChildRoot(test.root, "child", filepath.Join("nested", "child"))
+	child, err := safeio.OpenPinnedChildRoot(test.root, "child", filepath.Join("nested", "child"), "root changed while opening")
 	if child != nil {
 		t.Fatalf("expected failed child-root acquisition, got %#v", child)
 	}
@@ -389,32 +390,19 @@ func assertOpenJVMDetectionChildRootFailure(t *testing.T, test jvmDetectionChild
 
 func TestJVMDetectionWalkerWalkEntryPreservesSkipErrorAndFileBehavior(t *testing.T) {
 	repo := canonicalRepoPath(t)
-	dirInfo, err := os.Stat(repo)
-	if err != nil {
-		t.Fatalf("stat repo fixture: %v", err)
+	testutil.MustWriteFile(t, filepath.Join(repo, "target", "Main.java"), "class Main {}")
+	testutil.MustWriteFile(t, filepath.Join(repo, "note.txt"), "not JVM")
+	detection := &language.Detection{}
+	walker := newJVMDetectionTestWalker(repo, map[string]struct{}{}, detection, shared.RootedWalkBudget{MaxTraversalEntries: 3, MaxFiles: 1})
+	if err := walker.walk(context.Background()); err != nil {
+		t.Fatalf("skip directory and ordinary file: %v", err)
 	}
-	filePath := filepath.Join(repo, "note.txt")
-	testutil.MustWriteFile(t, filePath, "not JVM\n")
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		t.Fatalf("stat file fixture: %v", err)
+	if detection.Matched {
+		t.Fatalf("skipped source or ordinary file matched: %#v", detection)
 	}
-
-	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
-	skippedEntry := fs.FileInfoToDirEntry(&jvmDetectionNamedFileInfo{FileInfo: dirInfo, name: "target"})
-	if err := walker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filepath.Join(repo, "target"), skippedEntry); err != nil {
-		t.Fatalf("expected skipped directory to avoid opening, got %v", err)
-	}
-
-	fileEntry := fs.FileInfoToDirEntry(fileInfo)
-	if err := walker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filePath, fileEntry); err != nil {
-		t.Fatalf("expected ordinary file entry to complete without directory open, got %v", err)
-	}
-
-	exhaustedBudget := &jvmDetectionBudget{maxTraversalEntries: 1, traversalEntriesSeen: 1}
-	exhaustedWalker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, exhaustedBudget)
-	if err := exhaustedWalker.walkEntry(context.Background(), &jvmDetectionChildTestRoot{}, filePath, fileEntry); !errors.Is(err, errJVMDetectionTraversalLimit) {
-		t.Fatalf("expected traversal-limit error to propagate, got %v", err)
+	walker.budget.MaxTraversalEntries = 1
+	if err := walker.walk(context.Background()); !jvmDetectionTraversalLimited(err) {
+		t.Fatalf("expected traversal-limit error, got %v", err)
 	}
 }
 
@@ -425,7 +413,7 @@ func TestJVMDetectionWalkerUsesLinearPinnedRootOperationsForDeepWideTree(t *test
 	)
 
 	repo := canonicalRepoPath(t)
-	directoryCount, fileCount := createJVMDetectionDeepWideTree(t, repo, depth, width)
+	directoryCount, _ := createJVMDetectionDeepWideTree(t, repo, depth, width)
 	root, err := safeio.OpenRoot(repo)
 	if err != nil {
 		t.Fatalf("open detection operation-count root: %v", err)
@@ -440,16 +428,13 @@ func TestJVMDetectionWalkerUsesLinearPinnedRootOperationsForDeepWideTree(t *test
 	countingRoot := &countingJVMDetectionRoot{Root: root, counts: counts}
 	budget := defaultJVMDetectionBudget()
 	detection := &language.Detection{}
-	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, detection, budget)
-	if err := walker.walkPinned(context.Background(), &osJVMDetectionRoot{root: countingRoot}); err != nil {
+	walker := newJVMDetectionTestWalker(repo, map[string]struct{}{}, detection, budget)
+	if err := walker.walkPinned(context.Background(), countingRoot); err != nil {
 		t.Fatalf("walk deep and wide detection tree: %v", err)
 	}
 
 	if detection.Matched {
 		t.Fatalf("expected non-JVM fixture to remain unmatched, got %#v", detection)
-	}
-	if budget.traversalEntriesSeen != directoryCount+fileCount {
-		t.Fatalf("expected every fixture entry to be visited once, got %d want %d", budget.traversalEntriesSeen, directoryCount+fileCount)
 	}
 	if counts.openRoot != directoryCount-1 {
 		t.Fatalf("expected one pinned child-root open per non-root directory, got %d want %d", counts.openRoot, directoryCount-1)
@@ -467,7 +452,7 @@ func TestJVMDetectionWalkerUsesLinearPinnedRootOperationsForDeepWideTree(t *test
 
 func TestJVMDetectionHelpersPropagatePinnedErrors(t *testing.T) {
 	lstatErr := errors.New("root lstat failed")
-	walker := newJVMDetectionWalker(t.TempDir(), map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker := newJVMDetectionTestWalker(t.TempDir(), map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
 	if err := walker.walkPinned(context.Background(), &jvmDetectionTestRootWithError{err: lstatErr}); !errors.Is(err, lstatErr) {
 		t.Fatalf("expected pinned lstat error, got %v", err)
 	}
@@ -481,8 +466,8 @@ func TestJVMDetectionHelpersPropagatePinnedErrors(t *testing.T) {
 func TestJVMDetectionWalkerReadDirectoryJoinsCloseError(t *testing.T) {
 	repo := t.TempDir()
 	closeErr := errors.New("close rooted directory")
-	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
-	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+	walker := newJVMDetectionTestWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openDirectory = func(safeio.Root, string) (safeio.ReadDirFile, error) {
 		return &jvmRootedTestDirectory{
 			jvmRootedTestFile: jvmRootedTestFile{
 				close: func() error { return closeErr },
@@ -490,7 +475,7 @@ func TestJVMDetectionWalkerReadDirectoryJoinsCloseError(t *testing.T) {
 		}, nil
 	}
 
-	_, err := walker.readDirectory(context.Background(), &jvmDetectionTestRootWithError{}, repo)
+	err := walker.walkPinned(context.Background(), newJVMDetectionTestRoot(t, repo))
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("expected close error from rooted directory read, got %v", err)
 	}
@@ -540,14 +525,15 @@ func TestScanRepoWithSourceReaderHonorsCanceledContext(t *testing.T) {
 }
 
 type jvmDetectionTestRootWithError struct {
+	safeio.Root
 	err error
 }
 
-func (*jvmDetectionTestRootWithError) Open(string) (jvmDetectionDirectory, error) {
+func (*jvmDetectionTestRootWithError) Open(string) (safeio.File, error) {
 	return nil, errors.New("unexpected open")
 }
 
-func (*jvmDetectionTestRootWithError) OpenRoot(string) (jvmDetectionRoot, error) {
+func (*jvmDetectionTestRootWithError) OpenRoot(string) (safeio.Root, error) {
 	return nil, errors.New("unexpected child root open")
 }
 
@@ -558,14 +544,15 @@ func (r *jvmDetectionTestRootWithError) Lstat(string) (fs.FileInfo, error) {
 func (*jvmDetectionTestRootWithError) Close() error { return nil }
 
 type jvmDetectionStatRootWithError struct {
+	safeio.Root
 	err error
 }
 
-func (*jvmDetectionStatRootWithError) Open(string) (jvmDetectionDirectory, error) {
+func (*jvmDetectionStatRootWithError) Open(string) (safeio.File, error) {
 	return nil, errors.New("unexpected open")
 }
 
-func (*jvmDetectionStatRootWithError) OpenRoot(string) (jvmDetectionRoot, error) {
+func (*jvmDetectionStatRootWithError) OpenRoot(string) (safeio.Root, error) {
 	return nil, errors.New("unexpected child root open")
 }
 
@@ -576,16 +563,17 @@ func (r *jvmDetectionStatRootWithError) Lstat(string) (fs.FileInfo, error) {
 func (*jvmDetectionStatRootWithError) Close() error { return nil }
 
 type jvmDetectionLimitTestRoot struct {
+	safeio.Root
 	info       fs.FileInfo
-	directory  jvmDetectionDirectory
+	directory  safeio.ReadDirFile
 	closeCalls int
 }
 
-func (r *jvmDetectionLimitTestRoot) Open(string) (jvmDetectionDirectory, error) {
-	return r.directory, nil
+func (r *jvmDetectionLimitTestRoot) Open(string) (safeio.File, error) {
+	return &jvmDetectionReadFixtureFile{ReadDirFile: r.directory, info: r.info}, nil
 }
 
-func (*jvmDetectionLimitTestRoot) OpenRoot(string) (jvmDetectionRoot, error) {
+func (*jvmDetectionLimitTestRoot) OpenRoot(string) (safeio.Root, error) {
 	return nil, errors.New("unexpected child root open")
 }
 
@@ -601,7 +589,7 @@ func (r *jvmDetectionLimitTestRoot) Close() error {
 	return nil
 }
 
-func withOpenJVMDetectionRootHook(t *testing.T, hook func(string) (jvmDetectionRoot, error)) {
+func withOpenJVMDetectionRootHook(t *testing.T, hook func(string) (safeio.Root, error)) {
 	t.Helper()
 	original := openJVMDetectionRootHook
 	openJVMDetectionRootHook = hook
@@ -671,16 +659,17 @@ func (r *countingJVMDetectionRoot) Close() error {
 }
 
 type jvmDetectionChildTestRoot struct {
+	safeio.Root
 	lstat    func(string) (fs.FileInfo, error)
-	openRoot func(string) (jvmDetectionRoot, error)
+	openRoot func(string) (safeio.Root, error)
 	close    func() error
 }
 
-func (*jvmDetectionChildTestRoot) Open(string) (jvmDetectionDirectory, error) {
+func (*jvmDetectionChildTestRoot) Open(string) (safeio.File, error) {
 	return nil, errors.New("unexpected directory open")
 }
 
-func (r *jvmDetectionChildTestRoot) OpenRoot(name string) (jvmDetectionRoot, error) {
+func (r *jvmDetectionChildTestRoot) OpenRoot(name string) (safeio.Root, error) {
 	if r.openRoot != nil {
 		return r.openRoot(name)
 	}
@@ -699,13 +688,4 @@ func (r *jvmDetectionChildTestRoot) Close() error {
 		return r.close()
 	}
 	return nil
-}
-
-type jvmDetectionNamedFileInfo struct {
-	fs.FileInfo
-	name string
-}
-
-func (i *jvmDetectionNamedFileInfo) Name() string {
-	return i.name
 }
