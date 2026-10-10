@@ -65,14 +65,150 @@ def digest(path):
     return value.hexdigest()
 
 
-def write_json(path, value):
-    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
-    require(len(data) <= METADATA_RESERVE, "metadata receipt too large")
-    path = Path(path)
-    metadata = sum(p.stat().st_size for p in path.parent.iterdir()
-                   if p != path and p.is_file() and p.suffix not in (STDOUT_SUFFIX, ".stderr"))
-    require(metadata + len(data) <= METADATA_RESERVE, "aggregate metadata cap exceeded")
-    path.write_bytes(data)
+COMMAND_NAMES = frozenset(
+    ['version-' + name for name in ('go', 'git', PYTHON_TOOL, 'ruby', 'cc')]
+    + ['ruby-yaml', 'shell', 'executable-filesystem', 'go-env', 'archive-F', 'archive-C',
+       'modules-download', 'modules-verify', 'modules-verify-after']
+    + [name + suffix for name in ('B', 'C', 'C-race', 'I', 'restored')
+       for suffix in ('-compile', '-buildinfo', '-0', '-1', '-2')])
+JSON_NAMES = frozenset({'bootstrap.json', 'result.json', 'runtime-before.json', 'runtime-after.json',
+                       'variant-inventories.json'}
+                      | {name + '.json' for name in COMMAND_NAMES}
+                      | {name + '-binary.json' for name in ('B', 'C', 'C-race', 'I', 'restored')})
+RECEIPT_NAMES = JSON_NAMES | frozenset(
+    name + suffix for name in COMMAND_NAMES for suffix in (STDOUT_SUFFIX, '.stderr')) | {'original-subject.go.txt'}
+INITIAL_RESULT = {STATUS_KEY: 'INCOMPLETE', 'native_windows': 'UNRUN', 'external_review_binding': 'REQUIRED'}
+
+
+class Receipts:
+    """Fixed proof receipts, confined to one retained private directory."""
+
+    def __init__(self, path):
+        self.path = private_directory(path)
+        self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.identity = os.fstat(self.fd)
+        try:
+            self.check()
+        except BaseException:
+            os.close(self.fd)
+            raise
+
+    def check(self):
+        current = self.path.lstat()
+        require(self.path.resolve() == self.path
+                and stat.S_ISDIR(current.st_mode) and current.st_uid == os.getuid()
+                and stat.S_IMODE(current.st_mode) == 0o700
+                and (current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino),
+                'receipt directory replaced')
+
+    def close(self):
+        primary = sys.exc_info()[1]
+        try:
+            os.close(self.fd)
+        except OSError as secondary:
+            if primary is not None and primary is not secondary:
+                raise primary from secondary
+            raise
+
+    @staticmethod
+    def signature(value):
+        return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_nlink,
+                value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+    def checked_file(self, name):
+        self.check()
+        require(name in RECEIPT_NAMES, 'unknown receipt name')
+        value = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        require(stat.S_ISREG(value.st_mode) and value.st_uid == os.getuid() and value.st_nlink == 1
+                and stat.S_IMODE(value.st_mode) in (0o600, 0o644),
+                'receipt is not an owned regular file')
+        return value
+
+    def read(self, name):
+        before = self.checked_file(name)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
+        with os.fdopen(fd, 'rb') as stream:
+            require(self.signature(os.fstat(stream.fileno())) == self.signature(before), 'receipt changed before read')
+            limit = COMMAND_CAP if name.endswith((STDOUT_SUFFIX, '.stderr')) else METADATA_RESERVE
+            data = stream.read(limit + 1)
+            require(len(data) <= limit, 'receipt read cap exceeded')
+            require(self.signature(os.fstat(stream.fileno())) == self.signature(before), 'receipt changed during read')
+        require(self.signature(self.checked_file(name)) == self.signature(before), 'receipt changed after read')
+        return data
+
+    def totals(self):
+        self.check()
+        metadata = total = 0
+        for name in os.listdir(self.fd):
+            item = self.checked_file(name)
+            total += item.st_size
+            if not name.endswith((STDOUT_SUFFIX, '.stderr')):
+                metadata += item.st_size
+        return metadata, total
+
+    def reserve(self, size):
+        metadata, total = self.totals()
+        require(metadata + size <= METADATA_RESERVE, 'aggregate metadata cap exceeded')
+        require(total + size <= EVIDENCE_CAP, 'aggregate evidence cap exceeded')
+
+    def open_output(self, name):
+        self.check()
+        require(name in RECEIPT_NAMES and name.endswith((STDOUT_SUFFIX, '.stderr')), 'unknown output receipt')
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
+        return os.fdopen(fd, 'wb')
+
+    def write(self, name, data):
+        self.check()
+        require(name in RECEIPT_NAMES and not name.endswith((STDOUT_SUFFIX, '.stderr'))
+                and name not in ('bootstrap.json', 'result.json'), 'unknown or protected receipt')
+        self.reserve(len(data))
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+        self.check()
+
+    def finish(self, data):
+        self.check()
+        before = self.checked_file('result.json')
+        require(json.loads(self.read('result.json')) == INITIAL_RESULT, 'unexpected result placeholder')
+        # Count both the old placeholder and complete temporary receipt before replacement.
+        self.reserve(len(data))
+        temporary = '.result-final.json'
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
+        owned = os.fstat(fd)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(data)
+            self.check()
+            require(self.signature(self.checked_file('result.json')) == self.signature(before), 'result placeholder changed')
+            require(json.loads(self.read('result.json')) == INITIAL_RESULT, 'result placeholder content changed')
+            current = os.stat(temporary, dir_fd=self.fd, follow_symlinks=False)
+            require((current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino)
+                    and stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                    and current.st_uid == os.getuid() and current.st_size == len(data), 'final receipt changed')
+            os.replace(temporary, 'result.json', src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        finally:
+            try:
+                current = os.stat(temporary, dir_fd=self.fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    os.unlink(temporary, dir_fd=self.fd)
+            except FileNotFoundError:
+                pass
+
+
+def write_json(receipts, name, value):
+    primary = sys.exc_info()[1]
+    try:
+        data = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
+        require(name in JSON_NAMES and len(data) <= METADATA_RESERVE, 'invalid metadata receipt')
+        if name == 'result.json':
+            receipts.finish(data)
+        else:
+            receipts.write(name, data)
+    except BaseException as secondary:
+        if primary is not None and primary is not secondary:
+            raise primary from secondary
+        raise
 
 
 def binding(path):
@@ -118,6 +254,7 @@ class Commands:
         self.failed = False
 
     def consume(self, selector, output, allowance):
+        self.receipts.check()
         for key, _ in selector.select(timeout=min(0.05, max(0, allowance))):
             chunk = os.read(key.fileobj.fileno(), 65536)
             if not chunk:
@@ -165,6 +302,7 @@ class Commands:
         return not selector.get_map() and not group_exists(child.pid)
 
     def run(self, name, argv, cwd):
+        require(name in COMMAND_NAMES, "unknown command receipt name")
         require(not self.failed, "no launch after an earlier command failure")
         end = min(self.deadline - CLEANUP_SECONDS, time.monotonic() + COMMAND_SECONDS)
         require(end > time.monotonic(), "total command allowance exhausted")
@@ -177,8 +315,8 @@ class Commands:
         sinks = []
         try:
             for channel in ("stdout", "stderr"):
-                path = self.receipts / (name + "." + channel)
-                sinks.append(path.open("xb"))
+                sinks.append(self.receipts.open_output(name + "." + channel))
+            self.receipts.check()
             require(time.monotonic() < end, "launch allowance exhausted")
             child = subprocess.Popen(record["argv"], cwd=cwd, env=self.environment,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -193,42 +331,59 @@ class Commands:
             self.failed = True
             record[ERROR_KEY] = str(error)
             if child is not None:
-                record[JOINED_KEY] = self.cleanup(child, selector, output)
-                record["exit"] = child.returncode
+                self.cleanup_record(child, selector, output, record, error)
             raise
         finally:
-            for key in selector.get_map().values():
-                key.fileobj.close()
-            selector.close()
-            close_errors = []
-            for sink in sinks:
-                try:
-                    sink.close()
-                except OSError as error:
-                    close_errors.append(str(error))
-            if close_errors:
-                self.failed = True
-                record["finalization_errors"] = close_errors
-                if record[ERROR_KEY] is None:
-                    record[ERROR_KEY] = "output finalization: " + "; ".join(close_errors)
-            record.update(ended=time.time(), output=output)
-            self.records.append(record)
-            write_json(self.receipts / (name + ".json"), record)
+            primary = sys.exc_info()[1]
+            try:
+                self.finish_record(selector, sinks, record, output)
+            except BaseException as secondary:
+                if primary is not None and primary is not secondary:
+                    raise primary from secondary
+                raise
         require(record[ERROR_KEY] is None, "output finalization failed")
         return record
+
+    def cleanup_record(self, child, selector, output, record, error):
+        try:
+            record[JOINED_KEY] = self.cleanup(child, selector, output)
+            record["exit"] = child.returncode
+        except BaseException as secondary:
+            if error is not secondary:
+                raise error from secondary
+            raise
+
+    def finish_record(self, selector, sinks, record, output):
+        for key in selector.get_map().values():
+            key.fileobj.close()
+        selector.close()
+        close_errors = []
+        for sink in sinks:
+            try:
+                sink.close()
+            except OSError as error:
+                close_errors.append(str(error))
+        if close_errors:
+            self.failed = True
+            record["finalization_errors"] = close_errors
+            if record[ERROR_KEY] is None:
+                record[ERROR_KEY] = "output finalization: " + "; ".join(close_errors)
+        record.update(ended=time.time(), output=output)
+        self.records.append(record)
+        write_json(self.receipts, record["name"] + ".json", record)
 
     def success(self, name, argv, cwd):
         record = self.run(name, argv, cwd)
         if record["exit"] != 0:
             self.failed = True
             raise RuntimeError(name + " failed; not a behavioral red")
-        return (self.receipts / (name + STDOUT_SUFFIX)).read_bytes()
+        return self.receipts.read(name + STDOUT_SUFFIX)
 
 
 def test_result(record, stdout, stderr, test, red):
     require(record[JOINED_KEY] and record[ERROR_KEY] is None, "test process custody failed")
     text = (stdout + stderr).decode("utf-8", errors="strict")
-    runs = re.findall(r"^=== RUN   (\S+)\s*$", text, re.MULTILINE)
+    runs = re.findall(r"^=== RUN {3}(\S+)\s*$", text, re.MULTILINE)
     results = re.findall(r"^--- (PASS|FAIL|SKIP): (\S+) \([^\n]+\)$", text, re.MULTILINE)
     require(runs == [test], "missing, duplicate or wrong RUN frame")
     require(results == [("FAIL" if red else "PASS", test)], "wrong named result or skip")
@@ -315,8 +470,9 @@ def tool_search_path(tools):
 
 
 def environment(root, tools):
-    for name in ("GOCACHEPROG", "GOFLAGS", GOENV_KEY, TOOLCHAIN_KEY):
+    for name in ("GOCACHEPROG", "GOFLAGS", GOENV_KEY):
         require(not os.environ.get(name), "ambient Go override rejected: " + name)
+    require(os.environ.get(TOOLCHAIN_KEY, "") in ("", "local"), "ambient Go override rejected: " + TOOLCHAIN_KEY)
     env = {"PATH": tool_search_path(tools),
            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "GOMAXPROCS": "2",
            TOOLCHAIN_KEY: "local", GOENV_KEY: "off", CGO_KEY: "1",
@@ -371,7 +527,7 @@ def compile_variant(commands, tools, root, output, name, race=False):
     require(("\tbuild\t-race=true\n" in info) == race, "binary race mode mismatch")
     for setting in ("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1", "-compiler=gc"):
         require("\tbuild\t" + setting + "\n" in info, "missing binary setting: " + setting)
-    write_json(commands.receipts / (name + "-binary.json"), binding(output))
+    write_json(commands.receipts, name + "-binary.json", binding(output))
 
 
 def run_tests(commands, root, binary, name, red):
@@ -380,8 +536,8 @@ def run_tests(commands, root, binary, name, red):
         before = binding(binary)
         record = commands.run(label, [binary, "-test.v", "-test.count=1", "-test.timeout=15m",
                                       "-test.run=^" + test + "$"], root / "scripts")
-        test_result(record, (commands.receipts / (label + STDOUT_SUFFIX)).read_bytes(),
-                    (commands.receipts / (label + ".stderr")).read_bytes(), test, red)
+        test_result(record, commands.receipts.read(label + STDOUT_SUFFIX),
+                    commands.receipts.read(label + ".stderr"), test, red)
         require(binding(binary) == before, "test binary changed during execution")
 
 
@@ -401,8 +557,8 @@ def prove(commands, tools, repository, scratch):
         (target / SUBJECT).write_bytes(inverse((candidate / SUBJECT).read_bytes()))
     baseline_inventory = inventory(baseline)
     require(baseline_inventory == inventory(mutation), "inverse is not byte-identical to instrumented parent")
-    (commands.receipts / "original-subject.go.txt").write_bytes((original / SUBJECT).read_bytes())
-    write_json(commands.receipts / "variant-inventories.json", {"F": old, "C": expected, "B_equals_I": baseline_inventory})
+    commands.receipts.write("original-subject.go.txt", (original / SUBJECT).read_bytes())
+    write_json(commands.receipts, "variant-inventories.json", {"F": old, "C": expected, "B_equals_I": baseline_inventory})
     commands.success("modules-download", [tools["go"], "mod", "download", "-json"], candidate)
     commands.success("modules-verify", [tools["go"], "mod", "verify"], candidate)
     verify_subject(candidate)
@@ -425,11 +581,11 @@ def main():
     root = private_directory(Path(os.environ["PINNING_PROOF_ROOT"]))
     runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
     require(root.parent == runner_temp and root.name.startswith("pinning-proof."), "root is outside invocation namespace")
-    receipts = private_directory(root / "receipts")
+    receipts = Receipts(root / "receipts")
     result = {STATUS_KEY: "INCOMPLETE", "native_windows": "UNRUN", "external_review_binding": "REQUIRED"}
     commands = None
     try:
-        bootstrap = json.loads((receipts / "bootstrap.json").read_text())
+        bootstrap = json.loads(receipts.read("bootstrap.json"))
         require(bootstrap[STATUS_KEY] == "ADMITTED" and bootstrap["O"] == REPAIR, "missing bootstrap admission")
         repository = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
         require(repository not in root.parents and root not in repository.parents and root != repository,
@@ -447,25 +603,37 @@ def main():
         require(digest(driver) == bootstrap["driver_sha256"], "driver differs from admitted W")
         commands = Commands(receipts, environment(scratch, tools))
         runtime = qualify(commands, tools, scratch)
-        write_json(receipts / "runtime-before.json", runtime)
+        write_json(receipts, "runtime-before.json", runtime)
         prove(commands, tools, repository, scratch)
         require({name: binding(path) for name, path in tools.items()} == runtime["tools"],
                 "tool bytes changed after consumption")
-        write_json(receipts / "runtime-after.json", {name: binding(path) for name, path in tools.items()})
+        write_json(receipts, "runtime-after.json", {name: binding(path) for name, path in tools.items()})
         verify_subject(repository)
         require(digest(driver) == bootstrap["driver_sha256"]
                 and digest(repository / ".github/workflows/pinning-fixture-proof.yml") == bootstrap["workflow_sha256"],
                 "W source changed after consumption")
         require(time.monotonic() < commands.deadline - CLEANUP_SECONDS, "total proof allowance exhausted")
-        require(sum(p.stat().st_size for p in receipts.iterdir() if p.is_file()) <= EVIDENCE_CAP - 4096,
+        require(receipts.totals()[1] <= EVIDENCE_CAP - 4096,
                 "final evidence cap exceeded")
         result[STATUS_KEY] = "NATIVE_PROOF_COMPLETE_PENDING_EXTERNAL_BINDING"
+    except Exception as error:
+        result[ERROR_KEY] = str(error)
     except BaseException as error:
         result[ERROR_KEY] = str(error)
+        raise
     finally:
-        result["commands"] = len(commands.records) if commands else 0
-        result["finished"] = time.time()
-        write_json(receipts / "result.json", result)
+        primary = sys.exc_info()[1]
+        try:
+            result["commands"] = len(commands.records) if commands else 0
+            result["finished"] = time.time()
+            try:
+                write_json(receipts, "result.json", result)
+            finally:
+                receipts.close()
+        except BaseException as secondary:
+            if primary is not None and primary is not secondary:
+                raise primary from secondary
+            raise
     return 0 if result[STATUS_KEY] == "NATIVE_PROOF_COMPLETE_PENDING_EXTERNAL_BINDING" else 1
 
 

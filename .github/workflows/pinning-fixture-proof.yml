@@ -42,6 +42,7 @@ jobs:
           import subprocess
 
           O = "6ce1817515bd9d84437804925407493d1b6f0e12"
+          H0 = "c6edc891e111b2b6b2891963c0b47959306b4538"
           F = "f0da6e1200f4e9f190932a2cb241d8c4ae6f21d8"
           PATHS = [".github/workflows/pinning-fixture-proof.yml", "scripts/check_pinning_fixture_proof.py"]
           SUBJECTS = {
@@ -83,7 +84,10 @@ jobs:
               require(git("rev-parse", "HEAD").decode().strip() == M, "wrong checkout")
               require(git("show", "-s", "--format=%P", M).decode().split() == [O, H], "wrong ordered merge parents")
               require(git("rev-parse", M + "^{tree}") == git("rev-parse", H + "^{tree}"), "merge tree differs from reviewed W")
-              require(git("show", "-s", "--format=%P", H).decode().split() == [O], "W is not direct child")
+              require(git("show", "-s", "--format=%P", H0).decode().split() == [O], "wrong original W parent")
+              require(git("show", "-s", "--format=%P", H).decode().split() == [H0], "W is not the single corrective child")
+              changed = git("diff", "--name-only", H0, H).decode().splitlines()
+              require(changed and set(changed).issubset(PATHS), "wrong corrective scope")
               require(git("show", "-s", "--format=%P", O).decode().split() == [F], "wrong O parent")
               require(git("diff", "--name-only", O, H).decode().splitlines() == PATHS, "wrong W path set")
               require(git("diff", "--name-only", F, O).decode().splitlines() == ["scripts/automation_integrity_head_test.go"], "wrong O scope")
