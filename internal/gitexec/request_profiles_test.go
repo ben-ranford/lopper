@@ -84,7 +84,7 @@ func TestCommandRejectsMalformedGlobalsAndOperandShapes(t *testing.T) {
 		{"-C", repo, "diff", "--no-ext-diff"},
 		{"-C", repo, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z"},
 		{"-C", repo, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--", "--ext-diff"},
-		{"-C", repo, "ls-files", "--others", "--exclude-standard", "-z", "--"},
+		{"-C", repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"},
 		{"-C", repo, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--", ":(literal)"},
 		{"-C", repo, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(literal)a\x00b"},
 		{"-c", "core.hooksPath=" + os.DevNull, "-C", repo, "worktree", "add", "--detach", repo, "HEAD"},
