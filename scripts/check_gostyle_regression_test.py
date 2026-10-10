@@ -76,6 +76,15 @@ class RunnerTests(unittest.TestCase):
     def scans(self):
         return [call for call in self.fake.calls if call[0][1] == "run"]
 
+    def test_arbitrary_launcher_rejected_before_any_command(self):
+        for launcher in ["python3", "go --help", "-version", str(self.root / "untrusted/go")]:
+            with self.subTest(launcher=launcher):
+                self.args.go = launcher
+                self.fake.calls.clear()
+                self.assertEqual(self.invoke(), 1)
+                self.assertFalse(self.fake.calls)
+                self.assertIn("configured Go launcher", self.output.getvalue())
+
     def test_one_verified_build_two_scans_and_owned_cleanup(self):
         self.assertEqual(self.invoke(), 0)
         installs = [call for call in self.fake.calls if call[0][1] == "install"]
@@ -91,6 +100,48 @@ class RunnerTests(unittest.TestCase):
         arguments = [call[0][1:] for call in self.fake.calls]
         self.assertLess(arguments.index(["mod", "verify"]), arguments.index(["install", gate.MODULE + "@v0.26.2"]))
         self.assertEqual(self.config.read_text(), "analyzers: {}\n")
+
+    def test_fixture_data_materialises_exact_owned_path(self):
+        source = self.root / "scripts/testdata/gostyle-regression/anonymous/fixture_test.go.txt"
+        original = source.read_bytes()
+        observed = []
+        scan = self.fake.scan
+
+        def inspect(command, cwd):
+            if cwd != self.root:
+                destination = cwd / "anonymous/fixture_test.go"
+                self.assertEqual(destination.read_bytes(), original)
+                self.assertFalse((cwd / "anonymous/fixture_test.go.txt").exists())
+                self.assertFalse(cwd.is_relative_to(self.root))
+                observed.append(destination)
+            return scan(command, cwd)
+
+        with mock.patch.object(self.fake, "scan", inspect):
+            self.assertEqual(self.invoke(), 0)
+        self.assertEqual(len(observed), 1)
+        self.assertFalse(observed[0].exists())
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(source.with_suffix("").exists())
+
+    def test_missing_fixture_data_still_scans_and_cleans(self):
+        source = self.root / "scripts/testdata/gostyle-regression/anonymous/fixture_test.go.txt"
+        source.unlink()
+        self.assertEqual(self.invoke(), 1)
+        self.assertEqual(len(self.scans()), 1)
+        self.assertEqual(self.scans()[0][1], self.root)
+        self.assertFalse(Path(self.scans()[0][0][0]).parent.parent.exists())
+
+    def test_version_grammar_rejects_unicode_and_option_injection(self):
+        for version in ["v٠.26.2", "v0.２6.2", "v0.26.²", "v0.26.2;echo bad", "-modfile=bad"]:
+            with self.subTest(version=version):
+                self.args.version = version
+                self.fake.calls.clear()
+                self.assertEqual(self.invoke(), 1)
+                self.assertEqual(len(self.fake.calls), 1)
+                self.assertIn("explicit release or pseudo-version", self.output.getvalue())
+        self.args.version = "v0.26.2-0.20261009074109-a852d2403d81"
+        self.fake.graph["Version"] = self.args.version
+        self.assertEqual(self.invoke(), 0)
 
     def test_cache_authentication_and_loader_compiler(self):
         with mock.patch.dict(os.environ, {"GOPROXY": "off", "GOSUMDB": "off", "GONOSUMDB": "*", "GOFLAGS": "-overlay=bad", "GOCACHEPROG": "bad"}):
@@ -176,6 +227,27 @@ class RunnerTests(unittest.TestCase):
                 self.assertFalse(any(call[0][1] == "install" for call in self.fake.calls))
 
 
+class LauncherTests(unittest.TestCase):
+    def test_fixed_lookup_and_canonical_absolute_override(self):
+        with tempfile.TemporaryDirectory(prefix="gostyle-launcher-") as directory:
+            launcher = Path(directory).resolve() / ("go.exe" if os.name == "nt" else "go")
+            launcher.write_text("fixture executable")
+            launcher.chmod(0o755)
+            with mock.patch.object(os, "get_exec_path", return_value=[str(launcher.parent)]):
+                self.assertEqual(gate.admitted_launcher("go"), str(launcher))
+                self.assertEqual(gate.admitted_launcher(str(launcher)), str(launcher))
+
+    def test_missing_or_nonregular_launcher_fails_closed(self):
+        with mock.patch.object(os, "get_exec_path", return_value=[]):
+            with self.assertRaisesRegex(gate.GateError, "unavailable"):
+                gate.admitted_launcher("go")
+        with tempfile.TemporaryDirectory(prefix="gostyle-launcher-") as directory:
+            (Path(directory) / ("go.exe" if os.name == "nt" else "go")).mkdir()
+            with mock.patch.object(os, "get_exec_path", return_value=[directory, ".", ""]):
+                with self.assertRaisesRegex(gate.GateError, "unavailable"):
+                    gate.admitted_launcher("go")
+
+
 class DiagnosticTests(unittest.TestCase):
     def test_missing_duplicate_position_and_control_diagnostics(self):
         expected = json.loads((HERE / "testdata/gostyle-regression/expected.json").read_text())
@@ -184,8 +256,9 @@ class DiagnosticTests(unittest.TestCase):
         line = f"{fixture / item['path']}:{item['line']}:{item['column']}: {item['message']}"
         gate.verify_diagnostics(completed([], 3, stderr=line + "\n"), expected, fixture)
         for invalid in ["", line + "\n" + line, line.replace(":6:2:", ":6:3:"), line.replace("anonymous/fixture_test.go", "valid/fixture.go")]:
+            result = completed([], 3, stderr=invalid)
             with self.subTest(invalid=invalid), self.assertRaises(gate.GateError):
-                gate.verify_diagnostics(completed([], 3, stderr=invalid), expected, fixture)
+                gate.verify_diagnostics(result, expected, fixture)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,25 @@ def checked(command, cwd, environment, timeout):
     return result.stdout
 
 
+def admitted_launcher(configured):
+    launcher = None
+    executable = "go.exe" if os.name == "nt" else "go"
+    for directory in os.get_exec_path():
+        candidate = Path(directory) / executable
+        if Path(directory).is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+            launcher = candidate.resolve(strict=True)
+            break
+    if launcher is None:
+        raise GateError("configured Go launcher is unavailable on the trusted PATH")
+    if configured != "go":
+        supplied = Path(configured)
+        if not supplied.is_absolute() or supplied.resolve() != launcher:
+            raise GateError("configured Go launcher must match the trusted PATH compiler")
+    return str(launcher)
+
+
 def resolve_compiler(launcher, toolchain, root):
+    launcher = admitted_launcher(launcher)
     environment = dict(os.environ, GOTOOLCHAIN=toolchain)
     data = json.loads(checked([launcher, "env", "-json", "GOROOT", "GOEXE", "GOMODCACHE", "GOCACHE"],
                               root, environment, FIXTURE_TIMEOUT))
@@ -71,7 +89,7 @@ def verify_graph(text, version):
 
 
 def build_tool(compiler, environment, extension, version, temporary):
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version):
+    if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version, re.ASCII):
         raise GateError("gostyle version must be an explicit release or pseudo-version")
     receipt = temporary / "receipt"
     receipt.mkdir()
@@ -108,6 +126,7 @@ def verify_diagnostics(result, expected, fixture):
 def fixture_scan(binary, config, root, environment, temporary):
     fixture = temporary / "fixture"
     shutil.copytree(root / "scripts/testdata/gostyle-regression", fixture)
+    (fixture / "anonymous/fixture_test.go.txt").rename(fixture / "anonymous/fixture_test.go")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
     result = execute([str(binary), "run", "-c", str(config), "./..."], fixture,
                      environment, FIXTURE_TIMEOUT)
