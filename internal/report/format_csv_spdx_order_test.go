@@ -27,6 +27,16 @@ func TestCSVSPDXDuplicateDependenciesAreOrderIndependent(t *testing.T) {
 			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{}},
 			{Language: "js-ts", Name: "duplicate"},
 		}},
+		{name: "evidence structural identity", dependencies: []DependencyReport{
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Evidence: nil}},
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Evidence: []string{}}},
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Evidence: []string{""}}},
+		}},
+		{name: "conflicts structural identity", dependencies: []DependencyReport{
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Conflicts: nil}},
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Conflicts: []string{}}},
+			{Language: "js-ts", Name: "duplicate", Identity: &DependencyIdentity{Ecosystem: "npm", Name: "duplicate", Conflicts: []string{""}}},
+		}},
 		{name: "identical rows", dependencies: []DependencyReport{
 			csvSPDXDuplicate("1.0.0", "MIT"), csvSPDXDuplicate("1.0.0", "MIT"), csvSPDXDuplicate("1.0.0", "MIT"),
 		}},
