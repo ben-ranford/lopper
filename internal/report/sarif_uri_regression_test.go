@@ -102,3 +102,19 @@ func sarifFilenameResult(t *testing.T, file string) sarifResult {
 	}
 	return log.Runs[0].Results[0]
 }
+
+func TestDependencyAnchorSkipsRejectedSortedLocations(t *testing.T) {
+	for _, locations := range [][]Location{
+		{{File: "../outside.go", Line: 1}, {File: "src/main.go", Line: 9}, {File: "src/z.go", Line: 2}},
+		{{File: "src/z.go", Line: 2}, {File: "src/main.go", Line: 9}, {File: "../outside.go", Line: 1}},
+	} {
+		dep := DependencyReport{UsedImports: []ImportUse{{Locations: locations[:1]}}, UnusedImports: []ImportUse{{Locations: locations[1:]}}}
+		anchor := dependencyAnchorLocation(dep)
+		if anchor == nil || anchor.PhysicalLocation.Region == nil {
+			t.Fatalf("expected valid anchor after rejected location, got %#v", anchor)
+		}
+		if got := anchor.PhysicalLocation; got.ArtifactLocation.URI != "src/main.go" || got.Region.StartLine != 9 {
+			t.Fatalf("expected earliest valid source location, got %#v", got)
+		}
+	}
+}

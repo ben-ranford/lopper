@@ -31,11 +31,12 @@ func dependencyAnchorLocation(dep DependencyReport) *sarifLocation {
 		}
 		return locations[i].Column < locations[j].Column
 	})
-	loc, ok := toSARIFLocation(locations[0])
-	if !ok {
-		return nil
+	for _, location := range locations {
+		if loc, ok := toSARIFLocation(location); ok {
+			return &loc
+		}
 	}
-	return &loc
+	return nil
 }
 
 func toSARIFLocations(locations []Location) []sarifLocation {
