@@ -233,6 +233,7 @@ def fixture_scan(binary, config, root, environment, temporary):
     shutil.copytree(root / "scripts/testdata/gostyle-regression", fixture)
     (fixture / "anonymous/fixture_test.go.txt").rename(fixture / "anonymous/fixture_test.go")
     (fixture / "multiple/fixture.go.txt").rename(fixture / "multiple/fixture.go")
+    (fixture / "named/fixture.go.txt").rename(fixture / "named/fixture.go")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
     result = execute([str(binary), "run", "-c", str(config), "./..."], fixture,
                      environment, FIXTURE_TIMEOUT)

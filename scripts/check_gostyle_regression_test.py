@@ -322,8 +322,40 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(grouped.read_bytes(), (HERE / "testdata/gostyle-regression/multiple/fixture.go.txt").read_bytes())
         self.assertFalse(grouped.with_suffix("").exists())
 
+    def test_named_fixture_data_materialises_exact_owned_path(self):
+        source = self.root / "scripts/testdata/gostyle-regression/named/fixture.go.txt"
+        self.assertFalse(source.with_suffix("").exists())
+        original = source.read_bytes()
+        observed = []
+        scan = self.fake.scan
+
+        def inspect(command, cwd):
+            if cwd != self.root:
+                destination = cwd / "named/fixture.go"
+                self.assertTrue(destination.is_file())
+                self.assertEqual(destination.read_bytes(), original)
+                self.assertFalse((cwd / "named/fixture.go.txt").exists())
+                self.assertFalse(cwd.is_relative_to(self.root))
+                observed.append(destination)
+            return scan(command, cwd)
+
+        with mock.patch.object(self.fake, "scan", inspect):
+            self.assertEqual(self.invoke(), 0)
+        self.assertEqual(len(observed), 1)
+        self.assertFalse(observed[0].exists())
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(source.with_suffix("").exists())
+
     def test_missing_fixture_data_still_scans_and_cleans(self):
         source = self.root / "scripts/testdata/gostyle-regression/anonymous/fixture_test.go.txt"
+        source.unlink()
+        self.assertEqual(self.invoke(), 1)
+        self.assertEqual(len(self.scans()), 1)
+        self.assertEqual(self.scans()[0][1], self.root)
+        self.assertFalse(Path(self.scans()[0][0][0]).parent.parent.exists())
+
+    def test_missing_named_fixture_data_still_scans_and_cleans(self):
+        source = self.root / "scripts/testdata/gostyle-regression/named/fixture.go.txt"
         source.unlink()
         self.assertEqual(self.invoke(), 1)
         self.assertEqual(len(self.scans()), 1)
