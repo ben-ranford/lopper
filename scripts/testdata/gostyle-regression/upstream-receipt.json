@@ -1,0 +1,74 @@
+{
+  "Path": "github.com/k1LoW/gostyle",
+  "Version": "v0.26.2",
+  "Sum": "h1:Tq0SUpl6Nn4iyQIOJwxRzLdU782T01O1atFlm8SYe+4=",
+  "GoModSum": "h1:SmQAVAamlkk8b3RXNr1U0pwx82k5AoQk8WP2YrRncgc=",
+  "Origin": {
+    "VCS": "git",
+    "URL": "https://github.com/k1LoW/gostyle",
+    "Hash": "eb5388dfbcc68cca44cf3cc84756d13a6df1335e",
+    "Ref": "refs/tags/v0.26.2"
+  },
+  "tools": {
+    "Path": "golang.org/x/tools",
+    "Version": "v0.50.0",
+    "Sum": "h1:c2ifzfcuY7L90lZ2aKd8S4K2NpASF08SZx9ZuJkHmSU=",
+    "GoModSum": "h1:7ulVMw3831Mwi5EZD6RomGyffr4VFjuNYXf2BbCEAV0="
+  },
+  "upstream": {
+    "189": {
+      "merge_commit_sha": "f5a324ad0717a186d9c8d04235dc3d636ad4578f",
+      "merged": true,
+      "url": "https://github.com/k1LoW/gostyle/pull/189",
+      "ahead_by": 9,
+      "behind_by": 0,
+      "status": "ahead"
+    },
+    "187": {
+      "merge_commit_sha": "a852d2403d8169225c0103d505f1a346f39faa06",
+      "merged": true,
+      "url": "https://github.com/k1LoW/gostyle/pull/187",
+      "ahead_by": 5,
+      "behind_by": 0,
+      "status": "ahead"
+    }
+  },
+  "release": {
+    "tag_name": "v0.26.2",
+    "immutable": true,
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-09T07:53:40Z",
+    "html_url": "https://github.com/k1LoW/gostyle/releases/tag/v0.26.2"
+  },
+  "graph_versions": {
+    "github.com/bmatcuk/doublestar/v4": "v4.10.2",
+    "github.com/cpuguy83/go-md2man/v2": "v2.0.6",
+    "github.com/fatih/camelcase": "v1.0.0",
+    "github.com/goccy/go-yaml": "v1.19.2",
+    "github.com/google/go-cmp": "v0.6.0",
+    "github.com/gostaticanalysis/comment": "v1.5.0",
+    "github.com/gostaticanalysis/testutil": "v0.6.1",
+    "github.com/hashicorp/go-version": "v1.7.0",
+    "github.com/inconshreveable/mousetrap": "v1.1.0",
+    "github.com/k1LoW/gostyle": "v0.26.2",
+    "github.com/otiai10/copy": "v1.14.1",
+    "github.com/otiai10/mint": "v1.6.3",
+    "github.com/russross/blackfriday/v2": "v2.1.0",
+    "github.com/spf13/cobra": "v1.10.2",
+    "github.com/spf13/pflag": "v1.0.10",
+    "github.com/tenntenn/modver": "v1.0.1",
+    "github.com/tenntenn/text/transform": "v0.0.0-20200319021203-7eef512accb3",
+    "github.com/yuin/goldmark": "v1.4.13",
+    "go.yaml.in/yaml/v3": "v3.0.4",
+    "golang.org/x/mod": "v0.41.0",
+    "golang.org/x/net": "v0.59.0",
+    "golang.org/x/sync": "v0.23.0",
+    "golang.org/x/sys": "v0.48.0",
+    "golang.org/x/telemetry": "v0.0.0-20260908163034-4bcc4b2ee518",
+    "golang.org/x/text": "v0.23.0",
+    "golang.org/x/tools": "v0.50.0",
+    "golang.org/x/xerrors": "v0.0.0-20200804184101-5ec99f83aff1",
+    "gopkg.in/check.v1": "v0.0.0-20161208181325-20d25e280405"
+  }
+}
