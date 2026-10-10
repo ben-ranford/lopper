@@ -945,6 +945,297 @@ jobs:
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: go run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
 
+      - name: Qualify native Windows Renovate offline controls
+        id: renovate_windows_offline
+        shell: pwsh
+        env:
+          QUALIFICATION_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $receipt = Join-Path $env:RUNNER_TEMP 'renovate-windows-offline-receipts'
+          $work = Join-Path $env:RUNNER_TEMP 'renovate-windows-offline-work'
+          $originalLocation = Get-Location
+          $originalEnvironment = @{}
+          $receiptOwned = $false; $workOwned = $false
+          $headReady = $false; $baseReady = $false; $baseOverlay = $false
+          $bindings = @{
+              'scripts/renovate_vsce_test.go' = '96afd681b861d88dc16a8d9f8a1f2e5a85ed71216bd8fcbd291f186162eee7ff'
+              'scripts/testdata/renovate/vsce-contract.mjs' = 'e9ca9684eec7c9d9f30902cfd6a70439c03fb739f83cb8d37f54584605107d42'
+              'scripts/testdata/renovate/README.md' = '2c4139e7f640ff7e3119d7e861632b05a76386c5ed73120c152b93add7b4c071'
+              'scripts/testdata/renovate/runtime-integrity.json' = 'fb503b7e8e684c70fef3afd563a0109e194a9edb7cc8769cdafa0941c4408f94'
+          }
+          $support = @('scripts/release_workflow_config_test.go', 'scripts/renovate_vsce_test.go', 'scripts/testdata/renovate/README.md', 'scripts/testdata/renovate/runtime-integrity.json', 'scripts/testdata/renovate/vsce-contract.mjs')
+          $inputPaths = @('renovate.json', 'scripts/release_workflow_config_test.go', 'go.mod', 'go.sum')
+          $baseInputs = @{}
+          $headInputs = @{}
+          function Save-JSON($name, $value) {
+              $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $receipt $name) -Encoding utf8NoBOM
+          }
+          function File-Hash($path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+          function Set-ProcessEnvironment($key, $value) {
+              if (-not $originalEnvironment.ContainsKey($key)) {
+                  $originalEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+              }
+              [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+          }
+          function Assert-ProviderAbsent($root) {
+              $artifacts = Join-Path $root '.artifacts'
+              if ((Test-Path -LiteralPath $artifacts) -and @(Get-ChildItem -LiteralPath $artifacts -Force | Where-Object { $_.Name -eq 'renovate-vsce-runtime' }).Count -ne 0) {
+                  throw "Disposable provider must be absent: $root"
+              }
+          }
+          function Assert-LocalDirectory($path) {
+              $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
+              if (-not [IO.Path]::IsPathFullyQualified($resolved) -or $resolved.StartsWith('\\') -or $resolved -cne [IO.Path]::GetFullPath($path)) { throw "Noncanonical local directory: $path" }
+              $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($resolved))
+              if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -ne 'NTFS') { throw "Local NTFS required: $path" }
+              $ancestor = Get-Item -LiteralPath $resolved -Force
+              while ($null -ne $ancestor) {
+                  if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse ancestor rejected: $($ancestor.FullName)" }
+                  $ancestor = $ancestor.Parent
+              }
+          }
+          function Assert-Custody {
+              Assert-ProviderAbsent $originalLocation.Path
+              foreach ($root in @($headRoot, $baseRoot)) { if ($null -ne $root -and (Test-Path -LiteralPath $root)) { Assert-ProviderAbsent $root } }
+              $actual = @{}
+              if ($headReady) {
+                  foreach ($relative in $bindings.Keys) {
+                      $hash = File-Hash (Join-Path $headRoot $relative)
+                      if ($hash -cne $bindings[$relative]) { throw "Frozen source mismatch: $relative" }
+                      $actual[$relative] = $hash
+                  }
+                  foreach ($relative in $headInputs.Keys) {
+                      if ((File-Hash (Join-Path $headRoot $relative)) -cne $headInputs[$relative]) { throw "Head input changed: $relative" }
+                  }
+              }
+              if ($baseReady) {
+                  foreach ($relative in $baseInputs.Keys) {
+                      if ((File-Hash (Join-Path $baseRoot $relative)) -cne $baseInputs[$relative]) { throw "Original base input changed: $relative" }
+                  }
+                  if ($baseOverlay) {
+                      foreach ($relative in $support) {
+                          if ((File-Hash (Join-Path $baseRoot $relative)) -cne (File-Hash (Join-Path $headRoot $relative))) { throw "Base support changed: $relative" }
+                      }
+                  }
+              }
+              @{ location = (Get-Location).Path; headReady = $headReady; baseReady = $baseReady; baseOverlay = $baseOverlay; hashes = $actual; providerAbsent = $true; baseInputs = $baseInputs } |
+                  ConvertTo-Json -Depth 5 -Compress | Add-Content -LiteralPath (Join-Path $receipt 'custody.jsonl') -Encoding utf8NoBOM
+          }
+          function Invoke-Native($name, $executable, [string[]]$arguments) {
+              Assert-Custody
+              $selectedEnvironment = @{}
+              foreach ($key in @('PATH','CC','CGO_ENABLED','GOTOOLCHAIN','GOENV','GOWORK','GOFLAGS','GOPROXY','GOSUMDB','GOVCS','GONOPROXY','GONOSUMDB','GOPRIVATE','GOCACHEPROG','NODE_OPTIONS','NODE_PATH','SystemRoot','GOOS','GOARCH')) {
+                  $selectedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+              }
+              Save-JSON "$name.command.json" @{ executable = $executable; arguments = $arguments; workingDirectory = (Get-Location).Path; environment = $selectedEnvironment }
+              & $executable @arguments 1> (Join-Path $receipt "$name.stdout") 2> (Join-Path $receipt "$name.stderr")
+              $status = $LASTEXITCODE
+              $status | Set-Content -LiteralPath (Join-Path $receipt "$name.exit") -Encoding utf8NoBOM
+              Assert-Custody
+              return $status
+          }
+          function Require-Zero($name, $executable, [string[]]$arguments) {
+              if ((Invoke-Native $name $executable $arguments) -ne 0) { throw "Native command failed: $name (raw streams/status retained)" }
+          }
+          function Read-Events($name) {
+              @(Get-Content -LiteralPath (Join-Path $receipt "$name.stdout") | ForEach-Object {
+                  $event = $_ | ConvertFrom-Json -ErrorAction Stop
+                  if ($event -isnot [pscustomobject] -or $event.Action -cnotin @('start','run','pause','cont','pass','bench','fail','output','skip') -or $event.Package -cne 'github.com/ben-ranford/lopper/scripts') { throw "Malformed or foreign event: $name" }
+                  $event
+              })
+          }
+          function Assert-Passes($name, [string[]]$expected) {
+              $events = @(Read-Events $name)
+              if (@($events | Where-Object { $_.Action -eq 'fail' -or $_.Action -eq 'skip' }).Count -ne 0) { throw "Failure/skip is not a qualification pass: $name" }
+              $passes = @($events | Where-Object { $_.Action -eq 'pass' -and $_.Test })
+              $packagePass = @($events | Where-Object { $_.Action -eq 'pass' -and -not $_.Test })
+              if ($passes.Count -ne $expected.Count -or $packagePass.Count -ne 1) { throw "Wrong test/package pass count: $name" }
+              foreach ($test in $expected) {
+                  if (@($passes | Where-Object { $_.Test -ceq $test }).Count -ne 1) { throw "Missing/duplicate control: $name/$test" }
+              }
+              foreach ($pass in $passes) { if ($expected -cnotcontains $pass.Test) { throw "Unexpected test pass: $name/$($pass.Test)" } }
+              Save-JSON "$name.accounting.json" @{ testPasses = $passes.Test; testPassCount = $passes.Count; packagePassCount = $packagePass.Count; failures = 0; skips = 0 }
+          }
+          try {
+              New-Item -ItemType Directory -Path $receipt -ErrorAction Stop | Out-Null
+              $receiptOwned = $true
+              Save-JSON 'run.json' @{ source = $env:QUALIFICATION_SOURCE_SHA; eventSHA = $env:GITHUB_SHA; eventName = $env:GITHUB_EVENT_NAME; runID = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; originalDirectory = $originalLocation.Path; receiptDirectory = $receipt; workDirectory = $work; runnerOS = $env:RUNNER_OS; runnerArch = $env:RUNNER_ARCH; powershell = $PSVersionTable.PSVersion.ToString() }
+              if (-not $IsWindows) { throw 'Native Windows is required; cross compilation is not qualification' }
+              if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw 'PowerShell 7.4 native byte redirection is required' }
+              Assert-LocalDirectory $env:RUNNER_TEMP
+              Assert-LocalDirectory $receipt
+              foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+                  $comparison = $key.ToUpperInvariant()
+                  if ($comparison -in @('NODE_OPTIONS','NODE_PATH','BASH_ENV','ENV') -or $comparison.StartsWith('LD_') -or $comparison.StartsWith('DYLD_') -or $comparison.StartsWith('GIT_CONFIG_')) { Set-ProcessEnvironment $key $null }
+              }
+              Set-ProcessEnvironment 'GOTOOLCHAIN' 'local'
+              Set-ProcessEnvironment 'GOENV' 'off'
+              Set-ProcessEnvironment 'GOWORK' 'off'
+              Set-ProcessEnvironment 'GOFLAGS' '-buildvcs=false -mod=readonly'
+              Set-ProcessEnvironment 'GOCACHEPROG' $null
+              $go = (Resolve-Path -LiteralPath (Join-Path $env:REGRESSION_PROOF_GO_ROOT 'bin/go.exe')).ProviderPath
+              $node = (Resolve-Path -LiteralPath (Join-Path $env:RUNNER_TOOL_CACHE 'node/24.21.0/x64/node.exe')).ProviderPath
+              $gcc = (Get-Command gcc -CommandType Application -ErrorAction Stop).Source
+              if (-not [IO.Path]::IsPathFullyQualified($env:SystemRoot) -or -not (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32') -PathType Container)) { throw 'Accessible absolute native SystemRoot required' }
+              Set-ProcessEnvironment 'PATH' ((Split-Path $node) + [IO.Path]::PathSeparator + $env:PATH)
+              Set-ProcessEnvironment 'CC' $gcc
+              Set-ProcessEnvironment 'CGO_ENABLED' '1'
+              Require-Zero 'go-version' $go @('version')
+              if ((Get-Content -Raw -LiteralPath (Join-Path $receipt 'go-version.stdout')).Trim() -cne 'go version go1.27.2 windows/amd64') { throw 'Canonical Go 1.27.2 required' }
+              Require-Zero 'go-host' $go @('env','-json','GOHOSTOS','GOHOSTARCH','GOOS','GOARCH','GOROOT','CGO_ENABLED','CC')
+              $hostFields = Get-Content -Raw -LiteralPath (Join-Path $receipt 'go-host.stdout') | ConvertFrom-Json -ErrorAction Stop
+              if ($hostFields.GOHOSTOS -cne 'windows' -or $hostFields.GOOS -cne 'windows' -or $hostFields.GOHOSTARCH -cne 'amd64' -or $hostFields.GOARCH -cne 'amd64' -or $hostFields.CGO_ENABLED -cne '1' -or $hostFields.CC -cne $gcc -or (Resolve-Path -LiteralPath $hostFields.GOROOT).ProviderPath -cne (Split-Path (Split-Path $go))) { throw 'Native Go host/target/compiler/root mismatch' }
+              Require-Zero 'node-version' $node @('--version')
+              if ((Get-Content -Raw -LiteralPath (Join-Path $receipt 'node-version.stdout')).Trim() -cne 'v24.21.0') { throw 'Official cached Node 24.21.0 required' }
+              Require-Zero 'node-host' $node @('-p','JSON.stringify({platform:process.platform,arch:process.arch,executable:process.execPath})')
+              $nodeHost = Get-Content -Raw -LiteralPath (Join-Path $receipt 'node-host.stdout') | ConvertFrom-Json -ErrorAction Stop
+              if ($nodeHost.platform -cne 'win32' -or $nodeHost.arch -cne 'x64' -or $nodeHost.executable -cne $node) { throw 'Native cached Windows x64 Node required' }
+              Require-Zero 'gcc-version' $gcc @('--version')
+              Require-Zero 'gcc-synchronization' $gcc @('--print-file-name=libsynchronization.a')
+              $syncLibrary = (Get-Content -Raw -LiteralPath (Join-Path $receipt 'gcc-synchronization.stdout')).Trim()
+              if (-not [IO.Path]::IsPathFullyQualified($syncLibrary) -or -not (Test-Path -LiteralPath $syncLibrary -PathType Leaf)) { throw 'Existing mingw synchronization library required' }
+              Save-JSON 'tools.json' @{ go = $go; goSHA256 = (File-Hash $go); node = $node; nodeSHA256 = (File-Hash $node); gcc = $gcc; gccSHA256 = (File-Hash $gcc); synchronizationLibrary = $syncLibrary; synchronizationSHA256 = (File-Hash $syncLibrary); SystemRoot = $env:SystemRoot; host = $hostFields; nodeHost = $nodeHost }
+              $source = $env:QUALIFICATION_SOURCE_SHA
+              if ($source -cnotmatch '^[0-9a-f]{40}$') { throw 'Full lowercase source SHA required' }
+              $base = '0c753332a26136aef94a78886d096f8dfd85f734'
+              $git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+              $tar = (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+              Require-Zero 'resolve-head' $git @('rev-parse','--verify',"${source}^{commit}")
+              if ((Get-Content -Raw -LiteralPath (Join-Path $receipt 'resolve-head.stdout')).Trim() -cne $source) { throw 'Exact source commit required' }
+              Require-Zero 'resolve-base' $git @('rev-parse','--verify',"${base}^{commit}")
+              if ((Get-Content -Raw -LiteralPath (Join-Path $receipt 'resolve-base.stdout')).Trim() -cne $base) { throw 'Genuine base commit required' }
+              New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
+              $workOwned = $true
+              Assert-LocalDirectory $work
+              $headRoot = Join-Path $work 'head'; $baseRoot = Join-Path $work 'base'
+              New-Item -ItemType Directory -Path $headRoot, $baseRoot -ErrorAction Stop | Out-Null
+              $headArchive = Join-Path $work 'head.tar'; $baseArchive = Join-Path $work 'base.tar'
+              Require-Zero 'archive-head' $git @('-c','core.autocrlf=false','-c','core.eol=lf','archive','--format=tar',"--output=$headArchive",$source)
+              Require-Zero 'extract-head' $tar @('-xf',$headArchive,'-C',$headRoot)
+              Require-Zero 'archive-base' $git @('-c','core.autocrlf=false','-c','core.eol=lf','archive','--format=tar',"--output=$baseArchive",$base)
+              Require-Zero 'extract-base' $tar @('-xf',$baseArchive,'-C',$baseRoot)
+              Assert-LocalDirectory $headRoot; Assert-LocalDirectory $baseRoot
+              foreach ($relative in $inputPaths) { $headInputs[$relative] = File-Hash (Join-Path $headRoot $relative) }
+              foreach ($relative in @('renovate.json','go.mod','go.sum')) { $baseInputs[$relative] = File-Hash (Join-Path $baseRoot $relative) }
+              Save-JSON 'source.json' @{ source = $source; base = $base; headArchiveSHA256 = (File-Hash $headArchive); baseArchiveSHA256 = (File-Hash $baseArchive); expected = $bindings; headInputs = $headInputs; originalBaseInputs = $baseInputs; headDirectory = $headRoot; baseDirectory = $baseRoot }
+              Copy-Item -LiteralPath (Join-Path $baseRoot 'renovate.json') -Destination (Join-Path $receipt 'original-base-config.json') -ErrorAction Stop
+              $headReady = $true; $baseReady = $true
+              Assert-Custody
+              # Separate prerequisite retrieval: only the existing declared/checksummed Go modules.
+              foreach ($tree in @('head','base')) {
+                  Set-Location -LiteralPath (Join-Path $work $tree)
+                  Require-Zero "$tree-mod-download" $go @('mod','download')
+                  Require-Zero "$tree-mod-verify" $go @('mod','verify')
+              }
+              # All following children run offline; no npm, provider, installation or cross target.
+              Set-ProcessEnvironment 'GOPROXY' 'off'
+              Set-ProcessEnvironment 'GOSUMDB' 'off'
+              Set-ProcessEnvironment 'GOVCS' '*:off'
+              Set-ProcessEnvironment 'GONOPROXY' 'none'
+              Set-ProcessEnvironment 'GONOSUMDB' 'none'
+              Set-ProcessEnvironment 'GOPRIVATE' $null
+              $headRegex = '^Test(RenovateTracksIndependentMarketplaceExpectation|MarketplaceToolingPinRejectsMismatchAndInvalidIntegrity|RenovateFixtureOfflineControls|RenovateFixtureStartupEnvironmentKeys|RenovateFixtureStartupEnvironmentControls)$'
+              $baseRegex = '^Test(MarketplaceToolingPinRejectsMismatchAndInvalidIntegrity|RenovateFixtureOfflineControls|RenovateFixtureStartupEnvironmentKeys|RenovateFixtureStartupEnvironmentControls)$'
+              $matcher = 'TestRenovateTracksIndependentMarketplaceExpectation'
+              $expectedHead = @(
+                  $matcher,
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity',
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity/coordinated_current_pin',
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity/mismatched_version',
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity/missing_integrity',
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity/wrong_algorithm',
+                  'TestMarketplaceToolingPinRejectsMismatchAndInvalidIntegrity/empty_digest',
+                  'TestRenovateFixtureOfflineControls',
+                  'TestRenovateFixtureOfflineControls/boundaries',
+                  'TestRenovateFixtureOfflineControls/commands',
+                  'TestRenovateFixtureOfflineControls/serial',
+                  'TestRenovateFixtureStartupEnvironmentKeys',
+                  'TestRenovateFixtureStartupEnvironmentKeys/windows',
+                  'TestRenovateFixtureStartupEnvironmentKeys/linux',
+                  'TestRenovateFixtureStartupEnvironmentKeys/darwin',
+                  'TestRenovateFixtureStartupEnvironmentControls',
+                  'TestRenovateFixtureStartupEnvironmentControls/NODE_OPTIONS',
+                  'TestRenovateFixtureStartupEnvironmentControls/Node_Options',
+                  'TestRenovateFixtureStartupEnvironmentControls/NODE_PATH',
+                  'TestRenovateFixtureStartupEnvironmentControls/Node_Path'
+              )
+              $expectedBase = @($expectedHead | Where-Object { $_ -cne $matcher })
+              if ($expectedHead.Count -ne 20 -or $expectedBase.Count -ne 19) { throw 'Exact 20/19 control contract required' }
+              Set-Location -LiteralPath $headRoot
+              foreach ($mode in @('normal','race')) {
+                  $arguments = @('test','./scripts','-json','-count=1','-timeout','2m','-run',$headRegex)
+                  if ($mode -eq 'race') { $arguments += '-race' }
+                  Require-Zero $mode $go $arguments
+                  Assert-Passes $mode $expectedHead
+              }
+              Assert-Custody
+              foreach ($relative in $support) {
+                  $destination = Join-Path $baseRoot $relative
+                  New-Item -ItemType Directory -Path (Split-Path $destination) -Force -ErrorAction Stop | Out-Null
+                  Copy-Item -LiteralPath (Join-Path $headRoot $relative) -Destination $destination -ErrorAction Stop
+              }
+              $baseOverlay = $true
+              Assert-Custody
+              Set-Location -LiteralPath $baseRoot
+              Require-Zero 'base-compile' $go @('test','./scripts','-json','-count=1','-timeout','2m','-run','^$')
+              Assert-Passes 'base-compile' @()
+              $negativeStatus = Invoke-Native 'base-missing-manager' $go @('test','./scripts','-json','-count=1','-timeout','2m','-run','^TestRenovateTracksIndependentMarketplaceExpectation$')
+              $negativeEvents = @(Read-Events 'base-missing-manager')
+              $failures = @($negativeEvents | Where-Object { $_.Action -eq 'fail' })
+              $namedFailure = @($failures | Where-Object { $_.Test -ceq $matcher })
+              $packageFailure = @($failures | Where-Object { -not $_.Test })
+              $intendedOutput = @($negativeEvents | Where-Object { $_.Test -ceq $matcher -and $_.Output -like '*Renovate does not track the independent Marketplace version expectation*' })
+              if ($negativeStatus -ne 1 -or $failures.Count -ne 2 -or $namedFailure.Count -ne 1 -or $packageFailure.Count -ne 1 -or $intendedOutput.Count -eq 0 -or @($negativeEvents | Where-Object { $_.Action -eq 'skip' -or $_.Action -eq 'pass' }).Count -ne 0) { throw 'Genuine base must fail only the intended missing-manager assertion' }
+              Save-JSON 'base-negative.accounting.json' @{ exit = $negativeStatus; intendedFailure = $matcher; testFailures = 1; packageFailures = 1; skips = 0 }
+              Require-Zero 'base-portable' $go @('test','./scripts','-json','-count=1','-timeout','2m','-run',$baseRegex)
+              Assert-Passes 'base-portable' $expectedBase
+              Assert-Custody
+          } catch {
+              if ($receiptOwned) { $_ | Out-String | Set-Content -LiteralPath (Join-Path $receipt 'failure.txt') -Encoding utf8NoBOM }
+              throw
+          } finally {
+              # Every restoration runs even if final custody or owned-work cleanup fails.
+              $finalErrors = @()
+              if ($receiptOwned) {
+                  try { Assert-Custody } catch { $finalErrors += ($_ | Out-String) }
+                  try {
+                      if ($baseReady) {
+                          $finalBaseInputs = @{}
+                          foreach ($relative in $baseInputs.Keys) { $finalBaseInputs[$relative] = File-Hash (Join-Path $baseRoot $relative) }
+                          Save-JSON 'final-base-inputs.json' @{ expected = $baseInputs; actual = $finalBaseInputs }
+                          Copy-Item -LiteralPath (Join-Path $baseRoot 'renovate.json') -Destination (Join-Path $receipt 'final-base-config.json') -ErrorAction Stop
+                      }
+                  } catch { $finalErrors += ($_ | Out-String) }
+              }
+              foreach ($key in $originalEnvironment.Keys) {
+                  try { [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], 'Process') } catch { $finalErrors += ($_ | Out-String) }
+              }
+              try { Set-Location -LiteralPath $originalLocation.Path } catch { $finalErrors += ($_ | Out-String) }
+              if ($workOwned) {
+                  try {
+                      Assert-LocalDirectory $work
+                      if ($work -cne (Join-Path $env:RUNNER_TEMP 'renovate-windows-offline-work')) { throw 'Exclusive work identity changed' }
+                      Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction Stop
+                  } catch { $finalErrors += ($_ | Out-String) }
+              }
+              if ($receiptOwned) {
+                  try { Assert-ProviderAbsent $originalLocation.Path } catch { $finalErrors += ($_ | Out-String) }
+                  Save-JSON 'restoration.json' @{ environmentRestored = ($finalErrors.Count -eq 0); restoredKeys = @($originalEnvironment.Keys); location = (Get-Location).Path; workOwned = $workOwned; workAbsent = (-not (Test-Path -LiteralPath $work)); errors = $finalErrors }
+              }
+              if ($finalErrors.Count -ne 0) { throw ($finalErrors -join "`n") }
+          }
+          Save-JSON 'qualification.json' @{ result = 'PASS'; source = $source; base = $base; headNormal = 20; headRace = 20; basePortable = 19; nativeWindows = $true; UNC = 'PENDING'; REAL = 'NOT_RUN' }
+
+      - name: Upload native Windows Renovate offline receipts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: renovate-windows-offline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/renovate-windows-offline-receipts
+          if-no-files-found: error
+
   verify:
     if: ${{ always() }}
     needs: [verify-checks, verify-tests, regression-proof-windows]
