@@ -3,12 +3,9 @@ package jvm
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -17,9 +14,8 @@ import (
 )
 
 var (
-	errJVMDetectionTraversalLimit = errors.New("jvm detection traversal limit exceeded")
-	afterJVMDetectRootSignals     = func(string) error { return nil }
-	openJVMDetectionRootHook      = openJVMDetectionRoot
+	afterJVMDetectRootSignals = func(string) error { return nil }
+	openJVMDetectionRootHook  = safeio.OpenRootNoFollow
 )
 
 func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (detection language.Detection, err error) {
@@ -46,98 +42,26 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (de
 	}
 
 	budget := defaultJVMDetectionBudget()
-	walker := newJVMDetectionWalker(repoPath, roots, &detection, budget)
-	err = walker.walkPinned(ctx, root)
-	if err != nil && !shared.IsPureSentinelError(err, fs.SkipAll, errJVMDetectionTraversalLimit) {
+	err = walkJVMDetectionWithinRoot(ctx, repoPath, root, roots, &detection, budget)
+	_, limited := shared.RootedWalkBudgetWarning("jvm detection", budget, err)
+	if err != nil && !limited && !shared.IsPureSentinelError(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-type jvmDetectionBudget struct {
-	maxTraversalEntries    int
-	maxConfinedCandidates  int
-	traversalEntriesSeen   int
-	traversalEntriesQueued int
-	confinedCandidatesSeen int
-}
-
 const (
-	// The traversal limit counts the root plus every queued or visited entry.
-	// Four times the candidate limit leaves headroom for rejected entries.
 	defaultJVMMaxTraversalEntries   = 4096
 	defaultJVMMaxConfinedCandidates = 1024
-	// ReadDir allocations stay fixed-size except for the final remaining budget.
-	jvmDetectionReadBatchSize = 128
 )
 
-func defaultJVMDetectionBudget() *jvmDetectionBudget {
-	return &jvmDetectionBudget{
-		maxTraversalEntries:   defaultJVMMaxTraversalEntries,
-		maxConfinedCandidates: defaultJVMMaxConfinedCandidates,
+func defaultJVMDetectionBudget() shared.RootedWalkBudget {
+	return shared.RootedWalkBudget{
+		MaxTraversalEntries: defaultJVMMaxTraversalEntries,
+		MaxFiles:            defaultJVMMaxConfinedCandidates,
+		CountCandidate:      isJVMDetectionCandidate,
 	}
-}
-
-func (b *jvmDetectionBudget) countTraversalEntry() error {
-	if b.traversalBudgetExhausted() {
-		return errJVMDetectionTraversalLimit
-	}
-	b.traversalEntriesSeen++
-	return nil
-}
-
-func (b *jvmDetectionBudget) traversalReadSize() int {
-	if b.maxTraversalEntries <= 0 {
-		return jvmDetectionReadBatchSize
-	}
-	remaining := b.maxTraversalEntries - b.totalTraversalEntries()
-	return min(jvmDetectionReadBatchSize, max(remaining, 0))
-}
-
-func (b *jvmDetectionBudget) queueTraversalEntries(count int) bool {
-	if count < 0 || (b.maxTraversalEntries > 0 && b.totalTraversalEntries()+count > b.maxTraversalEntries) {
-		return false
-	}
-	b.traversalEntriesQueued += count
-	return true
-}
-
-func (b *jvmDetectionBudget) dequeueTraversalEntry() bool {
-	if b.traversalEntriesQueued == 0 {
-		return false
-	}
-	b.traversalEntriesQueued--
-	return true
-}
-
-func (b *jvmDetectionBudget) traversalBudgetExhausted() bool {
-	return b.maxTraversalEntries > 0 && b.totalTraversalEntries() >= b.maxTraversalEntries
-}
-
-func (b *jvmDetectionBudget) totalTraversalEntries() int {
-	return b.traversalEntriesSeen + b.traversalEntriesQueued
-}
-
-func (b *jvmDetectionBudget) countConfinedCandidate() error {
-	b.confinedCandidatesSeen++
-	if b.maxConfinedCandidates > 0 && b.confinedCandidatesSeen > b.maxConfinedCandidates {
-		return fs.SkipAll
-	}
-	return nil
-}
-
-type jvmDetectionDirectory interface {
-	ReadDir(count int) ([]fs.DirEntry, error)
-	Stat() (fs.FileInfo, error)
-	Close() error
-}
-
-type jvmDetectionRoot interface {
-	Open(name string) (jvmDetectionDirectory, error)
-	OpenRoot(name string) (jvmDetectionRoot, error)
-	Lstat(name string) (fs.FileInfo, error)
-	Close() error
 }
 
 type jvmRootSignalReader interface {
@@ -145,254 +69,16 @@ type jvmRootSignalReader interface {
 	Close() error
 }
 
-type jvmDetectionWalker struct {
-	repoPath      string
-	roots         map[string]struct{}
-	detection     *language.Detection
-	budget        *jvmDetectionBudget
-	openRoot      func(string) (jvmDetectionRoot, error)
-	openDirectory func(jvmDetectionRoot, string) (jvmDetectionDirectory, error)
-}
-
-func newJVMDetectionWalker(repoPath string, roots map[string]struct{}, detection *language.Detection, budget *jvmDetectionBudget) *jvmDetectionWalker {
-	return &jvmDetectionWalker{
-		repoPath:      repoPath,
-		roots:         roots,
-		detection:     detection,
-		budget:        budget,
-		openRoot:      openJVMDetectionRoot,
-		openDirectory: openJVMDetectionDirectory,
-	}
-}
-
-type osJVMDetectionRoot struct {
-	root safeio.Root
-}
-
-func openJVMDetectionRoot(path string) (jvmDetectionRoot, error) {
-	root, err := safeio.OpenRootNoFollow(path)
-	if err != nil {
-		return nil, err
-	}
-	return &osJVMDetectionRoot{root: root}, nil
-}
-
-func (r *osJVMDetectionRoot) Open(name string) (jvmDetectionDirectory, error) {
-	file, err := safeio.OpenPinnedDirectory(r.root, name)
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
-}
-
-func (r *osJVMDetectionRoot) OpenRoot(name string) (jvmDetectionRoot, error) {
-	root, err := r.root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	return &osJVMDetectionRoot{root: root}, nil
-}
-
-func (r *osJVMDetectionRoot) Lstat(name string) (fs.FileInfo, error) {
-	return r.root.Lstat(name)
-}
-
-func (r *osJVMDetectionRoot) Close() error {
-	return r.root.Close()
-}
-
-func openJVMDetectionDirectory(root jvmDetectionRoot, path string) (jvmDetectionDirectory, error) {
-	return root.Open(path)
-}
-
-func (w *jvmDetectionWalker) walk(ctx context.Context) (returnErr error) {
-	root, err := w.openRoot(w.repoPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, root.Close())
-	}()
-
-	return w.walkPinned(ctx, root)
-}
-
-func (w *jvmDetectionWalker) walkPinned(ctx context.Context, root jvmDetectionRoot) error {
+func walkJVMDetectionWithinRoot(ctx context.Context, repoPath string, root safeio.Root, roots map[string]struct{}, detection *language.Detection, budget shared.RootedWalkBudget) error {
 	if err := shared.WalkContextErr(ctx, nil); err != nil {
 		return err
 	}
-	info, err := root.Lstat(".")
-	if err != nil {
-		return err
-	}
-	return w.walkEntry(ctx, root, w.repoPath, fs.FileInfoToDirEntry(info))
-}
-
-func (w *jvmDetectionWalker) walkEntry(ctx context.Context, root jvmDetectionRoot, path string, entry fs.DirEntry) error {
-	if err := shared.WalkContextErr(ctx, nil); err != nil {
-		return err
-	}
-	err := walkJVMDetectionEntry(w.repoPath, path, entry, w.roots, w.detection, w.budget)
-	if errors.Is(err, filepath.SkipDir) {
+	return shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
+		if file.Entry.Type()&os.ModeSymlink == 0 && isJVMDetectionCandidate(file.Path, file.Entry) {
+			updateJVMDetection(repoPath, file.Path, file.Entry, roots, detection)
+		}
 		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !entry.IsDir() {
-		return nil
-	}
-	return w.walkDirectory(ctx, root, path, ".")
-}
-
-func (w *jvmDetectionWalker) walkDirectory(ctx context.Context, root jvmDetectionRoot, path, relativePath string) error {
-	entries, err := w.readDirectory(ctx, root, path)
-	if err != nil {
-		return err
-	}
-	for _, child := range entries {
-		if err := shared.WalkContextErr(ctx, nil); err != nil {
-			return err
-		}
-		if !w.budget.dequeueTraversalEntry() {
-			return fs.ErrInvalid
-		}
-		childPath := filepath.Join(path, child.Name())
-		err := walkJVMDetectionEntry(w.repoPath, childPath, child, w.roots, w.detection, w.budget)
-		if errors.Is(err, filepath.SkipDir) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if !child.IsDir() {
-			continue
-		}
-
-		childRelativePath := filepath.Join(relativePath, child.Name())
-		childRoot, err := openJVMDetectionChildRoot(root, child.Name(), childRelativePath)
-		if err != nil {
-			return err
-		}
-		walkErr := w.walkDirectory(ctx, childRoot, childPath, childRelativePath)
-		if err := errors.Join(walkErr, childRoot.Close()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (w *jvmDetectionWalker) readDirectory(ctx context.Context, root jvmDetectionRoot, path string) ([]fs.DirEntry, error) {
-	directory, err := w.openDirectory(root, ".")
-	if err != nil {
-		return nil, err
-	}
-
-	entries, readErr := w.readDirectoryEntries(ctx, path, directory)
-	closeErr := directory.Close()
-	if err := errors.Join(readErr, closeErr); err != nil {
-		return nil, err
-	}
-	// Only complete directories are sorted and processed.
-	slices.SortFunc(entries, func(left, right fs.DirEntry) int {
-		return strings.Compare(left.Name(), right.Name())
 	})
-	return entries, nil
-}
-
-func openJVMDetectionChildRoot(root jvmDetectionRoot, name, path string) (jvmDetectionRoot, error) {
-	return safeio.OpenPinnedChildRoot(root, name, path, "path changed while opening")
-}
-
-func (w *jvmDetectionWalker) readDirectoryEntries(ctx context.Context, path string, directory jvmDetectionDirectory) ([]fs.DirEntry, error) {
-	var entries []fs.DirEntry
-	for {
-		if err := shared.WalkContextErr(ctx, nil); err != nil {
-			return nil, err
-		}
-		readSize := w.budget.traversalReadSize()
-		if readSize == 0 {
-			return entries, w.probeDirectoryLimit(path, directory)
-		}
-		batch, done, err := w.readDirectoryBatch(path, directory, readSize)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, batch...)
-		if done {
-			return entries, nil
-		}
-	}
-}
-
-func (w *jvmDetectionWalker) readDirectoryBatch(path string, directory jvmDetectionDirectory, readSize int) ([]fs.DirEntry, bool, error) {
-	batch, err := directory.ReadDir(readSize)
-	if len(batch) > readSize || !w.budget.queueTraversalEntries(len(batch)) {
-		return nil, false, jvmDetectionReadLimitError(path, w.budget.maxTraversalEntries, err)
-	}
-	if shared.IsPureSentinelError(err, io.EOF) {
-		return batch, true, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if len(batch) == 0 {
-		return nil, false, io.ErrNoProgress
-	}
-	return batch, false, nil
-}
-
-func jvmDetectionReadLimitError(path string, limit int, readErr error) error {
-	limitErr := newJVMDetectionTraversalLimitError(path, limit)
-	if readErr != nil && !shared.IsPureSentinelError(readErr, io.EOF) {
-		return errors.Join(limitErr, readErr)
-	}
-	return limitErr
-}
-
-func (w *jvmDetectionWalker) probeDirectoryLimit(path string, directory jvmDetectionDirectory) error {
-	entries, err := directory.ReadDir(1)
-	if len(entries) > 0 {
-		limitErr := newJVMDetectionTraversalLimitError(path, w.budget.maxTraversalEntries)
-		if err != nil && !shared.IsPureSentinelError(err, io.EOF) {
-			return errors.Join(limitErr, err)
-		}
-		return limitErr
-	}
-	if shared.IsPureSentinelError(err, io.EOF) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return io.ErrNoProgress
-}
-
-func newJVMDetectionTraversalLimitError(path string, limit int) error {
-	return fmt.Errorf("%w at %q (maximum entries: %d)", errJVMDetectionTraversalLimit, path, limit)
-}
-
-func walkJVMDetectionEntry(repoPath, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, budget *jvmDetectionBudget) error {
-	if err := budget.countTraversalEntry(); err != nil {
-		return newJVMDetectionTraversalLimitError(path, budget.maxTraversalEntries)
-	}
-	if entry.IsDir() {
-		if shouldSkipDir(entry.Name()) {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-	if entry.Type()&os.ModeSymlink != 0 {
-		return nil
-	}
-	if !isJVMDetectionCandidate(path, entry) {
-		return nil
-	}
-	if err := budget.countConfinedCandidate(); err != nil {
-		return err
-	}
-	updateJVMDetection(repoPath, path, entry, roots, detection)
-	return nil
 }
 
 func isJVMDetectionCandidate(path string, entry fs.DirEntry) bool {
