@@ -25,31 +25,32 @@ import (
 )
 
 const (
-	identityStatusDeclared    = "declared"
-	identityStatusResolved    = "resolved"
-	identityStatusUnknown     = "unknown"
-	identityStatusConflicting = "conflicting"
-	identityPURLUnavailable   = "unavailable"
-	identityDiscoveryFailed   = "discovery failed"
-	identityReadFailed        = "read failed"
-	identityParseFailed       = "parse failed"
-	identityInvalidXML        = "invalid XML"
-	goModFileName             = "go.mod"
-	goWorkFileName            = "go.work"
-	nodePackageManifestFile   = "package.json"
-	npmAliasPrefix            = "npm:"
-	packageLockFileName       = "package-lock.json"
-	pnpmLockFileName          = "pnpm-lock.yaml"
-	poetryLockFileName        = "poetry.lock"
-	pythonPipfileName         = "Pipfile"
-	pythonProjectFileName     = "pyproject.toml"
-	cargoManifestFileName     = "Cargo.toml"
-	cargoLockFileName         = "Cargo.lock"
-	kotlinAndroidLanguageName = "kotlin-android"
-	uvLockFileName            = "uv.lock"
-	dotnetCentralFileName     = "Directory.Packages.props"
-	dotnetLockFileName        = "packages.lock.json"
-	carthageResolvedFileName  = "Cartfile.resolved"
+	identityStatusDeclared      = "declared"
+	identityStatusResolved      = "resolved"
+	identityStatusUnknown       = "unknown"
+	identityStatusConflicting   = "conflicting"
+	identityPURLUnavailable     = "unavailable"
+	identityDiscoveryFailed     = "discovery failed"
+	identityReadFailed          = "read failed"
+	identityParseFailed         = "parse failed"
+	identityInvalidXML          = "invalid XML"
+	identityAnnotationOperation = "identity annotation"
+	goModFileName               = "go.mod"
+	goWorkFileName              = "go.work"
+	nodePackageManifestFile     = "package.json"
+	npmAliasPrefix              = "npm:"
+	packageLockFileName         = "package-lock.json"
+	pnpmLockFileName            = "pnpm-lock.yaml"
+	poetryLockFileName          = "poetry.lock"
+	pythonPipfileName           = "Pipfile"
+	pythonProjectFileName       = "pyproject.toml"
+	cargoManifestFileName       = "Cargo.toml"
+	cargoLockFileName           = "Cargo.lock"
+	kotlinAndroidLanguageName   = "kotlin-android"
+	uvLockFileName              = "uv.lock"
+	dotnetCentralFileName       = "Directory.Packages.props"
+	dotnetLockFileName          = "packages.lock.json"
+	carthageResolvedFileName    = "Cartfile.resolved"
 )
 
 type identityEvidence struct {
@@ -167,13 +168,13 @@ func annotateDependencyIdentitiesChecked(ctx context.Context, repoPath string, r
 	identities := make([]*report.DependencyIdentity, len(reportData.Dependencies))
 	for i := range reportData.Dependencies {
 		if ctx.Err() != nil {
-			return shared.GradleDiscoveryFailure(repoPath, "identity annotation", ctx.Err())
+			return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, ctx.Err())
 		}
 		dep := &reportData.Dependencies[i]
 		evidence := identityEvidenceForDependencyWithContext(ctx, index, *dep)
 		identity := buildDependencyIdentityWithContext(ctx, *dep, evidence)
 		if ctx.Err() != nil {
-			return shared.GradleDiscoveryFailure(repoPath, "identity annotation", ctx.Err())
+			return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, ctx.Err())
 		}
 		identities[i] = identity
 		if policy.limit == 0 {
@@ -181,7 +182,7 @@ func annotateDependencyIdentitiesChecked(ctx context.Context, repoPath string, r
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return shared.GradleDiscoveryFailure(repoPath, "identity annotation", err)
+		return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, err)
 	}
 	for i := range reportData.Dependencies {
 		reportData.Dependencies[i].Identity = identities[i]

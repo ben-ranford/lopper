@@ -18,6 +18,8 @@ type identityDiscoveryPolicy struct {
 	visit func(string) error
 }
 
+const identityDiscoveryOperation = "identity discovery"
+
 func identitySnapshotForPolicy(ctx context.Context, repo string, warnings *identityWarningCollector, policy identityDiscoveryPolicy) (identityManifestSnapshot, error) {
 	if policy.limit == 0 {
 		return discoverIdentityManifestSnapshotWithContext(ctx, repo, warnings), nil
@@ -31,7 +33,7 @@ func discoverStrictIdentitySnapshot(ctx context.Context, repo string, limit int)
 func discoverStrictIdentitySnapshotWithPolicy(ctx context.Context, repo string, policy identityDiscoveryPolicy) (identityManifestSnapshot, error) {
 	limit := policy.limit
 	if limit <= 0 {
-		return identityManifestSnapshot{}, shared.GradleDiscoveryFailure(repo, "identity discovery", fmt.Errorf("invalid identity file limit: %d", limit))
+		return identityManifestSnapshot{}, shared.GradleDiscoveryFailure(repo, identityDiscoveryOperation, fmt.Errorf("invalid identity file limit: %d", limit))
 	}
 	snapshot := identityManifestSnapshot{}
 	truncated, err := shared.WalkRepoFilesWithErrors(ctx, repo, limit, shouldSkipIdentityDir, func(path string, entry fs.DirEntry) error {
@@ -44,10 +46,10 @@ func discoverStrictIdentitySnapshotWithPolicy(ctx context.Context, repo string, 
 	}, func(_ string, err error) error { return err })
 	err = errors.Join(err, ctx.Err())
 	if truncated {
-		err = errors.Join(err, &shared.GradleDiscoveryError{Path: repo, Operation: "identity discovery", Resource: "identity entries", Limit: int64(limit), ObservedAtLeast: int64(limit) + 1, Err: shared.ErrGradleDiscoveryLimit})
+		err = errors.Join(err, &shared.GradleDiscoveryError{Path: repo, Operation: identityDiscoveryOperation, Resource: "identity entries", Limit: int64(limit), ObservedAtLeast: int64(limit) + 1, Err: shared.ErrGradleDiscoveryLimit})
 	}
 	if err != nil {
-		return identityManifestSnapshot{}, shared.GradleDiscoveryFailure(repo, "identity discovery", err)
+		return identityManifestSnapshot{}, shared.GradleDiscoveryFailure(repo, identityDiscoveryOperation, err)
 	}
 	sortIdentityManifestSnapshot(&snapshot)
 	return snapshot, nil
@@ -79,11 +81,20 @@ func collectStrictGradleIdentity(ctx context.Context, repo string, index identit
 		warnings.append(message)
 	}
 	declarations := make(map[string]map[string]struct{}, len(snapshot.gradleBuildFiles))
+	collector := strictGradleDeclarationCollector{
+		repo:         repo,
+		root:         root,
+		budget:       budget,
+		resolver:     &resolver,
+		index:        index,
+		declarations: declarations,
+		warnings:     warnings,
+	}
 	for _, path := range snapshot.gradleBuildFiles {
 		if snapshot.skipNonRegularGradle(path, warnings) {
 			continue
 		}
-		if err := collectStrictGradleDeclaration(ctx, repo, path, root, budget, &resolver, index, declarations, warnings); err != nil {
+		if err := collector.collect(ctx, path); err != nil {
 			return err
 		}
 	}
@@ -110,8 +121,18 @@ func readStrictGradleIdentity(ctx context.Context, repo, path string, root safei
 	return budget.ReadWithinRoot(ctx, root, rel, path)
 }
 
-func collectStrictGradleDeclaration(ctx context.Context, repo, path string, root safeio.Root, budget *shared.GradleDiscoveryBudget, resolver *shared.GradleCatalogResolver, index identityIndex, declarations map[string]map[string]struct{}, warnings *identityWarningCollector) error {
-	data, err := readStrictGradleIdentity(ctx, repo, path, root, budget)
+type strictGradleDeclarationCollector struct {
+	repo         string
+	root         safeio.Root
+	budget       *shared.GradleDiscoveryBudget
+	resolver     *shared.GradleCatalogResolver
+	index        identityIndex
+	declarations map[string]map[string]struct{}
+	warnings     *identityWarningCollector
+}
+
+func (c *strictGradleDeclarationCollector) collect(ctx context.Context, path string) error {
+	data, err := readStrictGradleIdentity(ctx, c.repo, path, c.root, c.budget)
 	if err != nil {
 		return err
 	}
@@ -119,25 +140,25 @@ func collectStrictGradleDeclaration(ctx context.Context, repo, path string, root
 	if err != nil {
 		return err
 	}
-	libraries, messages, err := resolver.ParseDependencyReferencesContext(ctx, path, data)
+	libraries, messages, err := c.resolver.ParseDependencyReferencesContext(ctx, path, data)
 	if err != nil {
 		return err
 	}
 	for _, message := range messages {
-		warnings.append(message)
+		c.warnings.append(message)
 	}
-	source := relativeIdentitySource(repo, path)
+	source := relativeIdentitySource(c.repo, path)
 	project := filepath.ToSlash(filepath.Dir(path))
-	if declarations[project] == nil {
-		declarations[project] = make(map[string]struct{})
+	if c.declarations[project] == nil {
+		c.declarations[project] = make(map[string]struct{})
 	}
 	for _, coordinate := range coordinates {
-		addMavenEvidence(index, coordinate.Group, coordinate.Artifact, coordinate.Version, source, identityStatusDeclared)
-		declarations[project][gradleCoordinateKey(coordinate.Group, coordinate.Artifact)] = struct{}{}
+		addMavenEvidence(c.index, coordinate.Group, coordinate.Artifact, coordinate.Version, source, identityStatusDeclared)
+		c.declarations[project][gradleCoordinateKey(coordinate.Group, coordinate.Artifact)] = struct{}{}
 	}
 	for _, library := range libraries {
-		addMavenEvidence(index, library.Group, library.Artifact, library.Version, source, identityStatusDeclared)
-		declarations[project][gradleCoordinateKey(library.Group, library.Artifact)] = struct{}{}
+		addMavenEvidence(c.index, library.Group, library.Artifact, library.Version, source, identityStatusDeclared)
+		c.declarations[project][gradleCoordinateKey(library.Group, library.Artifact)] = struct{}{}
 	}
 	return shared.GradleDiscoveryFailure(path, "identity parse", ctx.Err())
 }

@@ -145,45 +145,50 @@ func TestStrictGradleDiscoveryCancellationSkipAndConsumerFailure(t *testing.T) {
 	})
 
 	t.Run("read cancellation is typed", func(t *testing.T) {
-		repo := t.TempDir()
-		leaf := buildGradleName
-		testutil.MustWriteFile(t, filepath.Join(repo, leaf), "implementation 'org.example:kept:1'\n")
-		root, err := safeio.OpenRootNoFollow(repo)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			if err := root.Close(); err != nil {
-				t.Error(err)
-			}
-		}()
-		dir, err := safeio.OpenPinnedDirectory(root, ".")
-		if err != nil {
-			t.Fatal(err)
-		}
-		entries, readErr := dir.ReadDir(-1)
-		closeErr := dir.Close()
-		if err := errors.Join(readErr, closeErr); err != nil {
-			t.Fatal(err)
-		}
-		var entry fs.DirEntry
-		for _, candidate := range entries {
-			if candidate.Name() == leaf {
-				entry = candidate
-				break
-			}
-		}
-		if entry == nil {
-			t.Fatalf("fixture entry %q missing", leaf)
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, warning, err := readGradleInputWithinRoot(ctx, repo, shared.RootedWalkFile{Parent: root, Leaf: leaf, Path: filepath.Join(repo, leaf), Entry: entry}, shared.NewGradleDiscoveryBudget(repo))
-		var discoveryErr *shared.GradleDiscoveryError
-		if warning != "" || !errors.As(err, &discoveryErr) || !errors.Is(err, context.Canceled) {
-			t.Fatalf("warning=%q error=%v", warning, err)
-		}
+		assertStrictGradleReadCancellationIsTyped(t)
 	})
+}
+
+func assertStrictGradleReadCancellationIsTyped(t *testing.T) {
+	t.Helper()
+	repo := t.TempDir()
+	leaf := buildGradleName
+	testutil.MustWriteFile(t, filepath.Join(repo, leaf), "implementation 'org.example:kept:1'\n")
+	root, err := safeio.OpenRootNoFollow(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	dir, err := safeio.OpenPinnedDirectory(root, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, readErr := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	var entry fs.DirEntry
+	for _, candidate := range entries {
+		if candidate.Name() == leaf {
+			entry = candidate
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("fixture entry %q missing", leaf)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, warning, err := readGradleInputWithinRoot(ctx, repo, shared.RootedWalkFile{Parent: root, Leaf: leaf, Path: filepath.Join(repo, leaf), Entry: entry}, shared.NewGradleDiscoveryBudget(repo))
+	var discoveryErr *shared.GradleDiscoveryError
+	if warning != "" || !errors.As(err, &discoveryErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("warning=%q error=%v", warning, err)
+	}
 }
 
 func TestGradleLockfileContextCancellationDiscardsParsedCoordinates(t *testing.T) {
