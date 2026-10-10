@@ -51,3 +51,13 @@ tests but cannot run this POSIX PTY harness.
 The opt-in Stave preview (`--enable-feature stave-tui-preview`) retains its
 separate navigation/command modes documented in `docs/stave-tui-preview.md`.
 This fix targets the default summary UI selected without that explicit opt-in.
+
+When line-command input is piped to terminal output, automatic in-place redraws
+retain the latest dependency detail or command feedback until the next input.
+For example, after `open alpha` or an unknown command, the feedback remains below
+the refreshed summary while input waits. The next command replaces it. Redirected
+output retains its existing transcript without replaying duplicate feedback.
+
+`TestSummaryRefreshPreservesCommandFeedback` exercises this path with real PTY
+output and reader-handoff markers. It checks visibility after the latest screen
+clear, then checks replacement after the next input, without sleep-based timing.
