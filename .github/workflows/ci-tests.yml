@@ -51,6 +51,7 @@ jobs:
           fi
 
       - name: Run normal and leak tests
+        id: ordinary_tests
         env:
           BUILD_CHANNEL: ${{ inputs.build_channel }}
         run: make ci-tests BUILD_CHANNEL="${BUILD_CHANNEL}"
@@ -59,3 +60,58 @@ jobs:
       - name: Check runtime artifacts after tests
         if: ${{ always() }}
         run: make runtime-pycache-check
+
+      - name: Capture bounded native hook interruption evidence
+        id: native_trace
+        if: ${{ always() && !cancelled() && inputs.build_channel == 'dev' && github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.run_attempt == 1 }}
+        env:
+          TRACE_SOURCE_SHA: ${{ inputs.source_sha }}
+          TRACE_BUILD_CHANNEL: ${{ inputs.build_channel }}
+          TRACE_ORDINARY_OUTCOME: ${{ steps.ordinary_tests.outcome }}
+          TRACE_DRIVER_SHA256: 023eac2b864db169d2b3fb0ed951a9a35ea432ee96efe9839f797a583cfde90c
+        run: /usr/bin/python3 -I -S "${GITHUB_WORKSPACE}/scripts/trace-hook-interruption.py" run
+
+      - name: Upload bounded native hook interruption evidence
+        if: ${{ always() && inputs.build_channel == 'dev' && github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.run_attempt == 1 && contains(fromJSON('["success","failure","cancelled"]'), steps.native_trace.outcome) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/main.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/main.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/manifest.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/manifest.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/preflight.log
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/preflight.log.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit0.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit0.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit0.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit23.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit23.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/exit23.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/signal.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/signal.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/signal.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/groups.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/groups.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/groups.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cap.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cap.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cap.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/write-error.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/write-error.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/write-error.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/missing.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/missing.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/missing.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/abnormal.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/abnormal.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/abnormal.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cancel.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cancel.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/cancel.receipt.json.tmp
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/focused.trace
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/focused.receipt.json
+            ${{ runner.temp }}/hook-native-${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}/focused.receipt.json.tmp
