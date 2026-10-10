@@ -85,7 +85,7 @@ format-check:
 	fi
 
 gostyle:
-	GOFLAGS=-buildvcs=false $(GO_CMD) run github.com/k1LoW/gostyle@$(GOSTYLE_VERSION) run -c .gostyle.yml ./...
+	GOFLAGS=-buildvcs=false python3 scripts/check_gostyle_regression.py --go "$(GO)" --toolchain "$(GO_TOOLCHAIN)" --version "$(GOSTYLE_VERSION)" --config .gostyle.yml --root .
 
 lint:
 	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
