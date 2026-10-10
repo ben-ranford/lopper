@@ -44,22 +44,27 @@ func TestMavenCatalogAdmissionFailureRemainsSticky(t *testing.T) {
 		{"uninitialised", []model.MavenManifest{{}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := newMavenManifestCatalog()
-			catalog.entries = tc.entries
-			catalog.retain("pom.xml", shared.ParsedPOM{}, "read", fs.ErrNotExist)
-			first := catalog.err
-			if first == nil || (tc.limited && !errors.Is(first, model.ErrMavenEvidenceLimit)) {
-				t.Fatalf("admission failure = %v", first)
-			}
-			catalog.retain("other/pom.xml", shared.ParsedPOM{}, "read", fs.ErrPermission)
-			if !errors.Is(catalog.err, first) || len(catalog.entries) != len(tc.entries) {
-				t.Fatal("later retention replaced the failure or appended evidence")
-			}
-			for _, entry := range catalog.entries {
-				if entry.Size() != 0 || entry.Path() != "" {
-					t.Fatal("failed retention changed existing evidence")
-				}
-			}
+			assertMavenAdmissionFailureSticky(t, tc.entries, tc.limited)
 		})
+	}
+}
+
+func assertMavenAdmissionFailureSticky(t *testing.T, entries []model.MavenManifest, limited bool) {
+	t.Helper()
+	catalog := newMavenManifestCatalog()
+	catalog.entries = entries
+	catalog.retain("pom.xml", shared.ParsedPOM{}, "read", fs.ErrNotExist)
+	first := catalog.err
+	if first == nil || (limited && !errors.Is(first, model.ErrMavenEvidenceLimit)) {
+		t.Fatalf("admission failure = %v", first)
+	}
+	catalog.retain("other/pom.xml", shared.ParsedPOM{}, "read", fs.ErrPermission)
+	if !errors.Is(catalog.err, first) || len(catalog.entries) != len(entries) {
+		t.Fatal("later retention replaced the failure or appended evidence")
+	}
+	for _, entry := range catalog.entries {
+		if entry.Size() != 0 || entry.Path() != "" {
+			t.Fatal("failed retention changed existing evidence")
+		}
 	}
 }

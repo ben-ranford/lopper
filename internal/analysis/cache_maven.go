@@ -13,7 +13,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-var afterMavenCacheInputValidated = func(string) {}
+var afterMavenCacheInputValidated = func(string) {
+	// Tests remove the POM after input validation to verify cached evidence survives;
+	// production needs no action at this boundary.
+}
 
 const mavenCacheEnvelopeVersion = 1
 const mavenCacheIdentityPolicy = "identity"

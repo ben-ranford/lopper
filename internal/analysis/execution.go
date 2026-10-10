@@ -67,7 +67,7 @@ func (s *Service) runCandidateOnRootsWithMaven(ctx context.Context, req Request,
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		current, adapterFailure, err := s.runCandidateRoot(ctx, req, repoPath, normalizedRoot, isolationRoots, candidate, cache, maven, trueRepoPathOverride...)
+		current, adapterFailure, err := s.runCandidateRoot(ctx, req, candidateRootScope{repoPath: repoPath, root: normalizedRoot, isolationRoots: isolationRoots}, candidate, cache, maven, trueRepoPathOverride...)
 		if err != nil {
 			if !adapterFailure || fatalCandidateError(req, err) {
 				return nil, nil, nil, err
@@ -84,20 +84,28 @@ func fatalCandidateError(req Request, err error) bool {
 	return errors.Is(err, model.ErrMavenEvidenceLimit) || shouldFailAdapterError(req) || !isMultiLanguage(req.Language)
 }
 
-func (s *Service) runCandidateRoot(ctx context.Context, req Request, repoPath, normalizedRoot string, isolationRoots []string, candidate language.Candidate, cache *analysisCache, maven *mavenEvidenceAccumulator, trueRepoPathOverride ...string) (report.Report, bool, error) {
-	cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), normalizedRoot, isolationRoots, trueRepoPathOverride...)
+// candidateRootScope keeps the candidate's root and isolation boundary tied to
+// the repository used to normalise its reported locations.
+type candidateRootScope struct {
+	repoPath       string
+	root           string
+	isolationRoots []string
+}
+
+func (s *Service) runCandidateRoot(ctx context.Context, req Request, scope candidateRootScope, candidate language.Candidate, cache *analysisCache, maven *mavenEvidenceAccumulator, trueRepoPathOverride ...string) (report.Report, bool, error) {
+	cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), scope.root, scope.isolationRoots, trueRepoPathOverride...)
 	if hit {
 		if err := maven.accept(cachedReport); err != nil {
 			return report.Report{}, false, err
 		}
-		current, err := prepareCandidateReport(req, repoPath, normalizedRoot, candidate.Adapter.ID(), cachedReport)
+		current, err := prepareCandidateReport(req, scope.repoPath, scope.root, candidate.Adapter.ID(), cachedReport)
 		return current, false, err
 	}
-	exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
+	exclusions := cache.cacheAnalysisExclusions(scope.root, req, trueRepoPathOverride...)
 	current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
-		RepoPath:                          normalizedRoot,
+		RepoPath:                          scope.root,
 		ScopeMode:                         req.ScopeMode,
-		IsolatedProjectRoots:              isolationRoots,
+		IsolatedProjectRoots:              scope.isolationRoots,
 		ExcludedPaths:                     exclusions.directories,
 		ExcludedFiles:                     exclusions.files,
 		Dependency:                        req.Dependency,
@@ -113,13 +121,13 @@ func (s *Service) runCandidateRoot(ctx context.Context, req Request, repoPath, n
 		return report.Report{}, true, err
 	}
 	if candidate.Adapter.ID() == "jvm" {
-		current.RepoPath = normalizedRoot
+		current.RepoPath = scope.root
 	}
 	if err := maven.accept(current); err != nil {
 		return report.Report{}, false, err
 	}
-	storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
-	current, err = prepareCandidateReport(req, repoPath, normalizedRoot, candidate.Adapter.ID(), current)
+	storeCachedReport(cache, candidate.Adapter.ID(), scope.root, cacheEntry, current)
+	current, err = prepareCandidateReport(req, scope.repoPath, scope.root, candidate.Adapter.ID(), current)
 	return current, false, err
 }
 func prepareCandidateReport(req Request, repoPath, root, adapter string, current report.Report) (report.Report, error) {

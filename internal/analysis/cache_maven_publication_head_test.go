@@ -168,7 +168,7 @@ func TestMavenPublicationWarningPreservesCompleteLiveEvidence(t *testing.T) {
 func runMavenPublicationCandidate(t *testing.T, cache *analysisCache, req Request, result report.Report) report.Report {
 	t.Helper()
 	candidate := language.Candidate{Adapter: &testServiceAdapter{id: "jvm", analyse: result}}
-	current, _, err := (&Service{}).runCandidateRoot(context.Background(), req, result.RepoPath, result.RepoPath, nil, candidate, cache, newMavenEvidenceAccumulator(result.RepoPath))
+	current, _, err := (&Service{}).runCandidateRoot(context.Background(), req, candidateRootScope{repoPath: result.RepoPath, root: result.RepoPath}, candidate, cache, newMavenEvidenceAccumulator(result.RepoPath))
 	if err != nil {
 		t.Fatalf("cache publication became analysis failure: %v", err)
 	}

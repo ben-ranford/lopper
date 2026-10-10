@@ -40,23 +40,30 @@ type MavenManifest struct {
 	size, values          int
 }
 
+// MavenEvidenceBudget is the caller's remaining retention allowance.
+// Model limits still cap both dimensions before any evidence is copied.
+type MavenEvidenceBudget struct {
+	Bytes  int
+	Values int
+}
+
 func NewMavenManifest(path string, properties map[string]string, dependencies, managed []MavenDeclaration, stage, kind string) (MavenManifest, error) {
-	return NewMavenManifestWithinBudget(path, properties, dependencies, managed, stage, kind, MavenEvidenceByteLimit, MavenEvidenceValueLimit)
+	return NewMavenManifestWithinBudget(path, properties, dependencies, managed, stage, kind, MavenEvidenceBudget{Bytes: MavenEvidenceByteLimit, Values: MavenEvidenceValueLimit})
 }
 
 // NewMavenManifestWithinBudget admits borrowed inputs before copying retained data.
 // The caller's remaining allowance can lower, but never raise, the model limits.
-func NewMavenManifestWithinBudget(path string, properties map[string]string, dependencies, managed []MavenDeclaration, stage, kind string, remainingBytes, remainingValues int) (MavenManifest, error) {
+func NewMavenManifestWithinBudget(path string, properties map[string]string, dependencies, managed []MavenDeclaration, stage, kind string, budget MavenEvidenceBudget) (MavenManifest, error) {
 	values := len(properties) + len(dependencies) + len(managed)
 	if err := ValidateMavenManifestState(path, stage, kind, values); err != nil {
 		return MavenManifest{}, err
 	}
-	if len(properties) > MavenEvidenceRecordLimit || len(dependencies)+len(managed) > MavenEvidenceRecordLimit || values > min(remainingValues, MavenEvidenceValueLimit) {
+	if len(properties) > MavenEvidenceRecordLimit || len(dependencies)+len(managed) > MavenEvidenceRecordLimit || values > min(budget.Values, MavenEvidenceValueLimit) {
 		return MavenManifest{}, ErrMavenEvidenceLimit
 	}
 	value := MavenManifest{path: path, properties: properties, dependencies: dependencies, managed: managed, stage: stage, kind: kind, values: values}
 	value.size = mavenManifestSize(value)
-	if value.size > min(remainingBytes, MavenEvidenceByteLimit) {
+	if value.size > min(budget.Bytes, MavenEvidenceByteLimit) {
 		return MavenManifest{}, ErrMavenEvidenceLimit
 	}
 	value.path = strings.Clone(path)

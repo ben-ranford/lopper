@@ -42,7 +42,7 @@ func (c *mavenManifestCatalog) retain(path string, parsed shared.ParsedPOM, stag
 	} else {
 		kind = mavenFailureKind(stage, err)
 	}
-	entry, entryErr := model.NewMavenManifestWithinBudget(path, view.Properties, view.Dependencies, view.ManagedDependencies, stage, kind, remainingBytes, remainingValues)
+	entry, entryErr := model.NewMavenManifestWithinBudget(path, view.Properties, view.Dependencies, view.ManagedDependencies, stage, kind, model.MavenEvidenceBudget{Bytes: remainingBytes, Values: remainingValues})
 	if entryErr != nil {
 		c.err = entryErr
 		return

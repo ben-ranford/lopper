@@ -117,7 +117,7 @@ func TestMavenManifestRemainingBudgetAdmission(t *testing.T) {
 		{"negative", -1, -1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			retained, err := NewMavenManifestWithinBudget("pom.xml", properties, nil, nil, "", "", tc.bytes, tc.values)
+			retained, err := NewMavenManifestWithinBudget("pom.xml", properties, nil, nil, "", "", MavenEvidenceBudget{Bytes: tc.bytes, Values: tc.values})
 			if tc.valid {
 				if err != nil || !retained.Equal(entry) {
 					t.Fatalf("exact admission: %v %v", retained, err)

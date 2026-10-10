@@ -23,23 +23,7 @@ func TestMavenRebaseValidatesRootsAndPreservesEvidence(t *testing.T) {
 		{"incompatible", "relative", root, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rebased, err := RebaseMavenManifest(entry, tc.from, tc.to)
-			if (err != nil) != tc.wantError {
-				t.Fatalf("rebase error = %v", err)
-			}
-			if tc.wantError {
-				if rebased.Size() != 0 || rebased.Path() != "" {
-					t.Fatal("failed rebase returned retained evidence")
-				}
-			} else {
-				if rebased.Path() != tc.path || rebased.Properties()["version"] != "1" {
-					t.Fatalf("rebased evidence = %#v", rebased)
-				}
-				rebased.Properties()["version"] = "changed"
-			}
-			if entry.Path() != "pom.xml" || entry.Properties()["version"] != "1" {
-				t.Fatal("rebase changed original evidence")
-			}
+			assertMavenRebasePreservesEvidence(t, entry, tc.from, tc.to, tc.path, tc.wantError)
 		})
 	}
 }
@@ -98,5 +82,26 @@ func TestMavenWindowsComponentCharacterRules(t *testing.T) {
 		if invalidWindowsMavenComponent(component) {
 			t.Errorf("local component rejected: %q", component)
 		}
+	}
+}
+
+func assertMavenRebasePreservesEvidence(t *testing.T, entry MavenManifest, from, to, path string, wantError bool) {
+	t.Helper()
+	rebased, err := RebaseMavenManifest(entry, from, to)
+	if (err != nil) != wantError {
+		t.Fatalf("rebase error = %v", err)
+	}
+	if wantError {
+		if rebased.Size() != 0 || rebased.Path() != "" {
+			t.Fatal("failed rebase returned retained evidence")
+		}
+	} else {
+		if rebased.Path() != path || rebased.Properties()["version"] != "1" {
+			t.Fatalf("rebased evidence = %#v", rebased)
+		}
+		rebased.Properties()["version"] = "changed"
+	}
+	if entry.Path() != "pom.xml" || entry.Properties()["version"] != "1" {
+		t.Fatal("rebase changed original evidence")
 	}
 }
