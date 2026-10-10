@@ -960,8 +960,8 @@ jobs:
           $receiptOwned = $false; $workOwned = $false
           $headReady = $false; $baseReady = $false; $baseOverlay = $false
           $bindings = @{
-              'scripts/renovate_vsce_test.go' = '96afd681b861d88dc16a8d9f8a1f2e5a85ed71216bd8fcbd291f186162eee7ff'
-              'scripts/testdata/renovate/vsce-contract.mjs' = 'e9ca9684eec7c9d9f30902cfd6a70439c03fb739f83cb8d37f54584605107d42'
+              'scripts/renovate_vsce_test.go' = 'b605042552082d6f5090a885d38c97619a1224ac82103e55044635ea71034478'
+              'scripts/testdata/renovate/vsce-contract.mjs' = '2af540ae8aaebf115a4f3a15d6be2ade4c8a157ba6bd39040607f7102db00dc4'
               'scripts/testdata/renovate/README.md' = '2c4139e7f640ff7e3119d7e861632b05a76386c5ed73120c152b93add7b4c071'
               'scripts/testdata/renovate/runtime-integrity.json' = 'fb503b7e8e684c70fef3afd563a0109e194a9edb7cc8769cdafa0941c4408f94'
           }
@@ -1077,7 +1077,79 @@ jobs:
               Set-ProcessEnvironment 'GOCACHEPROG' $null
               $go = (Resolve-Path -LiteralPath (Join-Path $env:REGRESSION_PROOF_GO_ROOT 'bin/go.exe')).ProviderPath
               $node = (Resolve-Path -LiteralPath (Join-Path $env:RUNNER_TOOL_CACHE 'node/24.21.0/x64/node.exe')).ProviderPath
-              $gcc = (Get-Command gcc -CommandType Application -ErrorAction Stop).Source
+              $chooserEnvironment = [Environment]::GetEnvironmentVariables('Process')
+              $chooserFunctions = @{}
+              foreach ($name in @('Get-Command', 'Resolve-Path')) {
+                  $functionPath = "Function:\global:$name"
+                  $chooserFunctions[$name] = if (Test-Path -LiteralPath $functionPath) { (Get-Item -LiteralPath $functionPath -ErrorAction Stop).Definition } else { $null }
+              }
+              $chooserFailure = $null
+              try {
+                  & {
+                      $first = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\mingw64\bin\gcc.exe' }
+                      $second = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\Strawberry\c\bin\gcc.exe' }
+                      $alias = [pscustomobject]@{ CommandType = 'Alias'; Source = 'untrusted-alias' }
+                      $function = [pscustomobject]@{ CommandType = 'Function'; Source = 'untrusted-function' }
+                      $relative = [pscustomobject]@{ CommandType = 'Application'; Source = 'relative\gcc.exe' }
+                      $cases = @(
+                          @{ name = 'single'; commands = @($first); expected = $first.Source; resolves = 1 },
+                          @{ name = 'ordered-two'; commands = @($first, $second); expected = $first.Source; resolves = 1 },
+                          @{ name = 'duplicates'; commands = @($first, $first); expected = $first.Source; resolves = 1 },
+                          @{ name = 'missing'; commands = @(); error = 'Absolute native GCC application required'; resolves = 0 },
+                          @{ name = 'lookup-error'; commands = @($first); lookupError = $true; error = 'chooser discovery fault'; resolves = 0 },
+                          @{ name = 'relative'; commands = @($relative); error = 'Absolute native GCC application required'; resolves = 0 },
+                          @{ name = 'alias-function-collision'; commands = @($alias, $function, $first, $second); expected = $first.Source; resolves = 1 },
+                          @{ name = 'canonical-error'; commands = @($first); resolveError = $true; error = 'chooser resolution fault'; resolves = 1 }
+                      )
+                      function Get-Command {
+                          param([string]$Name, [System.Management.Automation.CommandTypes]$CommandType, [switch]$All, [System.Management.Automation.ActionPreference]$ErrorAction)
+                          $observed.discovery++
+                          if ($Name -cne 'gcc' -or $CommandType -ne [System.Management.Automation.CommandTypes]::Application -or -not $All -or $ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop) { throw 'Invalid discovery invocation' }
+                          if ($case.lookupError) { throw 'chooser discovery fault' }
+                          $case.commands | Where-Object { $_.CommandType -ceq 'Application' }
+                      }
+                      function Resolve-Path {
+                          param([string]$LiteralPath, [System.Management.Automation.ActionPreference]$ErrorAction)
+                          $observed.resolution++
+                          if ($LiteralPath -cne $case.commands[0].Source -and $case.name -cne 'alias-function-collision') { throw 'Wrong provider selected' }
+                          if ($ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop) { throw 'Invalid resolution invocation' }
+                          if ($case.resolveError) { throw 'chooser resolution fault' }
+                          [pscustomobject]@{ ProviderPath = $LiteralPath }
+                      }
+                      $results = @()
+                      foreach ($case in $cases) {
+                          $observed = @{ discovery = 0; resolution = 0 }
+                          $gcc = $null
+                          $choiceError = $null
+                          try {
+                              $gccCommands = @(Get-Command gcc -CommandType Application -All -ErrorAction Stop)
+                              if ($gccCommands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($gccCommands[0].Source)) { throw 'Absolute native GCC application required' }
+                              $gcc = (Resolve-Path -LiteralPath $gccCommands[0].Source -ErrorAction Stop).ProviderPath
+                          } catch { $choiceError = $_.Exception.Message }
+                          if ($observed.discovery -ne 1 -or $observed.resolution -ne $case.resolves) { throw "Chooser invocation counts differ: $($case.name)" }
+                          if ($case.ContainsKey('error')) {
+                              if ($choiceError -cne $case.error) { throw "Chooser did not preserve required failure: $($case.name)" }
+                          } elseif ($null -ne $choiceError -or $gcc -isnot [string] -or $gcc -cne $case.expected) { throw "Chooser did not select one expected application: $($case.name)" }
+                          $results += @{ name = $case.name; passed = $true; discoveryCount = $observed.discovery; resolutionCount = $observed.resolution; executableAuthentication = $false }
+                      }
+                      Save-JSON 'gcc-choice-controls.json' @{ cases = $results; count = $results.Count; boundaryControls = $true; nativeExecutableAuthentication = $false }
+                  }
+              } catch { $chooserFailure = $_ }
+              $chooserEnvironmentAfter = [Environment]::GetEnvironmentVariables('Process')
+              if ($chooserEnvironmentAfter.Count -ne $chooserEnvironment.Count) { throw 'Chooser controls changed environment keys' }
+              foreach ($key in $chooserEnvironment.Keys) {
+                  if ($chooserEnvironmentAfter[$key] -cne $chooserEnvironment[$key]) { throw "Chooser controls changed environment: $key" }
+              }
+              foreach ($name in $chooserFunctions.Keys) {
+                  $functionPath = "Function:\global:$name"
+                  $actualFunction = if (Test-Path -LiteralPath $functionPath) { (Get-Item -LiteralPath $functionPath -ErrorAction Stop).Definition } else { $null }
+                  if ($actualFunction -cne $chooserFunctions[$name]) { throw "Chooser controls changed global function: $name" }
+              }
+              Save-JSON 'gcc-choice-restoration.json' @{ environmentUnchanged = $true; globalFunctionsUnchanged = $true; controlsFailed = ($null -ne $chooserFailure) }
+              if ($null -ne $chooserFailure) { throw $chooserFailure }
+              $gccCommands = @(Get-Command gcc -CommandType Application -All -ErrorAction Stop)
+              if ($gccCommands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($gccCommands[0].Source)) { throw 'Absolute native GCC application required' }
+              $gcc = (Resolve-Path -LiteralPath $gccCommands[0].Source -ErrorAction Stop).ProviderPath
               if (-not [IO.Path]::IsPathFullyQualified($env:SystemRoot) -or -not (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32') -PathType Container)) { throw 'Accessible absolute native SystemRoot required' }
               Set-ProcessEnvironment 'PATH' ((Split-Path $node) + [IO.Path]::PathSeparator + $env:PATH)
               Set-ProcessEnvironment 'CC' $gcc

@@ -188,6 +188,18 @@ if (mode === 'boundaries') {
  let fixture; const envBefore = { ...process.env }; let calls = 0;
  await assert.rejects(() => f.withFixture(root, async (owned) => { fixture = owned; write(path.join(owned, '.go-modcache/readonly/file'), 'cached'); fs.chmodSync(path.join(owned, '.go-modcache/readonly'), 0o555); return f.withEnvironment({ONLY:'private'}, () => f.applySerial(['first','reject','never'], async (upgrade) => { calls++; write(path.join(owned,'output'), upgrade); if (upgrade === 'reject') throw new Error('replacement failed'); })); }), /replacement failed/);
  assert.equal(calls, 2); assert.equal(fs.existsSync(fixture), false); assert.deepEqual({...process.env}, envBefore);
+ const result = {};
+ assert.equal(await f.withFixture(root, async (owned) => { fixture = owned; return result; }), result);
+ assert.equal(fs.existsSync(fixture), false);
+ const originalFailure = new Error('original operation failure');
+ await assert.rejects(() => f.withFixture(root, async () => { throw originalFailure; }), (error) => error === originalFailure);
+ await f.withFixture(root, async () => { throw undefined; }).then(() => assert.fail('undefined rejection was lost'), (error) => assert.equal(error, undefined));
+ const breakCleanup = (owned) => { fs.rmSync(owned, {recursive:true}); fs.writeFileSync(owned, 'non-directory'); };
+ await assert.rejects(() => f.withFixture(root, async (owned) => { breakCleanup(owned); return result; }), (error) => error.code === 'ERR_ASSERTION' && !(error instanceof AggregateError));
+ await assert.rejects(() => f.withFixture(root, async (owned) => { breakCleanup(owned); throw originalFailure; }), (error) => {
+  assert.ok(error instanceof AggregateError); assert.equal(error.message, 'fixture failed and cleanup failed');
+  assert.equal(error.errors.length, 2); assert.equal(error.errors[0], originalFailure); assert.equal(error.errors[1].code, 'ERR_ASSERTION'); return true;
+ });
 } else { throw new Error('unknown control'); }
 console.log('offline control passed: ' + mode);
 `
@@ -318,37 +330,28 @@ func TestRenovateFixtureWindowsCIQualificationContract(t *testing.T) {
 	const qualifyName = "Qualify native Windows Renovate offline controls"
 	const uploadName = "Upload native Windows Renovate offline receipts"
 	job := workflowJobByName(t, workflow.Jobs, jobName)
-	if job.RunsOn != "windows-latest" || job.If != "" || job.ContinueOnError {
-		t.Fatal("qualification requires the existing unconditional native Windows job")
-	}
-	assertWorkflowJobPermissions(t, job, jobName, map[string]string{"contents": "read"})
-	var deadlines struct {
-		Jobs map[string]struct {
-			Timeout int `yaml:"timeout-minutes"`
-		} `yaml:"jobs"`
-	}
-	readYAMLConfig(t, ".github/workflows/ci.yml", &deadlines)
-	if deadlines.Jobs[jobName].Timeout != 20 {
-		t.Fatal("qualification must retain the original 20-minute deadline")
-	}
-	wantNames := []string{"Checkout", "Setup Go", "Resolve native Go toolchain", "Test native Windows proof tools", "Verify native Windows runtime path compatibility", "Write PR body for regression proof", "Prove Windows regression tests for fix PRs", qualifyName, uploadName}
-	if len(job.Steps) != len(wantNames) {
-		t.Fatal("qualification must append only two steps to the original Windows job")
-	}
-	for i, name := range wantNames {
-		if job.Steps[i].Name != name {
-			t.Fatalf("Windows step %d = %q, want %q", i, job.Steps[i].Name, name)
-		}
-	}
-	checkout := job.Steps[0]
-	if checkout.Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || checkout.With["ref"] != "${{ github.sha }}" || checkout.With["fetch-depth"] != "0" || checkout.With["persist-credentials"] != "false" {
-		t.Fatal("qualification must preserve the original event checkout")
-	}
+	assertRenovateWindowsJob(t, job, jobName, qualifyName, uploadName)
 	qualify := workflowStepByName(t, workflow.Jobs, jobName, qualifyName)
 	if qualify.If != "" || qualify.ContinueOnError || qualify.Shell != "pwsh" || qualify.ID != "renovate_windows_offline" || len(qualify.Env) != 1 || qualify.Env["QUALIFICATION_SOURCE_SHA"] != "${{ github.event.pull_request.head.sha || github.sha }}" {
 		t.Fatal("exact head selection must be unconditional and bound through process environment")
 	}
 	assertWorkflowStepRunOmitsAll(t, qualify, "native qualification", []string{"${{", "merge-base", "continue-on-error", "npm install", "npm ci", "TestRenovateFixtureWindowsCIQualificationContract", "SilentlyContinue"})
+	assertWorkflowStepRunContainsAll(t, qualify, "single native compiler selection", []string{
+		"$gccCommands = @(Get-Command gcc -CommandType Application -All -ErrorAction Stop)",
+		"$gccCommands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($gccCommands[0].Source)",
+		"$gcc = (Resolve-Path -LiteralPath $gccCommands[0].Source -ErrorAction Stop).ProviderPath",
+	})
+	assertWorkflowStepRunOmitsAll(t, qualify, "no compiler array or fallback", []string{"$gcc = (Get-Command", "$gccCommands[1]", "Select-Object -Last"})
+	assertWorkflowStepRunContainsAll(t, qualify, "native chooser boundary controls", []string{
+		"'single'", "'ordered-two'", "'duplicates'", "'missing'", "'lookup-error'", "'relative'", "'alias-function-collision'", "'canonical-error'",
+		"[System.Management.Automation.CommandTypes]$CommandType", "[System.Management.Automation.ActionPreference]$ErrorAction",
+		"$Name -cne 'gcc'", "$CommandType -ne [System.Management.Automation.CommandTypes]::Application", "-or -not $All", "$ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop",
+		"$observed.discovery -ne 1 -or $observed.resolution -ne $case.resolves", "$gcc -isnot [string]", "$choiceError -cne $case.error",
+		"$chooserEnvironmentAfter.Count -ne $chooserEnvironment.Count", "$chooserEnvironmentAfter[$key] -cne $chooserEnvironment[$key]", "$actualFunction -cne $chooserFunctions[$name]",
+		"'gcc-choice-controls.json'", "'gcc-choice-restoration.json'", "nativeExecutableAuthentication = $false",
+	})
+	assertTextAppearsBefore(t, qualify.Run, "if ($null -ne $chooserFailure) { throw $chooserFailure }", "Set-ProcessEnvironment 'CC' $gcc", "native controls and restoration must precede real compiler use")
+	assertTextAppearsBefore(t, qualify.Run, "$gcc = (Resolve-Path", "Set-ProcessEnvironment 'CC' $gcc", "scalar canonical compiler must precede CC")
 	assertWorkflowStepRunContainsAll(t, qualify, "native source/runtime/offline custody", []string{
 		"$ErrorActionPreference = 'Stop'", "$PSNativeCommandUseErrorActionPreference = $false",
 		"if (-not $IsWindows)", "'go version go1.27.2 windows/amd64'", "'bin/go.exe'", "'node/24.21.0/x64/node.exe'", "'v24.21.0'",
@@ -403,4 +406,34 @@ func TestRenovateFixtureWindowsCIQualificationContract(t *testing.T) {
 	}
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Require every verification job")
 	assertWorkflowStepRunContainsAll(t, gate, "Windows required gate", []string{"${WINDOWS_PROOF_RESULT}", "success"})
+}
+
+func assertRenovateWindowsJob(t *testing.T, job workflowJobConfig, jobName, qualifyName, uploadName string) {
+	t.Helper()
+	if job.RunsOn != "windows-latest" || job.If != "" || job.ContinueOnError {
+		t.Fatal("qualification requires the existing unconditional native Windows job")
+	}
+	assertWorkflowJobPermissions(t, job, jobName, map[string]string{"contents": "read"})
+	var deadlines struct {
+		Jobs map[string]struct {
+			Timeout int `yaml:"timeout-minutes"`
+		} `yaml:"jobs"`
+	}
+	readYAMLConfig(t, ".github/workflows/ci.yml", &deadlines)
+	if deadlines.Jobs[jobName].Timeout != 20 {
+		t.Fatal("qualification must retain the original 20-minute deadline")
+	}
+	wantNames := []string{"Checkout", "Setup Go", "Resolve native Go toolchain", "Test native Windows proof tools", "Verify native Windows runtime path compatibility", "Write PR body for regression proof", "Prove Windows regression tests for fix PRs", qualifyName, uploadName}
+	if len(job.Steps) != len(wantNames) {
+		t.Fatal("qualification must append only two steps to the original Windows job")
+	}
+	for i, name := range wantNames {
+		if job.Steps[i].Name != name {
+			t.Fatalf("Windows step %d = %q, want %q", i, job.Steps[i].Name, name)
+		}
+	}
+	checkout := job.Steps[0]
+	if checkout.Uses != "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || checkout.With["ref"] != "${{ github.sha }}" || checkout.With["fetch-depth"] != "0" || checkout.With["persist-credentials"] != "false" {
+		t.Fatal("qualification must preserve the original event checkout")
+	}
 }

@@ -12,12 +12,12 @@ const manifestPath = 'extensions/vscode-lopper/package.json';
 const lockPath = 'extensions/vscode-lopper/package-lock.json';
 const workflowPath = '.github/workflows/release.yml';
 const packageFiles = [manifestPath, sourcePath, workflowPath];
-const directModules = [
+const directModules = new Set([
  'modules/manager/custom/regex/index.js', 'modules/manager/npm/extract/index.js',
  'modules/manager/npm/update/dependency/index.js', 'workers/repository/update/branch/auto-replace.js',
  'workers/repository/extract/manager-files.js', 'workers/repository/updates/branchify.js',
  'config/defaults.js', 'config/global.js', 'util/string-match.js',
-];
+]);
 const manifestDigest = 'fb503b7e8e684c70fef3afd563a0109e194a9edb7cc8769cdafa0941c4408f94';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const byPath = (a, b) => a < b ? -1 : Number(a > b);
@@ -96,7 +96,7 @@ export function requireProfile(platform, arch) {
 }
 
 export async function loadRenovateModule(root, module) {
- assert.ok(directModules.includes(module), 'unrecognized Renovate import');
+ assert.ok(directModules.has(module), 'unrecognized Renovate import');
  return import(pathToFileURL(checkedPath(root, `dist/${module}`)));
 }
 
@@ -210,8 +210,8 @@ export async function withEnvironment(env, operation) {
 
 export async function withFixture(root, operation) {
  const fixture = mkdtempSync(join(canonicalRoot(root), 'lopper-vsce-contract-'));
- let failure;
- try { return await operation(fixture); } catch (error) { failure = error; throw error; } finally {
+ let result; let failure; let failed = false; let cleanupFailure; let cleanupFailed = false;
+ try { result = await operation(fixture); } catch (error) { failure = error; failed = true; } finally {
   try {
    // Go's private module cache contains read-only directories. Never follow links during cleanup.
    const writableDirectories = (directory) => {
@@ -227,11 +227,14 @@ export async function withFixture(root, operation) {
    };
    writableDirectories(fixture);
    rmSync(fixture, { recursive: true, force: true });
-  } catch (error) {
-   if (failure) throw new AggregateError([failure, error], 'fixture failed and cleanup failed');
-   throw error;
-  }
+  } catch (error) { cleanupFailure = error; cleanupFailed = true; }
  }
+ if (cleanupFailed) {
+  if (failure) throw new AggregateError([failure, cleanupFailure], 'fixture failed and cleanup failed');
+  throw cleanupFailure;
+ }
+ if (failed) throw failure;
+ return result;
 }
 
 export function commandFor(provider, name, args, cwd, env) {
@@ -427,9 +430,9 @@ export async function main() {
  assert.equal(process.env.NODE_PATH, undefined, 'sanitize Node search externally');
  const identities = admitProvider(repo, provider);
  admitOSCapabilities();
- let failure;
+ let result; let failure; let failed = false; let custodyFailure; let custodyFailed = false;
  try {
-  return await withFixture('/private/tmp', async (fixture) => {
+  result = await withFixture('/private/tmp', async (fixture) => {
    writeChecked(fixture, '.home/.npmrc', '');
    writeChecked(fixture, '.home/empty-global-npmrc', '');
    const env = fixtureEnvironment(provider, fixture);
@@ -440,12 +443,15 @@ export async function main() {
    };
    return withEnvironment(env, () => runContract(repo, renovate, fixture, run));
   });
- } catch (error) { failure = error; throw error; } finally {
-  try { assert.deepEqual(admitProvider(repo, provider), identities, 'runtime filesystem identities changed during consumption'); } catch (error) {
-   if (failure) throw new AggregateError([failure, error], 'fixture failed and runtime custody changed');
-   throw error;
-  }
+ } catch (error) { failure = error; failed = true; } finally {
+  try { assert.deepEqual(admitProvider(repo, provider), identities, 'runtime filesystem identities changed during consumption'); } catch (error) { custodyFailure = error; custodyFailed = true; }
  }
+ if (custodyFailed) {
+  if (failure) throw new AggregateError([failure, custodyFailure], 'fixture failed and runtime custody changed');
+  throw custodyFailure;
+ }
+ if (failed) throw failure;
+ return result;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
