@@ -244,7 +244,8 @@ func proofDiff(args []string) bool {
 }
 
 func validFiles(args []string) bool {
-	if slices.Equal(args, []string{"--others", "--exclude-standard"}) {
+	if slices.Equal(args, []string{"--others", "--exclude-standard"}) ||
+		slices.Equal(args, []string{"--others", "--exclude-standard", "-z", "--"}) {
 		return true
 	}
 	if len(args) != 0 && args[0] == "--cached" {
