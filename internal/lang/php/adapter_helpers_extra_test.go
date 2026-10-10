@@ -2806,3 +2806,131 @@ func setUsageIncompleteForTest(t *testing.T, value any) {
 func isPureOversizedFileErrorForTest(err error) bool {
 	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }
+
+func TestPHPSharedReportBuilderParity(t *testing.T) {
+	first := report.Location{File: "first.php", Line: 2, Column: 1}
+	second := report.Location{File: "second.php", Line: 3, Column: 1}
+	idle := report.ImportUse{Name: "Idle", Module: `Vendor\Lib\Idle`, Locations: []report.Location{first}}
+	grouped := report.RiskCue{Code: "grouped-use-import", Severity: "medium", Message: "found 2 grouped PHP use import(s) for this dependency"}
+	dynamic := report.RiskCue{Code: "dynamic-loading", Severity: "high", Message: "found 3 file(s) with dynamic/reflection usage that may hide dependency references"}
+	explicitAdvice := report.Recommendation{Code: "prefer-explicit-imports", Priority: "medium",
+		Message:   "Grouped use imports were detected; prefer explicit imports for clearer attribution.",
+		Rationale: "Explicit imports improve readability and reduce ambiguity in static analysis."}
+	dynamicAdvice := report.Recommendation{Code: "review-dynamic-loading", Priority: "high",
+		Message:   "Dynamic loading/reflection patterns were detected; manually review runtime dependency usage.",
+		Rationale: "Static analysis can under-report usage when class names are resolved dynamically."}
+	unused := scanResult{Files: []fileScan{{ScannedFile: shared.ScannedFile{Imports: []importBinding{
+		{Dependency: "vendor/lib", Module: idle.Module, Name: idle.Name, Local: "i", Location: first},
+	}}}}}
+	incomplete := unused
+	incomplete.UsageIncomplete = true
+	incomplete.GroupedImportsByDependency = map[string]int{"vendor/lib": 2, "other": 99}
+	incomplete.DynamicUsageByDependency = map[string]int{"vendor/lib": 3, "other": 99}
+	completeCues := incomplete
+	completeCues.UsageIncomplete = false
+	for _, tc := range []struct {
+		name      string
+		scan      scanResult
+		threshold int
+		want      report.DependencyReport
+		warnings  []string
+	}{
+		{
+			name: "nil files",
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", TopUsedSymbols: []report.SymbolUsage{},
+				UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}, Recommendations: []report.Recommendation{}},
+			warnings: []string{`no imports found for dependency "vendor/lib"`},
+		},
+		{
+			name: "empty files", scan: scanResult{Files: []fileScan{}},
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", TopUsedSymbols: []report.SymbolUsage{},
+				UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}, Recommendations: []report.Recommendation{}},
+			warnings: []string{`no imports found for dependency "vendor/lib"`},
+		},
+		{
+			name: "mixed usage with threshold boundary", threshold: 50,
+			scan: scanResult{Files: []fileScan{
+				{ScannedFile: shared.ScannedFile{Imports: []importBinding{
+					{Dependency: "VENDOR/LIB", Module: `Vendor\Lib\Alpha`, Name: "Alpha", Local: "a", Location: first},
+					{Dependency: "vendor/lib", Module: idle.Module, Name: idle.Name, Local: "i", Location: first},
+					{Dependency: "other", Name: "Ignored", Local: "o"},
+				}, Usage: map[string]int{"a": 2, "o": 99}}},
+				{ScannedFile: shared.ScannedFile{Imports: []importBinding{
+					{Dependency: "vendor/lib", Module: `Vendor\Lib\Alpha`, Name: "Alpha", Local: "alias", Location: second},
+				}, Usage: map[string]int{"alias": 3}}},
+			}},
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50,
+				TopUsedSymbols: []report.SymbolUsage{{Name: "Alpha", Count: 5}},
+				UsedImports:    []report.ImportUse{{Name: "Alpha", Module: `Vendor\Lib\Alpha`, Locations: []report.Location{first, second}}},
+				UnusedImports:  []report.ImportUse{idle}, Recommendations: []report.Recommendation{}},
+			warnings: []string{},
+		},
+		{
+			name: "unused removal and low usage advice", scan: unused, threshold: 40,
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", TotalExportsCount: 1,
+				TopUsedSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{idle},
+				Recommendations: []report.Recommendation{
+					{Code: "remove-unused-dependency", Priority: "high", Message: `No used imports were detected for "vendor/lib"; consider removing it.`,
+						Rationale: "Unused dependencies increase risk and maintenance surface."},
+					{Code: "low-usage-dependency", Priority: "medium", Message: `Dependency "vendor/lib" has low observed usage (0.0%).`,
+						Rationale: "Low-usage dependencies are candidates for removal or replacement."},
+				}},
+			warnings: []string{},
+		},
+		{
+			name: "complete grouped and dynamic advice", scan: completeCues, threshold: 40,
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", TotalExportsCount: 1,
+				TopUsedSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{idle},
+				RiskCues: []report.RiskCue{grouped, dynamic}, Recommendations: []report.Recommendation{
+					{Code: "remove-unused-dependency", Priority: "high", Message: `No used imports were detected for "vendor/lib"; consider removing it.`,
+						Rationale: "Unused dependencies increase risk and maintenance surface."},
+					explicitAdvice, dynamicAdvice,
+					{Code: "low-usage-dependency", Priority: "medium", Message: `Dependency "vendor/lib" has low observed usage (0.0%).`,
+						Rationale: "Low-usage dependencies are candidates for removal or replacement."},
+				}},
+			warnings: []string{},
+		},
+		{
+			name: "incomplete suppression retains grouped and dynamic advice", scan: incomplete, threshold: 40,
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", TotalExportsCount: 1, UsageIncomplete: true,
+				TopUsedSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{}, SuppressedUnusedImports: []report.ImportUse{idle},
+				RiskCues: []report.RiskCue{grouped, dynamic}, Recommendations: []report.Recommendation{explicitAdvice, dynamicAdvice}},
+			warnings: []string{},
+		},
+		{
+			name: "incomplete empty suppression", scan: scanResult{UsageIncomplete: true}, threshold: 40,
+			want: report.DependencyReport{Name: "vendor/lib", Language: "php", UsageIncomplete: true,
+				TopUsedSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{}, SuppressedUnusedImports: []report.ImportUse{},
+				Recommendations: []report.Recommendation{}},
+			warnings: []string{`no imports found for dependency "vendor/lib"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warnings := buildDependencyReport("vendor/lib", tc.scan, tc.threshold)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("report mismatch:\ngot  %#v\nwant %#v", got, tc.want)
+			}
+			if !reflect.DeepEqual(warnings, tc.warnings) {
+				t.Fatalf("warnings mismatch: got %#v want %#v", warnings, tc.warnings)
+			}
+		})
+	}
+}
+
+func TestPHPReportRankingPreservesConfidenceInputs(t *testing.T) {
+	scan := scanResult{Files: []fileScan{{ScannedFile: shared.ScannedFile{Imports: []importBinding{
+		{Dependency: "explicit", Module: `Vendor\Explicit\Idle`, Name: "Idle", Local: "idle"},
+		{Dependency: "dynamic", Module: `Vendor\Dynamic\Idle`, Name: "Idle", Local: "idle"},
+	}}}}, DynamicUsageByDependency: map[string]int{"dynamic": 1}}
+	dependencies, warnings := buildTopPHPDependencies(2, scan, 40, report.DefaultRemovalCandidateWeights())
+	if !reflect.DeepEqual(warnings, []string{}) || len(dependencies) != 2 {
+		t.Fatalf("unexpected ranked result: %#v, warnings %#v", dependencies, warnings)
+	}
+	if dependencies[0].Name != "explicit" || dependencies[1].Name != "dynamic" {
+		t.Fatalf("unexpected ranking: %#v", dependencies)
+	}
+	high, low := dependencies[0].RemovalCandidate, dependencies[1].RemovalCandidate
+	if high == nil || low == nil || high.Confidence <= low.Confidence || low.Confidence <= 0 || high.Confidence > 100 {
+		t.Fatalf("expected static imports to retain higher confidence than dynamic usage: high %#v low %#v", high, low)
+	}
+}
