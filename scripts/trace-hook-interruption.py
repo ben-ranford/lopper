@@ -23,9 +23,9 @@ STRACE = '/usr/bin/strace'
 TREE_SUFFIX = '^{tree}'
 DIRECTORY_ERROR = 'sink directory custody'
 
-PARENT = "406c8859cd00bd30b2339c42af24977791456b85"
+PARENT = "9351dc18688c5b6a6f7421f9239b6da415d898b6"
 WORKFLOW_SHA = "907ab8596d7ac054eb565a8bfbb329464eb3f59e4c77a58e7f5fa17bb0e428db"
-CONTROLS_SHA = "3911bfeb428227f21fb06120c25444d6339aa7481fcf295fd31361e26192166d"
+CONTROLS_SHA = "77eb83e374531e4ca5605455fc21a337c2f26f7d6816d22ec8c2db10fe19a05c"
 SOURCE_PATHS = (".github/workflows/ci-tests.yml", "scripts/trace-hook-interruption.py",
                 "scripts/testdata/hook-interruption-trace-controls.py")
 ORIGINALS = {
@@ -39,10 +39,21 @@ SYSCALLS = ("clone,clone3,fork,vfork,execve,execveat,exit,exit_group,wait4,waiti
             "rt_sigprocmask,rt_sigreturn,pipe,pipe2,dup,dup2,dup3,fcntl,close,"
             "close_range,open,openat,openat2,read,readv,write,writev")
 SELECTOR = "^TestHooksInstallInterruptCleansPreflightAndRollsBackState$"
-STREAMS = ("exit0", "exit23", "signal", "groups", "cap", "write-error",
-           "missing", "abnormal", "cancel", "focused")
+TRACE_NAMES = {
+    "exit0": "exit0.trace",
+    "exit23": "exit23.trace",
+    "signal": "signal.trace",
+    "groups": "groups.trace",
+    "cap": "cap.trace",
+    "write-error": "write-error.trace",
+    "missing": "missing.trace",
+    "abnormal": "abnormal.trace",
+    "cancel": "cancel.trace",
+    "focused": "focused.trace",
+}
+STREAMS = tuple(TRACE_NAMES)
 CAPS = {name: (8388608 if name in ("cap", "focused") else 65536) for name in STREAMS}
-SLOTS = {name + TRACE_SUFFIX: CAPS[name] for name in STREAMS}
+SLOTS = {TRACE_NAMES[name]: CAPS[name] for name in STREAMS}
 SLOTS.update({name + RECEIPT_SUFFIX: 4096 for name in STREAMS})
 SLOTS.update({MAIN_NAME: 32768, MANIFEST_NAME: 32768, LOG_NAME: 65536})
 MAX_RETAINED = 17473536
@@ -234,11 +245,12 @@ def checked_sink_close(fd, output):
 
 
 def sink(directory, slot, witness_fd=None, release_fd=None):
-    if slot not in STREAMS:
+    if slot not in TRACE_NAMES:
         raise ValueError("invalid fixed stream")
+    trace_name = TRACE_NAMES[slot]
     descriptor = owned_directory(directory)
     try:
-        fd = os.open(slot + TRACE_SUFFIX, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        fd = os.open(trace_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
         output = fd
         errors = []
         try:

@@ -482,6 +482,72 @@ def selftest():
     api = runpy.run_path(str(DRIVER), run_name="portable_trace_support")
     assert len(api["STREAMS"]) == 10
     assert sum(api["SLOTS"].values()) == 17473536
+    expected_names = ("exit0", "exit23", "signal", "groups", "cap", "write-error",
+                      "missing", "abnormal", "cancel", "focused")
+    expected_traces = {
+        "exit0": "exit0.trace",
+        "exit23": "exit23.trace",
+        "signal": "signal.trace",
+        "groups": "groups.trace",
+        "cap": "cap.trace",
+        "write-error": "write-error.trace",
+        "missing": "missing.trace",
+        "abnormal": "abnormal.trace",
+        "cancel": "cancel.trace",
+        "focused": "focused.trace",
+    }
+    expected_caps = {name: (8388608 if name in ("cap", "focused") else 65536)
+                     for name in expected_names}
+    expected_slots = {expected_traces[name]: expected_caps[name] for name in expected_names}
+    expected_slots.update({name + ".receipt.json": 4096 for name in expected_names})
+    expected_slots.update({"main.json": 32768, "manifest.json": 32768, "preflight.log": 65536})
+    assert api["STREAMS"] == expected_names and tuple(api["TRACE_NAMES"]) == expected_names
+    assert api["TRACE_NAMES"] == expected_traces
+    assert {name: name + api["TRACE_SUFFIX"] for name in expected_names} == expected_traces
+    assert api["CAPS"] == expected_caps and api["SLOTS"] == expected_slots
+    assert len(api["SLOTS"]) == 23 and api["MAX_RETAINED"] == 17473536
+    import tempfile
+    with tempfile.TemporaryDirectory() as runner_temp:
+        canonical_runner_temp = pathlib.Path(runner_temp).resolve(strict=True)
+        run_dir = canonical_runner_temp / "hook-native-g043-selftest-job-1"
+        run_dir.mkdir(mode=0o700)
+        outside_trace = canonical_runner_temp / "outside.trace"
+        outside_receipt = canonical_runner_temp / "outside.receipt.json"
+        saved_environment = {name: os.environ.get(name) for name in
+                             ("RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_JOB", "GITHUB_RUN_ATTEMPT")}
+        os.environ.update({"RUNNER_TEMP": runner_temp, "GITHUB_RUN_ID": "g043-selftest",
+                           "GITHUB_JOB": "job", "GITHUB_RUN_ATTEMPT": "1"})
+        try:
+            try:
+                api["sink"](run_dir, "../outside")
+            except ValueError as error:
+                assert str(error) == "invalid fixed stream"
+            else:
+                raise AssertionError("traversal-shaped sink label accepted")
+            assert list(run_dir.iterdir()) == []
+            assert not outside_trace.exists() and not outside_receipt.exists()
+
+            sink_globals = api["sink"].__globals__
+            original_drain = sink_globals["drain"]
+            drain_calls = []
+            def fixture_drain(source, _target, cap):
+                drain_calls.append((source, cap))
+                return {"received": 0, "retained": 0, "discarded": 0,
+                        "counter_saturated": False, "eof": True, "errors": []}
+            sink_globals["drain"] = fixture_drain
+            try:
+                assert api["sink"](run_dir, "exit0") == 0
+            finally:
+                sink_globals["drain"] = original_drain
+            assert drain_calls == [(0, expected_caps["exit0"])]
+            assert {path.name for path in run_dir.iterdir()} == {"exit0.trace", "exit0.receipt.json"}
+            assert not outside_trace.exists() and not outside_receipt.exists()
+        finally:
+            for name, value in saved_environment.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
     command = api["trace_command"](DRIVER, pathlib.Path("/private/output"), "focused",
                                   ["/private/hook.test", "-test.run=" + api["SELECTOR"], "-test.count=1", "-test.timeout=10m"])
     assert command[:5] == ["/usr/bin/strace", "-f", "-I", "2", "-ttt"]
