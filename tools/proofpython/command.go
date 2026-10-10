@@ -13,6 +13,8 @@ import (
 	process "github.com/ben-ranford/lopper/internal/runtime"
 )
 
+const formalTargetOSArgument = "--target-os"
+
 // Completion is certified only after the existing owner reports an empty job.
 // A parent Wait result alone must never authorise verification or deletion.
 func runJoined(cmd *exec.Cmd) (commandErr, joinErr error) {
@@ -54,18 +56,18 @@ func ordinaryArguments(args []string) error {
 }
 
 func formalArguments(args []string) error {
-	allowed := map[string]bool{"--repo": true, "--body-file": true, "--title": true, "--base-sha": true, "--regression-exempt-label": true, "--target-os": true}
+	allowed := map[string]bool{"--repo": true, "--body-file": true, "--title": true, "--base-sha": true, "--regression-exempt-label": true, formalTargetOSArgument: true}
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i += 2 {
 		if i+1 >= len(args) || !allowed[args[i]] || seen[args[i]] {
 			return errors.New("unsupported formal proof argument")
 		}
-		if args[i] == "--target-os" && args[i+1] != "windows" {
+		if args[i] == formalTargetOSArgument && args[i+1] != "windows" {
 			return errors.New("formal proof must use native Windows target")
 		}
 		seen[args[i]] = true
 	}
-	if !seen["--target-os"] {
+	if !seen[formalTargetOSArgument] {
 		return errors.New("missing native proof target")
 	}
 	return nil

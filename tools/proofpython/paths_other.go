@@ -57,8 +57,26 @@ func fileIdentity(file *os.File) (string, error) {
 	if err := syscall.Fstat(int(file.Fd()), &info); err != nil {
 		return "", err
 	}
-	if info.Dev < 0 {
-		return "", errors.New("negative device identity")
+	device, err := deviceIdentity(info.Dev)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("%016x:%016x", uint64(info.Dev), uint64(info.Ino)), nil
+	return fmt.Sprintf("%016x:%016x", device, uint64(info.Ino)), nil
+}
+
+func deviceIdentity(value any) (uint64, error) {
+	// Stat_t.Dev is signed on some OSes and unsigned on Linux; reject negatives before widening.
+	switch value := value.(type) {
+	case int32:
+		if value < 0 {
+			return 0, errors.New("negative device identity")
+		}
+		return uint64(value), nil
+	case uint32:
+		return uint64(value), nil
+	case uint64:
+		return value, nil
+	default:
+		return 0, errors.New("unsupported device identity")
+	}
 }

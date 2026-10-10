@@ -8,7 +8,7 @@ import (
 
 func TestDiagnosticOverflowIsBoundedAndExplicit(t *testing.T) {
 	exact := strings.Repeat("x", maxErrorBytes)
-	if got := boundedErrorMessage(errors.New(exact)); got != exact {
+	if boundedErrorMessage(errors.New(exact)) != exact {
 		t.Fatal("exact diagnostic changed")
 	}
 	got := boundedErrorMessage(errors.New(exact + "overflow"))

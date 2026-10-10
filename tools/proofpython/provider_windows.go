@@ -16,6 +16,8 @@ import (
 	"strings"
 )
 
+const pythonExecutableName = "python.exe"
+
 func captureProvider(ctx context.Context, root, bin string) (receipt, error) {
 	if err := checkProviderLocation(root, bin); err != nil {
 		return receipt{}, err
@@ -62,7 +64,7 @@ func captureProvider(ctx context.Context, root, bin string) (receipt, error) {
 
 func captureAliases(ctx context.Context, private receipt, bin string) ([]record, error) {
 	var aliases []record
-	for _, name := range []string{"python.exe", "python3.exe"} {
+	for _, name := range []string{pythonExecutableName, "python3.exe"} {
 		path := filepath.Join(bin, name)
 		if err := requireAMD64File(path); err != nil {
 			return nil, err
@@ -214,7 +216,7 @@ func admitAdapterRecord(row record, root string, aliases map[string]bool) error 
 		return errors.New("adapter escaped fixed Go bin")
 	}
 	name := filepath.Base(row.Path)
-	if (name != "python.exe" && name != "python3.exe") || aliases[name] {
+	if (name != pythonExecutableName && name != "python3.exe") || aliases[name] {
 		return errors.New("invalid or duplicate adapter")
 	}
 	aliases[name] = true
@@ -280,7 +282,7 @@ func observerRecords(ctx context.Context) (record, record, error) {
 
 func interpreterDigest(private receipt) string {
 	for _, row := range private.Records {
-		if row.Path == "python.exe" {
+		if row.Path == pythonExecutableName {
 			return row.Hash
 		}
 	}
