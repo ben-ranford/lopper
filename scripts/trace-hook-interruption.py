@@ -13,9 +13,19 @@ import subprocess
 import sys
 import time
 
-PARENT = "a25eb4e3cc3b1f489687ab15ae8dcc89c519d5f8"
+TRACE_SUFFIX = '.trace'
+RECEIPT_SUFFIX = '.receipt.json'
+MAIN_NAME = 'main.json'
+MANIFEST_NAME = 'manifest.json'
+LOG_NAME = 'preflight.log'
+PYTHON = '/usr/bin/python3'
+STRACE = '/usr/bin/strace'
+TREE_SUFFIX = '^{tree}'
+DIRECTORY_ERROR = 'sink directory custody'
+
+PARENT = "406c8859cd00bd30b2339c42af24977791456b85"
 WORKFLOW_SHA = "907ab8596d7ac054eb565a8bfbb329464eb3f59e4c77a58e7f5fa17bb0e428db"
-CONTROLS_SHA = "51f98ea7419334bec7f1c2b05ecce922698c9d79faa57b19ebea79e65a9b6926"
+CONTROLS_SHA = "3911bfeb428227f21fb06120c25444d6339aa7481fcf295fd31361e26192166d"
 SOURCE_PATHS = (".github/workflows/ci-tests.yml", "scripts/trace-hook-interruption.py",
                 "scripts/testdata/hook-interruption-trace-controls.py")
 ORIGINALS = {
@@ -32,9 +42,9 @@ SELECTOR = "^TestHooksInstallInterruptCleansPreflightAndRollsBackState$"
 STREAMS = ("exit0", "exit23", "signal", "groups", "cap", "write-error",
            "missing", "abnormal", "cancel", "focused")
 CAPS = {name: (8388608 if name in ("cap", "focused") else 65536) for name in STREAMS}
-SLOTS = {name + ".trace": CAPS[name] for name in STREAMS}
-SLOTS.update({name + ".receipt.json": 4096 for name in STREAMS})
-SLOTS.update({"main.json": 32768, "manifest.json": 32768, "preflight.log": 65536})
+SLOTS = {name + TRACE_SUFFIX: CAPS[name] for name in STREAMS}
+SLOTS.update({name + RECEIPT_SUFFIX: 4096 for name in STREAMS})
+SLOTS.update({MAIN_NAME: 32768, MANIFEST_NAME: 32768, LOG_NAME: 65536})
 MAX_RETAINED = 17473536
 COUNTER_MAX = (1 << 63) - 1
 
@@ -74,27 +84,72 @@ def bounded_read(path, limit):
         os.close(fd)
 
 
+def owned_directory(directory):
+    """Admit only this run's generated private child, then retain directory custody."""
+    temp = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    identifiers = [os.environ[name] for name in ("GITHUB_RUN_ID", "GITHUB_JOB", "GITHUB_RUN_ATTEMPT")]
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value, re.ASCII) for value in identifiers):
+        raise ValueError(DIRECTORY_ERROR)
+    name = "hook-native-" + "-".join(identifiers)
+    if os.fspath(directory) != str(temp / name):
+        raise ValueError(DIRECTORY_ERROR)
+    expected_parent = temp.stat()
+    parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        parent_info = os.fstat(parent)
+        if (parent_info.st_dev, parent_info.st_ino) != (expected_parent.st_dev, expected_parent.st_ino):
+            raise ValueError(DIRECTORY_ERROR)
+        private_parent = parent_info.st_uid == os.getuid() and not parent_info.st_mode & 0o022
+        sticky_temp = parent_info.st_uid == 0 and stat.S_IMODE(parent_info.st_mode) == 0o1777
+        if not (private_parent or sticky_temp):
+            raise ValueError(DIRECTORY_ERROR)
+        expected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISDIR(expected.st_mode) or expected.st_uid != os.getuid() or stat.S_IMODE(expected.st_mode) != 0o700:
+            raise ValueError(DIRECTORY_ERROR)
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        actual = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (actual.st_dev, actual.st_ino, actual.st_uid, actual.st_mode) != (expected.st_dev, expected.st_ino, expected.st_uid, expected.st_mode) or (current.st_dev, current.st_ino) != (actual.st_dev, actual.st_ino):
+            raise ValueError(DIRECTORY_ERROR)
+        result = descriptor
+        descriptor = None
+        return result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
 def exclusive_write(directory, name, data):
     """One allocation: exclusive temp, checked writes/close, then rename; retain failures."""
     if name not in SLOTS or len(data) > SLOTS[name]:
         raise ValueError("slot or metadata bound")
-    directory = pathlib.Path(directory)
-    final = directory / name
-    temporary = directory / (name + ".tmp")
-    if final.exists() or final.is_symlink():
-        raise FileExistsError("final slot already exists")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    owned = not isinstance(directory, int)
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if owned else directory
     try:
-        view = memoryview(data)
-        while view:
-            wrote = os.write(fd, view)
-            if wrote <= 0:
-                raise OSError("zero write")
-            view = view[wrote:]
-        os.fsync(fd)
+        try:
+            os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError("final slot already exists")
+        temporary = name + ".tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        try:
+            view = memoryview(data)
+            while view:
+                wrote = os.write(fd, view)
+                if wrote <= 0:
+                    raise OSError("zero write")
+                view = view[wrote:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(temporary, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
     finally:
-        os.close(fd)
-    os.rename(temporary, final)
+        if owned:
+            os.close(descriptor)
 
 
 def publish(directory, name, value):
@@ -142,12 +197,16 @@ def drain(source, target, cap):
 
 
 def sink_publication(directory, slot, receipt, witness_fd, release_fd):
+    state = "COMPLETE"
+    if receipt["errors"]:
+        state = "FAILED_IO"
+    elif receipt["discarded"] or receipt["counter_saturated"]:
+        state = "INCOMPLETE"
     receipt.update({"version": 1, "slot": slot, "driver_sha256": file_identity(__file__)["sha256"],
-                    "state": "FAILED_IO" if receipt["errors"] else
-                    ("INCOMPLETE" if receipt["discarded"] or receipt["counter_saturated"] else "COMPLETE")})
+                    "state": state})
     if slot == "missing":
         return 17
-    publish(directory, slot + ".receipt.json", receipt)
+    publish(directory, slot + RECEIPT_SUFFIX, receipt)
     if slot == "abnormal":
         if witness_fd is None or release_fd is None:
             raise ValueError("private abnormal witness absent")
@@ -177,35 +236,35 @@ def checked_sink_close(fd, output):
 def sink(directory, slot, witness_fd=None, release_fd=None):
     if slot not in STREAMS:
         raise ValueError("invalid fixed stream")
-    directory = pathlib.Path(directory)
-    info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-        raise ValueError("sink directory custody")
-    fd = os.open(directory / (slot + ".trace"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    output = fd
-    errors = []
-    # Only the fixed private write-error slot exercises /dev/full. Never focused.
-    if slot == "write-error":
-        output = os.open("/dev/full", os.O_WRONLY)
+    descriptor = owned_directory(directory)
     try:
-        receipt = drain(0, output, CAPS[slot])
+        fd = os.open(slot + TRACE_SUFFIX, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        output = fd
+        errors = []
         try:
-            os.fsync(fd)
-        except OSError:
-            errors.append("FLUSH_ERROR")
+            # Only the fixed private write-error slot exercises /dev/full. Never focused.
+            if slot == "write-error":
+                output = os.open("/dev/full", os.O_WRONLY)
+            receipt = drain(0, output, CAPS[slot])
+            try:
+                os.fsync(fd)
+            except OSError:
+                errors.append("FLUSH_ERROR")
+        finally:
+            errors.extend(checked_sink_close(fd, output))
+        receipt["errors"].extend(errors)
+        return sink_publication(descriptor, slot, receipt, witness_fd, release_fd)
     finally:
-        errors.extend(checked_sink_close(fd, output))
-    receipt["errors"].extend(errors)
-    return sink_publication(directory, slot, receipt, witness_fd, release_fd)
+        os.close(descriptor)
 
 
 def trace_command(driver, directory, slot, target, witness_fd=None, release_fd=None):
-    command = ["/usr/bin/python3", "-I", "-S", str(driver), "sink", str(directory), slot]
+    command = [PYTHON, "-I", "-S", str(driver), "sink", str(directory), slot]
     if witness_fd is not None:
         if slot != "abnormal":
             raise ValueError("private seam on wrong slot")
         command.extend([str(witness_fd), str(release_fd)])
-    return ["/usr/bin/strace", "-f", "-I", "2", "-ttt", "-T", "-e", "raw=all",
+    return [STRACE, "-f", "-I", "2", "-ttt", "-T", "-e", "raw=all",
             "-e", "trace=" + SYSCALLS, "-e", "signal=all", "-o", "|" + shlex.join(command), *target]
 
 
@@ -242,11 +301,11 @@ def receipt_state(receipt):
 
 
 def load_receipt(directory, slot):
-    receipt = json.loads(bounded_read(pathlib.Path(directory) / (slot + ".receipt.json"), 4096))
+    receipt = json.loads(bounded_read(pathlib.Path(directory) / (slot + RECEIPT_SUFFIX), 4096))
     receipt_shape(receipt, slot)
     receipt_counters(receipt, slot)
     receipt_state(receipt)
-    trace_info = (pathlib.Path(directory) / (slot + ".trace")).lstat()
+    trace_info = (pathlib.Path(directory) / (slot + TRACE_SUFFIX)).lstat()
     if not stat.S_ISREG(trace_info.st_mode) or trace_info.st_size != receipt["retained"]:
         raise ValueError("trace size")
     return receipt
@@ -278,7 +337,7 @@ def raw_line_facts(line, facts, waits, gaps):
     terminal = re.fullmatch(rb"(?:\[pid\s+)?(\d+)\]?\s+\d+\.\d+\s+\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+\n", line)
     if terminal and len(facts) < 32:
         facts.append({"pid_numeric": int(terminal[1]), "terminal": terminal[2].decode("ascii")})
-    waited = re.search(rb"wait4\([^\n]*\)\s+=\s+(0x[0-9a-f]+|[0-9]+)(?:\s|\n)", line)
+    waited = re.search(rb"wait4\([^\n]*\)\s+=\s+(0x[\da-f]+|\d+)\s", line, re.ASCII)
     if waited and len(waits) < 32:
         waits.append({"returned_pid_numeric": int(waited[1], 16 if waited[1].startswith(b"0x") else 10),
                       "wait_status_pointer_contents": "OPAQUE"})
@@ -289,7 +348,7 @@ def raw_facts(directory, slot, width):
     facts = []
     waits = []
     gaps = {"PID_TID_REUSE", "CLONE_FILES", "EXEC_FD_REUSE", "OPAQUE_PIPE_AND_WAIT_STATUS"}
-    with (pathlib.Path(directory) / (slot + ".trace")).open("rb") as stream:
+    with (pathlib.Path(directory) / (slot + TRACE_SUFFIX)).open("rb") as stream:
         while stream.tell() <= CAPS[slot]:
             line = stream.readline(4097)
             if not line:
@@ -303,7 +362,7 @@ def raw_facts(directory, slot, width):
 
 def git(root, *arguments):
     env = dict(os.environ)
-    for key in list(env):
+    for key in tuple(env):
         if key.startswith("GIT_"):
             del env[key]
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -353,7 +412,7 @@ def event_context(root):
     # parent. An advanced base needs a fresh source binding/review, not a merge
     # reconstruction fallback or new object writes in this diagnostic.
     git(root, "merge-base", "--is-ancestor", base, PARENT)
-    if git(root, "rev-parse", source + "^{tree}") != git(root, "rev-parse", head + "^{tree}"):
+    if git(root, "rev-parse", source + TREE_SUFFIX) != git(root, "rev-parse", head + TREE_SUFFIX):
         raise ValueError("merge contains source outside the exact candidate tree")
     git(root, "diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD")
     if git(root, "ls-files", "--others", "--", "*.go", "go.mod", "go.sum").strip():
@@ -415,21 +474,21 @@ def validate_binding(root):
     original_binding(root, head)
     synchronize_binding(root, event, head)
     return {"parent": PARENT, "head": head, "base": base, "checkout_merge": source,
-            "checkout_tree": git(root, "rev-parse", source + "^{tree}").decode().strip(),
+            "checkout_tree": git(root, "rev-parse", source + TREE_SUFFIX).decode().strip(),
             "action": event["action"], "originals": ORIGINALS,
             "delta_sha256": digest(git(root, "diff", "--binary", "--no-ext-diff", "--no-textconv", PARENT, head)),
             "review_authority_claim": False}
 
 
 def tracer_identity(result):
-    tracer = file_identity("/usr/bin/strace")
+    tracer = file_identity(STRACE)
     result["preflight"].update({"strace": tracer, "image": os.environ.get("ImageVersion", "")[:256],
                                 "kernel": platform.release(), "architecture": platform.machine()})
     if os.environ.get("ImageVersion") != "20261004.327.1" or tracer["sha256"] != "28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001":
         raise ValueError("unreviewed image or tracer")
     if tracer["uid"] != 0 or tracer["mode"] & 0o022:
         raise ValueError("tracer ownership/mode")
-    version = subprocess.check_output(["/usr/bin/strace", "-V"], stderr=subprocess.STDOUT)
+    version = subprocess.check_output([STRACE, "-V"], stderr=subprocess.STDOUT)
     package = subprocess.check_output(["/usr/bin/dpkg-query", "-W", "-f=${Version} ${Architecture}", "strace"])
     result["preflight"].update({"strace_version": version[:4096].decode(errors="replace"), "dpkg": package[:256].decode(errors="replace")})
     if len(version) > 4096 or b"version 6.8" not in version or package != b"6.8-0ubuntu2 amd64":
@@ -441,7 +500,7 @@ def preflight(root, result):
     result["preflight"] = {"platform": sys.platform}
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise ValueError("native Linux amd64 required")
-    interpreter = file_identity("/usr/bin/python3")
+    interpreter = file_identity(PYTHON)
     result["preflight"].update({"python": interpreter, "python_version": sys.version})
     if interpreter["realpath"].startswith(str(root) + "/") or not sys.flags.isolated or not sys.flags.no_site:
         raise ValueError("interpreter isolation")
@@ -545,7 +604,7 @@ def run():
         binary = compile_normal(root, build, result)
         controls = root / SOURCE_PATHS[2]
         # Fixed control owner owns only private children; no focused supervisor.
-        control_status = subprocess.call(["/usr/bin/python3", "-I", "-S", str(controls), "controls", str(output), str(build)])
+        control_status = subprocess.call([PYTHON, "-I", "-S", str(controls), "controls", str(output), str(build)])
         result["controls_status"] = control_status
         result["control_truth"] = json.loads(bounded_read(build / "control-truth.json", 16384))
         if control_status:
@@ -554,21 +613,24 @@ def run():
         command = trace_command(pathlib.Path(__file__).resolve(), output, "focused", target)
         result["focused_argv"] = command
         # Persist exact launch provenance before launch in the one bounded log slot.
-        exclusive_write(output, "preflight.log", (json.dumps({"command": command, "driver": file_identity(__file__), "control_truth": result["control_truth"]}) + "\n").encode())
+        exclusive_write(output, LOG_NAME, (json.dumps({"command": command, "driver": file_identity(__file__), "control_truth": result["control_truth"]}) + "\n").encode())
         tracer = subprocess.Popen(command, cwd=root / "scripts")
         returncode = tracer.wait()  # Only our direct strace child. No timeout/target cleanup.
         result["focused"] = observe(output, "focused", returncode)
         result["focused"]["raw_facts"] = raw_facts(output, "focused", 64)
         result["state"] = "COMPLETE" if result["focused"]["sink_receipt_state"] == "COMPLETE" else "UNQUALIFIED"
-        status = (returncode if returncode >= 0 else 128 - returncode) if result["state"] == "COMPLETE" else 1
+        if result["state"] == "COMPLETE":
+            status = returncode
+            if returncode < 0:
+                status = 128 - returncode
     except (Exception, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):
             result["state"] = "PARTIAL_UNKNOWN"
         result["error"] = type(error).__name__
         result["reason"] = str(error)[:1024]
     finally:
-        publish(output, "main.json", result)
-        publish(output, "manifest.json", {"version": 1, "content_ceiling": MAX_RETAINED, "slots": SLOTS,
+        publish(output, MAIN_NAME, result)
+        publish(output, MANIFEST_NAME, {"version": 1, "content_ceiling": MAX_RETAINED, "slots": SLOTS,
                                           "files_before_manifest": inventory(output), "sink_wait_status": "UNOBSERVABLE"})
         inventory(output)
     return status
@@ -589,9 +651,9 @@ def selftest():
             os.close(target_fd)
         assert result["received"] == 20000 and result["retained"] == 8192 and result["discarded"] == 11808 and result["eof"]
         assert (directory / "target").stat().st_size == 8192
-        publish(directory, "main.json", {"portable_support_only": True})
+        publish(directory, MAIN_NAME, {"portable_support_only": True})
         try:
-            publish(directory, "main.json", {})
+            publish(directory, MAIN_NAME, {})
         except FileExistsError:
             pass
         else:
@@ -606,23 +668,23 @@ def selftest():
         assert failure["errors"] == ["WRITE_ERROR"] and failure["eof"]
         assert failure["received"] == failure["discarded"] == 20000 and failure["retained"] == 0
         try:
-            exclusive_write(directory, "preflight.log", b"x" * 65537)
+            exclusive_write(directory, LOG_NAME, b"x" * 65537)
         except ValueError:
             pass
         else:
             raise AssertionError("metadata overflow accepted")
         assert not (directory / "preflight.log.tmp").exists()
         original_rename = os.rename
-        def failed_rename(*_):
+        def failed_rename(*_, **_kwargs):
             raise OSError("portable rename failure seam")
         try:
             os.rename = failed_rename
-            publish(directory, "manifest.json", {"bounded": True})
+            publish(directory, MANIFEST_NAME, {"bounded": True})
         except OSError:
             pass
         finally:
             os.rename = original_rename
-        assert (directory / "manifest.json.tmp").is_file() and not (directory / "manifest.json").exists()
+        assert (directory / "manifest.json.tmp").is_file() and not (directory / MANIFEST_NAME).exists()
         # Receipt alone never supplies a waited sink outcome; corrupt accounting fails.
         (directory / "exit0.trace").write_bytes(b"")
         receipt = {"version": 1, "slot": "exit0", "driver_sha256": file_identity(__file__)["sha256"],

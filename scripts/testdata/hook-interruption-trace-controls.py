@@ -4,6 +4,8 @@ import array
 import fcntl
 import json
 import os
+import re
+import stat
 import signal
 import socket
 import sys
@@ -14,6 +16,10 @@ if len(sys.argv) < 2 or sys.argv[1] not in ("target", "sentinel"):
     import runpy
     import select
     import subprocess
+
+WORKSPACE_ERROR = "privacy workspace custody"
+PRIVACY_PREFIX = "HOOK_TRACE_PRIVACY_SENTINEL_"
+PYTHON = "/usr/bin/python3"
 
 DRIVER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trace-hook-interruption.py")
 
@@ -26,19 +32,59 @@ def send(channel, value, fd=None):
     channel.sendmsg([payload], ancillary)
 
 
+def private_workspace(workspace):
+    # Target mode keeps its narrow imports; no driver/module execution in tracee.
+    temp = os.path.realpath(os.environ["RUNNER_TEMP"])
+    identifiers = [os.environ[name] for name in ("GITHUB_RUN_ID", "GITHUB_JOB", "GITHUB_RUN_ATTEMPT")]
+    if any(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value, re.ASCII) is None for value in identifiers):
+        raise ValueError(WORKSPACE_ERROR)
+    name = "hook-native-" + "-".join(identifiers) + "-build"
+    if os.fspath(workspace) != os.path.join(temp, name):
+        raise ValueError(WORKSPACE_ERROR)
+    expected_parent = os.stat(temp)
+    parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        info = os.fstat(parent)
+        expected = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        private_parent = info.st_uid == os.getuid() and not info.st_mode & 0o022
+        sticky_temp = info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o1777
+        if not (private_parent or sticky_temp) or (info.st_dev, info.st_ino) != (expected_parent.st_dev, expected_parent.st_ino):
+            raise ValueError(WORKSPACE_ERROR)
+        if not stat.S_ISDIR(expected.st_mode) or expected.st_uid != os.getuid() or stat.S_IMODE(expected.st_mode) != 0o700:
+            raise ValueError(WORKSPACE_ERROR)
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        actual = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (actual.st_dev, actual.st_ino, actual.st_uid, actual.st_mode) != (expected.st_dev, expected.st_ino, expected.st_uid, expected.st_mode) or (current.st_dev, current.st_ino) != (actual.st_dev, actual.st_ino):
+            raise ValueError(WORKSPACE_ERROR)
+        result = descriptor
+        descriptor = None
+        return result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent)
+
+
 def privacy_target(channel, slot, workspace):
     sentinel = sys.argv[-1]
-    if not sentinel.startswith("HOOK_TRACE_PRIVACY_SENTINEL_" + slot + "_") or len(sentinel) > 96:
+    if slot not in ("exit0", "exit23", "signal") or re.fullmatch(PRIVACY_PREFIX + slot + r"_[\da-f]{32}", sentinel, re.ASCII) is None:
         raise ValueError("private sentinel identity")
-    path = os.path.join(workspace, sentinel)
     # Real argv/env/path/read/write sentinels, never synthetic trace strings.
     if sys.argv[-1] != sentinel or os.environ.get("HOOK_TRACE_PRIVATE_SENTINEL") != sentinel:
         raise ValueError("privacy fixture inputs")
-    with open(path, "xb", buffering=0) as stream:
-        stream.write(sentinel.encode())
-    with open(path, "rb", buffering=0) as stream:
-        if stream.read(4096) != sentinel.encode():
-            raise ValueError("privacy fixture IO")
+    descriptor = private_workspace(workspace)
+    try:
+        fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        with os.fdopen(fd, "wb", buffering=0) as stream:
+            stream.write(sentinel.encode())
+        fd = os.open(sentinel, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+        with os.fdopen(fd, "rb", buffering=0) as stream:
+            if stream.read(4096) != sentinel.encode():
+                raise ValueError("privacy fixture IO")
+    finally:
+        os.close(descriptor)
     read_fd, write_fd = os.pipe()
     os.write(write_fd, sentinel.encode())
     if os.read(read_fd, 4096) != sentinel.encode():
@@ -123,7 +169,7 @@ class Owner:
         self.tracers = []
         self.truth = []
         self.sentinels = {}
-        self.sentinel = subprocess.Popen(["/usr/bin/python3", "-I", "-S", __file__, "sentinel"],
+        self.sentinel = subprocess.Popen([PYTHON, "-I", "-S", __file__, "sentinel"],
                                          start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def remaining(self, reserve=0):
@@ -167,11 +213,11 @@ class Owner:
         self.remaining(0.5)
         parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         sink_parent = sink_child = None
-        target_argv = ["/usr/bin/python3", "-I", "-S", str(pathlib.Path(__file__).resolve()),
+        target_argv = [PYTHON, "-I", "-S", str(pathlib.Path(__file__).resolve()),
                        "target", slot, str(child.fileno()), str(self.workspace)]
         env = dict(os.environ)
         if slot in ("exit0", "exit23", "signal"):
-            sentinel = "HOOK_TRACE_PRIVACY_SENTINEL_" + slot + "_" + os.urandom(16).hex()
+            sentinel = PRIVACY_PREFIX + slot + "_" + os.urandom(16).hex()
             self.sentinels[slot] = sentinel
             target_argv.append(sentinel)
             env["HOOK_TRACE_PRIVATE_SENTINEL"] = sentinel
@@ -210,7 +256,7 @@ class Owner:
         terminal = "killed by SIGTERM" if slot == "signal" else "exited with " + str(expected)
         if not any(fact["pid_numeric"] == root["root"] and fact["terminal"] == terminal for fact in result["raw_facts"]["terminal_facts"]):
             raise ValueError("root terminal fact does not match independently admitted root")
-        if self.sentinels[slot].encode() in trace or b"HOOK_TRACE_PRIVACY_SENTINEL_" in trace:
+        if self.sentinels[slot].encode() in trace or PRIVACY_PREFIX.encode() in trace:
             raise ValueError("raw argv/env/path/read/write privacy leak")
 
     def status_privacy(self):
