@@ -2929,8 +2929,17 @@ func TestPHPReportRankingPreservesConfidenceInputs(t *testing.T) {
 	if dependencies[0].Name != "explicit" || dependencies[1].Name != "dynamic" {
 		t.Fatalf("unexpected ranking: %#v", dependencies)
 	}
+	for _, dependency := range dependencies {
+		candidate := dependency.RemovalCandidate
+		if candidate == nil {
+			t.Fatalf("expected ranked dependency %q to have a removal candidate", dependency.Name)
+		}
+		if candidate.Confidence <= 0 || candidate.Confidence > 100 {
+			t.Fatalf("expected ranked dependency %q confidence in (0, 100], got %g", dependency.Name, candidate.Confidence)
+		}
+	}
 	high, low := dependencies[0].RemovalCandidate, dependencies[1].RemovalCandidate
-	if high == nil || low == nil || high.Confidence <= low.Confidence || low.Confidence <= 0 || high.Confidence > 100 {
+	if high.Confidence <= low.Confidence {
 		t.Fatalf("expected static imports to retain higher confidence than dynamic usage: high %#v low %#v", high, low)
 	}
 }
