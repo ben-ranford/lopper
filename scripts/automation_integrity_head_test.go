@@ -92,7 +92,8 @@ jobs:
         uses: actions/checkout@v7
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -126,7 +127,8 @@ runs:
       uses: actions/cache@v4
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,7 +158,8 @@ jobs:
     steps: *trusted_steps
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -639,6 +642,20 @@ func readRepoFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func holdPinningFixtureWriter(t *testing.T, repoDir string) {
+	t.Helper()
+
+	writer, err := os.OpenFile(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("hold pinning fixture writer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close pinning fixture writer: %v", err)
+		}
+	})
 }
 
 func writeRepoScriptFixture(t *testing.T, repoDir string, path string) {
