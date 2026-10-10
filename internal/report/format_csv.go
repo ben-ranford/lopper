@@ -159,6 +159,10 @@ func dependencyCSVOrderKey(dep DependencyReport) [8]string {
 	// SPDX namespace seeding observes identity presence even when all identity
 	// fields are empty, so retain that distinction after the visible fields.
 	fallback.WriteString(strconv.FormatBool(dep.Identity != nil))
+	// Structural evidence can change the SPDX identity key without changing its
+	// rendered CSV fields, so preserve that final distinction too.
+	fallback.WriteByte('\n')
+	fallback.WriteString(strconv.Quote(DependencyVersionlessKey(dep)))
 	key[7] = fallback.String()
 	return key
 }
