@@ -440,6 +440,41 @@ func TestReadStaveLineInputContextStopsWatcherAfterNormalRead(t *testing.T) {
 	}
 }
 
+func TestReadStaveLineInputContextPreservesInputWhenAlreadyCanceled(t *testing.T) {
+	cancelReadCalled := false
+	cases := []struct {
+		name       string
+		cancelRead func() bool
+	}{
+		{name: "generic"},
+		{name: "cancellable", cancelRead: func() bool { cancelReadCalled = true; return true }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cancelReadCalled = false
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			source := strings.NewReader("refresh\n")
+			reader := bufio.NewReader(source)
+			remaining := source.Len()
+			line, eof, err := readStaveLineInputContext(ctx, reader, tc.cancelRead)
+			if line != "" || eof || !errors.Is(err, context.Canceled) {
+				t.Fatalf("already-cancelled read = (%q, %t, %v)", line, eof, err)
+			}
+			if source.Len() != remaining {
+				t.Fatalf("already-cancelled read consumed input: remaining = %d, want %d", source.Len(), remaining)
+			}
+			if cancelReadCalled {
+				t.Fatal("already-cancelled read invoked the cancellation callback")
+			}
+			line, eof, err = readStaveLineInput(reader)
+			if line != "refresh" || eof || err != nil {
+				t.Fatalf("preserved input = (%q, %t, %v)", line, eof, err)
+			}
+		})
+	}
+}
+
 func TestReadStaveLineInputContextReturnsCancellationAfterGenericRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reader := &cancelOnFirstRead{reader: strings.NewReader("refresh\n"), cancel: cancel}
