@@ -53,6 +53,7 @@ def admitted_launcher(configured):
 def resolve_compiler(launcher, toolchain, root):
     launcher = admitted_launcher(launcher)
     environment = dict(os.environ, GOTOOLCHAIN=toolchain)
+    environment.pop("GOROOT", None)
     data = json.loads(checked([launcher, "env", "-json", "GOROOT", "GOEXE", "GOMODCACHE", "GOCACHE"],
                               root, environment, FIXTURE_TIMEOUT))
     compiler = Path(data["GOROOT"]) / "bin" / ("go" + data["GOEXE"])

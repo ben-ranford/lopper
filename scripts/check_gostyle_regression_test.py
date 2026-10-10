@@ -158,6 +158,24 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("GOCACHEPROG", environment)
         self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(self.root / "compiler/bin"))
 
+    def test_inherited_goroot_is_removed_before_compiler_probe(self):
+        for inherited in [str(self.root), str(self.root / "incomplete-sdk")]:
+            with self.subTest(goroot=inherited), mock.patch.dict(os.environ, {"GOROOT": inherited}):
+                before = dict(os.environ)
+                self.fake.calls.clear()
+                self.assertEqual(self.invoke(), 0)
+                probe = self.fake.calls[0]
+                self.assertEqual(probe[0][1:3], ["env", "-json"])
+                self.assertEqual(probe[2]["GOTOOLCHAIN"], "go1.27.2")
+                self.assertNotIn("GOROOT", probe[2])
+                compiler = str(self.root / "compiler/bin/go")
+                for command, _, environment, _ in self.fake.calls[1:]:
+                    self.assertNotIn("GOROOT", environment)
+                    self.assertEqual(environment["PATH"].split(os.pathsep)[0], str(Path(compiler).parent))
+                    if command[1] != "run":
+                        self.assertEqual(command[0], compiler)
+                self.assertEqual(os.environ, before)
+
     def test_direct_panic_and_silent_success_still_scan_repository(self):
         for code in [0, 1, 2, 4]:
             with self.subTest(code=code):
