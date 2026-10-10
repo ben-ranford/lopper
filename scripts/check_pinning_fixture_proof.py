@@ -25,6 +25,8 @@ ERROR_KEY = 'error'
 PYTHON_TOOL = 'python3'
 VERSION_FLAG = '--version'
 STDOUT_SUFFIX = '.stdout'
+STDERR_SUFFIX = '.stderr'
+RESULT_RECEIPT = 'result.json'
 
 ORIGINAL = "f0da6e1200f4e9f190932a2cb241d8c4ae6f21d8"
 REPAIR = "6ce1817515bd9d84437804925407493d1b6f0e12"
@@ -71,12 +73,12 @@ COMMAND_NAMES = frozenset(
        'modules-download', 'modules-verify', 'modules-verify-after']
     + [name + suffix for name in ('B', 'C', 'C-race', 'I', 'restored')
        for suffix in ('-compile', '-buildinfo', '-0', '-1', '-2')])
-JSON_NAMES = frozenset({'bootstrap.json', 'result.json', 'runtime-before.json', 'runtime-after.json',
+JSON_NAMES = frozenset({'bootstrap.json', RESULT_RECEIPT, 'runtime-before.json', 'runtime-after.json',
                        'variant-inventories.json'}
                       | {name + '.json' for name in COMMAND_NAMES}
                       | {name + '-binary.json' for name in ('B', 'C', 'C-race', 'I', 'restored')})
 RECEIPT_NAMES = JSON_NAMES | frozenset(
-    name + suffix for name in COMMAND_NAMES for suffix in (STDOUT_SUFFIX, '.stderr')) | {'original-subject.go.txt'}
+    name + suffix for name in COMMAND_NAMES for suffix in (STDOUT_SUFFIX, STDERR_SUFFIX)) | {'original-subject.go.txt'}
 INITIAL_RESULT = {STATUS_KEY: 'INCOMPLETE', 'native_windows': 'UNRUN', 'external_review_binding': 'REQUIRED'}
 
 
@@ -129,7 +131,7 @@ class Receipts:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
         with os.fdopen(fd, 'rb') as stream:
             require(self.signature(os.fstat(stream.fileno())) == self.signature(before), 'receipt changed before read')
-            limit = COMMAND_CAP if name.endswith((STDOUT_SUFFIX, '.stderr')) else METADATA_RESERVE
+            limit = COMMAND_CAP if name.endswith((STDOUT_SUFFIX, STDERR_SUFFIX)) else METADATA_RESERVE
             data = stream.read(limit + 1)
             require(len(data) <= limit, 'receipt read cap exceeded')
             require(self.signature(os.fstat(stream.fileno())) == self.signature(before), 'receipt changed during read')
@@ -142,7 +144,7 @@ class Receipts:
         for name in os.listdir(self.fd):
             item = self.checked_file(name)
             total += item.st_size
-            if not name.endswith((STDOUT_SUFFIX, '.stderr')):
+            if not name.endswith((STDOUT_SUFFIX, STDERR_SUFFIX)):
                 metadata += item.st_size
         return metadata, total
 
@@ -153,14 +155,14 @@ class Receipts:
 
     def open_output(self, name):
         self.check()
-        require(name in RECEIPT_NAMES and name.endswith((STDOUT_SUFFIX, '.stderr')), 'unknown output receipt')
+        require(name in RECEIPT_NAMES and name.endswith((STDOUT_SUFFIX, STDERR_SUFFIX)), 'unknown output receipt')
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
         return os.fdopen(fd, 'wb')
 
     def write(self, name, data):
         self.check()
-        require(name in RECEIPT_NAMES and not name.endswith((STDOUT_SUFFIX, '.stderr'))
-                and name not in ('bootstrap.json', 'result.json'), 'unknown or protected receipt')
+        require(name in RECEIPT_NAMES and not name.endswith((STDOUT_SUFFIX, STDERR_SUFFIX))
+                and name not in ('bootstrap.json', RESULT_RECEIPT), 'unknown or protected receipt')
         self.reserve(len(data))
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
         with os.fdopen(fd, 'wb') as stream:
@@ -169,8 +171,8 @@ class Receipts:
 
     def finish(self, data):
         self.check()
-        before = self.checked_file('result.json')
-        require(json.loads(self.read('result.json')) == INITIAL_RESULT, 'unexpected result placeholder')
+        before = self.checked_file(RESULT_RECEIPT)
+        require(json.loads(self.read(RESULT_RECEIPT)) == INITIAL_RESULT, 'unexpected result placeholder')
         # Count both the old placeholder and complete temporary receipt before replacement.
         self.reserve(len(data))
         temporary = '.result-final.json'
@@ -180,13 +182,13 @@ class Receipts:
             with os.fdopen(fd, 'wb') as stream:
                 stream.write(data)
             self.check()
-            require(self.signature(self.checked_file('result.json')) == self.signature(before), 'result placeholder changed')
-            require(json.loads(self.read('result.json')) == INITIAL_RESULT, 'result placeholder content changed')
+            require(self.signature(self.checked_file(RESULT_RECEIPT)) == self.signature(before), 'result placeholder changed')
+            require(json.loads(self.read(RESULT_RECEIPT)) == INITIAL_RESULT, 'result placeholder content changed')
             current = os.stat(temporary, dir_fd=self.fd, follow_symlinks=False)
             require((current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino)
                     and stat.S_ISREG(current.st_mode) and current.st_nlink == 1
                     and current.st_uid == os.getuid() and current.st_size == len(data), 'final receipt changed')
-            os.replace(temporary, 'result.json', src_dir_fd=self.fd, dst_dir_fd=self.fd)
+            os.replace(temporary, RESULT_RECEIPT, src_dir_fd=self.fd, dst_dir_fd=self.fd)
         finally:
             try:
                 current = os.stat(temporary, dir_fd=self.fd, follow_symlinks=False)
@@ -201,7 +203,7 @@ def write_json(receipts, name, value):
     try:
         data = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
         require(name in JSON_NAMES and len(data) <= METADATA_RESERVE, 'invalid metadata receipt')
-        if name == 'result.json':
+        if name == RESULT_RECEIPT:
             receipts.finish(data)
         else:
             receipts.write(name, data)
@@ -537,7 +539,7 @@ def run_tests(commands, root, binary, name, red):
         record = commands.run(label, [binary, "-test.v", "-test.count=1", "-test.timeout=15m",
                                       "-test.run=^" + test + "$"], root / "scripts")
         test_result(record, commands.receipts.read(label + STDOUT_SUFFIX),
-                    commands.receipts.read(label + ".stderr"), test, red)
+                    commands.receipts.read(label + STDERR_SUFFIX), test, red)
         require(binding(binary) == before, "test binary changed during execution")
 
 
@@ -627,7 +629,7 @@ def main():
             result["commands"] = len(commands.records) if commands else 0
             result["finished"] = time.time()
             try:
-                write_json(receipts, "result.json", result)
+                write_json(receipts, RESULT_RECEIPT, result)
             finally:
                 receipts.close()
         except BaseException as secondary:

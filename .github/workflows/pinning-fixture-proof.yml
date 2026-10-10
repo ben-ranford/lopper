@@ -43,6 +43,7 @@ jobs:
 
           O = "6ce1817515bd9d84437804925407493d1b6f0e12"
           H0 = "c6edc891e111b2b6b2891963c0b47959306b4538"
+          H1 = "05a8c486f4ea86897a426703ca93f26a44bc2e78"
           F = "f0da6e1200f4e9f190932a2cb241d8c4ae6f21d8"
           PATHS = [".github/workflows/pinning-fixture-proof.yml", "scripts/check_pinning_fixture_proof.py"]
           SUBJECTS = {
@@ -85,9 +86,13 @@ jobs:
               require(git("show", "-s", "--format=%P", M).decode().split() == [O, H], "wrong ordered merge parents")
               require(git("rev-parse", M + "^{tree}") == git("rev-parse", H + "^{tree}"), "merge tree differs from reviewed W")
               require(git("show", "-s", "--format=%P", H0).decode().split() == [O], "wrong original W parent")
-              require(git("show", "-s", "--format=%P", H).decode().split() == [H0], "W is not the single corrective child")
-              changed = git("diff", "--name-only", H0, H).decode().splitlines()
-              require(changed and set(changed).issubset(PATHS), "wrong corrective scope")
+              require(git("rev-parse", H1 + "^{commit}").decode().strip() == H1, "wrong pinned H1 identity")
+              require(git("show", "-s", "--format=%P", H1).decode().split() == [H0], "wrong H1 parent")
+              first_correction = git("diff", "--name-only", H0, H1).decode().splitlines()
+              require(first_correction and set(first_correction).issubset(PATHS), "wrong H0-to-H1 corrective scope")
+              require(git("show", "-s", "--format=%P", H).decode().split() == [H1], "H2 is not the single corrective child of pinned H1")
+              second_correction = git("diff", "--name-only", H1, H).decode().splitlines()
+              require(second_correction and set(second_correction).issubset(PATHS), "wrong H1-to-H2 corrective scope")
               require(git("show", "-s", "--format=%P", O).decode().split() == [F], "wrong O parent")
               require(git("diff", "--name-only", O, H).decode().splitlines() == PATHS, "wrong W path set")
               require(git("diff", "--name-only", F, O).decode().splitlines() == ["scripts/automation_integrity_head_test.go"], "wrong O scope")
