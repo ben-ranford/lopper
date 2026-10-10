@@ -304,68 +304,31 @@ func TestAdapterDetectRejectsEscapingSymlinkSignals(t *testing.T) {
 	})
 }
 
-func TestAdapterAnalyseSkipsOversizedGradleManifest(t *testing.T) {
+func TestAdapterAnalyseAcceptsLargeGradleManifest(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), strings.Repeat("a", maxScannableJVMBuildFile+1))
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "java", testFileAppJava), "class App {}\n")
-
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath: repo,
-		TopN:     1,
-	})
-	if err != nil {
-		t.Fatalf(errAnalyseFmt, err)
-	}
-	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "unable to read build.gradle: "+safeReadTooLargeMessage()) {
-		t.Fatalf("expected oversized build warning, got %#v", reportData.Warnings)
-	}
-	if !strings.Contains(warnings, "no JVM dependencies discovered") {
-		t.Fatalf("expected dependency-discovery warning after oversized build skip, got %#v", reportData.Warnings)
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), strings.Repeat(" ", maxScannableJVMBuildFile+1)+"implementation 'org.example:late:1'\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "import org.example.Widget;\nclass Main { Widget value; }\n")
+	result := analyseJVMReport(t, language.Request{RepoPath: repo, TopN: 1})
+	assertSingleDependencyUsage(t, result.Dependencies, "late", "expected declaration after former2MiB limit")
+	if strings.Contains(strings.Join(result.Warnings, "\n"), "unable to read build.gradle") {
+		t.Fatalf("unexpected bounded manifest warning: %v", result.Warnings)
 	}
 }
 
-func TestAdapterAnalyseSkipsOversizedGradleCatalogInputs(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		oversized   string
-		warningText string
-	}{
-		{
-			name:        "oversized settings.gradle.kts",
-			oversized:   "settings.gradle.kts",
-			warningText: "unable to read settings.gradle.kts: file exceeds size limit",
-		},
-		{
-			name:        "oversized gradle/libs.versions.toml",
-			oversized:   filepath.Join("gradle", "libs.versions.toml"),
-			warningText: "unable to read gradle/libs.versions.toml: file exceeds size limit",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestAdapterAnalyseAcceptsLargeGradleCatalogInputs(t *testing.T) {
+	for _, name := range []string{"settings.gradle.kts", filepath.Join("gradle", "libs.versions.toml")} {
+		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `
-dependencies {
-  implementation("com.squareup.okhttp3:okhttp:4.12.0")
-}
-`)
-			testutil.MustWriteFile(t, filepath.Join(repo, tc.oversized), strings.Repeat("a", shared.GradleManifestByteLimit+1))
-			testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
-import okhttp3.OkHttpClient
-fun runClient() { OkHttpClient() }
-`)
-
-			reportData := analyseJVMReport(t, language.Request{RepoPath: repo, TopN: 5})
-			if !strings.Contains(strings.Join(reportData.Warnings, "\n"), tc.warningText) {
-				t.Fatalf("expected oversized manifest warning, got %#v", reportData.Warnings)
+			testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `dependencies { implementation("com.squareup.okhttp3:okhttp:4.12.0") }`)
+			testutil.MustWriteFile(t, filepath.Join(repo, name), strings.Repeat(" ", shared.GradleManifestByteLimit+1))
+			testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), "import okhttp3.OkHttpClient\nfun runClient() { OkHttpClient() }\n")
+			result := analyseJVMReport(t, language.Request{RepoPath: repo, TopN: 5})
+			if strings.Contains(strings.Join(result.Warnings, "\n"), "unable to read") {
+				t.Fatalf("unexpected catalog warning: %v", result.Warnings)
 			}
-			assertSingleDependencyUsage(t, reportData.Dependencies, "okhttp", "expected direct Gradle dependency analysis to continue")
+			assertSingleDependencyUsage(t, result.Dependencies, "okhttp", "expected direct Gradle dependency analysis to continue")
 		})
 	}
-}
-
-func safeReadTooLargeMessage() string {
-	return "file exceeds size limit"
 }
 
 func TestJVMSourceScanSkipsOversizedFiles(t *testing.T) {

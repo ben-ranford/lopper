@@ -1,10 +1,15 @@
 package kotlinandroid
 
 import (
+	"context"
+	"errors"
+	"fmt"
+
 	"io/fs"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -96,4 +101,58 @@ func discoverGradleLockfiles(repoPath string) (gradleFileDiscoveryResult, error)
 	})
 	result.Files = files
 	return result, err
+}
+
+func streamGradleFilesContext(ctx context.Context, repoPath string, root safeio.Root, bytes *shared.GradleDiscoveryBudget, consume func(string, []byte) error) error {
+	return streamGradleFilesContextWithWarnings(ctx, repoPath, root, bytes, nil, consume)
+}
+
+func streamGradleFilesContextWithWarnings(ctx context.Context, repoPath string, root safeio.Root, bytes *shared.GradleDiscoveryBudget, warnings *[]string, consume func(string, []byte) error) error {
+	if err := ctx.Err(); err != nil {
+		return shared.GradleDiscoveryFailure(repoPath, "discovery", err)
+	}
+	// Legacy WalkDir applies the skip predicate to the root itself as well.
+	if shouldSkipDir(filepath.Base(repoPath)) {
+		return nil
+	}
+	matches := func(name string) bool {
+		return matchesBuildFile(name, []string{buildGradleName, buildGradleKTSName, gradleLockfileName})
+	}
+	budget := shared.RootedWalkBudget{MaxTraversalEntries: 8192, MaxFiles: 2048, MaxWorkItems: 2048, CountCandidate: func(_ string, entry fs.DirEntry) bool { return matches(entry.Name()) }}
+	err := shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
+		if !matches(file.Leaf) {
+			return nil
+		}
+		content, warning, err := readGradleInputWithinRoot(ctx, repoPath, file, bytes)
+		if err != nil {
+			return err
+		}
+		if warning != "" {
+			if warnings != nil {
+				*warnings = append(*warnings, warning)
+			}
+			return nil
+		}
+		if err := consume(file.Path, content); err != nil {
+			return err
+		}
+		return ctx.Err()
+	})
+	return shared.GradleDiscoveryWalkFailure(repoPath, budget, errors.Join(err, ctx.Err()))
+}
+
+func readGradleInputWithinRoot(ctx context.Context, repoPath string, file shared.RootedWalkFile, bytes *shared.GradleDiscoveryBudget) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", shared.GradleDiscoveryFailure(file.Path, "read", err)
+	}
+	entryType := file.Entry.Type()
+	if entryType&fs.ModeType != 0 {
+		readErr := fs.ErrInvalid
+		if entryType&fs.ModeSymlink != 0 {
+			readErr = fmt.Errorf("%w: %s", safeio.ErrTargetPathSymlink, file.Leaf)
+		}
+		return nil, formatGradleReadWarning(repoPath, file.Path, readErr), nil
+	}
+	content, err := bytes.ReadWithinRoot(ctx, file.Parent, file.Leaf, file.Path)
+	return content, "", err
 }

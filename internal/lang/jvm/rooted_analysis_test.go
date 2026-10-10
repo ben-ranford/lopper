@@ -402,7 +402,7 @@ func TestCollectDeclaredDependenciesWithinRootIgnoresBuildSymlinkDecoyFloodForCa
 	}
 }
 
-func TestCollectDeclaredDependenciesWithinRootDowngradesTraversalLimitToWarning(t *testing.T) {
+func TestCollectDeclaredDependenciesWithinRootRejectsTraversalLimit(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "app", buildGradleName), `dependencies { implementation("org.junit.jupiter:junit-jupiter-api:5.10.0") }`)
 	for index := 0; index < maxJVMBuildTraversalEntries+16; index++ {
@@ -410,16 +410,15 @@ func TestCollectDeclaredDependenciesWithinRootDowngradesTraversalLimitToWarning(
 	}
 	root := openJVMTestRoot(t, repo)
 
-	descriptors, _, _, warnings, err := collectDeclaredDependenciesWithinRoot(context.Background(), repo, root)
-	if err != nil {
-		t.Fatalf("collect rooted dependencies under traversal cap: %v", err)
+	descriptors, prefixes, aliases, warnings, err := collectDeclaredDependenciesWithinRoot(context.Background(), repo, root)
+	if err == nil {
+		t.Fatal("expected fatal traversal limit")
 	}
-	if len(descriptors) != 1 || descriptors[0].Name != "junit-jupiter-api" {
-		t.Fatalf("expected rooted dependency descriptors before traversal cap, got %#v", descriptors)
+	if !strings.Contains(err.Error(), "traversal entries exceeds 4096 (observed at least 4097)") || !strings.Contains(err.Error(), "rooted walk traversal limit exceeded") {
+		t.Fatalf("lost exact catalog boundary or original walk cause: %v", err)
 	}
-	joinedWarnings := strings.Join(warnings, "\n")
-	if !strings.Contains(joinedWarnings, "JVM build file scan reached the rooted walk limit") {
-		t.Fatalf("expected partial rooted-walk warning, got %#v", warnings)
+	if len(descriptors) != 0 || len(prefixes) != 0 || len(aliases) != 0 || len(warnings) != 0 {
+		t.Fatalf("partial discovery escaped: %v %v %v %v", descriptors, prefixes, aliases, warnings)
 	}
 }
 

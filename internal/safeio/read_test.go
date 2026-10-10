@@ -39,6 +39,155 @@ func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 	}
 }
 
+func TestOpenRootExistingAncestorNoFollowPreservesDeepMissingSuffix(t *testing.T) {
+	t.Run("public path returns deepest ancestor and suffix", func(t *testing.T) {
+		assertPublicDeepMissingRootSuffix(t)
+	})
+
+	t.Run("transfers existing handles and preserves caller close error", func(t *testing.T) {
+		assertDeepMissingRootSuffixHandleOwnership(t)
+	})
+}
+
+func assertPublicDeepMissingRootSuffix(t *testing.T) {
+	t.Helper()
+	rootDir := t.TempDir()
+	ancestor := filepath.Join(rootDir, "one", "two")
+	if err := os.MkdirAll(ancestor, 0o700); err != nil {
+		t.Fatalf("create existing ancestors: %v", err)
+	}
+	root, ancestorPath, missing, err := OpenRootExistingAncestorNoFollow(filepath.Join(ancestor, "missing", "deeper"))
+	if err != nil {
+		t.Fatalf("open existing ancestor: %v", err)
+	}
+	if root == nil {
+		t.Fatal("expected an opened existing ancestor")
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close existing ancestor: %v", err)
+		}
+	}()
+	canonicalAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		t.Fatalf("resolve existing ancestor: %v", err)
+	}
+	if ancestorPath != canonicalAncestor {
+		t.Fatalf("unexpected opened ancestor path: got %q want %q", ancestorPath, canonicalAncestor)
+	}
+	assertDeepMissingSuffix(t, missing)
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		t.Fatalf("stat returned root: %v", err)
+	}
+	ancestorInfo, err := os.Stat(canonicalAncestor)
+	if err != nil {
+		t.Fatalf("stat expected ancestor: %v", err)
+	}
+	if !os.SameFile(openedInfo, ancestorInfo) {
+		t.Fatal("returned root does not identify the deepest existing ancestor")
+	}
+}
+
+func assertDeepMissingRootSuffixHandleOwnership(t *testing.T) {
+	t.Helper()
+	fixture := newDeepMissingRootFixture(t)
+	target := filepath.Join(fixture.volumeRoot, "repo", "one", "two", "missing", "deeper")
+	root, ancestor, missing, err := openRootPathWith(target, func(string) (string, error) { return target, nil }, filepath.Rel, fixture.openRoot, fixture.openChild, allowMissingRootSuffix)
+	if err != nil {
+		t.Fatalf("open deepest existing ancestor: %v", err)
+	}
+	if root != fixture.roots[3] || ancestor != filepath.Join(fixture.volumeRoot, "repo", "one", "two") {
+		t.Fatalf("unexpected ancestor result: root=%#v path=%q", root, ancestor)
+	}
+	assertDeepMissingSuffix(t, missing)
+	if fixture.openCalls != 3 || fixture.closeCalls[0] != 1 || fixture.closeCalls[1] != 1 || fixture.closeCalls[2] != 1 || fixture.closeCalls[3] != 0 {
+		t.Fatalf("unexpected handle transfers before caller close: opens=%d closes=%v", fixture.openCalls, fixture.closeCalls)
+	}
+	if err := root.Close(); !errors.Is(err, fixture.closeErr) {
+		t.Fatalf("returned root close error not preserved: %v", err)
+	}
+	if fixture.closeCalls[3] != 1 {
+		t.Fatalf("returned root close count=%d, want 1", fixture.closeCalls[3])
+	}
+}
+
+type deepMissingRootFixture struct {
+	t          *testing.T
+	volumeRoot string
+	components []string
+	roots      []*fakeRoot
+	closeCalls []int
+	closeErr   error
+	openCalls  int
+}
+
+func newDeepMissingRootFixture(t *testing.T) *deepMissingRootFixture {
+	t.Helper()
+	fixture := &deepMissingRootFixture{
+		t:          t,
+		volumeRoot: filepath.VolumeName(t.TempDir()) + string(os.PathSeparator),
+		components: []string{"repo", "one", "two", "missing"},
+		closeCalls: make([]int, 4),
+		closeErr:   errors.New("close returned ancestor"),
+	}
+	directoryInfo := statTestPath(t, t.TempDir())
+	fixture.roots = make([]*fakeRoot, len(fixture.components))
+	for i := range fixture.roots {
+		index := i
+		fixture.roots[i] = &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) { return fixture.lstat(index, name, directoryInfo) },
+			close: func() error { return fixture.close(index) },
+		}
+	}
+	return fixture
+}
+
+func (f *deepMissingRootFixture) lstat(index int, name string, directoryInfo fs.FileInfo) (fs.FileInfo, error) {
+	if name != f.components[index] {
+		f.t.Fatalf("root %d lstat %q, want %q", index, name, f.components[index])
+	}
+	if index == len(f.components)-1 {
+		return nil, os.ErrNotExist
+	}
+	return directoryInfo, nil
+}
+
+func (f *deepMissingRootFixture) close(index int) error {
+	f.closeCalls[index]++
+	if index == len(f.components)-1 {
+		return f.closeErr
+	}
+	return nil
+}
+
+func (f *deepMissingRootFixture) openRoot(name string) (Root, error) {
+	if name != f.volumeRoot {
+		f.t.Fatalf("opened volume root %q, want %q", name, f.volumeRoot)
+	}
+	return f.roots[0], nil
+}
+
+func (f *deepMissingRootFixture) openChild(current Root, name, requestedPath string) (Root, string, error) {
+	if f.openCalls >= 3 || current != f.roots[f.openCalls] {
+		f.t.Fatalf("unexpected current root or excess child open: call=%d root=%#v", f.openCalls, current)
+	}
+	wantName := f.components[f.openCalls]
+	wantPath := filepath.Join(f.volumeRoot, filepath.Join(f.components[:f.openCalls+1]...))
+	if name != wantName || requestedPath != wantPath {
+		f.t.Fatalf("unexpected child path: name=%q path=%q", name, requestedPath)
+	}
+	f.openCalls++
+	return f.roots[f.openCalls], requestedPath, nil
+}
+
+func assertDeepMissingSuffix(t *testing.T, missing []string) {
+	t.Helper()
+	if len(missing) != 2 || missing[0] != "missing" || missing[1] != "deeper" {
+		t.Fatalf("unexpected missing suffix: %#v", missing)
+	}
+}
+
 func TestReadFileUnderRejectsSymlinkedRoot(t *testing.T) {
 	canonicalRoot := t.TempDir()
 	targetPath := filepath.Join(canonicalRoot, writeTestFileName)
@@ -183,6 +332,31 @@ func TestOpenFileWithinRootReadsRelativeFile(t *testing.T) {
 	}
 	if got := string(data); got != "hello" {
 		t.Fatalf(unexpectedContentFmt, got)
+	}
+}
+
+func TestOpenPinnedRegularFileDoesNotOpenWhenPlatformFlagsAreUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "regular.txt")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write regular test file: %v", err)
+	}
+	info := statTestPath(t, path)
+	openCalls := 0
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return info, nil },
+		openFile: func(string, int, os.FileMode) (File, error) {
+			openCalls++
+			return nil, errors.New("unexpected leaf open")
+		},
+	}
+	file, err := openPinnedRegularChildAtPathWithFlags(root, "regular.txt", "regular.txt", func() (int, error) {
+		return 0, errors.ErrUnsupported
+	})
+	if file != nil || !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("unsupported open strategy should fail closed, file=%v err=%v", file, err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("unsupported open strategy reached leaf OpenFile %d times", openCalls)
 	}
 }
 
