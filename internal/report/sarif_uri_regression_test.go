@@ -118,3 +118,54 @@ func TestDependencyAnchorSkipsRejectedSortedLocations(t *testing.T) {
 		}
 	}
 }
+
+func TestSARIFUnusedImportRejectsUnrelatedAnchorFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		locations []Location
+		wantURI   string
+	}{
+		{"escaping", []Location{{File: "../outside.go", Line: 4}}, ""},
+		{"blank", []Location{{File: " "}}, ""},
+		{"absent", nil, "src/main.go"},
+		{"empty", []Location{}, "src/main.go"},
+		{"valid after rejected", []Location{{File: "../outside.go"}, {File: "src/unused.go", Line: 4}}, "src/unused.go"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := Report{Dependencies: []DependencyReport{{Name: "pkg", Language: "js-ts",
+				UsedImports:   []ImportUse{{Name: "used", Module: "pkg", Locations: []Location{{File: "src/main.go", Line: 9}}}},
+				UnusedImports: []ImportUse{{Name: "unused", Module: "pkg", Locations: tc.locations}},
+			}}}
+			assertSARIFUnusedImportLocation(t, rep, tc.wantURI)
+		})
+	}
+}
+
+func assertSARIFUnusedImportLocation(t *testing.T, rep Report, wantURI string) {
+	t.Helper()
+	formatted, err := NewFormatter().Format(rep, FormatSARIF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSARIFSchema(t, formatted)
+	var log sarifLog
+	if err := json.Unmarshal([]byte(formatted), &log); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.Runs) != 1 || len(log.Runs[0].Results) != 1 {
+		t.Fatalf("expected one retained unused-import finding: %#v", log.Runs)
+	}
+	result := log.Runs[0].Results[0]
+	if result.RuleID != "lopper/waste/unused-import" {
+		t.Fatalf("unexpected retained rule: %s", result.RuleID)
+	}
+	if wantURI == "" {
+		if len(result.Locations) != 0 {
+			t.Fatalf("rejected supplied import location acquired unrelated anchor: %#v", result.Locations)
+		}
+		return
+	}
+	if len(result.Locations) != 1 || result.Locations[0].PhysicalLocation.ArtifactLocation.URI != wantURI {
+		t.Fatalf("unused-import location = %#v, want %s", result.Locations, wantURI)
+	}
+}
