@@ -913,3 +913,42 @@ func TestIsPathWithinRejectsSymlinkEscape(t *testing.T) {
 		t.Fatalf("expected path through escaping symlink to be rejected")
 	}
 }
+
+func TestDependencyReportBuilderPreservesCollections(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats DependencyStats
+		want  report.DependencyReport
+	}{
+		{
+			name: "nil collections",
+			want: report.DependencyReport{Name: "dep", Language: "fixture"},
+		},
+		{
+			name:  "allocated empty collections",
+			stats: DependencyStats{TopSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}},
+			want: report.DependencyReport{Name: "dep", Language: "fixture", TopUsedSymbols: []report.SymbolUsage{},
+				UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}},
+		},
+		{
+			name: "high and low confidence import metadata",
+			stats: DependencyStats{HasImports: true, UsedCount: 1, TotalCount: 2, UsedPercent: 50,
+				TopSymbols: []report.SymbolUsage{{Name: "Used", Module: "example", Count: 3}},
+				UsedImports: []report.ImportUse{{Name: "Used", Module: "example", ConfidenceScore: 0.9,
+					Locations: []report.Location{{File: "source", Line: 2, Column: 3}}, Provenance: []string{"literal-import"}, ConfidenceReasonCodes: []string{"literal"}}},
+				UnusedImports: []report.ImportUse{{Name: "Idle", Module: "example", ConfidenceScore: 0.1, ConfidenceReasonCodes: []string{"uncertain"}}}},
+			want: report.DependencyReport{Name: "dep", Language: "fixture", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50,
+				TopUsedSymbols: []report.SymbolUsage{{Name: "Used", Module: "example", Count: 3}},
+				UsedImports: []report.ImportUse{{Name: "Used", Module: "example", ConfidenceScore: 0.9,
+					Locations: []report.Location{{File: "source", Line: 2, Column: 3}}, Provenance: []string{"literal-import"}, ConfidenceReasonCodes: []string{"literal"}}},
+				UnusedImports: []report.ImportUse{{Name: "Idle", Module: "example", ConfidenceScore: 0.1, ConfidenceReasonCodes: []string{"uncertain"}}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildDependencyReportFromStats("dep", "fixture", tc.stats)
+			if !dependencyReportCollectionsEqual(got, tc.want) {
+				t.Fatalf("report mismatch:\ngot  %#v\nwant %#v", got, tc.want)
+			}
+		})
+	}
+}
