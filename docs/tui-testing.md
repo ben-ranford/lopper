@@ -51,3 +51,26 @@ tests but cannot run this POSIX PTY harness.
 The opt-in Stave preview (`--enable-feature stave-tui-preview`) retains its
 separate navigation/command modes documented in `docs/stave-tui-preview.md`.
 This fix targets the default summary UI selected without that explicit opt-in.
+
+## Terminal restoration acceptance
+
+The terminal input reader owns its shutdown independently of Bubble Tea. The
+Unix raw-mode lease must remain active until both the program and reader stop;
+cleanup then restores the caller's exact original mode without closing its file.
+Windows retains its console reader's existing mode ownership and no-flush close.
+
+`TestStaveRestorationWaitsForReaderAcrossShutdown` gates an independent read
+through normal quit, parent cancellation, program failure and reader-close error.
+It observes mode after program exit and after cancellation, releases the read,
+then verifies the close result, exact restoration and borrowed-file ownership.
+`TestStaveRestorationSignalProcess` runs SIGINT/SIGTERM cases in isolated helper
+processes with lifecycle sentinels and bounded, reaped exits. Unstarted-reader
+cleanup has a separate acceptance case. Scoped leak assertions add no ignores.
+
+These are acceptance tests for the restoration fix already merged in #1760.
+They exercise the lease/input/Bubble Tea lifecycle directly; the existing
+`TestStaveInFlightActionProcessSignalsRestoreTerminal` and parent-cancellation
+suite exercise the real program orchestration. Mutation controls that remove
+the reader join or prematurely restore raw mode must fail behaviorally. Native
+Linux and Windows verification still requires their own runners; cross-compiling
+is not evidence of terminal behavior.

@@ -133,3 +133,8 @@ func TestStaveTerminalRejectsUninterruptibleInput(t *testing.T) {
 	prepared.Session.Close()
 	goleak.VerifyNone(t)
 }
+
+func verifyRestorationNoLeaks(t *testing.T) {
+	t.Helper()
+	goleak.VerifyNone(t)
+}
