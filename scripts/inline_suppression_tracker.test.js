@@ -1639,11 +1639,10 @@ test('preserves mixed-hunk scan state, locations and full-file occurrence ordina
     '-`',
     ' `;',
     `+${marker}`,
-    '\\ No newline at end of file',
     '@@ -7 +8 @@',
     '-`',
     `+${marker}`,
-    '',
+    '\\ No newline at end of file',
   ].join('\n');
   const harness = makeHarness({
     files: [{ filename: 'main.js', status: 'modified', patch }],
