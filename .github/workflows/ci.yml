@@ -1225,7 +1225,9 @@ jobs:
             if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -cne $bootstrapSha256) { throw 'Trusted provider bootstrap digest mismatch' }
             if ((Get-FileHash -LiteralPath $verify -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifySha256) { throw 'Trusted provider verifier digest mismatch' }
           }
-          $go = (Get-Command go -CommandType Application).Source
+          $goCandidates = @(Get-Command go -CommandType Application | Select-Object -First 1)
+          if ($goCandidates.Count -ne 1) { throw 'Pinned bootstrap Go command is unavailable' }
+          $go = $goCandidates[0].Source
           if (-not [System.IO.Path]::IsPathFullyQualified($go)) { throw 'Pinned bootstrap Go must resolve to an absolute executable' }
           $goVersion = (& $go version).Trim()
           if ($LASTEXITCODE -ne 0 -or $goVersion -cne 'go version go1.27.2 windows/amd64') { throw "Unexpected bootstrap Go identity: $goVersion" }
