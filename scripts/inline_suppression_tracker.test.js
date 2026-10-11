@@ -1604,3 +1604,104 @@ test('rejects path traversal before issue mutation', async () => {
 test('ignores suppression-shaped text inside ANSI-C quotes', () => {
   assert.equal(testables.hasInlineSuppressionMarker("value=$'literal\\';#nolint'", 'build.bash'), false);
 });
+
+test('preserves ASCII hunk coordinates with omitted and zero counts', () => {
+  for (const [header, expected] of [
+    ['@@ -7 +12 @@ function context', 12],
+    ['@@ -0,0 +1,1 @@', 1],
+    ['@@ -12,1 +0,0 @@', 0],
+    ['@@ -007,02 +012,03 @@', 12],
+    ['@@ -100,20 +200,30 @@', 200],
+  ]) {
+    assert.equal(testables.parseHunkStart(header, 'main.go'), expected, header);
+  }
+  for (const header of [
+    '@@ -٧,1 +12,1 @@',
+    '@@ -7,١ +12,1 @@',
+    '@@ -7,1 +١٢,1 @@',
+    '@@ -7,1 +12,١ @@',
+    '@@ -7,1 +12x,1 @@',
+  ]) {
+    assert.throws(() => testables.parseHunkStart(header, 'main.go'), {
+      name: 'SyntaxError',
+      message: 'Unable to parse inline suppression diff hunk for main.go.',
+    }, header);
+  }
+});
+
+test('preserves mixed-hunk scan state, locations and full-file occurrence ordinals', async () => {
+  const marker = '// nolint rationale=temporary scanner false positive; owner=@security; remove-when=parser fixed';
+  const headLines = ['const sample = `', marker, '`;', marker, 'const a = 1;', marker, 'const b = 2;', marker];
+  const patch = [
+    '@@ -1,3 +1,4 @@',
+    ' const sample = `',
+    `+${marker}`,
+    '-`',
+    ' `;',
+    `+${marker}`,
+    '\\ No newline at end of file',
+    '@@ -7 +8 @@',
+    '-`',
+    `+${marker}`,
+    '',
+  ].join('\n');
+  const harness = makeHarness({
+    files: [{ filename: 'main.js', status: 'modified', patch }],
+    fullFileContents: { 'main.js': headLines.join('\n') },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.contentFetches, 1);
+  assert.equal(harness.calls.updated.length, 0);
+  assert.equal(harness.calls.created.length, 2);
+  for (const [index, line, occurrence] of [[0, 4, 2], [1, 8, 4]]) {
+    const body = harness.calls.created[index].body;
+    assert.ok(body.startsWith(`<!-- lopper-inline-suppression:${testables.fingerprintFor('main.js', marker, occurrence)} -->\n`));
+    assert.ok(body.includes(`Location: \`main.js:${line}\``));
+    assert.ok(body.includes(`Source: https://github.com/octo/lopper/blob/head-sha/main.js#L${line}`));
+    assert.ok(body.includes('Owner: @security'));
+    assert.ok(body.includes(`Source line:\n\n\`\`\`text\n${marker}\n\`\`\``));
+  }
+});
+
+test('preserves first lowercase fingerprint extraction during reconciliation', async () => {
+  const current = testables.fingerprintFor('main.go', trackedLine());
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const headers = [
+    `<!-- lopper-inline-suppression:${first} -->`,
+    `<!-- lopper-inline-suppression:${second} -->`,
+    `<!-- lopper-inline-suppression:${'c'.repeat(63)} -->`,
+    `<!-- lopper-inline-suppression:${'D'.repeat(64)} -->`,
+    '<!-- no fingerprint -->',
+  ];
+  const harness = makeHarness({
+    searchItems: ({ input }) => {
+      if (input.q.includes(`lopper-inline-suppression:${current}`)) {
+        return [];
+      }
+      return [
+        {
+          number: 199,
+          body: `<!-- lopper-inline-suppression:${current} -->\n<!-- lopper-inline-suppression-pr:42 -->\n<!-- lopper-inline-suppression:${second} -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+        ...headers.map((header, index) => ({
+          number: 200 + index,
+          body: `${header}\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        })),
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.deepEqual(harness.calls.updated.map((input) => input.issue_number), [200, 201]);
+  for (const update of harness.calls.updated) {
+    assert.equal(update.state, 'closed');
+    assert.equal(update.state_reason, 'not_planned');
+  }
+  assert.equal(harness.calls.created.length, 1);
+});
