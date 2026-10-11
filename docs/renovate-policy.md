@@ -47,11 +47,13 @@ installation with its own dependencies and RE2, outside the repository.
 Synthetic dependency records prove bounded engine behavior, not live registry
 discovery or hosted PR creation.
 
-With an external pinned installation and Node 24.11+ (Node 24 series):
+Install either reviewed engine release at `/tmp/renovate-proof/node_modules/renovate`. The fixture derives the repository root from its own module URL and reads the engine only from that fixed external location.
+
+With that pinned installation and Node 24.11+ (Node 24 series):
 
 ```sh
 node /tmp/renovate-proof/node_modules/renovate/dist/config-validator.js --strict --no-global renovate.json
-node scripts/testdata/renovate/explicit-policy.mjs "$PWD" /tmp/renovate-proof/node_modules/renovate
+node scripts/testdata/renovate/explicit-policy.mjs
 go test ./scripts -run 'Test(Renovate|MarketplaceToolingPin|ReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling)' -count=1
 ```
 

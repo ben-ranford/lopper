@@ -960,7 +960,7 @@ jobs:
           $receiptOwned = $false; $workOwned = $false
           $headReady = $false; $baseReady = $false; $baseOverlay = $false
           $bindings = @{
-              'scripts/renovate_vsce_test.go' = 'b605042552082d6f5090a885d38c97619a1224ac82103e55044635ea71034478'
+              'scripts/renovate_vsce_test.go' = 'af3d4d1c850599a7299dc996ddbe9f6b1117b3f815f262215c0c6cea6db88d02'
               'scripts/testdata/renovate/vsce-contract.mjs' = '2af540ae8aaebf115a4f3a15d6be2ade4c8a157ba6bd39040607f7102db00dc4'
               'scripts/testdata/renovate/README.md' = '2c4139e7f640ff7e3119d7e861632b05a76386c5ed73120c152b93add7b4c071'
               'scripts/testdata/renovate/runtime-integrity.json' = 'fb503b7e8e684c70fef3afd563a0109e194a9edb7cc8769cdafa0941c4408f94'
@@ -969,6 +969,15 @@ jobs:
           $inputPaths = @('renovate.json', 'scripts/release_workflow_config_test.go', 'go.mod', 'go.sum')
           $baseInputs = @{}
           $headInputs = @{}
+          function Resolve-NativeArchiveTool {
+              param([ValidateSet('git','tar')][string]$Name)
+              $commands = @(Get-Command $Name -CommandType Application -All -ErrorAction Stop)
+              if ($commands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($commands[0].Source)) { throw "Absolute native $Name application required" }
+              $resolved = Resolve-Path -LiteralPath $commands[0].Source -ErrorAction Stop
+              $executable = $resolved.ProviderPath
+              if ($executable -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($executable) -or -not (Test-Path -LiteralPath $executable -PathType Leaf -ErrorAction Stop)) { throw "Canonical native $Name executable file required" }
+              return $executable
+          }
           function Save-JSON($name, $value) {
               $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $receipt $name) -Encoding utf8NoBOM
           }
@@ -1147,6 +1156,76 @@ jobs:
               }
               Save-JSON 'gcc-choice-restoration.json' @{ environmentUnchanged = $true; globalFunctionsUnchanged = $true; controlsFailed = ($null -ne $chooserFailure) }
               if ($null -ne $chooserFailure) { throw $chooserFailure }
+              $archiveToolChoiceFailure = $null
+              try {
+                  & {
+                      $gitFirst = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\Program Files\Git\cmd\git.exe' }
+                      $gitSecond = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\PortableGit\cmd\git.exe' }
+                      $tarFirst = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\Windows\System32\tar.exe' }
+                      $tarSecond = [pscustomobject]@{ CommandType = 'Application'; Source = 'C:\Tools\tar.exe' }
+                      $relative = [pscustomobject]@{ CommandType = 'Application'; Source = 'relative\tool.exe' }
+                      $alias = [pscustomobject]@{ CommandType = 'Alias'; Source = 'untrusted-alias' }
+                      $cases = @(
+                          @{ name = 'git-single'; tool = 'git'; commands = @($gitFirst); expected = $gitFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'git-ordered-two'; tool = 'git'; commands = @($gitFirst, $gitSecond); expected = $gitFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'git-alias-before-applications'; tool = 'git'; commands = @($alias, $gitFirst, $gitSecond); expected = $gitFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'git-missing'; tool = 'git'; commands = @(); error = 'Absolute native git application required'; resolves = 0; exists = $false },
+                          @{ name = 'git-relative'; tool = 'git'; commands = @($relative); error = 'Absolute native git application required'; resolves = 0; exists = $false },
+                          @{ name = 'git-lookup-error'; tool = 'git'; commands = @($gitFirst); lookupError = $true; error = 'archive chooser discovery fault'; resolves = 0; exists = $false },
+                          @{ name = 'git-canonical-error'; tool = 'git'; commands = @($gitFirst); resolveError = $true; error = 'archive chooser resolution fault'; resolves = 1; exists = $false },
+                          @{ name = 'git-nonscalar'; tool = 'git'; commands = @($gitFirst); expected = $gitFirst.Source; providerShape = 'array'; error = 'Canonical native git executable file required'; resolves = 1; exists = $true },
+                          @{ name = 'git-relative-provider'; tool = 'git'; commands = @($gitFirst); expected = $gitFirst.Source; providerShape = 'relative'; error = 'Canonical native git executable file required'; resolves = 1; exists = $true },
+                          @{ name = 'git-nonfile'; tool = 'git'; commands = @($gitFirst); expected = $gitFirst.Source; error = 'Canonical native git executable file required'; resolves = 1; exists = $false },
+                          @{ name = 'tar-single'; tool = 'tar'; commands = @($tarFirst); expected = $tarFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'tar-ordered-two'; tool = 'tar'; commands = @($tarFirst, $tarSecond); expected = $tarFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'tar-alias-before-applications'; tool = 'tar'; commands = @($alias, $tarFirst, $tarSecond); expected = $tarFirst.Source; resolves = 1; exists = $true },
+                          @{ name = 'tar-missing'; tool = 'tar'; commands = @(); error = 'Absolute native tar application required'; resolves = 0; exists = $false },
+                          @{ name = 'tar-relative'; tool = 'tar'; commands = @($relative); error = 'Absolute native tar application required'; resolves = 0; exists = $false },
+                          @{ name = 'tar-lookup-error'; tool = 'tar'; commands = @($tarFirst); lookupError = $true; error = 'archive chooser discovery fault'; resolves = 0; exists = $false },
+                          @{ name = 'tar-canonical-error'; tool = 'tar'; commands = @($tarFirst); resolveError = $true; error = 'archive chooser resolution fault'; resolves = 1; exists = $false },
+                          @{ name = 'tar-nonscalar'; tool = 'tar'; commands = @($tarFirst); expected = $tarFirst.Source; providerShape = 'array'; error = 'Canonical native tar executable file required'; resolves = 1; exists = $true },
+                          @{ name = 'tar-relative-provider'; tool = 'tar'; commands = @($tarFirst); expected = $tarFirst.Source; providerShape = 'relative'; error = 'Canonical native tar executable file required'; resolves = 1; exists = $true },
+                          @{ name = 'tar-nonfile'; tool = 'tar'; commands = @($tarFirst); expected = $tarFirst.Source; error = 'Canonical native tar executable file required'; resolves = 1; exists = $false }
+                      )
+                      function Get-Command {
+                          param([string]$Name, [System.Management.Automation.CommandTypes]$CommandType, [switch]$All, [System.Management.Automation.ActionPreference]$ErrorAction)
+                          $observed.discovery++
+                          if ($Name -cne $case.tool -or $CommandType -ne [System.Management.Automation.CommandTypes]::Application -or -not $All -or $ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop) { throw 'Invalid archive-tool discovery invocation' }
+                          if ($case.lookupError) { throw 'archive chooser discovery fault' }
+                          $case.commands | Where-Object { $_.CommandType -ceq 'Application' }
+                      }
+                      function Resolve-Path {
+                          param([string]$LiteralPath, [System.Management.Automation.ActionPreference]$ErrorAction)
+                          $observed.resolution++
+                          $expectedApplication = @($case.commands | Where-Object { $_.CommandType -ceq 'Application' })[0]
+                          if ($LiteralPath -cne $expectedApplication.Source -or $ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop) { throw 'Wrong archive-tool provider selected' }
+                          if ($case.resolveError) { throw 'archive chooser resolution fault' }
+                          if ($case.providerShape -eq 'array') { return [pscustomobject]@{ ProviderPath = @($LiteralPath, $LiteralPath) } }
+                          if ($case.providerShape -eq 'relative') { return [pscustomobject]@{ ProviderPath = 'relative\resolved.exe' } }
+                          return [pscustomobject]@{ ProviderPath = $LiteralPath }
+                      }
+                      function Test-Path {
+                          param([string]$LiteralPath, [string]$PathType, [System.Management.Automation.ActionPreference]$ErrorAction)
+                          $observed.fileCheck++
+                          if ($LiteralPath -cne $case.expected -or $PathType -cne 'Leaf' -or $ErrorAction -ne [System.Management.Automation.ActionPreference]::Stop) { throw 'Invalid archive-tool leaf check' }
+                          return $case.exists
+                      }
+                      $results = @()
+                      foreach ($case in $cases) {
+                          $observed = @{ discovery = 0; resolution = 0; fileCheck = 0 }
+                          $selected = $null; $choiceError = $null
+                          try { $selected = Resolve-NativeArchiveTool -Name $case.tool } catch { $choiceError = $_.Exception.Message }
+                          $wantFileCheck = if ($case.resolves -eq 1 -and -not $case.resolveError -and $case.providerShape -notin @('array','relative')) { 1 } else { 0 }
+                          if ($observed.discovery -ne 1 -or $observed.resolution -ne $case.resolves -or $observed.fileCheck -ne $wantFileCheck) { throw "Archive-tool chooser invocation counts differ: $($case.name)" }
+                          if ($case.ContainsKey('error')) {
+                              if ($choiceError -cne $case.error) { throw "Archive-tool chooser did not preserve required failure: $($case.name)" }
+                          } elseif ($null -ne $choiceError -or $selected -isnot [string] -or $selected -cne $case.expected) { throw "Archive-tool chooser did not select one expected file: $($case.name)" }
+                          $results += @{ name = $case.name; passed = $true; discoveryCount = $observed.discovery; resolutionCount = $observed.resolution; fileCheckCount = $observed.fileCheck }
+                      }
+                      Save-JSON 'archive-tool-choice-controls.json' @{ cases = $results; count = $results.Count; boundaryControls = $true; nativeExecutableAuthentication = $false }
+                  }
+              } catch { $archiveToolChoiceFailure = $_ }
+              if ($null -ne $archiveToolChoiceFailure) { throw $archiveToolChoiceFailure }
               $gccCommands = @(Get-Command gcc -CommandType Application -All -ErrorAction Stop)
               if ($gccCommands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($gccCommands[0].Source)) { throw 'Absolute native GCC application required' }
               $gcc = (Resolve-Path -LiteralPath $gccCommands[0].Source -ErrorAction Stop).ProviderPath
@@ -1172,8 +1251,8 @@ jobs:
               $source = $env:QUALIFICATION_SOURCE_SHA
               if ($source -cnotmatch '^[0-9a-f]{40}$') { throw 'Full lowercase source SHA required' }
               $base = '0c753332a26136aef94a78886d096f8dfd85f734'
-              $git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
-              $tar = (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+              $git = Resolve-NativeArchiveTool -Name 'git'
+              $tar = Resolve-NativeArchiveTool -Name 'tar'
               Require-Zero 'resolve-head' $git @('rev-parse','--verify',"${source}^{commit}")
               if ((Get-Content -Raw -LiteralPath (Join-Path $receipt 'resolve-head.stdout')).Trim() -cne $source) { throw 'Exact source commit required' }
               Require-Zero 'resolve-base' $git @('rev-parse','--verify',"${base}^{commit}")

@@ -142,7 +142,11 @@ if (mode === 'boundaries') {
 } else if (mode === 'commands') {
  const poison = path.join(root, 'poison'); const marker = path.join(root, 'poison-executed'); fs.mkdirSync(poison);
  const poisonedNpm = path.join(poison, windows ? 'npm.exe' : 'npm');
- fs.copyFileSync(process.execPath, poisonedNpm, fs.constants.COPYFILE_FICLONE);
+ if (windows) fs.copyFileSync(process.execPath, poisonedNpm, fs.constants.COPYFILE_FICLONE);
+ else {
+  const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  fs.writeFileSync(poisonedNpm, '#!/bin/sh\nexec ' + quote(process.execPath) + ' "$@"\n', { mode: 0o755 });
+ }
  fs.chmodSync(poisonedNpm, 0o755);
  for (const name of ['git', 'tar', 'node', 'go']) fs.linkSync(poisonedNpm, path.join(poison, windows ? name + '.exe' : name));
  const sentinel = 'import fs from "node:fs"; fs.writeFileSync(' + JSON.stringify(marker) + ', "executed\\n");';
@@ -342,6 +346,20 @@ func TestRenovateFixtureWindowsCIQualificationContract(t *testing.T) {
 		"$gcc = (Resolve-Path -LiteralPath $gccCommands[0].Source -ErrorAction Stop).ProviderPath",
 	})
 	assertWorkflowStepRunOmitsAll(t, qualify, "no compiler array or fallback", []string{"$gcc = (Get-Command", "$gccCommands[1]", "Select-Object -Last"})
+	assertWorkflowStepRunContainsAll(t, qualify, "single native archive-tool selection", []string{
+		"function Resolve-NativeArchiveTool", "[ValidateSet('git','tar')][string]$Name",
+		"$commands = @(Get-Command $Name -CommandType Application -All -ErrorAction Stop)",
+		"$commands.Count -eq 0 -or -not [IO.Path]::IsPathFullyQualified($commands[0].Source)",
+		"$resolved = Resolve-Path -LiteralPath $commands[0].Source -ErrorAction Stop", "$executable = $resolved.ProviderPath",
+		"$executable -isnot [string]", "-not [IO.Path]::IsPathFullyQualified($executable)", "Test-Path -LiteralPath $executable -PathType Leaf -ErrorAction Stop",
+		"$git = Resolve-NativeArchiveTool -Name 'git'", "$tar = Resolve-NativeArchiveTool -Name 'tar'",
+	})
+	assertWorkflowStepRunContainsAll(t, qualify, "native Git and tar chooser boundary controls", []string{
+		"'archive-tool-choice-controls.json'", "'git-ordered-two'", "'tar-ordered-two'", "'git-alias-before-applications'", "'tar-alias-before-applications'",
+		"'git-missing'", "'tar-missing'", "'git-relative'", "'tar-relative'", "'git-lookup-error'", "'tar-lookup-error'",
+		"'git-canonical-error'", "'tar-canonical-error'", "'git-nonscalar'", "'tar-nonscalar'", "'git-relative-provider'", "'tar-relative-provider'", "'git-nonfile'", "'tar-nonfile'",
+		"$Name -cne $case.tool", "Invalid archive-tool discovery invocation", "Wrong archive-tool provider selected", "Canonical native $Name executable file required",
+	})
 	assertWorkflowStepRunContainsAll(t, qualify, "native chooser boundary controls", []string{
 		"'single'", "'ordered-two'", "'duplicates'", "'missing'", "'lookup-error'", "'relative'", "'alias-function-collision'", "'canonical-error'",
 		"[System.Management.Automation.CommandTypes]$CommandType", "[System.Management.Automation.ActionPreference]$ErrorAction",
