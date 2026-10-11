@@ -87,21 +87,21 @@ func TestInstallScriptReleaseResponseErrors(t *testing.T) {
 
 func TestInstallScriptLargeResponseInstallsAndCleans(t *testing.T) {
 	fixture := newReleaseResponseFixture(t, largeReleaseResponse(t))
-	writeReleaseArchive(t, filepath.Join(fixture.dir, "archive.tar.gz"))
+	writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
 	output, err := fixture.run(t, "v1.8", "", false, "")
 	if err != nil || !strings.Contains(output, "Installed lopper fixture v1.8.12") {
 		t.Fatalf("install failed: %v\n%s", err, output)
 	}
 	installDir := filepath.Join(fixture.dir, "installed binary")
 	assertReleaseFileContains(t, fixture.pathFile, installDir+"\n")
-	assertReleaseFileContains(t, fixture.output, "binary-path="+filepath.Join(installDir, "lopper")+"\n")
+	assertReleaseFileContains(t, fixture.output, "binary-path="+filepath.Join(installDir, actionBinaryName(runtime.GOOS))+"\n")
 	assertReleaseFileContains(t, fixture.calls, "asset\n")
 	assertReleaseRunnerClean(t, fixture.runner)
 }
 
 func TestInstallScriptDownloadFailureCleans(t *testing.T) {
 	fixture := newReleaseResponseFixture(t, []byte(`[{"tag_name":"v1.8.12"}]`))
-	writeReleaseArchive(t, filepath.Join(fixture.dir, "archive.tar.gz"))
+	writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
 	output, err := fixture.run(t, "v1.8", "", false, "22")
 	if err == nil {
 		t.Fatalf("download failure unexpectedly installed: %s", output)
@@ -134,7 +134,7 @@ if [[ "$#" == 2 && "$1" == -fsSL && "$2" == 'https://api.github.com/repos/ben-ra
   cat "$FIXTURE_RESPONSE"
   exit "${FIXTURE_CURL_STATUS:-0}"
 fi
-if [[ "$#" == 4 && "$1" == -fsSL && "$2" == "https://github.com/ben-ranford/lopper/releases/download/v1.8.12/lopper_v1.8.12_${FIXTURE_OS}_${FIXTURE_ARCH}.tar.gz" && "$3" == -o ]]; then
+if [[ "$#" == 4 && "$1" == -fsSL && "$2" == "https://github.com/ben-ranford/lopper/releases/download/v1.8.12/lopper_v1.8.12_${FIXTURE_OS}_${FIXTURE_ARCH}.${FIXTURE_ARCHIVE_EXTENSION}" && "$3" == -o ]]; then
   printf 'asset\n' >> "$FIXTURE_CALLS"
   cp "$FIXTURE_ARCHIVE" "$4"
   exit "${FIXTURE_ASSET_STATUS:-0}"
@@ -147,8 +147,8 @@ exit 90
 		"TMPDIR="+fixture.runner, "GITHUB_OUTPUT="+fixture.output, "GITHUB_PATH="+fixture.pathFile,
 		"LOPPER_INSTALL_DIR="+filepath.Join(dir, "installed binary"), "LOPPER_GITHUB_TOKEN=",
 		"LOPPER_ACTION_OS=", "LOPPER_ACTION_ARCH=", "FIXTURE_RESPONSE="+fixture.response,
-		"FIXTURE_CALLS="+fixture.calls, "FIXTURE_ARCHIVE="+filepath.Join(dir, "archive.tar.gz"),
-		"FIXTURE_OS="+runtime.GOOS, "FIXTURE_ARCH="+runtime.GOARCH)
+		"FIXTURE_CALLS="+fixture.calls, "FIXTURE_ARCHIVE="+filepath.Join(dir, "archive"),
+		"FIXTURE_ARCHIVE_EXTENSION="+archiveExtension(runtime.GOOS), "FIXTURE_OS="+runtime.GOOS, "FIXTURE_ARCH="+runtime.GOARCH)
 	return fixture
 }
 
@@ -175,7 +175,7 @@ func (f *releaseResponseFixture) run(t *testing.T, version, ref string, dryRun b
 
 func assertReleaseResolution(t *testing.T, fixture releaseResponseFixture, output, version string) {
 	t.Helper()
-	url := fmt.Sprintf("https://github.com/ben-ranford/lopper/releases/download/%s/lopper_%s_%s_%s.tar.gz", version, version, runtime.GOOS, runtime.GOARCH)
+	url := fmt.Sprintf("https://github.com/ben-ranford/lopper/releases/download/%s/lopper_%s_%s_%s.%s", version, version, runtime.GOOS, runtime.GOARCH, archiveExtension(runtime.GOOS))
 	for _, expected := range []string{"resolved-version=" + version + "\n", "download-url=" + url + "\n"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("missing %q in %s", expected, output)
@@ -211,6 +211,10 @@ func assertReleaseFileContains(t *testing.T, path, expected string) {
 
 func writeReleaseArchive(t *testing.T, path string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		writeWindowsActionArchive(t, path, nativeActionFixture(t), "lopper.exe")
+		return
+	}
 	var buffer bytes.Buffer
 	compressed := gzip.NewWriter(&buffer)
 	archive := tar.NewWriter(compressed)
