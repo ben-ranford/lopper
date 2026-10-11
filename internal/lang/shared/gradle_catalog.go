@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -80,6 +81,7 @@ type gradleCatalogFile struct {
 }
 
 type gradleCatalogRegistry struct {
+	strict        *GradleDiscoveryBudget
 	repoPath      string
 	knownCatalogs map[string]struct{}
 	sources       map[string]gradleCatalogSource
@@ -137,11 +139,49 @@ func LoadGradleCatalogResolverWithinRoot(ctx context.Context, repoPath string, r
 			return GradleCatalogResolver{}, nil, err
 		}
 	}
-	resolver, err := registry.buildResolverWithinRoot()
+	resolver, err := registry.buildResolverWithinRoot(ctx)
 	if err != nil {
 		return GradleCatalogResolver{}, nil, err
 	}
 	return resolver, dedupeGradleCatalogWarnings(registry.warnings), nil
+}
+
+// LoadGradleCatalogResolverStrict preserves semantic warnings but never accepts
+// missing discovered/configured input, resource truncation or cancellation.
+func LoadGradleCatalogResolverStrict(ctx context.Context, repoPath string, root safeio.Root, budget *GradleDiscoveryBudget) (GradleCatalogResolver, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return GradleCatalogResolver{}, nil, GradleDiscoveryFailure(repoPath, "catalog", err)
+	}
+	if budget == nil {
+		return GradleCatalogResolver{}, nil, GradleDiscoveryFailure(repoPath, "catalog", fmt.Errorf("missing Gradle byte budget"))
+	}
+	registry := newGradleCatalogRegistry(repoPath)
+	registry.strict = budget
+	if err := registry.collectSourcesWithinRoot(ctx, root); err != nil {
+		return GradleCatalogResolver{}, nil, GradleDiscoveryWalkFailure(repoPath, rootedGradleCatalogWalkBudget(), err)
+	}
+	resolver, err := registry.buildResolverWithinRoot(ctx)
+	if err != nil {
+		return GradleCatalogResolver{}, nil, GradleDiscoveryFailure(repoPath, "catalog", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return GradleCatalogResolver{}, nil, GradleDiscoveryFailure(repoPath, "catalog", err)
+	}
+	return resolver, dedupeGradleCatalogWarnings(registry.warnings), nil
+}
+
+func (r *gradleCatalogRegistry) readPinned(ctx context.Context, parent safeio.Root, leaf, path string) ([]byte, error) {
+	if r.strict != nil {
+		return r.strict.ReadWithinRoot(ctx, parent, leaf, path)
+	}
+	return safeio.ReadFileWithinRootLimit(parent, leaf, GradleManifestByteLimit)
+}
+
+func (r *gradleCatalogRegistry) strictContextError(ctx context.Context, path string) error {
+	if r.strict == nil {
+		return nil
+	}
+	return GradleDiscoveryFailure(path, "catalog", ctx.Err())
 }
 
 func newGradleCatalogRegistry(repoPath string) *gradleCatalogRegistry {
@@ -165,20 +205,22 @@ func (r *gradleCatalogRegistry) collectSourcesWithinRoot(ctx context.Context, ro
 	walkErr := WalkRepoFilesWithinRootPinned(ctx, r.repoPath, root, budget, maybeSkipGradleCatalogDirectoryName, func(file RootedWalkFile) error {
 		switch strings.ToLower(file.Leaf) {
 		case settingsGradleFileName, settingsGradleKTSFileName:
-			return r.loadSettingsFileWithinPinnedParent(file.Parent, file.Leaf, file.Path)
+			if !r.skipKnownNonRegularGradleFile(file) {
+				return r.loadSettingsFileWithinPinnedParent(ctx, file.Parent, file.Leaf, file.Path)
+			}
 		case defaultGradleCatalogFileName:
-			r.registerDefaultCatalog(file.Path)
+			r.registerDiscoveredDefaultCatalog(file)
 		}
 		return nil
 	})
 	if walkErr != nil {
-		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, walkErr); !limited {
+		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, walkErr); r.strict != nil || !limited {
 			return walkErr
 		}
 	}
 	sourceWalkErr := r.captureSourcesWithinRoot(ctx, root)
 	if sourceWalkErr != nil {
-		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, sourceWalkErr); !limited {
+		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, sourceWalkErr); r.strict != nil || !limited {
 			return sourceWalkErr
 		}
 	}
@@ -208,7 +250,10 @@ func (r *gradleCatalogRegistry) captureSourcesWithinRoot(ctx context.Context, ro
 		if len(keys) == 0 {
 			return nil
 		}
-		content, readErr := safeio.ReadFileWithinRootLimit(file.Parent, file.Leaf, GradleManifestByteLimit)
+		content, readErr := r.readPinned(ctx, file.Parent, file.Leaf, file.Path)
+		if r.strict != nil && readErr != nil {
+			return readErr
+		}
 		for _, key := range keys {
 			source := r.sources[key]
 			source.rootedContent = content
@@ -313,15 +358,21 @@ func (r *gradleCatalogRegistry) loadSettingsFile(path string) {
 
 func (r *gradleCatalogRegistry) loadSettingsFileWithinRoot(root safeio.Root, path string) error {
 	content, readErr := readGradleCatalogFileWithinRoot(root, r.repoPath, path)
-	return r.loadSettingsFileResult(path, content, readErr)
+	return r.loadSettingsFileResult(context.Background(), path, content, readErr)
 }
 
-func (r *gradleCatalogRegistry) loadSettingsFileWithinPinnedParent(parent safeio.Root, leaf, path string) error {
-	content, readErr := safeio.ReadFileWithinRootLimit(parent, leaf, GradleManifestByteLimit)
-	return r.loadSettingsFileResult(path, content, readErr)
+func (r *gradleCatalogRegistry) loadSettingsFileWithinPinnedParent(ctx context.Context, parent safeio.Root, leaf, path string) error {
+	content, readErr := r.readPinned(ctx, parent, leaf, path)
+	return r.loadSettingsFileResult(ctx, path, content, readErr)
 }
 
-func (r *gradleCatalogRegistry) loadSettingsFileResult(path string, content []byte, readErr error) error {
+func (r *gradleCatalogRegistry) loadSettingsFileResult(ctx context.Context, path string, content []byte, readErr error) error {
+	if err := r.strictContextError(ctx, path); err != nil {
+		return errors.Join(readErr, err)
+	}
+	if r.strict != nil && readErr != nil {
+		return GradleDiscoveryFailure(path, "settings read", readErr)
+	}
 	if readErr != nil {
 		if !isPureGradleCatalogReadWarning(readErr) {
 			return readErr
@@ -330,7 +381,7 @@ func (r *gradleCatalogRegistry) loadSettingsFileResult(path string, content []by
 		return nil
 	}
 	r.loadSettingsFileContent(path, string(content))
-	return nil
+	return r.strictContextError(ctx, path)
 }
 
 func (r *gradleCatalogRegistry) loadSettingsFileContent(path, content string) {
@@ -391,8 +442,8 @@ func (r *gradleCatalogRegistry) buildResolver() GradleCatalogResolver {
 	return r.finalizeResolver()
 }
 
-func (r *gradleCatalogRegistry) buildResolverWithinRoot() (GradleCatalogResolver, error) {
-	if err := r.parseSourcesWithinRoot(); err != nil {
+func (r *gradleCatalogRegistry) buildResolverWithinRoot(ctx context.Context) (GradleCatalogResolver, error) {
+	if err := r.parseSourcesWithinRootContext(ctx); err != nil {
 		return GradleCatalogResolver{}, err
 	}
 	return r.finalizeResolver(), nil
@@ -415,8 +466,12 @@ func (r *gradleCatalogRegistry) parseSources() {
 }
 
 func (r *gradleCatalogRegistry) parseSourcesWithinRoot() error {
+	return r.parseSourcesWithinRootContext(context.Background())
+}
+
+func (r *gradleCatalogRegistry) parseSourcesWithinRootContext(ctx context.Context) error {
 	for _, source := range r.sortedSources() {
-		if err := r.loadCapturedSourceWithinRoot(source); err != nil {
+		if err := r.loadCapturedSourceWithinRootContext(ctx, source); err != nil {
 			return err
 		}
 	}
@@ -470,17 +525,27 @@ func (r *gradleCatalogRegistry) loadSource(source gradleCatalogSource) {
 
 func (r *gradleCatalogRegistry) loadSourceWithinRoot(root safeio.Root, source gradleCatalogSource) error {
 	content, readErr := readGradleCatalogFileWithinRoot(root, r.repoPath, source.path)
-	return r.loadSourceResult(source, content, readErr)
+	return r.loadSourceResult(context.Background(), source, content, readErr)
 }
 
 func (r *gradleCatalogRegistry) loadCapturedSourceWithinRoot(source gradleCatalogSource) error {
+	return r.loadCapturedSourceWithinRootContext(context.Background(), source)
+}
+
+func (r *gradleCatalogRegistry) loadCapturedSourceWithinRootContext(ctx context.Context, source gradleCatalogSource) error {
 	if !source.rootedLoaded {
 		source.rootedReadErr = uncapturedGradleCatalogSourceError(r.repoPath, source.path)
 	}
-	return r.loadSourceResult(source, source.rootedContent, source.rootedReadErr)
+	return r.loadSourceResult(ctx, source, source.rootedContent, source.rootedReadErr)
 }
 
-func (r *gradleCatalogRegistry) loadSourceResult(source gradleCatalogSource, content []byte, readErr error) error {
+func (r *gradleCatalogRegistry) loadSourceResult(ctx context.Context, source gradleCatalogSource, content []byte, readErr error) error {
+	if err := r.strictContextError(ctx, source.path); err != nil {
+		return errors.Join(readErr, err)
+	}
+	if r.strict != nil && readErr != nil {
+		return GradleDiscoveryFailure(source.path, "catalog read", readErr)
+	}
 	if readErr != nil {
 		if !isPureGradleCatalogReadWarning(readErr) {
 			return readErr
@@ -488,7 +553,13 @@ func (r *gradleCatalogRegistry) loadSourceResult(source gradleCatalogSource, con
 		r.warnings = append(r.warnings, formatGradleCatalogReadWarning(r.repoPath, source.path, readErr))
 		return nil
 	}
-	parsed, parseWarnings := parseGradleCatalogFile(string(content), source.name, relativeGradleCatalogPath(r.repoPath, source.path))
+	parsed, parseWarnings, parseErr := parseGradleCatalogFileResult(string(content), source.name, relativeGradleCatalogPath(r.repoPath, source.path))
+	if r.strict != nil && parseErr != nil {
+		return GradleDiscoveryFailure(source.path, "catalog parse", parseErr)
+	}
+	if err := r.strictContextError(ctx, source.path); err != nil {
+		return errors.Join(readErr, err)
+	}
 	r.warnings = append(r.warnings, parseWarnings...)
 	scope := r.ensureScope(source.root)
 	r.mergeLibraries(scope, source, parsed.libraries)
@@ -583,6 +654,22 @@ func (r *GradleCatalogResolver) ParseDependencyReferences(buildFilePath, content
 	return collector.dependencies, dedupeGradleCatalogWarnings(collector.warnings)
 }
 
+func (r *GradleCatalogResolver) ParseDependencyReferencesContext(ctx context.Context, path string, source []byte) ([]GradleCatalogLibrary, []string, error) {
+	references, err := parseGradleCatalogReferencesContext(ctx, path, source)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r == nil {
+		return nil, nil, nil
+	}
+	collector := newGradleCatalogReferenceCollector(r, path)
+	collector.consumeReferences(references)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, GradleDiscoveryFailure(path, "catalog references", err)
+	}
+	return collector.dependencies, dedupeGradleCatalogWarnings(collector.warnings), nil
+}
+
 func newGradleCatalogReferenceCollector(resolver *GradleCatalogResolver, buildFilePath string) *gradleCatalogReferenceCollector {
 	return &gradleCatalogReferenceCollector{
 		resolver:      resolver,
@@ -592,7 +679,11 @@ func newGradleCatalogReferenceCollector(resolver *GradleCatalogResolver, buildFi
 }
 
 func (c *gradleCatalogReferenceCollector) collectReferences(content string) {
-	for _, reference := range parseGradleCatalogReferencesForFile(c.buildFilePath, content) {
+	c.consumeReferences(parseGradleCatalogReferencesForFile(c.buildFilePath, content))
+}
+
+func (c *gradleCatalogReferenceCollector) consumeReferences(references []gradleCatalogReference) {
+	for _, reference := range references {
 		if !c.resolver.shouldProcessCatalogReference(reference.catalogName) {
 			continue
 		}
@@ -766,14 +857,23 @@ func parseGradleSettingsCatalogRefs(content, relativePath string) ([]gradleCatal
 }
 
 func parseGradleCatalogFile(content, catalogName, relativePath string) (gradleCatalogFile, []string) {
+	parsed, warnings, err := parseGradleCatalogFileResult(content, catalogName, relativePath)
+	if err != nil {
+		return parsed, []string{fmt.Sprintf("unable to parse Gradle version catalog %s: %v", relativePath, err)}
+	}
+	return parsed, warnings
+}
+
+func parseGradleCatalogFileResult(content, catalogName, relativePath string) (gradleCatalogFile, []string, error) {
 	parser := newGradleCatalogFileParser(catalogName, relativePath)
 	document := make(map[string]any)
 	if err := toml.Unmarshal([]byte(content), &document); err != nil {
-		parser.warnings = append(parser.warnings, fmt.Sprintf("unable to parse Gradle version catalog %s: %v", relativePath, err))
-		return parser.finalize()
+		parsed, warnings := parser.finalize()
+		return parsed, warnings, err
 	}
 	parser.consumeDocument(document)
-	return parser.finalize()
+	parsed, warnings := parser.finalize()
+	return parsed, warnings, nil
 }
 
 func newGradleCatalogFileParser(catalogName, relativePath string) *gradleCatalogFileParser {
@@ -1064,4 +1164,33 @@ func DedupeWarnings(warnings []string) []string {
 
 func dedupeGradleCatalogWarnings(warnings []string) []string {
 	return DedupeWarnings(warnings)
+}
+
+func (r *gradleCatalogRegistry) skipKnownNonRegularGradleFile(file RootedWalkFile) bool {
+	if file.Entry.Type().IsRegular() {
+		return false
+	}
+	if r.strict != nil {
+		if _, regular := r.strict.observedRegular[filepath.Clean(file.Path)]; regular {
+			return false
+		}
+	}
+	err := fs.ErrInvalid
+	if file.Entry.Type()&fs.ModeSymlink != 0 {
+		err = fmt.Errorf("%w: %s", safeio.ErrTargetPathSymlink, file.Leaf)
+	}
+	r.warnings = append(r.warnings, formatGradleCatalogReadWarning(r.repoPath, file.Path, err))
+	return true
+}
+
+func (r *gradleCatalogRegistry) registerDiscoveredDefaultCatalog(file RootedWalkFile) {
+	if strings.ToLower(filepath.Base(filepath.Dir(file.Path))) != "gradle" {
+		return
+	}
+	root := filepath.Dir(filepath.Dir(file.Path))
+	if _, configured := r.sources[buildGradleCatalogScopeKey(root, "libs")]; !configured && r.skipKnownNonRegularGradleFile(file) {
+		r.trackKnownCatalog("libs")
+		return
+	}
+	r.registerDefaultCatalog(file.Path)
 }
