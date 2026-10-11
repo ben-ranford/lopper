@@ -5,6 +5,22 @@ The required CI aggregate already waits for its producer and downloads that
 producer's exact current-run artifact ID. It does not search by artifact name
 across runs or start a separate artifact-wait deadline before production finishes.
 
+This same-run handoff replaces the timestamp correlation raised in #1749. The
+aggregate reads its producer's result through `needs.verify-checks.result` and
+its exact artifact locator through `needs.verify-checks.outputs.pr_report_artifact_id`.
+A failed or cancelled producer fails the aggregate's first gate without searching
+for another same-head run. The remaining tracking-issue wait shares an 18-minute,
+30-second deadline from initialization, leaving 90 seconds before the aggregate's
+20-minute timeout to report the result.
+
+The protected adapter takes its independently authenticated run ID and attempt
+from its caller. Producer `created_at` and PR `updated_at` do not select that run;
+artifact timestamps still validate the selected attempt's evidence window. Tests
+cover current and stale outcomes on either side of a consumer start timestamp,
+including a different run with identical head and timestamps. These are local
+acceptance proofs of the existing implementation, not a new hosted handoff or a
+claim that PR-editable workflow code is trusted.
+
 The producer now writes explicit v1 evidence even for a clean scan. Aggregate
 `verify` rejects missing, malformed, oversized or symlinked evidence before its
 independent diff checks. These checks are still in PR-editable workflow code.
