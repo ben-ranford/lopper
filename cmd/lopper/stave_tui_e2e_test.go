@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"github.com/ben-ranford/lopper/internal/testutil"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 )
 
 const stavePTYTimeout = 30 * time.Second
+const stavePTYCleanupGrace = 2 * time.Second
 
 type ptyReadResult struct {
 	n   int
@@ -515,20 +517,22 @@ func testStavePTYResizeRun(t *testing.T, bin, root, fixture string, run int) {
 	if err != nil {
 		t.Fatalf("run %d start: %v", run, err)
 	}
-	defer closePTYProcess(t, ptmx, cmd)
+	t.Logf("run %d started PTY child pid=%d at 80x24", run, cmd.Process.Pid)
+	waiter := newPTYWaitOwner(cmd.Wait)
+	defer closePTYProcessWithWait(t, ptmx, cmd, waiter, run)
 	assertStavePTYResizeFrames(t, ptmx, run)
-	assertStavePTYExitRestoresTerminal(t, ptmx, cmd, run)
+	assertStavePTYExitRestoresTerminal(t, ptmx, waiter, run)
 }
 
 func assertStavePTYResizeFrames(t *testing.T, ptmx *os.File, run int) {
 	t.Helper()
-	initial := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status: Stave preview") })
+	initial := readPTYUntilContext(t, ptmx, stavePTYTimeout, fmt.Sprintf("run %d initial 80x24 frame", run), func(s string) bool { return strings.Contains(s, "Status: Stave preview") })
 	assertNoUnsafeTerminalSequences(t, initial)
 	for _, size := range []struct{ cols, rows uint16 }{{40, 12}, {20, 8}} {
 		if err := pty.Setsize(ptmx, &pty.Winsize{Cols: size.cols, Rows: size.rows}); err != nil {
-			t.Fatalf("run %d resize: %v", run, err)
+			t.Fatalf("run %d resize to %dx%d: %v", run, size.cols, size.rows, err)
 		}
-		frame := readPTYUntil(t, ptmx, stavePTYTimeout, func(s string) bool { return strings.Contains(s, "Status:") })
+		frame := readPTYUntilContext(t, ptmx, stavePTYTimeout, fmt.Sprintf("run %d resize %dx%d frame", run, size.cols, size.rows), func(s string) bool { return strings.Contains(s, "Status:") })
 		assertNoUnsafeTerminalSequences(t, frame)
 		if len(frame) == 0 {
 			t.Fatalf("run %d resize produced empty frame", run)
@@ -536,12 +540,12 @@ func assertStavePTYResizeFrames(t *testing.T, ptmx *os.File, run int) {
 	}
 }
 
-func assertStavePTYExitRestoresTerminal(t *testing.T, ptmx *os.File, cmd *exec.Cmd, run int) {
+func assertStavePTYExitRestoresTerminal(t *testing.T, ptmx *os.File, waiter *ptyWaitOwner, run int) {
 	t.Helper()
 	if _, err := ptmx.Write([]byte("q")); err != nil {
 		t.Fatalf("run %d quit: %v", run, err)
 	}
-	if err := waitPTYExit(cmd, stavePTYTimeout); err != nil {
+	if err := waitPTYExitWithOwner(waiter, stavePTYTimeout); err != nil {
 		t.Fatalf("run %d exit: %v", run, err)
 	}
 	if err := ptmx.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
@@ -610,6 +614,15 @@ func TestStaveTUIDumbTerminalErrorsAndHelpStayVisible(t *testing.T) {
 
 func readPTYUntil(t *testing.T, r io.Reader, timeout time.Duration, done func(string) bool) string {
 	t.Helper()
+	return readPTYUntilContext(t, r, timeout, "", done)
+}
+
+func readPTYUntilContext(t *testing.T, r io.Reader, timeout time.Duration, phase string, done func(string) bool) string {
+	t.Helper()
+	contextLabel := ""
+	if phase != "" {
+		contextLabel = " during " + phase
+	}
 	var out bytes.Buffer
 	readDone := make(chan ptyReadResult, 1)
 	go func() {
@@ -630,9 +643,12 @@ func readPTYUntil(t *testing.T, r io.Reader, timeout time.Duration, done func(st
 			}
 			if result.err != nil {
 				if errors.Is(result.err, io.EOF) {
+					if phase != "" && !done(out.String()) {
+						t.Fatalf("PTY reached EOF%s before expected output; captured=%q", contextLabel, out.String())
+					}
 					return out.String()
 				}
-				t.Fatalf("read PTY output: %v", result.err)
+				t.Fatalf("read PTY output%s: %v; captured=%q", contextLabel, result.err, out.String())
 			}
 			go func() {
 				buf := make([]byte, 4096)
@@ -644,7 +660,7 @@ func readPTYUntil(t *testing.T, r io.Reader, timeout time.Duration, done func(st
 				}{n, buf, err}
 			}()
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for PTY output after %s: %q", timeout, out.String())
+			t.Fatalf("timed out waiting for PTY output after %s%s: %q", timeout, contextLabel, out.String())
 		}
 	}
 }
@@ -715,6 +731,133 @@ func waitPTYExit(cmd *exec.Cmd, timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		return context.DeadlineExceeded
+	}
+}
+
+type ptyWaitOwner struct {
+	done chan struct{}
+	err  error
+}
+
+func newPTYWaitOwner(wait func() error) *ptyWaitOwner {
+	owner := &ptyWaitOwner{done: make(chan struct{})}
+	go func() {
+		owner.err = wait()
+		close(owner.done)
+	}()
+	return owner
+}
+
+func (w *ptyWaitOwner) wait(timeout time.Duration) (completed bool, err error) {
+	select {
+	case <-w.done:
+		return true, w.err
+	case <-time.After(timeout):
+		return false, context.DeadlineExceeded
+	}
+}
+
+func waitPTYExitWithOwner(owner *ptyWaitOwner, timeout time.Duration) error {
+	completed, err := owner.wait(timeout)
+	if !completed {
+		return err
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 130 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func closePTYProcessWithWait(t *testing.T, ptmx *os.File, cmd *exec.Cmd, owner *ptyWaitOwner, run int) {
+	t.Helper()
+	if err := ptmx.Close(); err != nil {
+		t.Logf("close pty: %v", err)
+	}
+	completed, stopErr, waitErr := stopAndJoinPTYWait(owner, func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return cmd.Process.Kill()
+	}, stavePTYCleanupGrace)
+	if stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+		t.Errorf("run %d kill PTY process during cleanup: %v", run, stopErr)
+	}
+	if !completed {
+		t.Errorf("run %d PTY process wait did not complete within cleanup grace %s", run, stavePTYCleanupGrace)
+	}
+	if completed && waitErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 130 {
+			t.Logf("run %d PTY child exited during cleanup: %v", run, waitErr)
+		}
+	}
+}
+
+func stopAndJoinPTYWait(owner *ptyWaitOwner, stop func() error, grace time.Duration) (completed bool, stopErr error, waitErr error) {
+	select {
+	case <-owner.done:
+		return true, nil, owner.err
+	default:
+	}
+	stopErr = stop()
+	completed, waitErr = owner.wait(grace)
+	return completed, stopErr, waitErr
+}
+
+func TestPTYWaitOwnerSharesSingleWaitAcrossCompletionAndCleanup(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	waitCalls := 0
+	owner := newPTYWaitOwner(func() error {
+		waitCalls++
+		close(started)
+		<-finish
+		return nil
+	})
+	<-started
+	close(finish)
+	if completed, err := owner.wait(time.Second); !completed || err != nil {
+		t.Fatalf("normal wait = (completed=%t, err=%v), want (completed=true, err=nil)", completed, err)
+	}
+	stopCalls := 0
+	completed, stopErr, waitErr := stopAndJoinPTYWait(owner, func() error {
+		stopCalls++
+		return nil
+	}, stavePTYCleanupGrace)
+	if !completed || stopErr != nil || waitErr != nil {
+		t.Fatalf("cleanup join = (completed=%t, stopErr=%v, waitErr=%v), want (completed=true, stopErr=nil, waitErr=nil)", completed, stopErr, waitErr)
+	}
+	if waitCalls != 1 || stopCalls != 0 {
+		t.Fatalf("wait calls=%d cleanup stop calls=%d, want 1 and 0", waitCalls, stopCalls)
+	}
+}
+
+func TestPTYWaitOwnerCleanupJoinsOriginalWaitAfterKill(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	waitCalls := 0
+	owner := newPTYWaitOwner(func() error {
+		waitCalls++
+		close(started)
+		<-finish
+		return errors.New("killed child")
+	})
+	<-started
+	killCalls := 0
+	completed, stopErr, waitErr := stopAndJoinPTYWait(owner, func() error {
+		killCalls++
+		close(finish)
+		return nil
+	}, stavePTYCleanupGrace)
+	if stopErr != nil || !completed || waitErr == nil || waitErr.Error() != "killed child" {
+		t.Fatalf("cleanup = (completed=%t, stop=%v, wait=%v), want completed join and successful stop with child error", completed, stopErr, waitErr)
+	}
+	if waitCalls != 1 || killCalls != 1 {
+		t.Fatalf("wait calls=%d kill calls=%d, want one each", waitCalls, killCalls)
 	}
 }
 
