@@ -1,12 +1,52 @@
 // Offline policy proof using the official pinned engine; no package installs here.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve, join } from 'node:path';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, parse, resolve, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const engine = resolve('/tmp/renovate-proof/node_modules/renovate');
-const version = JSON.parse(readFileSync(join(engine, 'package.json'))).version;
-assert.ok(['44.134.1', '44.145.1'].includes(version));
+const [engineArg, ...extraArgs] = process.argv.slice(2);
+assert.ok(engineArg && extraArgs.length === 0, 'usage: explicit-policy.mjs /absolute/path/to/renovate');
+assert.ok(isAbsolute(engineArg), 'Renovate engine package path must be absolute');
+assert.ok(typeof process.getuid === 'function', 'engine privacy validation requires POSIX ownership checks');
+const engine = realpathSync(engineArg);
+const checkPrivateEnginePath = (path) => {
+  const root = parse(path).root;
+  const parts = path.slice(root.length).split(sep).filter(Boolean);
+  let current = root;
+  let sharedTempSeen = false;
+  let privateChildRequired = false;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const checkDirectory = () => {
+    const info = lstatSync(current);
+    assert.ok(info.isDirectory(), `Renovate engine path component must be a real directory: ${current}`);
+    const mode = info.mode & 0o7777;
+    if ((mode & 0o022) !== 0) {
+      assert.ok((mode & 0o1000) !== 0 && (info.uid === 0 || info.uid === uid),
+        `Renovate engine path has a publicly writable directory: ${current}`);
+      assert.notEqual(current, path, 'Renovate engine package directory must be private');
+      assert.notEqual(uid, undefined, 'cannot verify ownership below a shared temporary directory');
+      sharedTempSeen = true;
+      privateChildRequired = true;
+      return;
+    }
+    if (privateChildRequired) {
+      assert.equal(info.uid, uid, `Renovate engine child of shared temporary directory must be owned by the current user: ${current}`);
+      privateChildRequired = false;
+    } else if (sharedTempSeen) {
+      assert.ok(info.uid === uid || info.uid === 0,
+        `Renovate engine path below shared temporary directory has an untrusted owner: ${current}`);
+    }
+  };
+  checkDirectory();
+  for (const part of parts) {
+    current = current === root ? join(root, part) : join(current, part);
+    checkDirectory();
+  }
+  assert.ok(!privateChildRequired, 'Renovate engine path has no private child below its shared temporary directory');
+};
+checkPrivateEnginePath(engine);
+const version = JSON.parse(readFileSync(join(engine, 'package.json'), 'utf8')).version;
+assert.ok(['44.134.1', '44.145.1'].includes(version), `unsupported Renovate engine version: ${version}`);
 const load = (p) => import(pathToFileURL(join(engine, 'dist', p)));
 const { getConfig } = await load('config/defaults.js');
 const { branchifyUpgrades } = await load('workers/repository/updates/branchify.js');

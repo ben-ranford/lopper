@@ -3,7 +3,11 @@ package scripts
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -188,6 +192,65 @@ func TestRenovateExplicitRecommendedPolicy(t *testing.T) {
 	}
 	if _, exists := config["dependencyDashboardApproval"]; exists {
 		t.Fatal("dashboard must not gate update creation")
+	}
+}
+
+func TestRenovatePolicyFixtureRejectsInvalidEnginePath(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required for Renovate fixture engine-path checks")
+	}
+	fixture, err := filepath.Abs("testdata/renovate/explicit-policy.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupported := t.TempDir()
+	if err := os.WriteFile(filepath.Join(unsupported, "package.json"), []byte(`{"version":"43.0.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	public := filepath.Join(t.TempDir(), "public")
+	engine := filepath.Join(public, "node_modules", "renovate")
+	if err := os.MkdirAll(engine, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(public, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(engine, "package.json"), []byte(`{"version":"44.145.1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsupportedName := "unsupported version"
+	publicName := "publicly writable installation"
+	unsupportedWant := "unsupported Renovate engine version: 43.0.0"
+	publicWant := "publicly writable directory"
+	if runtime.GOOS == "windows" {
+		unsupportedName = "absolute unsupported-version path"
+		publicName = "absolute public-installation path"
+		unsupportedWant = "engine privacy validation requires POSIX ownership checks"
+		publicWant = unsupportedWant
+	}
+	for _, tc := range []struct {
+		name, engine, want string
+	}{
+		{name: "missing", want: "usage: explicit-policy.mjs"},
+		{name: "relative", engine: "relative/node_modules/renovate", want: "Renovate engine package path must be absolute"},
+		{name: publicName, engine: engine, want: publicWant},
+		{name: unsupportedName, engine: unsupported, want: unsupportedWant},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{fixture}
+			if tc.engine != "" {
+				args = append(args, tc.engine)
+			}
+			command := exec.Command(node, args...)
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatalf("fixture accepted invalid engine path %q", tc.engine)
+			}
+			if !strings.Contains(string(output), tc.want) {
+				t.Fatalf("fixture error = %q, want %q", output, tc.want)
+			}
+		})
 	}
 }
 

@@ -47,13 +47,15 @@ installation with its own dependencies and RE2, outside the repository.
 Synthetic dependency records prove bounded engine behavior, not live registry
 discovery or hosted PR creation.
 
-Install either reviewed engine release at `/tmp/renovate-proof/node_modules/renovate`. The fixture derives the repository root from its own module URL and reads the engine only from that fixed external location.
+On POSIX systems, use an existing private installation of either reviewed engine release and set `RENOVATE_ENGINE_PACKAGE` to the absolute path of its `node_modules/renovate` package. The fixture rejects missing or relative paths, paths with publicly writable components, and versions outside the reviewed 44.134.1 and 44.145.1 releases. A sticky system temporary directory is accepted only when the installation below it is owned by the current user and its remaining path is not group- or world-writable. On platforms without POSIX ownership checks, the fixture rejects absolute paths before inspecting or importing the engine. It resolves the supplied package path before reading it, derives the repository root from its own module URL, and does not install packages or access the network.
 
 With that pinned installation and Node 24.11+ (Node 24 series):
 
 ```sh
-node /tmp/renovate-proof/node_modules/renovate/dist/config-validator.js --strict --no-global renovate.json
-node scripts/testdata/renovate/explicit-policy.mjs
+# Replace this illustrative value with the existing private installation path.
+export RENOVATE_ENGINE_PACKAGE=/absolute/path/to/private-installation/node_modules/renovate
+node "$RENOVATE_ENGINE_PACKAGE/dist/config-validator.js" --strict --no-global renovate.json
+node scripts/testdata/renovate/explicit-policy.mjs "$RENOVATE_ENGINE_PACKAGE"
 go test ./scripts -run 'Test(Renovate|MarketplaceToolingPin|ReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling)' -count=1
 ```
 
