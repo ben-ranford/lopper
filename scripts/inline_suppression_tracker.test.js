@@ -1631,18 +1631,47 @@ test('preserves ASCII hunk coordinates with omitted and zero counts', () => {
 
 test('preserves mixed-hunk scan state, locations and full-file occurrence ordinals', async () => {
   const marker = '// nolint rationale=temporary scanner false positive; owner=@security; remove-when=parser fixed';
-  const headLines = ['const sample = `', marker, '`;', marker, 'const a = 1;', marker, 'const b = 2;', marker];
+  const headLines = [
+    'const sample = `',
+    marker,
+    '`;',
+    'const a = 1;',
+    marker,
+    marker,
+    'const b = 2;',
+    'const v3 = 3;',
+    'const v4 = 4;',
+    'const v5 = 5;',
+    'const v6 = 6;',
+    'const v7 = 7;',
+    'const v8 = 8;',
+    'const v9 = 9;',
+    'const v10 = 10;',
+    'const v11 = 11;',
+    'const v12 = 12;',
+    'const v13 = 13;',
+    marker,
+    'const v14 = 14;',
+    'const v15 = 15;',
+  ];
   const patch = [
-    '@@ -1,3 +1,4 @@',
+    '@@ -1,7 +1,9 @@',
     ' const sample = `',
     `+${marker}`,
-    '-`',
     ' `;',
+    ' const a = 1;',
+    ` ${marker}`,
     `+${marker}`,
-    '@@ -7 +8 @@',
-    '-`',
+    ' const b = 2;',
+    ' const v3 = 3;',
+    ' const v4 = 4;',
+    '@@ -14,5 +16,6 @@ const v10 = 10;',
+    ' const v11 = 11;',
+    ' const v12 = 12;',
+    ' const v13 = 13;',
     `+${marker}`,
-    '\\ No newline at end of file',
+    ' const v14 = 14;',
+    ' const v15 = 15;',
   ].join('\n');
   const harness = makeHarness({
     files: [{ filename: 'main.js', status: 'modified', patch }],
@@ -1654,7 +1683,7 @@ test('preserves mixed-hunk scan state, locations and full-file occurrence ordina
   assert.equal(harness.calls.contentFetches, 1);
   assert.equal(harness.calls.updated.length, 0);
   assert.equal(harness.calls.created.length, 2);
-  for (const [index, line, occurrence] of [[0, 4, 2], [1, 8, 4]]) {
+  for (const [index, line, occurrence] of [[0, 6, 3], [1, 19, 4]]) {
     const body = harness.calls.created[index].body;
     assert.ok(body.startsWith(`<!-- lopper-inline-suppression:${testables.fingerprintFor('main.js', marker, occurrence)} -->\n`));
     assert.ok(body.includes(`Location: \`main.js:${line}\``));
