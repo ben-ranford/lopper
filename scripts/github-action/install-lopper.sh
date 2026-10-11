@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+readonly WINDOWS_OS="windows"
 
 error() {
   echo "::error::$*" >&2
@@ -39,7 +40,8 @@ write_output() {
 }
 
 validate_windows_path() {
-  if [[ "$1" == *$'\n'* || "$1" == *$'\r'* ]]; then
+  local value="$1"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
     error "The Windows installation path must not contain line breaks."
     exit 2
   fi
@@ -102,7 +104,7 @@ resolve_release_series_tag() {
   local series="$1"
 
   local python="python3"
-  if ! command -v "$python" >/dev/null 2>&1 && [[ "$(detect_os)" == "windows" ]]; then
+  if ! command -v "$python" >/dev/null 2>&1 && [[ "$(detect_os)" == "$WINDOWS_OS" ]]; then
     python="python"
   fi
   if ! command -v "$python" >/dev/null 2>&1; then
@@ -209,7 +211,7 @@ detect_os() {
   case "$(lower "$value")" in
     linux) printf 'linux' ;;
     darwin) printf 'darwin' ;;
-    windows | windows_nt | mingw*_nt-* | msys_nt-*) printf 'windows' ;;
+    "$WINDOWS_OS" | windows_nt | mingw*_nt-* | msys_nt-*) printf '%s' "$WINDOWS_OS" ;;
     *)
       error "Unsupported runner OS '${value}'. Lopper release downloads are available for Linux, macOS and Windows runners."
       exit 1
@@ -238,7 +240,7 @@ tag="$(resolve_requested_tag)"
 validate_tag "$tag"
 
 goos="$(detect_os)"
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   validate_windows_path "${LOPPER_INSTALL_DIR:-}"
   validate_windows_path "${RUNNER_TEMP:-}"
   if [[ -z "$(trim "${RUNNER_TEMP:-}")" ]]; then
@@ -248,7 +250,7 @@ fi
 goarch="$(detect_arch)"
 archive_extension="tar.gz"
 binary_name="lopper"
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   archive_extension="zip"
   binary_name="lopper.exe"
 fi
@@ -268,7 +270,7 @@ runner_temp="$(trim "${RUNNER_TEMP:-}")"
 if [[ -z "$runner_temp" ]]; then
   runner_temp="${TMPDIR:-/tmp}"
 fi
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   runner_temp="$(cygpath -u "$runner_temp")"
 fi
 runner_temp="${runner_temp%/}"
@@ -276,7 +278,7 @@ install_dir="$(trim "${LOPPER_INSTALL_DIR:-}")"
 if [[ -z "$install_dir" ]]; then
   install_dir="${runner_temp}/lopper-action/bin"
 fi
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   install_dir="$(cygpath -u "$install_dir")"
 fi
 mkdir -p "$install_dir"
@@ -291,7 +293,7 @@ trap cleanup EXIT INT TERM
 
 archive_path="${work_dir}/${archive_name}"
 curl_with_token -fsSL "$download_url" -o "$archive_path"
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   zip_member="${archive_name%.zip}/${binary_name}"
   if ! member_count="$(unzip -Z1 "$archive_path" | grep -Fxc -- "$zip_member")" || [[ "$member_count" != "1" ]]; then
     error "Downloaded ZIP must contain exactly one ${zip_member}."
@@ -314,7 +316,7 @@ chmod +x "$installed_binary"
 
 path_entry="$install_dir"
 binary_output="$installed_binary"
-if [[ "$goos" == "windows" ]]; then
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
   path_entry="$(cygpath -w "$install_dir")"
   binary_output="$(cygpath -w "$installed_binary")"
   if [[ "$path_entry" == *$'\n'* || "$path_entry" == *$'\r'* ]]; then

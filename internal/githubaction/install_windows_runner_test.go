@@ -102,6 +102,16 @@ func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
 // therefore remain offline while the provider-owned proof lane exercises real
 // fixed and floating releases.
 func TestInstallScriptWindowsPublishedReleaseProof(t *testing.T) {
+	assertWindowsProofGoRootAvailable(t)
+	for _, requested := range []string{"v1.8.9", "v1.8"} {
+		t.Run(requested, func(t *testing.T) {
+			verifyPublishedWindowsRelease(t, requested)
+		})
+	}
+}
+
+func assertWindowsProofGoRootAvailable(t *testing.T) {
+	t.Helper()
 	goRoot := os.Getenv("REGRESSION_PROOF_GO_ROOT")
 	if runtime.GOOS != "windows" || goRoot == "" || os.Getenv("GOROOT") != goRoot {
 		t.Skip("requires the captured native Windows proof Go root")
@@ -112,64 +122,75 @@ func TestInstallScriptWindowsPublishedReleaseProof(t *testing.T) {
 			t.Skip("requires the authenticated Python provider artifacts")
 		}
 	}
+}
 
-	for _, requested := range []string{"v1.8.9", "v1.8"} {
-		t.Run(requested, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "release proof with spaces")
-			runnerTemp := filepath.Join(root, "runner temp")
-			installDir := filepath.Join(root, "installed binary")
-			if err := os.MkdirAll(runnerTemp, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			outputPath := filepath.Join(root, "github output")
-			githubPath := filepath.Join(root, "github path")
-			script := filepath.Join(repoRoot(t), "scripts", "github-action", "install-lopper.sh")
-			command := exec.Command("bash", script)
-			command.Env = replaceEnvironment(os.Environ(), map[string]string{
-				"GITHUB_OUTPUT":      outputPath,
-				"GITHUB_PATH":        githubPath,
-				"LOPPER_INSTALL_DIR": installDir,
-				"LOPPER_VERSION":     requested,
-				"RUNNER_TEMP":        runnerTemp,
-				"TMPDIR":             runnerTemp,
-			})
-			result, err := command.CombinedOutput()
-			if err != nil {
-				t.Fatalf("install published Windows release %s: %v\n%s", requested, err, result)
-			}
-
-			outputs, err := os.ReadFile(outputPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			binaryPath := outputValue(string(outputs), "binary-path")
-			resolvedVersion, installedVersion := outputValue(string(outputs), "resolved-version"), outputValue(string(outputs), "lopper-version")
-			if binaryPath == "" || resolvedVersion == "" || installedVersion == "" || !strings.Contains(binaryPath, "release proof with spaces") {
-				t.Fatalf("installer did not report its spaced Windows path and version: %s", outputs)
-			}
-			wantBinary := filepath.Join(installDir, "lopper.exe")
-			if !strings.EqualFold(filepath.Clean(binaryPath), filepath.Clean(wantBinary)) {
-				t.Fatalf("reported binary path %q, want %q", binaryPath, wantBinary)
-			}
-			if requested == "v1.8.9" && resolvedVersion != "v1.8.9" {
-				t.Fatalf("fixed release resolved unexpected tag %q", resolvedVersion)
-			}
-			if requested == "v1.8" && !strings.HasPrefix(resolvedVersion, "v1.8.") {
-				t.Fatalf("floating release resolved outside the v1.8 series: %q", resolvedVersion)
-			}
-			if !strings.Contains(installedVersion, strings.TrimPrefix(resolvedVersion, "v")) {
-				t.Fatalf("installed binary version %q does not match resolved tag %q", installedVersion, resolvedVersion)
-			}
-			versionOutput, err := exec.Command(binaryPath, "--version").CombinedOutput()
-			if err != nil || strings.TrimSpace(string(versionOutput)) != installedVersion {
-				t.Fatalf("installed executable identity differs from installer receipt: %v\n%s\nwant %q", err, versionOutput, installedVersion)
-			}
-			pathBytes, err := os.ReadFile(githubPath)
-			if err != nil || !strings.EqualFold(strings.TrimSpace(string(pathBytes)), installDir) {
-				t.Fatalf("installer PATH output does not name the spaced install directory: %v\n%s", err, pathBytes)
-			}
-		})
+func verifyPublishedWindowsRelease(t *testing.T, requested string) {
+	t.Helper()
+	installDir, githubPath, outputPath := runPublishedWindowsInstaller(t, requested)
+	outputs, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	binaryPath, _, installedVersion := assertPublishedWindowsOutputs(t, outputs, requested, installDir)
+	versionOutput, err := exec.Command(binaryPath, "--version").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(versionOutput)) != installedVersion {
+		t.Fatalf("installed executable identity differs from installer receipt: %v\n%s\nwant %q", err, versionOutput, installedVersion)
+	}
+	pathBytes, err := os.ReadFile(githubPath)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(pathBytes)), installDir) {
+		t.Fatalf("installer PATH output does not name the spaced install directory: %v\n%s", err, pathBytes)
+	}
+}
+
+func runPublishedWindowsInstaller(t *testing.T, requested string) (string, string, string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "release proof with spaces")
+	runnerTemp := filepath.Join(root, "runner temp")
+	installDir := filepath.Join(root, "installed binary")
+	if err := os.MkdirAll(runnerTemp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(root, "github output")
+	githubPath := filepath.Join(root, "github path")
+	script := filepath.Join(repoRoot(t), "scripts", "github-action", "install-lopper.sh")
+	command := exec.Command("bash", script)
+	command.Env = replaceEnvironment(os.Environ(), map[string]string{
+		"GITHUB_OUTPUT":      outputPath,
+		"GITHUB_PATH":        githubPath,
+		"LOPPER_INSTALL_DIR": installDir,
+		"LOPPER_VERSION":     requested,
+		"RUNNER_TEMP":        runnerTemp,
+		"TMPDIR":             runnerTemp,
+	})
+	result, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install published Windows release %s: %v\n%s", requested, err, result)
+	}
+	return installDir, githubPath, outputPath
+}
+
+func assertPublishedWindowsOutputs(t *testing.T, outputs []byte, requested, installDir string) (string, string, string) {
+	t.Helper()
+	binaryPath := outputValue(string(outputs), "binary-path")
+	resolvedVersion := outputValue(string(outputs), "resolved-version")
+	installedVersion := outputValue(string(outputs), "lopper-version")
+	if binaryPath == "" || resolvedVersion == "" || installedVersion == "" || !strings.Contains(binaryPath, "release proof with spaces") {
+		t.Fatalf("installer did not report its spaced Windows path and version: %s", outputs)
+	}
+	wantBinary := filepath.Join(installDir, "lopper.exe")
+	if !strings.EqualFold(filepath.Clean(binaryPath), filepath.Clean(wantBinary)) {
+		t.Fatalf("reported binary path %q, want %q", binaryPath, wantBinary)
+	}
+	if requested == "v1.8.9" && resolvedVersion != "v1.8.9" {
+		t.Fatalf("fixed release resolved unexpected tag %q", resolvedVersion)
+	}
+	if requested == "v1.8" && !strings.HasPrefix(resolvedVersion, "v1.8.") {
+		t.Fatalf("floating release resolved outside the v1.8 series: %q", resolvedVersion)
+	}
+	if !strings.Contains(installedVersion, strings.TrimPrefix(resolvedVersion, "v")) {
+		t.Fatalf("installed binary version %q does not match resolved tag %q", installedVersion, resolvedVersion)
+	}
+	return binaryPath, resolvedVersion, installedVersion
 }
 
 func replaceEnvironment(environment []string, replacements map[string]string) []string {

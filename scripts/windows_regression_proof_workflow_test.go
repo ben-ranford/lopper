@@ -147,6 +147,13 @@ func TestCIRequiresTrustedNativeWindowsActionProviderProof(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	job := workflowJobByName(t, workflow.Jobs, "action-windows-provider-proof")
+	assertTrustedWindowsProviderJob(t, workflow, job)
+	assertTrustedWindowsProviderExecution(t, workflow.Jobs)
+	assertTrustedWindowsProviderGate(t, workflow)
+}
+
+func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job workflowJobConfig) {
+	t.Helper()
 	if job.RunsOn != "windows-2025" || job.If != "" || job.ContinueOnError {
 		t.Fatal("trusted action provider proof must run as a required native windows-2025 job")
 	}
@@ -180,19 +187,24 @@ func TestCIRequiresTrustedNativeWindowsActionProviderProof(t *testing.T) {
 	assertTrustedProviderAuthBracket(t, preflight.Run, "Assert-TrustedProviderSource", "& $verifier @cacheArguments", "cache verifier")
 	bootstrap := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
 	assertTrustedProviderAuthBracket(t, bootstrap.Run, "Assert-TrustedProviderSource", "$result = & $env:TRUSTED_BOOTSTRAP", "trusted bootstrap")
-	installer := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Run fixed and floating native Windows installer proofs")
+}
+
+func assertTrustedWindowsProviderExecution(t *testing.T, jobs map[string]workflowJobConfig) {
+	t.Helper()
+	installer := workflowStepByName(t, jobs, "action-windows-provider-proof", "Run fixed and floating native Windows installer proofs")
 	if !strings.Contains(installer.Run, "TestInstallScriptWindows") || !strings.Contains(installer.Run, "-ProofArguments $proofArgs") {
 		t.Fatal("native installer proof must execute its published-release cases through the joined verifier")
 	}
 	if installer.Shell != "pwsh" {
 		t.Fatal("subject tests must execute only through the trusted joined-command verifier")
 	}
+	formal := workflowStepByName(t, jobs, "action-windows-provider-proof", "Prove native Windows regression tests for fix PRs")
 	for _, step := range []struct {
 		name string
 		step workflowStepConfig
 	}{
 		{name: "installer", step: installer},
-		{name: "formal regression", step: workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Prove native Windows regression tests for fix PRs")},
+		{name: "formal regression", step: formal},
 	} {
 		assertTrustedProviderAuthBracket(t, step.step.Run, "Assert-TrustedProviderInvocation", "& $env:TRUSTED_VERIFY -Verifier", step.name+" joined command")
 		for _, digest := range []string{
@@ -204,10 +216,13 @@ func TestCIRequiresTrustedNativeWindowsActionProviderProof(t *testing.T) {
 			}
 		}
 	}
-	formal := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Prove native Windows regression tests for fix PRs")
 	if formal.If == "" || !strings.Contains(formal.Run, "'--target-os', 'windows'") || !strings.Contains(formal.Run, "-ProofArguments $proofArgs") {
 		t.Fatal("formal candidate/base regression proof must run through the trusted verifier")
 	}
+}
+
+func assertTrustedWindowsProviderGate(t *testing.T, workflow workflowConfig) {
+	t.Helper()
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Require every verification job")
 	if !strings.Contains(gate.Env["WINDOWS_ACTION_PROOF_RESULT"], "action-windows-provider-proof.result") || !strings.Contains(gate.Run, "WINDOWS_ACTION_PROOF_RESULT") {
 		t.Fatal("aggregate verification must require the native action provider proof result")
