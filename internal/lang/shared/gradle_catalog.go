@@ -382,7 +382,9 @@ func (r *gradleCatalogRegistry) loadSettingsFileResult(ctx context.Context, path
 		return nil
 	}
 	if r.strict != nil {
-		if err := parseGradleTree(ctx, path, content, gradleLanguageForPath(path), func(*sitter.Node) {}); err != nil {
+		if err := parseGradleTree(ctx, path, content, gradleLanguageForPath(path), func(*sitter.Node) {
+			// This pass validates syntax only; catalog references are extracted below.
+		}); err != nil {
 			return err
 		}
 	}
