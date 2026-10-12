@@ -1,7 +1,11 @@
 package scripts
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -184,9 +188,107 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "Completed official CPython cache entry is unavailable") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.2 windows/amd64") {
 		t.Fatal("trusted provider commit/tree and completed-cache preflight must precede setup-python")
 	}
+	checkout := "git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1"
+	functionStart := strings.Index(preflight.Run, "function Assert-TrustedProviderSource {")
+	if strings.Count(preflight.Run, checkout) != 1 || functionStart < 0 || strings.Index(preflight.Run, checkout) > functionStart {
+		t.Fatal("trusted provider scripts must be restored exactly once before read-only source authentication")
+	}
+	functionBody, err := trustedProviderFunctionBody(preflight.Run, "Assert-TrustedProviderSource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(functionBody, "checkout-index") {
+		t.Fatal("source authentication must not repair changed bytes after the initial checkout")
+	}
+	for _, digestCheck := range []string{
+		"Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256",
+		"Get-FileHash -LiteralPath $verify -Algorithm SHA256",
+	} {
+		if !strings.Contains(functionBody, digestCheck) {
+			t.Fatalf("read-only source authentication must retain %q", digestCheck)
+		}
+	}
 	assertTrustedProviderAuthBracket(t, preflight.Run, "Assert-TrustedProviderSource", "& $verifier @cacheArguments", "cache verifier")
 	bootstrap := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
 	assertTrustedProviderAuthBracket(t, bootstrap.Run, "Assert-TrustedProviderSource", "$result = & $env:TRUSTED_BOOTSTRAP", "trusted bootstrap")
+}
+
+func trustedProviderFunctionBody(script, name string) (string, error) {
+	declaration := "function " + name + " {"
+	start := strings.Index(script, declaration)
+	if start < 0 {
+		return "", fmt.Errorf("function %q is missing", name)
+	}
+	bodyStart := start + len(declaration)
+	depth := 1
+	for index := bodyStart; index < len(script); index++ {
+		switch script[index] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return script[bodyStart:index], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("function %q has no closing brace", name)
+}
+
+func TestTrustedProviderCheckoutRestoresAuthenticatedBytesWithAutocrlf(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	trustedScript := "scripts/proof-python/provision.ps1"
+	runGitCommand(t, repo, "init", "--quiet")
+	runGitCommand(t, repo, "config", "core.autocrlf", "true")
+	runGitCommand(t, repo, "config", "user.name", "Test")
+	runGitCommand(t, repo, "config", "user.email", "test@example.invalid")
+
+	want := []byte("Write-Output 'pinned LF bytes'\nexit 0\n")
+	path := filepath.Join(repo, filepath.FromSlash(trustedScript))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "add", trustedScript)
+	runGitCommand(t, repo, "commit", "--quiet", "-m", "pin provider fixture")
+
+	crlf := bytes.ReplaceAll(want, []byte("\n"), []byte("\r\n"))
+	if err := os.WriteFile(path, crlf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "-c", "core.autocrlf=false", "checkout-index", "--force", "--", trustedScript)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("byte-preserving checkout returned %q, want pinned LF bytes %q", got, want)
+	}
+	wantDigest := sha256.Sum256(want)
+	if gotDigest := sha256.Sum256(got); gotDigest != wantDigest {
+		t.Fatal("restored provider bytes do not match the pinned digest")
+	}
+	if err := os.WriteFile(path, append(append([]byte(nil), got...), []byte("# changed\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedDigest := sha256.Sum256(changed)
+	if changedDigest == wantDigest {
+		t.Fatal("changed provider bytes unexpectedly retained the pinned digest")
+	}
+	stillChanged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stillChanged, changed) {
+		t.Fatal("a post-authentication check must detect tampering without restoring the file")
+	}
 }
 
 func assertTrustedWindowsProviderExecution(t *testing.T, jobs map[string]workflowJobConfig) {

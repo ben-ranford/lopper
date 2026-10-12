@@ -1219,6 +1219,8 @@ jobs:
           $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           $bootstrapSha256 = 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391'
           $verifySha256 = '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46'
+          git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Trusted provider byte-preserving checkout failed' }
           function Assert-TrustedProviderSource {
             if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
             if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
