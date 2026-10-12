@@ -51,7 +51,10 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	descriptors, lookups, declarationWarnings := collectDeclaredDependencies(repoPath)
+	descriptors, lookups, declarationWarnings, err := collectDeclaredDependenciesContext(ctx, repoPath)
+	if err != nil {
+		return report.Report{}, err
+	}
 	result.Warnings = append(result.Warnings, declarationWarnings...)
 
 	scanResult, err := scanRepo(ctx, repoPath, lookups)

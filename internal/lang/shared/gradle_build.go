@@ -1,7 +1,9 @@
 package shared
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -52,14 +54,24 @@ func ParseGradleDependencyCoordinates(content string, language *sitter.Language)
 		return nil
 	}
 	parser := sitter.NewParser()
+	defer parser.Close()
 	parser.SetLanguage(language)
-	tree, err := parser.ParseCtx(context.Background(), nil, []byte(content))
+	source := []byte(content)
+	tree, err := parser.ParseCtx(context.Background(), nil, source)
 	if err != nil || tree == nil {
 		return nil
 	}
-	source := []byte(content)
+	defer tree.Close()
+	root := tree.RootNode()
+	if root == nil {
+		return nil
+	}
+	// Keep the legacy helper's historical best-effort behavior for callers
+	// that intentionally inspect mixed or partially valid Gradle snippets.
+	// Strict discovery uses ParseGradleDependencyCoordinatesForFileContext,
+	// which rejects syntax errors and never publishes partial results.
 	coordinates := make([]GradleDependencyCoordinate, 0)
-	walkGradleNode(tree.RootNode(), func(node *sitter.Node) {
+	walkGradleNode(root, func(node *sitter.Node) {
 		if !isGradleDependencyCall(node, source) {
 			return
 		}
@@ -70,33 +82,101 @@ func ParseGradleDependencyCoordinates(content string, language *sitter.Language)
 	return coordinates
 }
 
+func ParseGradleDependencyCoordinatesForFileContext(ctx context.Context, path string, source []byte) ([]GradleDependencyCoordinate, error) {
+	return parseGradleCoordinatesContext(ctx, path, source, gradleLanguageForPath(path))
+}
+
+func parseGradleCoordinatesContext(ctx context.Context, path string, source []byte, language *sitter.Language) ([]GradleDependencyCoordinate, error) {
+	coordinates := make([]GradleDependencyCoordinate, 0)
+	err := parseGradleTree(ctx, path, source, language, func(node *sitter.Node) {
+		if !isGradleDependencyCall(node, source) {
+			return
+		}
+		if coordinate, ok := gradleCoordinateFromCall(node, source); ok {
+			coordinates = append(coordinates, coordinate)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return coordinates, nil
+}
+
 func parseGradleCatalogReferencesForFile(path, content string) []gradleCatalogReference {
-	language := gradleLanguageForPath(path)
-	if language == nil || strings.TrimSpace(content) == "" {
+	if strings.TrimSpace(content) == "" {
 		return nil
 	}
-	parser := sitter.NewParser()
-	parser.SetLanguage(language)
-	tree, err := parser.ParseCtx(context.Background(), nil, []byte(content))
-	if err != nil || tree == nil {
+	references, err := parseGradleCatalogReferencesContext(context.Background(), path, []byte(content))
+	if err != nil {
 		return nil
 	}
-	source := []byte(content)
+	return references
+}
+
+func parseGradleCatalogReferencesContext(ctx context.Context, path string, source []byte) ([]gradleCatalogReference, error) {
 	references := make([]gradleCatalogReference, 0)
-	walkGradleNode(tree.RootNode(), func(node *sitter.Node) {
+	err := parseGradleTree(ctx, path, source, gradleLanguageForPath(path), func(node *sitter.Node) {
 		if !isGradleDependencyCall(node, source) {
 			return
 		}
 		for _, arg := range gradleCallArguments(node) {
 			for _, expression := range gradleDependencyArgumentExpressions(arg, source) {
-				reference, ok := parseGradleCatalogReferenceExpression(expression)
-				if ok {
+				if reference, ok := parseGradleCatalogReferenceExpression(expression); ok {
 					references = append(references, reference)
 				}
 			}
 		}
 	})
-	return references
+	if err != nil {
+		return nil, err
+	}
+	return references, nil
+}
+
+func parseGradleTree(ctx context.Context, path string, source []byte, language *sitter.Language, visit func(*sitter.Node)) error {
+	if err := ctx.Err(); err != nil {
+		return GradleDiscoveryFailure(path, "parse", err)
+	}
+	if language == nil || len(bytes.TrimSpace(source)) == 0 {
+		return GradleDiscoveryFailure(path, "parse", ctx.Err())
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(language)
+	tree, err := parser.ParseCtx(ctx, nil, source)
+	if tree != nil {
+		defer tree.Close()
+	}
+	if err != nil {
+		return GradleDiscoveryFailure(path, "parse", errors.Join(err, ctx.Err()))
+	}
+	if tree == nil {
+		return GradleDiscoveryFailure(path, "parse", errors.New("gradle parser returned no tree"))
+	}
+	root := tree.RootNode()
+	if root == nil {
+		return GradleDiscoveryFailure(path, "parse", errors.New("gradle parser returned no root node"))
+	}
+	if root.HasError() {
+		return GradleDiscoveryFailure(path, "parse", errors.New("gradle parser reported syntax errors"))
+	}
+	return GradleDiscoveryFailure(path, "parse", walkGradleNodeContext(ctx, root, visit))
+}
+
+func walkGradleNodeContext(ctx context.Context, node *sitter.Node, visit func(*sitter.Node)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if node == nil {
+		return nil
+	}
+	visit(node)
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if err := walkGradleNodeContext(ctx, node.NamedChild(i), visit); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
 
 func gradleLanguageForPath(path string) *sitter.Language {

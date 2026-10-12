@@ -33,6 +33,7 @@ type analysisPipeline struct {
 	reports          []report.Report
 	warnings         []string
 	analyzedRoots    []string
+	identityPolicy   identityDiscoveryPolicy
 }
 
 func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analysisPipeline, error) {
@@ -60,6 +61,7 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 
 	cache := newAnalysisCache(req, repoPath, analysisRepoPath)
 	cache.observeInputRead = s.observeCacheInputRead
+	cache.deferWrites = true
 	return &analysisPipeline{
 		service:          s,
 		request:          req,
@@ -69,10 +71,14 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 		cleanupFn:        cleanupFn,
 		candidates:       candidates,
 		cache:            cache,
+		identityPolicy:   identityDiscoveryPolicy{limit: selectedGradleIdentityLimit(candidates)},
 	}, nil
 }
 
 func (p *analysisPipeline) cleanup() {
+	if p.cache != nil {
+		p.cache.pending = nil
+	}
 	for i := range p.reports {
 		clearMavenEvidence(&p.reports[i])
 	}
@@ -101,6 +107,9 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 }
 func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.Report, error) {
 	defer func() {
+		if p.cache != nil {
+			p.cache.pending = nil
+		}
 		for i := range p.reports {
 			clearMavenEvidence(&p.reports[i])
 		}
@@ -112,7 +121,7 @@ func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.R
 	}
 	if len(p.reports) == 0 {
 		reportData.Warnings = append(reportData.Warnings, "no language adapter produced results")
-		return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
+		return p.finalizeAndPublish(ctx, reportData)
 	}
 
 	maven, present, err := mergedMavenEvidence(p.analysisRepoPath, p.reports)
@@ -124,7 +133,7 @@ func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.R
 	merged.MavenManifestCatalog = present
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
-	return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
+	return p.finalizeAndPublish(ctx, merged)
 }
 
 func (p *analysisPipeline) collectWarnings() []string {
@@ -147,7 +156,10 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReportWithContext(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report) (result report.Report, resultErr error) {
+func finalizeReportWithContext(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+	return finalizeReportWithIdentityPolicy(ctx, req, repoPath, identityRepoPath, analyzedRoots, reportData, identityDiscoveryPolicy{})
+}
+func finalizeReportWithIdentityPolicy(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report, identityPolicy identityDiscoveryPolicy) (result report.Report, resultErr error) {
 	defer func() { clearMavenEvidence(&reportData); clearMavenEvidence(&result) }()
 	if err := ctx.Err(); err != nil {
 		return report.Report{}, err
@@ -163,7 +175,9 @@ func finalizeReportWithContext(ctx context.Context, req Request, repoPath, ident
 	lowConfidenceThreshold := float64(resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent))
 	annotateDerivedDependencyMetrics(reportData.Dependencies)
 	if identityPreviewEnabled(req) {
-		annotateDependencyIdentitiesWithContext(ctx, identityRepoPath, &reportData)
+		if err := annotateDependencyIdentitiesChecked(ctx, identityRepoPath, &reportData, identityPolicy); err != nil {
+			return report.Report{}, err
+		}
 		if err := ctx.Err(); err != nil {
 			return report.Report{}, err
 		}

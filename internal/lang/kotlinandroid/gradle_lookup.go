@@ -1,12 +1,15 @@
 package kotlinandroid
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const gradleReadWarningFormat = "unable to read %s: %v"
@@ -159,4 +162,61 @@ func formatGradleReadWarning(repoPath, path string, err error) string {
 		relPath = rel
 	}
 	return fmt.Sprintf(gradleReadWarningFormat, filepath.ToSlash(relPath), err)
+}
+
+func collectDeclaredDependenciesContext(ctx context.Context, repoPath string) (descriptors []dependencyDescriptor, lookups dependencyLookups, warnings []string, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, dependencyLookups{}, nil, shared.GradleDiscoveryFailure(repoPath, "discovery", err)
+	}
+	if shouldSkipDir(filepath.Base(repoPath)) {
+		return mergeDescriptors(nil, nil), buildDependencyLookupIndex(nil), nil, nil
+	}
+	root, err := safeio.OpenRootNoFollow(repoPath)
+	if err != nil {
+		return nil, dependencyLookups{}, nil, shared.GradleDiscoveryFailure(repoPath, "open root", err)
+	}
+	defer func() {
+		err = shared.GradleDiscoveryFailure(repoPath, "close root", errors.Join(err, root.Close()))
+		if err != nil {
+			descriptors, lookups, warnings = nil, dependencyLookups{}, nil
+		}
+	}()
+	return collectGradleDeclarationsWithinRoot(ctx, repoPath, root, shared.NewGradleDiscoveryBudget(repoPath))
+}
+
+func collectGradleDeclarationsWithinRoot(ctx context.Context, repoPath string, root safeio.Root, budget *shared.GradleDiscoveryBudget) ([]dependencyDescriptor, dependencyLookups, []string, error) {
+	resolver, warnings, err := shared.LoadGradleCatalogResolverStrict(ctx, repoPath, root, budget)
+	if err != nil {
+		return nil, dependencyLookups{}, nil, err
+	}
+	var manifest, lock []dependencyDescriptor
+	seen := make(map[string]struct{})
+	matched := false
+	err = streamGradleFilesContextWithWarnings(ctx, repoPath, root, budget, &warnings, func(path string, content []byte) error {
+		if strings.EqualFold(filepath.Base(path), gradleLockfileName) {
+			matched = true
+			items, err := parseGradleLockfileContentContext(ctx, string(content))
+			if err != nil {
+				return shared.GradleDiscoveryFailure(path, "lock parse", err)
+			}
+			lock = append(lock, detachGradleDescriptors(items)...)
+			return nil
+		}
+		items, parseWarnings, err := parseGradleDependencyContentContext(ctx, path, content, resolver)
+		if err != nil {
+			return err
+		}
+		warnings = append(warnings, parseWarnings...)
+		for _, item := range detachGradleDescriptors(items) {
+			manifest = appendManifestDescriptor(manifest, seen, item)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, dependencyLookups{}, nil, err
+	}
+	descriptors := mergeDescriptors(manifest, dedupeDescriptors(lock))
+	lookups := buildDependencyLookupIndex(descriptors)
+	lookups.HasLockfile = matched
+	return descriptors, lookups, shared.DedupeWarnings(warnings), nil
 }
