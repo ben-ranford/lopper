@@ -13,6 +13,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 	toml "github.com/pelletier/go-toml/v2"
+	sitter "github.com/smacker/go-tree-sitter"
 )
 
 const gradleCatalogScopeKeySeparator = "\x00"
@@ -379,6 +380,11 @@ func (r *gradleCatalogRegistry) loadSettingsFileResult(ctx context.Context, path
 		}
 		r.warnings = append(r.warnings, formatGradleCatalogReadWarning(r.repoPath, path, readErr))
 		return nil
+	}
+	if r.strict != nil {
+		if err := parseGradleTree(ctx, path, content, gradleLanguageForPath(path), func(*sitter.Node) {}); err != nil {
+			return err
+		}
 	}
 	r.loadSettingsFileContent(path, string(content))
 	return r.strictContextError(ctx, path)

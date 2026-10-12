@@ -590,6 +590,65 @@ func TestGradleStrictCatalogAbsenceAndErrors(t *testing.T) {
 	}
 }
 
+func TestGradleStrictCatalogRejectsMalformedSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name, settingsFile, settings string
+	}{
+		{
+			name:         "unclosed Groovy catalog block",
+			settingsFile: "settings.gradle",
+			settings:     `dependencyResolutionManagement { versionCatalogs { create("tools") { from(files("tools.toml")) }`,
+		},
+		{
+			name:         "unclosed Kotlin catalog block",
+			settingsFile: "settings.gradle.kts",
+			settings:     `dependencyResolutionManagement { versionCatalogs { create("tools") { from(files("tools.toml")) }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeGradleCatalogTestFile(t, filepath.Join(repo, tc.settingsFile), tc.settings)
+			writeGradleCatalogTestFile(t, filepath.Join(repo, "tools.toml"), "[libraries]\ncli = \"org.example:cli:1.0\"\n")
+			_, _, err := LoadGradleCatalogResolverStrict(context.Background(), repo, openSharedTestRoot(t, repo), NewGradleDiscoveryBudget(repo))
+			var discoveryErr *GradleDiscoveryError
+			if !errors.As(err, &discoveryErr) || discoveryErr.Operation != "parse" || !strings.Contains(err.Error(), "gradle parser reported syntax errors") {
+				t.Fatalf("expected strict settings syntax failure, got %v", err)
+			}
+		})
+	}
+}
+
+func TestGradleStrictCatalogAcceptsEmptySettings(t *testing.T) {
+	for _, tc := range []struct {
+		name, settingsFile, settings string
+	}{
+		{name: "empty Groovy settings", settingsFile: "settings.gradle", settings: ""},
+		{name: "whitespace Groovy settings", settingsFile: "settings.gradle", settings: " \n\t"},
+		{name: "empty Kotlin settings", settingsFile: "settings.gradle.kts", settings: ""},
+		{name: "whitespace Kotlin settings", settingsFile: "settings.gradle.kts", settings: " \n\t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeGradleCatalogTestFile(t, filepath.Join(repo, tc.settingsFile), tc.settings)
+			if _, _, err := LoadGradleCatalogResolverStrict(context.Background(), repo, openSharedTestRoot(t, repo), NewGradleDiscoveryBudget(repo)); err != nil {
+				t.Fatalf("strict discovery rejected valid empty settings: %v", err)
+			}
+		})
+	}
+}
+
+func TestGradleCatalogLegacyDiscoveryRemainsBestEffortForMalformedSettings(t *testing.T) {
+	repo := t.TempDir()
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "settings.gradle"), `dependencyResolutionManagement { versionCatalogs { create("tools") { from(files("tools.toml")) }`)
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "tools.toml"), "[libraries]\ncli = \"org.example:cli:1.0\"\n")
+
+	resolver, warnings := LoadGradleCatalogResolver(repo)
+	dependencies, parseWarnings := resolver.ParseDependencyReferences(filepath.Join(repo, "build.gradle"), "implementation tools.cli")
+	if len(warnings) != 0 || len(parseWarnings) != 0 || !reflect.DeepEqual(dependencies, []GradleCatalogLibrary{{Alias: "cli", Catalog: "tools", Group: "org.example", Artifact: "cli", Version: "1.0"}}) {
+		t.Fatalf("legacy best-effort resolution changed: dependencies=%+v warnings=%v parseWarnings=%v", dependencies, warnings, parseWarnings)
+	}
+}
+
 func assertGradleCatalogFailure(t *testing.T, err, want error) {
 	t.Helper()
 	if want == nil {
