@@ -179,7 +179,8 @@ def _real_path(path: str) -> str:
 
 
 def _remove_hook_bytecode() -> None:
-    cached = globals().get("__cached__", "")
+    # Python 3.15 no longer sets module __cached__; the spec records the path.
+    cached = getattr(globals().get("__spec__"), "cached", None) or globals().get("__cached__", "")
     if not cached:
         return
     try:
