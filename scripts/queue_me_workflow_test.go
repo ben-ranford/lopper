@@ -154,7 +154,8 @@ func TestQueueMeControllerNodeSuite(t *testing.T) {
 	}
 	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js",
 		"queue_me_sonar.test.js", "queue_me_suppressions.test.js", "queue_me_ci.test.js",
-		"queue_me_ci_intent.test.js", "queue_me_public_api.test.js", "queue_me_reuse.test.js")
+		"queue_me_ci_intent.test.js", "queue_me_public_api.test.js", "queue_me_reuse.test.js",
+		"testdata/queue_waiting/pause.cjs")
 	command.Dir = repoPath(t, "scripts")
 	output, err := command.CombinedOutput()
 	if err != nil {

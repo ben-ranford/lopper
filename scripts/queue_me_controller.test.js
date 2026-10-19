@@ -1957,85 +1957,11 @@ test('prepare disarms the queue and selects without evaluating or merging eviden
     assert.deepEqual(h.calls.disabled, [10, 20]);
     return { ticket, readiness: { state: 'READY', reasons: [] } };
   });
-  assert.equal(await runController.prepareQueue(h.args), ticket);
+  assert.deepEqual(await runController.prepareQueue(h.args), { ...ticket, predecessors: [] });
   assert.deepEqual(h.calls.evidence, []);
   assert.deepEqual(h.calls.revalidations, []);
   assert.deepEqual(h.calls.merged, []);
   assert.deepEqual(h.calls.armed, []);
-});
-
-function pausePreparation(t, pausedNumbers) {
-  return t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async input => {
-    if (pausedNumbers.includes(input.pullNumber)) {
-      const error = new Error('CI audit paused: candidate changes trusted workflow source .github/workflows/ci.yml.');
-      error.queuePauseMessage = error.message;
-      throw error;
-    }
-    return { ticket: { pull: input.pullNumber }, readiness: { state: 'READY', reasons: [] } };
-  });
-}
-
-test('a CI audit pause on the leader records the hold and prepares the next queued pull', async t => {
-  const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
-  const prepare = pausePreparation(t, [10]);
-  assert.deepEqual(await runController.prepareQueue(h.args), { pull: 20 });
-  assert.deepEqual(prepare.mock.calls.map(call => call.arguments[0].pullNumber), [10, 20]);
-  assert.match(commentsFor(h, 10), /Queue paused: the CI or reuse audit refused this pull request[^]*`CI audit paused: candidate changes trusted workflow source/);
-  assert.match(commentsFor(h, 10), /continue with the next queued pull request/);
-  assert.deepEqual(h.calls.merged, []);
-  assert.deepEqual(h.calls.armed, []);
-});
-
-test('a CI audit pause on the last queued pull records the hold without a ticket', async t => {
-  const h = makeHarness({ pulls: [makePull(10)] });
-  pausePreparation(t, [10]);
-  assert.equal(await runController.prepareQueue(h.args), undefined);
-  assert.match(commentsFor(h, 10), /Queue paused: the CI or reuse audit refused this pull request[^]*`CI audit paused: candidate changes trusted workflow source/);
-  assert.doesNotMatch(commentsFor(h, 10), /next queued pull request/);
-  assert.deepEqual(h.calls.merged, []);
-  assert.deepEqual(h.calls.armed, []);
-});
-
-test('advance merges only the prepared ticket after a leader CI audit pause', async t => {
-  const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
-  pausePreparation(t, [10]);
-  const ticket = await runController.prepareQueue(h.args);
-  const paused = commentsFor(h, 10);
-  t.mock.restoreAll();
-  await runController({ ...h.args, queueProof: { ticket: { snapshot: { pull_number: ticket.pull }, intent: {} } } });
-  assert.deepEqual(h.calls.merged, [20]);
-  assert(!h.calls.armed.includes(10));
-  assert.equal(commentsFor(h, 10), paused);
-});
-
-test('advance merges nothing when the ticket names no queued pull request', async () => {
-  for (const pullNumber of [30, '20', undefined]) {
-    const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
-    await runController({ ...h.args, queueProof: { ticket: { snapshot: { pull_number: pullNumber }, intent: {} } } });
-    assert.deepEqual(h.calls.merged, []);
-    assert.deepEqual(h.calls.armed, []);
-  }
-});
-
-test('candidate-controlled pause text stays inert in the status comment', async t => {
-  const h = makeHarness({ pulls: [makePull(10)] });
-  t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async () => {
-    const error = new Error('CI audit paused: job `x`\n## @ben-ranford **owned** [link](https://evil.example)');
-    error.queuePauseMessage = error.message;
-    throw error;
-  });
-  await runController.prepareQueue(h.args);
-  const body = commentsFor(h, 10);
-  const code = body.slice(body.indexOf('`'));
-  assert.equal((body.match(/`/g) || []).length, 2);
-  assert.match(code, /^`CI audit paused: job 'x' ## @ben-ranford \*\*owned\*\* \[link\]\(https:\/\/evil\.example\)`/);
-  assert.doesNotMatch(body.slice(0, body.indexOf('`')), /@ben-ranford/);
-});
-
-test('a non-pause preparation error still fails the queue run', async t => {
-  const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
-  t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async () => { throw new Error('controller fault'); });
-  await assert.rejects(runController.prepareQueue(h.args), /controller fault/);
 });
 
 test('blocked preparation disarms queued pulls and records the hold without a ticket or proof', async t => {

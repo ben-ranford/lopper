@@ -680,6 +680,29 @@ async function mergeVerifiedQueuedPull({
   }
 }
 
+// CI/reuse audit refusals pause this candidate like identity pauses; other errors still fail the run.
+async function pauseRefusedCandidate(github, owner, repo, pullNumber, hasFollower, error) {
+  if (!error?.queuePauseMessage) throw error;
+  await disableAutoMerge(github, owner, repo, pullNumber);
+  const retrySummary = hasFollower ? ' The queue will continue with the next queued pull request.' : '';
+  // Pause text can embed candidate-controlled CI job names; keep it inert inside a code span.
+  await syncStatusComment(github, owner, repo, pullNumber,
+    `## Queue status\n\nQueue paused: the CI or reuse audit refused this pull request.${retrySummary}\n\n\`${safeCommentText(error.queuePauseMessage, 1200)}\``);
+  return hasFollower;
+}
+
+// Advance may merge only the prepared ticket, and only when every queued pull ahead
+// of it is exactly the set prepare already handled; otherwise it merges nothing.
+function boundTicket(queued, ticket) {
+  const { predecessors, ...proofTicket } = ticket;
+  const index = queued.findIndex((pull) => pull.number === proofTicket.snapshot?.pull_number);
+  const current = queued.slice(0, Math.max(index, 0)).map((pull) => pull.number);
+  if (index < 0 || !Array.isArray(predecessors) || JSON.stringify(predecessors) !== JSON.stringify(current)) {
+    return null;
+  }
+  return { number: queued[index].number, ticket: proofTicket };
+}
+
 async function advanceQueuedPull({
   github,
   owner,
@@ -690,6 +713,7 @@ async function advanceQueuedPull({
   queueLabel,
   queueAppSlug,
   hasFollower,
+  predecessors,
   trustedPolicySHA,
   verifyEvidence,
   revalidateEvidence,
@@ -780,15 +804,9 @@ async function advanceQueuedPull({
     try {
       await onCandidate({ github, owner, repo, pullNumber: candidate.number,
         headSHA: update.headSHA, baseSHA: defaultBranchSHA, baseRef: defaultBranch,
-        trustedPolicySHA, queueLabel });
+        trustedPolicySHA, queueLabel }, predecessors);
     } catch (error) {
-      // CI/reuse audit refusals pause this candidate like identity pauses; other errors still fail the run.
-      if (!error?.queuePauseMessage) throw error;
-      await disableAutoMerge(github, owner, repo, candidate.number);
-      // Pause text can embed candidate-controlled CI job names; keep it inert inside a code span.
-      await syncStatusComment(github, owner, repo, candidate.number,
-        `## Queue status\n\nQueue paused: the CI or reuse audit refused this pull request.${hasFollower ? ' The queue will continue with the next queued pull request.' : ''}\n\n\`${safeCommentText(error.queuePauseMessage, 1200)}\``);
-      return hasFollower;
+      return pauseRefusedCandidate(github, owner, repo, candidate.number, hasFollower, error);
     }
     return false;
   }
@@ -884,15 +902,15 @@ async function runController({
     return;
   }
 
-  // Advance may verify and merge only the prepared ticket's pull request. Pulls the
-  // prepare job paused ahead of it were disarmed above and keep their status comment.
-  const ticketed = onCandidate || !queueProof?.ticket ? undefined : queueProof.ticket.snapshot?.pull_number ?? null;
-  if (ticketed !== undefined && !queued.some((pull) => pull.number === ticketed)) {
-    core.notice('The prepared queue ticket does not name a currently queued pull request; nothing was merged.');
+  // Pulls the prepare job paused ahead of the ticket were disarmed above and keep their status comment.
+  const bound = !onCandidate && queueProof?.ticket ? boundTicket(queued, queueProof.ticket) : undefined;
+  if (bound === null) {
+    core.notice('The prepared queue ticket no longer matches the queued pull requests ahead of it; nothing was merged.');
     return;
   }
+  if (bound) queueProof = { ...queueProof, ticket: bound.ticket };
   for (const [index, candidate] of queued.entries()) {
-    if (ticketed !== undefined && candidate.number !== ticketed) continue;
+    if (bound && candidate.number !== bound.number) continue;
     const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
@@ -903,6 +921,7 @@ async function runController({
       queueLabel,
       queueAppSlug,
       hasFollower: index + 1 < queued.length,
+      predecessors: queued.slice(0, index).map((pull) => pull.number),
       trustedPolicySHA,
       verifyEvidence,
       revalidateEvidence,
@@ -936,10 +955,10 @@ async function runController({
 
 async function prepareQueue(options) {
   let ticket;
-  await runController({ ...options, onCandidate: async (input) => {
+  await runController({ ...options, onCandidate: async (input, predecessors) => {
     const { prepareCandidate } = require('./queue_me_reuse');
     const prepared = await prepareCandidate(input);
-    ticket = prepared.ticket;
+    ticket = prepared.ticket && { ...prepared.ticket, predecessors };
     if (['WAITING', 'BLOCKED'].includes(prepared.readiness.state)) {
       const message = prepared.readiness.state === 'BLOCKED' ? 'Blocked by current CI.' : 'Waiting for current CI.';
       await syncStatusComment(input.github, input.owner, input.repo, input.pullNumber,
