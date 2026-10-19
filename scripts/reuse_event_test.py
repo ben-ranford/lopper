@@ -419,6 +419,22 @@ class EventTests(unittest.TestCase):
         self.assertEqual([(path, data["state"]) for path, data in self.api.posts],
                          [(PREFIX + "/statuses/" + HEAD, "success"), (PREFIX + "/statuses/" + HEAD, "pending")])
         self.assertIsNone(event.certified_record(event.current_statuses(self.api, REPOSITORY), second))
+        # Repeated duplicate-PR events find no success left and write nothing more.
+        for action in ("edited", "synchronize", "reopened"):
+            with self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(dict(payload, action=action))
+        self.assertEqual(len(self.api.posts), 2)
+
+    def test_shared_head_refusal_never_writes_without_a_readable_current_success(self):
+        second = dict(pull_document(), number=40)
+        self.api.responses[PREFIX + "/pulls/40"] = second
+        self.api.page_responses[PREFIX + "/pulls"].append(second)
+        payload = dict(self.payload, number=40, action="opened", pull_request=second)
+        for current in (dict(CERTIFIED, state="pending"), dict(CERTIFIED, state="failure"), None):
+            self.api.statuses[HEAD] = current
+            with self.subTest(current=current), self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(payload)
+        self.assertEqual(self.api.posts, [])
 
     def test_stale_or_other_repository_event_never_posts(self):
         for field in ("head", "base", "repository", "head_repository"):

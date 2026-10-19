@@ -551,8 +551,11 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
     except SharedHead as error:
         # A success inherited from the other PR's evidence must not stay usable
         # until the next sweep; this write needs only the authenticated head.
-        post_status(api, repository, error.head, "pending",
-                    "Head is shared with another open pull request; reuse evidence is not certified")
+        # Write only over a current success, so repeated duplicate-PR events
+        # cannot exhaust the head's status budget; the sweep is the backstop.
+        if current_success(api, repository, error.head):
+            post_status(api, repository, error.head, "pending",
+                        "Head is shared with another open pull request; reuse evidence is not certified")
         raise
     if event_name == "pull_request_target":
         pull = event["pull_request"]
@@ -636,6 +639,14 @@ def live_target(pulls, identifier, pull, default_branch, protected):
     if head_repository_id(pull) != identifier:
         return None
     return stack_parent_sha(pulls, identifier, pull, default_branch)
+
+
+def current_success(api, repository, head):
+    try:
+        combined = api.request(f"/repos/{repository}/commits/{head}/status?per_page=100&page=1")
+        return any(row["context"] == CONTEXT and row["state"] == "success" for row in combined["statuses"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def certification(snapshot):
