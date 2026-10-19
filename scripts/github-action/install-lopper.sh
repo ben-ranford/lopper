@@ -299,7 +299,10 @@ if [[ "$goos" == "$WINDOWS_OS" ]]; then
     error "Downloaded ZIP must contain exactly one ${zip_member}."
     exit 1
   fi
-  unzip -q "$archive_path" "$zip_member" -d "$work_dir"
+  if ! unzip -q "$archive_path" "$zip_member" "${archive_name%.zip}/share/lopper/*" -d "$work_dir"; then
+    error "Downloaded ZIP must contain ${zip_member} and its share/lopper runtime hooks."
+    exit 1
+  fi
 else
   tar -xzf "$archive_path" -C "$work_dir"
 fi
@@ -313,6 +316,13 @@ fi
 installed_binary="${install_dir}/${binary_name}"
 cp "$binary_path" "$installed_binary"
 chmod +x "$installed_binary"
+# The CLI resolves runtime hooks from share/lopper beside its executable.
+share_source="$(dirname "$binary_path")/share/lopper"
+if [[ -d "$share_source" ]]; then
+  rm -rf "${install_dir}/share/lopper"
+  mkdir -p "${install_dir}/share"
+  cp -R "$share_source" "${install_dir}/share/lopper"
+fi
 
 path_entry="$install_dir"
 binary_output="$installed_binary"

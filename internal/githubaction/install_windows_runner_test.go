@@ -75,7 +75,7 @@ func TestActionFixtureIgnoresEnvironmentOutputPath(t *testing.T) {
 }
 
 func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
-	for _, kind := range []string{"missing executable", "duplicate executable", "corrupt ZIP"} {
+	for _, kind := range []string{"missing executable", "duplicate executable", "missing runtime hooks", "corrupt ZIP"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture := windowsActionFixture(t)
 			archive := filepath.Join(fixture.dir, "archive")
@@ -84,6 +84,8 @@ func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
 			} else if kind == "duplicate executable" {
 				member := "lopper_v1.8.12_windows_" + runtime.GOARCH + "/lopper.exe"
 				writeActionZIP(t, archive, []actionZIPEntry{{member, []byte("one")}, {member, []byte("two")}})
+			} else if kind == "missing runtime hooks" {
+				writeActionZIP(t, archive, []actionZIPEntry{{"lopper_v1.8.12_windows_" + runtime.GOARCH + "/lopper.exe", nativeActionFixture(t)}})
 			} else if err := os.WriteFile(archive, []byte("invalid zip"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -241,7 +243,7 @@ func windowsActionFixture(t *testing.T) releaseResponseFixture {
 set -euo pipefail
 "$FIXTURE_UNZIP" "$@"
 if [[ "$1" == -q ]]; then
-  find "$5" -type f ! -path "$2" -print > "$FIXTURE_EXTRACTED"
+  find "${@: -1}" -type f ! -path "$2" -print | sort > "$FIXTURE_EXTRACTED"
 fi
 `)
 	fixture.env = append(fixture.env, "FIXTURE_UNZIP="+unzip, "FIXTURE_EXTRACTED="+filepath.Join(fixture.dir, "extracted"), "LOPPER_ACTION_OS=Windows_NT", "LOPPER_ACTION_ARCH="+runtime.GOARCH, "FIXTURE_OS=windows", "FIXTURE_ARCHIVE_EXTENSION=zip")
@@ -266,8 +268,16 @@ func assertWindowsInstalledAction(t *testing.T, fixture releaseResponseFixture) 
 	assertReleaseFileContains(t, fixture.pathFile, installDir+"\n")
 	assertReleaseRunnerClean(t, fixture.runner)
 	extracted, err := os.ReadFile(filepath.Join(fixture.dir, "extracted"))
-	if err != nil || strings.Count(string(extracted), "\n") != 1 || !strings.HasSuffix(string(extracted), "/lopper_v1.8.12_windows_"+runtime.GOARCH+"/lopper.exe\n") {
+	root := "/lopper_v1.8.12_windows_" + runtime.GOARCH + "/"
+	lines := strings.Split(strings.TrimSuffix(string(extracted), "\n"), "\n")
+	if err != nil || len(lines) != 1+len(windowsActionRuntimeHooks) || !strings.HasSuffix(lines[0], root+"lopper.exe") {
 		t.Fatalf("unexpected ZIP extraction layout: %v %s", err, extracted)
+	}
+	for index, hook := range windowsActionRuntimeHooks {
+		if !strings.HasSuffix(lines[index+1], root+"share/lopper/scripts/runtime/"+hook) {
+			t.Fatalf("unexpected ZIP extraction layout: %s", extracted)
+		}
+		assertReleaseFileContains(t, filepath.Join(installDir, "share", "lopper", "scripts", "runtime", hook), "hook "+hook)
 	}
 	assertReleaseFileAbsent(t, filepath.Join(fixture.dir, "outside"))
 	command := exec.Command("bash", filepath.Join(repoRoot(t), "scripts", "github-action", "run-lopper.sh"))
@@ -315,11 +325,15 @@ func nativeActionFixture(t *testing.T) []byte {
 func writeWindowsActionArchive(t *testing.T, path string, binary []byte, name string) {
 	t.Helper()
 	root := "lopper_v1.8.12_windows_" + runtime.GOARCH
-	writeActionZIP(t, path, []actionZIPEntry{
-		{root + "/" + name, binary},
-		{"../outside", []byte("must not extract unrelated entries")},
-	})
+	entries := []actionZIPEntry{{root + "/" + name, binary}}
+	for _, hook := range windowsActionRuntimeHooks {
+		entries = append(entries, actionZIPEntry{root + "/share/lopper/scripts/runtime/" + hook, []byte("hook " + hook)})
+	}
+	entries = append(entries, actionZIPEntry{root + "/share/man/man1/lopper.1", []byte("must not extract unrelated entries")}, actionZIPEntry{"../outside", []byte("must not extract unrelated entries")})
+	writeActionZIP(t, path, entries)
 }
+
+var windowsActionRuntimeHooks = []string{"loader.mjs", "require-hook.cjs", "sitecustomize.py"}
 
 type actionZIPEntry struct {
 	name string

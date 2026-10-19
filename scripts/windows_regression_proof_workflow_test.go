@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -184,11 +185,16 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 	if setupPython.Uses != "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" || setupPython.With["python-version"] != "3.13.16" || setupPython.With["architecture"] != "x64" || setupPython.With["check-latest"] != "false" || setupPython.With["update-environment"] != "false" {
 		t.Fatal("setup-python must use the pinned CPython x64 cache without latest lookup or environment mutation")
 	}
+	assertTrustedProviderPreflight(t, workflow)
+}
+
+func assertTrustedProviderPreflight(t *testing.T, workflow workflowConfig) {
+	t.Helper()
 	preflight := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache")
 	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "Completed official CPython cache entry is unavailable") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.2 windows/amd64") {
 		t.Fatal("trusted provider commit/tree and completed-cache preflight must precede setup-python")
 	}
-	checkout := "git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1"
+	checkout := trustedProviderCheckoutCommand
 	functionStart := strings.Index(preflight.Run, "function Assert-TrustedProviderSource {")
 	if strings.Count(preflight.Run, checkout) != 1 || functionStart < 0 || strings.Index(preflight.Run, checkout) > functionStart {
 		t.Fatal("trusted provider scripts must be restored exactly once before read-only source authentication")
@@ -235,31 +241,54 @@ func trustedProviderFunctionBody(script, name string) (string, error) {
 	return "", fmt.Errorf("function %q has no closing brace", name)
 }
 
+const trustedProviderCheckoutCommand = "git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1"
+
 func TestTrustedProviderCheckoutRestoresAuthenticatedBytesWithAutocrlf(t *testing.T) {
 	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	preflight := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache")
+	if !strings.Contains(preflight.Run, trustedProviderCheckoutCommand) {
+		t.Fatal("trusted provider preflight must restore authenticated bytes with a byte-preserving checkout")
+	}
 	repo := t.TempDir()
-	trustedScript := "scripts/proof-python/provision.ps1"
 	runGitCommand(t, repo, "init", "--quiet")
 	runGitCommand(t, repo, "config", "core.autocrlf", "true")
 	runGitCommand(t, repo, "config", "user.name", "Test")
 	runGitCommand(t, repo, "config", "user.email", "test@example.invalid")
 
+	fields := strings.Fields(trustedProviderCheckoutCommand)
+	trustedScripts := fields[slices.Index(fields, "--")+1:]
 	want := []byte("Write-Output 'pinned LF bytes'\nexit 0\n")
-	path := filepath.Join(repo, filepath.FromSlash(trustedScript))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
+	for _, trustedScript := range trustedScripts {
+		path := filepath.Join(repo, filepath.FromSlash(trustedScript))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGitCommand(t, repo, "add", trustedScript)
 	}
-	if err := os.WriteFile(path, want, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGitCommand(t, repo, "add", trustedScript)
 	runGitCommand(t, repo, "commit", "--quiet", "-m", "pin provider fixture")
 
 	crlf := bytes.ReplaceAll(want, []byte("\n"), []byte("\r\n"))
-	if err := os.WriteFile(path, crlf, 0o600); err != nil {
-		t.Fatal(err)
+	for _, trustedScript := range trustedScripts {
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(trustedScript)), crlf, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	runGitCommand(t, repo, "-c", "core.autocrlf=false", "checkout-index", "--force", "--", trustedScript)
+	args := slices.Clone(fields[1:])
+	args[slices.Index(args, "$trusted")] = repo
+	runGitCommand(t, repo, args...)
+	wantDigest := sha256.Sum256(want)
+	for _, trustedScript := range trustedScripts {
+		assertTrustedProviderBytesRestored(t, filepath.Join(repo, filepath.FromSlash(trustedScript)), want, wantDigest)
+	}
+}
+
+func assertTrustedProviderBytesRestored(t *testing.T, path string, want []byte, wantDigest [sha256.Size]byte) {
+	t.Helper()
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +296,6 @@ func TestTrustedProviderCheckoutRestoresAuthenticatedBytesWithAutocrlf(t *testin
 	if !bytes.Equal(got, want) {
 		t.Fatalf("byte-preserving checkout returned %q, want pinned LF bytes %q", got, want)
 	}
-	wantDigest := sha256.Sum256(want)
 	if gotDigest := sha256.Sum256(got); gotDigest != wantDigest {
 		t.Fatal("restored provider bytes do not match the pinned digest")
 	}
@@ -278,8 +306,7 @@ func TestTrustedProviderCheckoutRestoresAuthenticatedBytesWithAutocrlf(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedDigest := sha256.Sum256(changed)
-	if changedDigest == wantDigest {
+	if sha256.Sum256(changed) == wantDigest {
 		t.Fatal("changed provider bytes unexpectedly retained the pinned digest")
 	}
 	stillChanged, err := os.ReadFile(path)
