@@ -119,6 +119,8 @@ class FakeAPI:
         # Unlisted heads carry a valid success for the default pair; revocation
         # tests override or observe these current reuse-check statuses.
         self.statuses = {}
+        self.status_rows = {}
+        self.status_errors = {}
         self.reads = []
         self.graphql_response = None
         self.archive = archive()
@@ -130,9 +132,12 @@ class FakeAPI:
                 self.statuses[path.rsplit("/", 1)[1]] = {key: data[key] for key in ("context", "state", "description")}
             return {}
         self.reads.append(path)
-        if path.startswith(PREFIX + "/commits/") and path.endswith("/status?per_page=100&page=1"):
-            head = path[len(PREFIX + "/commits/"):].split("/")[0]
-            return {"statuses": [copy.deepcopy(self.statuses.get(head, CERTIFIED))]}
+        if path.startswith(PREFIX + "/commits/") and "/status?per_page=100&page=" in path:
+            head, page = path[len(PREFIX + "/commits/"):].split("/status?per_page=100&page=")
+            if head in self.status_errors:
+                raise self.status_errors[head]
+            rows = self.status_rows.get(head, [self.statuses.get(head, CERTIFIED)])
+            return {"total_count": len(rows), "statuses": copy.deepcopy(rows[(int(page) - 1) * 100:int(page) * 100])}
         return copy.deepcopy(self.responses[path])
 
     def graphql(self, query, variables):
@@ -425,16 +430,42 @@ class EventTests(unittest.TestCase):
                 self.prepare(dict(payload, action=action))
         self.assertEqual(len(self.api.posts), 2)
 
-    def test_shared_head_refusal_never_writes_without_a_readable_current_success(self):
+    def shared_payload(self):
         second = dict(pull_document(), number=40)
         self.api.responses[PREFIX + "/pulls/40"] = second
         self.api.page_responses[PREFIX + "/pulls"].append(second)
-        payload = dict(self.payload, number=40, action="opened", pull_request=second)
-        for current in (dict(CERTIFIED, state="pending"), dict(CERTIFIED, state="failure"), None):
-            self.api.statuses[HEAD] = current
-            with self.subTest(current=current), self.assertRaisesRegex(event.EventError, "shared"):
+        return dict(self.payload, number=40, action="opened", pull_request=second)
+
+    def test_shared_head_refusal_writes_nothing_without_a_current_success(self):
+        payload = self.shared_payload()
+        for rows in ([dict(CERTIFIED, state="pending")], [dict(CERTIFIED, state="failure")], [],
+                     [dict(context="other", state="success")]):
+            self.api.status_rows[HEAD] = rows
+            with self.subTest(rows=rows), self.assertRaisesRegex(event.EventError, "shared"):
                 self.prepare(payload)
         self.assertEqual(self.api.posts, [])
+
+    def test_shared_head_refusal_finds_success_on_a_later_status_page(self):
+        payload = self.shared_payload()
+        others = [dict(context=f"other-{index}", state="success") for index in range(100)]
+        self.api.status_rows[HEAD] = [*others, CERTIFIED]
+        with self.assertRaisesRegex(event.EventError, "shared"):
+            self.prepare(payload)
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+        self.assertIn(PREFIX + "/commits/" + HEAD + "/status?per_page=100&page=2", self.api.reads)
+
+    def test_shared_head_refusal_revokes_when_the_status_read_is_unknown(self):
+        payload = self.shared_payload()
+        unknown = (lambda: self.api.status_errors.update({HEAD: OSError("unavailable")}),
+                   lambda: self.api.status_rows.update({HEAD: [None]}),
+                   lambda: self.api.status_rows.update({HEAD: [dict(CERTIFIED, state="pending")] * 1001}))
+        for make_unknown in unknown:
+            self.api.posts.clear()
+            self.api.status_errors.clear()
+            make_unknown()
+            with self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(payload)
+            self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
 
     def test_stale_or_other_repository_event_never_posts(self):
         for field in ("head", "base", "repository", "head_repository"):

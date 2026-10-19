@@ -58,6 +58,7 @@ CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requ
 CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
 STACK_DEPTH = 16
+STATUS_PAGES = 10
 # One GraphQL page reads 100 open PR heads' current reuse-check status instead of one REST GET each.
 STATUS_QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -553,7 +554,8 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
         # until the next sweep; this write needs only the authenticated head.
         # Write only over a current success, so repeated duplicate-PR events
         # cannot exhaust the head's status budget; the sweep is the backstop.
-        if current_success(api, repository, error.head):
+        # An unknown state revokes too: read failures are transient, not repeatable by an outsider.
+        if current_success(api, repository, error.head) is not False:
             post_status(api, repository, error.head, "pending",
                         "Head is shared with another open pull request; reuse evidence is not certified")
         raise
@@ -642,11 +644,22 @@ def live_target(pulls, identifier, pull, default_branch, protected):
 
 
 def current_success(api, repository, head):
+    """True or False from a complete combined-status read; None when it is unreadable or incomplete."""
+    rows = []
     try:
-        combined = api.request(f"/repos/{repository}/commits/{head}/status?per_page=100&page=1")
-        return any(row["context"] == CONTEXT and row["state"] == "success" for row in combined["statuses"])
+        for page in range(1, STATUS_PAGES + 1):
+            combined = api.request(f"/repos/{repository}/commits/{head}/status?per_page=100&page={page}")
+            batch, total = combined["statuses"], combined["total_count"]
+            if not isinstance(batch, list) or len(batch) > 100 or type(total) is not int or total < 0:
+                return None
+            rows.extend(batch)
+            if len(batch) < 100 or len(rows) >= total:
+                break
+        if len(rows) != total:
+            return None
+        return any(row["context"] == CONTEXT and row["state"] == "success" for row in rows)
     except (OSError, ValueError, KeyError, TypeError):
-        return False
+        return None
 
 
 def certification(snapshot):
