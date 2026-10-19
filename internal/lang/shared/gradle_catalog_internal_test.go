@@ -317,6 +317,29 @@ dependencyResolutionManagement {
 	assertGradleCatalogWarningsContain(t, warnings, "multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath, "unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName)
 }
 
+func TestParseGradleSettingsCatalogRefsHandlesNestedBlocks(t *testing.T) {
+	settingsContent := `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("tools") { if (true) { version("v", "1") }; from(files("gradle/tools.versions.toml")) }
+    create("other") {
+      // closing brace in comment }
+      version("brace", "}")
+      /* another } */
+      from(files("gradle/other.versions.toml"))
+    }
+  }
+}
+`
+	refs, warnings := parseGradleSettingsCatalogRefs(settingsContent, gradleSettingsFileName)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for nested catalog blocks, got %#v", warnings)
+	}
+	if len(refs) != 2 || refs[0].Name != "tools" || refs[0].Path != gradleToolsCatalogPath || refs[1].Name != "other" || refs[1].Path != "gradle/other.versions.toml" {
+		t.Fatalf("expected nested catalog blocks to keep their sources, got %#v", refs)
+	}
+}
+
 func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo string, settingsPath string) {
 	t.Helper()
 

@@ -108,7 +108,7 @@ type gradleCatalogFileParser struct {
 }
 
 var (
-	gradleCatalogCreateBlockPattern    = regexp.MustCompile(`(?ms)\bcreate\s*\(\s*["']([^"']+)["']\s*\)\s*\{(.*?)\}`)
+	gradleCatalogCreateBlockPattern    = regexp.MustCompile(`\bcreate\s*\(\s*["']([^"']+)["']\s*\)\s*\{`)
 	gradleCatalogQuotedFilePathPattern = regexp.MustCompile(`["']([^"']+\.toml)["']`)
 	gradleCatalogAliasSeparatorPattern = regexp.MustCompile(`[-_.]+`)
 	gradleCatalogCollapsedSpacePattern = regexp.MustCompile(`\s+`)
@@ -840,16 +840,23 @@ func (i *gradleCatalogLookupIndex) resolve(buildFilePath string) *gradleCatalogS
 func parseGradleSettingsCatalogRefs(content, relativePath string) ([]gradleCatalogSettingRef, []string) {
 	refs := make([]gradleCatalogSettingRef, 0)
 	warnings := make([]string, 0)
-	for _, match := range gradleCatalogCreateBlockPattern.FindAllStringSubmatch(content, -1) {
-		if len(match) != 3 {
-			continue
+	for offset := 0; offset < len(content); {
+		match := gradleCatalogCreateBlockPattern.FindStringSubmatchIndex(content[offset:])
+		if match == nil {
+			break
 		}
-		name := strings.TrimSpace(match[1])
+		bodyStart := offset + match[1]
+		bodyEnd, ok := gradleBlockBodyEnd(content, bodyStart)
+		if !ok {
+			break
+		}
+		name := strings.TrimSpace(content[offset+match[2] : offset+match[3]])
+		offset = bodyEnd + 1
 		if name == "" {
 			continue
 		}
 		ref := gradleCatalogSettingRef{Name: name}
-		fileMatches := gradleCatalogQuotedFilePathPattern.FindAllStringSubmatch(match[2], -1)
+		fileMatches := gradleCatalogQuotedFilePathPattern.FindAllStringSubmatch(content[bodyStart:bodyEnd], -1)
 		if len(fileMatches) == 0 {
 			warnings = append(warnings, fmt.Sprintf("unsupported Gradle version catalog source for %s in %s", name, relativePath))
 			refs = append(refs, ref)
@@ -862,6 +869,47 @@ func parseGradleSettingsCatalogRefs(content, relativePath string) ([]gradleCatal
 		refs = append(refs, ref)
 	}
 	return refs, dedupeGradleCatalogWarnings(warnings)
+}
+
+// gradleBlockBodyEnd returns the index of the brace closing the block whose
+// body starts at start, skipping braces inside string literals and comments.
+func gradleBlockBodyEnd(content string, start int) (int, bool) {
+	depth := 1
+	for i := start; i < len(content); i++ {
+		switch c := content[i]; {
+		case c == '"' || c == '\'':
+			i = gradleQuotedLiteralEnd(content, i)
+		case strings.HasPrefix(content[i:], "//"):
+			i += strings.IndexByte(content[i:]+"\n", '\n')
+		case strings.HasPrefix(content[i:], "/*"):
+			end := strings.Index(content[i+2:], "*/")
+			if end < 0 {
+				return 0, false
+			}
+			i += end + 3
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func gradleQuotedLiteralEnd(content string, start int) int {
+	quote := content[start]
+	for i := start + 1; i < len(content); i++ {
+		switch content[i] {
+		case '\\':
+			i++
+		case quote:
+			return i
+		}
+	}
+	return len(content)
 }
 
 func parseGradleCatalogFile(content, catalogName, relativePath string) (gradleCatalogFile, []string) {
