@@ -12,17 +12,33 @@ import (
 	"testing"
 )
 
-func TestWindowsRuntimeCompatibilityProofRequiresPublishedBaseline(t *testing.T) {
+func TestWindowsRuntimeSearchPathTestsRunNatively(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	const jobName = "regression-proof-windows"
-	const stepName = "Verify native Windows runtime path compatibility"
+	const stepName = "Test native Windows runtime search paths"
 	step := workflowStepByName(t, workflow.Jobs, jobName, stepName)
-	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
-		t.Fatal("runtime compatibility proof must run natively and fail closed for build titles too")
+	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || step.Run != "go test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1" {
+		t.Fatal("Windows runtime search path tests must run natively and fail closed for every event")
 	}
 	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Resolve native Go toolchain", "Test native Windows proof tools", stepName, "Prove Windows regression tests for fix PRs")
+}
+
+func TestWindowsRuntimeBaselineProofIsScopedToItsPullRequest(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	const jobName = "regression-proof-windows"
+	const stepName = "Prove Windows runtime path fix against its baseline"
+	step := workflowStepByName(t, workflow.Jobs, jobName, stepName)
+	if step.If != "${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}" {
+		t.Fatal("unpublished runtime baseline proof must not run on main or unrelated pull requests")
+	}
+	if step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
+		t.Fatal("scoped runtime baseline proof must run natively and fail closed")
+	}
+	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Test native Windows runtime search paths", stepName, "Prove Windows regression tests for fix PRs")
 	script := readConfig(t, "scripts/verify-windows-runtime-paths.ps1")
 	assertWindowsRuntimeProofBoundaries(t, script)
 }
