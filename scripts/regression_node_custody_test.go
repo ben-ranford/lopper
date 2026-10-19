@@ -152,17 +152,22 @@ func TestRegressionNodeConsumersClearInheritedLoaderEnvironment(t *testing.T) {
 				continue
 			}
 			consumers++
-			// Candidate steps can append these to GITHUB_ENV; only step env overrides them.
-			for _, key := range []string{"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_PATH"} {
-				if value, present := step.Env[key]; !present || value != "" {
-					t.Fatalf("%s/%s must clear inherited %s before the authenticated runtime starts", jobName, step.Name, key)
-				}
-			}
+			assertInheritedLoaderEnvironmentCleared(t, jobName, step)
 		}
 	}
 	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers.
 	if consumers != 8 {
 		t.Fatalf("expected 8 authenticated runtime consumers, got %d", consumers)
+	}
+}
+
+func assertInheritedLoaderEnvironmentCleared(t *testing.T, jobName string, step workflowStepConfig) {
+	t.Helper()
+	// Candidate steps can append these to GITHUB_ENV; only step env overrides them.
+	for _, key := range []string{"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_PATH"} {
+		if value, present := step.Env[key]; !present || value != "" {
+			t.Fatalf("%s/%s must clear inherited %s before the authenticated runtime starts", jobName, step.Name, key)
+		}
 	}
 }
 
