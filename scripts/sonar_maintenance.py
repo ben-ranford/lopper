@@ -245,10 +245,15 @@ def configure(client, reference, scope_bytes, scope_digest, *, save):
     state = {"before": before, "expected": before, "changed": [], "permissions": permissions,
              "submissionUnresolved": False, "unresolvedWrite": None, "scopeDigest": scope_digest}
     save(state)
-    escaped = re.escape(reference)
+    # The setting is a Java regex. Extend it textually with a quoted literal
+    # alternative instead of parsing or wrapping it with Python's engine, which
+    # rejects valid Java syntax such as \Q...\E and moves leading (?i) flags.
+    quoted = "\\Q" + reference + "\\E"
     current = before[REGEX_KEY]["value"]
-    if re.fullmatch(current, reference) is None:
-        owned_write(client, state, REGEX_KEY, "(?:" + current + ")|" + escaped, save)
+    require(isinstance(current, str) and bool(current) and "\n" not in current and "\r" not in current,
+            "Unsupported long-lived branch regex")
+    if not current.endswith("|" + quoted):
+        owned_write(client, state, REGEX_KEY, current + "|" + quoted, save)
     owned_write(client, state, AUTOSCAN_KEY, "false", save)
     drain(client)
     return state

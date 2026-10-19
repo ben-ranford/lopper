@@ -134,6 +134,27 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual([call[0] for call in client.calls if call[3]],
                          ["settings/set", "settings/set", "settings/reset", "settings/set"])
 
+    def test_branch_regex_is_extended_as_java_text_without_python_parsing(self):
+        reference = "codex/v1.8.10-parent"
+        quoted = "\\Q" + reference + "\\E"
+        for current in ("(?i)release-.*", "\\Qliteral[\\E|main", "(branch|release)-.*"):
+            client = Client()
+            client.settings[maintenance.REGEX_KEY]["value"] = current
+            client.original = copy.deepcopy(client.settings)
+            with self.subTest(current=current):
+                maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
+                self.assertEqual(client.settings[maintenance.REGEX_KEY]["value"], current + "|" + quoted)
+        client = Client()
+        client.settings[maintenance.REGEX_KEY]["value"] = "main|" + quoted
+        client.original = copy.deepcopy(client.settings)
+        maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
+        self.assertEqual([call[1]["key"] for call in client.calls if call[3]], [maintenance.AUTOSCAN_KEY])
+        for current in ("", "a\nb"):
+            client = Client()
+            client.settings[maintenance.REGEX_KEY]["value"] = current
+            with self.subTest(current=current), self.assertRaisesRegex(maintenance.MaintenanceError, "branch regex"):
+                maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
+
     def test_denied_first_owned_write_never_disables_autoscan(self):
         client = Client()
         client.denied["settings/set"] = 403
