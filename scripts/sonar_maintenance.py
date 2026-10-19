@@ -27,6 +27,7 @@ CE_TASK = "ce/task"
 SETTINGS_SET = "settings/set"
 SETTINGS_RESET = "settings/reset"
 SHA_PATTERN = r"[a-f0-9]{40}"
+PROPERTY_KEY = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 class MaintenanceError(ValueError):
@@ -390,6 +391,19 @@ def scanner_archive(archive, destination, manifest):
     return executable
 
 
+def properties_text(properties):
+    """Serialize only pairs whose Java-properties parse is exactly the reviewed string."""
+    lines = []
+    for key, value in sorted(properties.items()):
+        # Backslash escapes/continuations, trimmed whitespace, line breaks and
+        # non-ASCII decoding could all change the parsed value; reject them.
+        require(isinstance(key, str) and PROPERTY_KEY.fullmatch(key) and isinstance(value, str)
+                and value == value.strip() and value.isascii() and value.isprintable() and "\\" not in value,
+                "Scanner property cannot be written without changing its reviewed value")
+        lines.append(key + "=" + value + "\n")
+    return "".join(lines)
+
+
 def run_scanner(executable, source, properties, workspace, token, *, timeout=600):
     import os
     import signal
@@ -400,7 +414,7 @@ def run_scanner(executable, source, properties, workspace, token, *, timeout=600
     metadata = workspace / "report-task.txt"
     properties = dict(properties, **{"sonar.scanner.metadataFilePath": str(metadata),
                                    "sonar.working.directory": str(workspace / "work")})
-    configuration.write_text("".join(key + "=" + value + "\n" for key, value in sorted(properties.items())))
+    configuration.write_text(properties_text(properties))
     os.chmod(configuration, 0o600)
     environment = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "SONAR_USER_HOME": str(workspace / "home"),
                    "SONAR_TOKEN": token, "LANG": "C.UTF-8"}

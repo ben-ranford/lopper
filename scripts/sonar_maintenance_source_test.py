@@ -108,6 +108,19 @@ print(os.environ['SONAR_TOKEN'])
         self.assertNotIn("synthetic-token", json.dumps(observed))
         self.assertEqual(observed["arguments"], ["-Dproject.settings=" + str(workspace / "scanner.properties")])
 
+    def test_property_values_that_parse_differently_are_rejected_before_writing(self):
+        workspace = self.directory / "operation"
+        workspace.mkdir()
+        for key, value in (("sonar.sources", "a\\"), ("sonar.sources", "a\\u0041"), ("sonar.sources", " a"),
+                           ("sonar.sources", "a "), ("sonar.sources", "a\nb=c"), ("sonar.sources", "a\rb"),
+                           ("sonar.sources", "caf\u00e9"), ("sonar.sources", "a\tb"), ("bad key", "a"),
+                           ("sonar:sources", "a"), ("#sonar", "a"), ("sonar.sources", 1)):
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(maintenance.MaintenanceError, "reviewed value"):
+                maintenance.run_scanner(self.directory / "never-run", self.directory, {key: value}, workspace, "token")
+            self.assertFalse((workspace / "scanner.properties").exists())
+        self.assertEqual(maintenance.properties_text({"b": "x=y:z", "a": "dir/one,dir/two"}),
+                         "a=dir/one,dir/two\nb=x=y:z\n")
+
     def test_lost_submission_keeps_saved_uncertainty_and_never_restores(self):
         client = Client()
         client.token = "synthetic-sentinel"
