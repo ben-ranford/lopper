@@ -10,11 +10,16 @@ certification; reopening does not restore an old receipt.
 
 `pull_request_target` runs from the PR's base branch, so a parent stacked on
 another parent cannot revoke its children from its own events: that source is not
-the default branch and fails the protected pin. Revocation therefore also runs from
-default-branch contexts. A `ci` `workflow_run` for a same-repository parent push
-revokes PRs targeting that branch, a `delete` revokes PRs targeting the deleted
-branch, and every such run sweeps open stacked PRs and revokes an existing success
-whose parent chain to the default branch is no longer live. A closed parent whose
-branch is kept is revoked at the next default-branch run, not instantly. Remote APIs provide no
-transactional compare-and-swap, so final certification also requires a fresh live
-pair/policy check after publication.
+the default branch and fails the protected pin. Revocation therefore runs from
+default-branch contexts and compares recorded evidence with live state: each
+success description records the exact target B and policy P it certified. A
+`delete`, a `pull_request_target` handled from the default branch, or the
+`requested` delivery of any `workflow_run` sweeps open stacked PRs from one PR
+listing and revokes a current success whose record is missing or malformed, whose
+P differs from the default-branch tip, or whose B differs from the live direct
+parent head of a unique open chain to the default branch. Parent moves without CI
+and closed or deleted parents are therefore revoked by the next such run, not
+instantly; label or edit churn on a parent no longer revokes children.
+
+Remote APIs provide no transactional compare-and-swap, so final certification also
+requires a fresh live pair/policy check after publication.

@@ -29,7 +29,8 @@ SIGNAL = ".github/workflows/reuse-review-signal.yml"
 PREFIX = "/repos/" + REPOSITORY
 SNAPSHOT = dict(version=2, policy_source=BASE, repository=REPOSITORY, repository_id=10,
                 head_repository_id=20, pull_number=12, base=BASE, head=HEAD, base_ref="main")
-STATUS = PREFIX + "/commits/" + HEAD + "/status?per_page=100&page=1"
+CERTIFIED = dict(context="reuse-check", state="success",
+                 description=f"Reuse, suppression and policy review passed; base={BASE} policy={BASE}")
 CI_RUNS = PREFIX + "/actions/workflows/ci.yml/runs?per_page=100&page=1&head_sha=" + HEAD + "&event=pull_request"
 
 
@@ -115,15 +116,26 @@ class FakeAPI:
             PREFIX + "/pulls": [pull_document()],
         }
         self.posts = []
+        # Unlisted heads carry a valid success for the default pair; revocation
+        # tests override or observe these current reuse-check statuses.
+        self.statuses = {}
+        self.reads = []
         self.archive = archive()
 
     def request(self, path, data=None):
         if data is not None:
             self.posts.append((path, copy.deepcopy(data)))
+            if "/statuses/" in path:
+                self.statuses[path.rsplit("/", 1)[1]] = {key: data[key] for key in ("context", "state", "description")}
             return {}
+        self.reads.append(path)
+        if path.startswith(PREFIX + "/commits/") and path.endswith("/status?per_page=100&page=1"):
+            head = path[len(PREFIX + "/commits/"):].split("/")[0]
+            return {"statuses": [copy.deepcopy(self.statuses.get(head, CERTIFIED))]}
         return copy.deepcopy(self.responses[path])
 
     def pages(self, path):
+        self.reads.append(path)
         return copy.deepcopy(self.page_responses[path])
 
     def artifact_archive(self, repository, artifact_id):
@@ -147,8 +159,19 @@ class StackPolicyTests(unittest.TestCase):
         self.api.responses[PREFIX + "/pulls/12"] = self.child
         self.api.responses[PREFIX + "/pulls/13"] = self.parent
         self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"] = {"object": {"sha": self.parent_sha}}
-        self.api.responses[STATUS] = {"statuses": [{"context": "reuse-check", "state": "pending"}]}
+        self.api.statuses[HEAD] = self.record(self.parent_sha)
         self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent]
+
+    @staticmethod
+    def record(base, policy_source=BASE):
+        return dict(CERTIFIED, description=event.certification(dict(base=base, policy_source=policy_source)))
+
+    def sweep(self, name="workflow_run", **payload):
+        payload = dict({"repository": {"id": 10}, "action": "requested", "workflow_run": {"id": 99}}, **payload)
+        return event.invalidate_stack_event(self.api, payload, name, REPOSITORY, 10)
+
+    def revoked(self):
+        return [(path, data["state"]) for path, data in self.api.posts]
 
     def deepen(self):
         """Retarget the parent onto a middle PR so the child sits two levels above main."""
@@ -156,6 +179,7 @@ class StackPolicyTests(unittest.TestCase):
         middle["number"] = 14
         middle["head"].update(sha="e" * 40, ref="codex/g042-middle", repo={"id": 10})
         self.parent["base"].update(ref="codex/g042-middle", sha="e" * 40)
+        self.api.statuses[self.parent_sha] = self.record("e" * 40)
         self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent, middle]
         return middle
 
@@ -177,17 +201,73 @@ class StackPolicyTests(unittest.TestCase):
                     event.pull_snapshot(self.api, REPOSITORY, 10, 12)
         self.assertEqual(self.api.posts, [])
 
-    def test_closed_and_deleted_parent_still_revoke_authenticated_child(self):
+    def test_closed_or_deleted_parent_revokes_recorded_child_success_once(self):
         self.parent["state"] = "closed"
         del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"]
-        payload = {"repository": {"id": 10}, "action": "closed", "number": 13}
-        self.assertEqual(event.invalidate_stack_event(self.api, payload, "pull_request_target", REPOSITORY, 10), 1)
         deletion = {"repository": {"id": 10}, "ref_type": "branch", "ref": self.reference}
         self.assertEqual(event.invalidate_stack_event(self.api, deletion, "delete", REPOSITORY, 10), 1)
-        self.assertEqual([entry[0] for entry in self.api.posts], [PREFIX + "/statuses/" + HEAD] * 2)
-        self.assertEqual([entry[1]["state"] for entry in self.api.posts], ["pending", "pending"])
+        self.assertEqual(self.sweep("pull_request_target", action="closed", number=13), 0)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
         with self.assertRaises(event.EventError):
             event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+
+    def test_live_recorded_success_survives_every_wakeup(self):
+        for name, payload in (("delete", {"ref_type": "tag", "ref": self.reference}),
+                              ("delete", {"ref_type": "branch", "ref": "feature/other"}),
+                              ("pull_request_target", {"action": "labeled", "number": 30}),
+                              ("workflow_run", {})):
+            with self.subTest(name=name, payload=payload):
+                self.assertEqual(self.sweep(name, **payload), 0)
+        self.assertEqual(self.api.posts, [])
+
+    def test_parent_move_without_ci_is_revoked_by_any_later_default_branch_run(self):
+        self.deepen()
+        self.assertEqual(self.sweep(), 0)
+        self.parent["head"]["sha"] = "f" * 40
+        self.api.statuses["f" * 40] = dict(CERTIFIED, state="pending")
+        for action in ("in_progress", "completed"):
+            self.api.reads.clear()
+            self.assertEqual(self.sweep(action=action), 0)
+            self.assertEqual(self.api.reads, [])
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+        self.assertEqual(self.sweep(), 0)
+
+    def test_missing_malformed_or_policy_moved_record_fails_closed(self):
+        legacy = dict(CERTIFIED, description="Protected reuse, suppression provenance and policy review passed")
+        truncated = dict(CERTIFIED, description=self.record(self.parent_sha)["description"][:-1])
+        for current in (legacy, truncated, dict(CERTIFIED, description=None), self.record(self.parent_sha.upper()),
+                        self.record(self.parent_sha, "d" * 40), self.record("d" * 40)):
+            self.api.posts.clear()
+            self.api.statuses[HEAD] = current
+            with self.subTest(current=current):
+                self.assertEqual(self.sweep(), 1)
+                self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+
+    def test_stack_sweep_reads_listed_rows_and_only_current_success_statuses(self):
+        self.deepen()
+        self.assertEqual(self.sweep(), 0)
+        status = PREFIX + "/commits/{}/status?per_page=100&page=1"
+        self.assertEqual(self.api.reads, [PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls",
+                                          status.format(HEAD), status.format(self.parent_sha)])
+
+    def test_success_record_round_trips_and_stays_within_status_limit(self):
+        snapshot = dict(SNAPSHOT, base=self.parent_sha, base_ref=self.reference, head_repository_id=10)
+        event.status(self.api, snapshot, "success", event.certification(snapshot))
+        self.assertLessEqual(len(self.api.posts[-1][1]["description"]), 140)
+        self.assertEqual(event.certified_record(self.api, REPOSITORY, HEAD), (self.parent_sha, BASE))
+        event.status(self.api, snapshot, "pending", "Protected reuse analysis and policy review pending")
+        self.assertIsNone(event.certified_record(self.api, REPOSITORY, HEAD))
+
+    def test_deleted_head_repository_is_inactive_and_skipped_by_main_push(self):
+        deleted = dict(pull_document(), number=31, head=dict(sha="9" * 40, ref="gone", repo=None))
+        self.api.responses[PREFIX + "/pulls/31"] = deleted
+        self.api.page_responses[PREFIX + "/pulls"].append(deleted)
+        with self.assertRaisesRegex(event.InactivePull, "deleted"):
+            event.pull_snapshot(self.api, REPOSITORY, 10, 31)
+        self.api.statuses["9" * 40] = dict(CERTIFIED, state="failure")
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 2)
 
     def test_policy_push_revokes_stack_even_when_target_disappears(self):
         del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"]
@@ -225,51 +305,8 @@ class StackPolicyTests(unittest.TestCase):
                 pulls.append(parent)
             pulls[-1]["base"]["ref"] = "main"
             return pulls
-        self.assertTrue(event.live_stack(chain(event.STACK_DEPTH), 10, self.child, "main"))
-        self.assertFalse(event.live_stack(chain(event.STACK_DEPTH + 1), 10, self.child, "main"))
-
-    def test_unrelated_deletes_and_fork_or_deleted_heads_are_no_ops(self):
-        fork = dict(pull_document(), number=30)
-        fork["head"] = dict(sha=HEAD, ref=self.reference, repo=dict(id=20))
-        deleted = dict(pull_document(), number=31)
-        deleted["head"] = dict(sha=HEAD, ref=self.reference, repo=None)
-        self.api.responses[PREFIX + "/pulls/30"] = fork
-        self.api.responses[PREFIX + "/pulls/31"] = deleted
-        for name, payload in (("delete", {"repository": {"id": 10}, "ref_type": "tag", "ref": self.reference}),
-                              ("delete", {"repository": {"id": 10}, "ref_type": "branch", "ref": "feature/other"}),
-                              ("pull_request_target", {"repository": {"id": 10}, "action": "closed", "number": 30}),
-                              ("pull_request_target", {"repository": {"id": 10}, "action": "synchronize", "number": 31})):
-            with self.subTest(name=name, payload=payload):
-                self.assertEqual(event.invalidate_stack_event(self.api, payload, name, REPOSITORY, 10), 0)
-        self.assertEqual(self.api.posts, [])
-
-    def test_default_branch_ci_wakeup_revokes_children_of_any_stack_depth(self):
-        self.deepen()
-        run = dict(ci_document(), id=42, head_branch=self.reference, head_repository=dict(id=10))
-        self.api.responses[PREFIX + "/actions/runs/42"] = run
-        payload = {"repository": {"id": 10}, "action": "requested", "workflow_run": {"id": 42}}
-        self.assertEqual(event.invalidate_stack_event(self.api, payload, "workflow_run", REPOSITORY, 10), 1)
-        self.assertEqual([(path, data["state"]) for path, data in self.api.posts], [(PREFIX + "/statuses/" + HEAD, "pending")])
-        for changed in (dict(run, head_repository=dict(id=20)), dict(run, path="attacker.yml")):
-            self.api.posts.clear()
-            self.api.responses[PREFIX + "/actions/runs/42"] = changed
-            with self.subTest(run=changed):
-                self.assertEqual(event.invalidate_stack_event(self.api, payload, "workflow_run", REPOSITORY, 10), 0)
-                self.assertEqual(self.api.posts, [])
-        self.api.responses[PREFIX + "/actions/runs/42"] = dict(run, workflow_id=7)
-        with self.assertRaises(event.EventError):
-            event.invalidate_stack_event(self.api, payload, "workflow_run", REPOSITORY, 10)
-
-    def test_default_branch_runs_revoke_only_certified_orphans(self):
-        self.deepen()["state"] = "closed"
-        parent_status = PREFIX + "/commits/" + self.parent_sha + "/status?per_page=100&page=1"
-        self.api.responses[parent_status] = {"statuses": [{"context": "reuse-check", "state": "failure"}]}
-        payload = {"repository": {"id": 10}, "action": "completed", "workflow_run": {"id": 7}}
-        self.assertEqual(event.invalidate_stack_event(self.api, payload, "workflow_run", REPOSITORY, 10), 0)
-        self.assertEqual(self.api.posts, [])
-        self.api.responses[STATUS]["statuses"][0]["state"] = "success"
-        self.assertEqual(event.invalidate_stack_event(self.api, payload, "workflow_run", REPOSITORY, 10), 1)
-        self.assertEqual([(path, data["state"]) for path, data in self.api.posts], [(PREFIX + "/statuses/" + HEAD, "pending")])
+        self.assertEqual(event.stack_parent_sha(chain(event.STACK_DEPTH), 10, self.child, "main"), self.parent_sha)
+        self.assertIsNone(event.stack_parent_sha(chain(event.STACK_DEPTH + 1), 10, self.child, "main"))
 
 class EventTests(unittest.TestCase):
     def setUp(self):
@@ -454,19 +491,22 @@ class EventTests(unittest.TestCase):
             second["head"]["sha"] = "e" * 40
             api.page_responses[PREFIX + "/pulls"].append(second)
             api.responses[PREFIX + "/pulls/13"] = second
-            first = api.responses[PREFIX + "/pulls/12"]
+            # Revocation acts on the listed rows; it never re-fetches each PR.
+            first = api.page_responses[PREFIX + "/pulls"][0]
             if scenario == "closed":
                 first["state"] = "closed"
             elif scenario == "retargeted":
                 first["base"]["ref"] = "other"
             else:
-                first["head"]["repo"] = None
+                first["head"]["sha"] = "main"
             with self.subTest(scenario=scenario):
                 if scenario == "broken":
                     with self.assertRaises(event.EventError):
                         event.invalidate_base(api, payload, "push", REPOSITORY, 10)
                 else:
-                    self.assertEqual(event.invalidate_base(api, payload, "push", REPOSITORY, 10), 1)
+                    # A retargeted PR's existing success is still removed.
+                    self.assertEqual(event.invalidate_base(api, payload, "push", REPOSITORY, 10),
+                                     2 if scenario == "retargeted" else 1)
                 self.assertEqual(api.posts[-1][0], PREFIX + "/statuses/" + "e" * 40)
 
 
@@ -536,6 +576,7 @@ class ReviewDismissalTests(unittest.TestCase):
             run["pull_requests"] = associations
             self.api.archive = b"unreadable"
             self.api.posts.clear()
+            self.api.statuses.clear()
             with self.subTest(associations=associations), self.assertRaises(event.EventError):
                 self.prepare()
             self.assertEqual([path for path, _ in self.api.posts], [PREFIX + "/statuses/" + HEAD])

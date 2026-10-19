@@ -50,6 +50,7 @@ CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requ
 CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
 STACK_DEPTH = 16
+CERTIFICATION = re.compile(r"Reuse, suppression and policy review passed; base=([0-9a-f]{40}) policy=([0-9a-f]{40})")
 
 
 def number(value):
@@ -297,32 +298,33 @@ def head_repository_id(pull):
     return (pull["head"]["repo"] or {}).get("id")
 
 
-def live_stack(pulls, identifier, pull, default_branch):
-    """Accept only a unique same-repository open PR chain from this target to the default branch."""
-    seen, child, sha = {pull["number"]}, pull, pull["base"]["sha"]
+def stack_parent_sha(pulls, identifier, pull, default_branch):
+    """Return the live direct-parent head only for a unique same-repository open PR chain to the default branch."""
+    seen, child, target = {pull["number"]}, pull, None
     for _ in range(STACK_DEPTH):
         parents = [row for row in pulls
                    if row["state"] == "open" and row["number"] not in seen
-                   and row["head"]["ref"] == child["base"]["ref"] and sha in (None, row["head"]["sha"])
+                   and row["head"]["ref"] == child["base"]["ref"]
                    and head_repository_id(row) == identifier and row["base"]["repo"]["id"] == identifier]
         if len(parents) != 1:
-            return False
+            return None
+        target = target or policy.immutable_sha(parents[0]["head"]["sha"])
         if parents[0]["base"]["ref"] == default_branch:
-            return True
-        # Only the direct target is bound to an exact SHA; ancestors prove the chain is live.
+            return target
         seen.add(parents[0]["number"])
-        child, sha = parents[0], None
-    return False
+        child = parents[0]
+    return None
 
 
 def require_stack_parent(api, repository, identifier, pull, default_branch):
     if head_repository_id(pull) != identifier:
         raise EventError("Stack head must belong to the protected repository")
-    if not live_stack(api.pages(f"/repos/{repository}/pulls"), identifier, pull, default_branch):
+    pulls = api.pages(f"/repos/{repository}/pulls")
+    if stack_parent_sha(pulls, identifier, pull, default_branch) != pull["base"]["sha"]:
         raise EventError("Stack target requires one unique live open parent")
 
 
-def pull_snapshot(api, repository, identifier, pull_number, *, require_current_base=True):
+def pull_snapshot(api, repository, identifier, pull_number):
     document = live_repository(api, repository, identifier)
     pull = api.request(f"/repos/{repository}/pulls/{number(pull_number)}")
     if (pull["number"] != pull_number or pull["base"]["repo"]["id"] != identifier
@@ -330,15 +332,14 @@ def pull_snapshot(api, repository, identifier, pull_number, *, require_current_b
         raise EventError("Live pull request repository or number does not match")
     if pull["state"] != "open":
         raise InactivePull("Pull request is not open")
+    if head_repository_id(pull) is None:
+        raise InactivePull("Pull request head repository was deleted")
     protected = branch_sha(api, repository, document["default_branch"])
-    if require_current_base:
-        if pull["base"]["ref"] != document["default_branch"]:
-            require_stack_parent(api, repository, identifier, pull, document["default_branch"])
-        target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
-        if target != pull["base"]["sha"]:
-            raise EventError("Pull request base does not match the current protected target")
-    elif pull["base"]["ref"] != document["default_branch"] and head_repository_id(pull) != identifier:
-        raise InactivePull("Fork pull requests cannot target a stack")
+    if pull["base"]["ref"] != document["default_branch"]:
+        require_stack_parent(api, repository, identifier, pull, document["default_branch"])
+    target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
+    if target != pull["base"]["sha"]:
+        raise EventError("Pull request base does not match the current protected target")
     return validate_snapshot({
         "version": 2, "repository": repository, "repository_id": identifier,
         "head_repository_id": pull["head"]["repo"]["id"], "pull_number": pull_number,
@@ -364,7 +365,7 @@ def signal_pull_number(api, event, repository, identifier, workflow, actor):
         pull_number = resolve_signal_pull(api, repository, identifier, run)
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
         live_repository(api, repository, identifier)
-        invalidate_pulls(api, repository, identifier, None,
+        invalidate_pulls(api, repository, identifier,
                          "Review wakeup unresolved; refresh exact-revision reuse analysis",
                          dismissed_reviewer=None if owner_wakeup else actor)
         raise EventError("Authenticated review wakeup could not resolve a PR; "
@@ -437,7 +438,7 @@ def ci_pull_number(api, event, repository, identifier):
         return resolve_ci_pull(api, run, repository, identifier)
     except (OSError, ValueError, KeyError, TypeError) as error:
         live_repository(api, repository, identifier)
-        invalidate_pulls(api, repository, identifier, None,
+        invalidate_pulls(api, repository, identifier,
                          "CI wakeup unresolved; refresh exact-revision reuse analysis")
         raise EventError("Authenticated CI wakeup could not resolve its current exact pair; "
                          "invalidated open target PRs pending explicit refresh") from error
@@ -539,100 +540,49 @@ def invalidate_base(api, event, event_name, repository, identifier):
     policy.immutable_sha(current["object"]["sha"])
     # If another push won the race, invalidate conservatively for that newer
     # base too. This event never grants a success or dispatches candidate code.
-    return invalidate_pulls(api, repository, identifier, None)
+    return invalidate_pulls(api, repository, identifier)
 
 
 def invalidate_stack_event(api, event, event_name, repository, identifier):
-    document = live_repository(api, repository, identifier)
     if event["repository"]["id"] != identifier:
         raise EventError("Revocation event repository mismatch")
-    if event_name == "delete":
-        # Tags and branches without dependent PRs simply match nothing.
-        reference = event.get("ref") if event.get("ref_type") == "branch" else None
-    elif event_name == "pull_request_target":
-        if event.get("action") not in ("opened", "synchronize", "edited", "closed", "reopened", "ready_for_review"):
-            raise EventError("Unsupported parent wakeup")
-        pull = api.request(f"/repos/{repository}/pulls/{number(event['number'])}")
-        if pull["number"] != event["number"]:
-            raise EventError("Parent wakeup does not match the live pull request")
-        # Fork and deleted-repository heads can never be stack parents.
-        reference = pull["head"].get("ref") if head_repository_id(pull) == identifier else None
-    elif event_name == "workflow_run":
-        reference = ci_stack_reference(api, event, repository, identifier)
-    else:
+    if event_name not in ("delete", "pull_request_target", "workflow_run"):
         raise EventError("Unsupported parent wakeup")
-    # Revocation deliberately does not require an open parent, a resolvable
-    # target, or an unchanged parent SHA. It can only remove certification.
-    count = 0
-    if isinstance(reference, str) and reference and reference != document["default_branch"]:
-        count = invalidate_pulls(api, repository, identifier, reference,
-                                 "Stack parent changed; refresh exact-revision reuse analysis")
-    return count + invalidate_orphaned_stacks(api, repository, identifier, document["default_branch"])
+    if event_name == "workflow_run" and event.get("action") != "requested":
+        # One sweep per run; in_progress/completed deliveries add only API cost.
+        return 0
+    # Event content selects nothing: any default-branch run sweeps every stacked
+    # success against its recorded target, so parent moves without CI and closed
+    # or deleted parents are revoked by the next run. It can only remove certification.
+    return invalidate_pulls(api, repository, identifier,
+                            "Stack target changed; refresh exact-revision reuse analysis", stale_only=True)
 
 
-def ci_stack_reference(api, event, repository, identifier):
-    """A default-branch CI wakeup names the parent branch whose push requires child revocation."""
-    if event.get("action") not in ("requested", "in_progress", "completed"):
-        raise EventError("Unsupported CI wakeup action")
-    run = api.request(f"/repos/{repository}/actions/runs/{number(event['workflow_run']['id'])}")
-    if run["path"] != CI_WORKFLOW:
-        return None
-    validate_ci_identity(run, ci_workflow(api, repository), identifier)
-    if run["id"] != event["workflow_run"]["id"]:
-        raise EventError("CI wakeup run identity changed")
-    return run["head_branch"] if run["head_repository"]["id"] == identifier else None
-
-
-def invalidate_orphaned_stacks(api, repository, identifier, default_branch):
-    """Revoke stacked success whose parent chain is no longer live, from any default-branch run."""
+def invalidate_pulls(api, repository, identifier,
+                     description="Protected base changed; refresh exact-revision reuse analysis", *,
+                     dismissed_reviewer=None, stale_only=False):
+    """Revoke current successes from listed rows; stale_only keeps successes still bound to live targets."""
+    document = live_repository(api, repository, identifier)
+    default_branch = document["default_branch"]
+    protected = branch_sha(api, repository, default_branch)
     pulls = api.pages(f"/repos/{repository}/pulls")
     count, failures = 0, 0
     for pull in pulls:
         try:
-            if (pull["state"] != "open" or pull["base"]["ref"] == default_branch
-                    or head_repository_id(pull) != identifier
-                    or live_stack(pulls, identifier, pull, default_branch)
-                    or not certified(api, repository, pull["head"]["sha"])):
+            if (pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier
+                    or (stale_only and pull["base"]["ref"] == default_branch)):
                 continue
-            snapshot = pull_snapshot(api, repository, identifier, number(pull["number"]), require_current_base=False)
-            status(api, snapshot, "pending", "Stack parent is no longer live; refresh exact-revision reuse analysis")
-            count += 1
-        except InactivePull:
-            continue
-        except (OSError, ValueError, KeyError, TypeError):
-            failures += 1
-    if failures:
-        raise EventError(f"Stack revocation failed for {failures} PRs after attempting every listed PR")
-    return count
-
-
-def certified(api, repository, head):
-    # Only an existing success needs revocation; repeated pending writes would
-    # consume the per-commit status budget on every default-branch run.
-    combined = api.request(f"/repos/{repository}/commits/{policy.immutable_sha(head)}/status?per_page=100&page=1")
-    return any(row["context"] == CONTEXT and row["state"] == "success" for row in combined["statuses"])
-
-
-def invalidate_pulls(api, repository, identifier, branch,
-                     description="Protected base changed; refresh exact-revision reuse analysis", *,
-                     dismissed_reviewer=None):
-    count, failures = 0, 0
-    for pull in api.pages(f"/repos/{repository}/pulls"):
-        try:
-            if pull["state"] != "open" or (branch is not None and pull["base"]["ref"] != branch):
+            # Only an existing success needs revocation; repeated pending writes
+            # would spend API and per-commit status budget on every run.
+            record = certified_record(api, repository, pull["head"]["sha"])
+            if record is None or (stale_only and record == (
+                    live_target(pulls, identifier, pull, default_branch, protected), protected)):
                 continue
-            # Invalidation must still erase old success while PR base metadata
-            # catches up with a main push. This branch can only publish pending.
-            snapshot = pull_snapshot(api, repository, identifier, number(pull["number"]),
-                                     require_current_base=False)
             if dismissed_reviewer is not None and not owner_review_dismissed(
-                    api, repository, snapshot["pull_number"], dismissed_reviewer):
+                    api, repository, number(pull["number"]), dismissed_reviewer):
                 continue
-            status(api, snapshot, "pending", description)
+            post_status(api, repository, pull["head"]["sha"], "pending", description)
             count += 1
-        except InactivePull:
-            # A PR can close or retarget between list and detail requests.
-            continue
         except (OSError, ValueError, KeyError, TypeError):
             # One API failure must not leave every later PR's status untouched.
             failures += 1
@@ -641,13 +591,40 @@ def invalidate_pulls(api, repository, identifier, branch,
     return count
 
 
+def live_target(pulls, identifier, pull, default_branch, protected):
+    if pull["base"]["ref"] == default_branch:
+        return protected
+    if head_repository_id(pull) != identifier:
+        return None
+    return stack_parent_sha(pulls, identifier, pull, default_branch)
+
+
+def certification(snapshot):
+    # Bounded (<=140 chars) record of the exact target and policy a success certified.
+    return f"Reuse, suppression and policy review passed; base={snapshot['base']} policy={snapshot['policy_source']}"
+
+
+def certified_record(api, repository, head):
+    """None without a current success; otherwise its recorded (base, policy), or () when unparseable."""
+    combined = api.request(f"/repos/{repository}/commits/{policy.immutable_sha(head)}/status?per_page=100&page=1")
+    rows = [row for row in combined["statuses"] if row["context"] == CONTEXT]
+    if not any(row["state"] == "success" for row in rows):
+        return None
+    match = CERTIFICATION.fullmatch(rows[0]["description"] or "") if len(rows) == 1 else None
+    return match.groups() if match else ()
+
+
 def status(api, snapshot, state, description):
     validate_snapshot(snapshot)
+    post_status(api, snapshot["repository"], snapshot["head"], state, description)
+
+
+def post_status(api, repository, head, state, description):
     payload = {"state": state, "context": CONTEXT, "description": description}
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     if re.fullmatch(r"[1-9]\d*", run_id):
-        payload["target_url"] = f"https://github.com/{snapshot['repository']}/actions/runs/{run_id}"
-    api.request(f"/repos/{snapshot['repository']}/statuses/{snapshot['head']}", payload)
+        payload["target_url"] = f"https://github.com/{repository}/actions/runs/{run_id}"
+    api.request(f"/repos/{repository}/statuses/{policy.immutable_sha(head)}", payload)
 
 
 def git_environment(token=None):
@@ -940,7 +917,7 @@ def publish(api, snapshot, result, analysis_result, reviewers, suppression=None,
             return
         producer = suppression_evidence(api, snapshot, suppression)
         same_live_pair(api, snapshot)
-        status(api, snapshot, "success", "Protected reuse, suppression provenance and policy review passed")
+        status(api, snapshot, "success", certification(snapshot))
         # GitHub's status write is not conditional on PR/review state. Correct
         # a write overtaken by a withdrawal or base update as soon as observed.
         after_publication = review_evidence(api, snapshot, result, reviewers)

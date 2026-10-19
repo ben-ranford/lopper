@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   invalidate-base:
-    if: ${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' || github.event_name == 'workflow_run' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' || (github.event_name == 'workflow_run' && github.event.action == 'requested') }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
