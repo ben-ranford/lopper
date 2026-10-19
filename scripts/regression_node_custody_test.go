@@ -155,9 +155,9 @@ func TestRegressionNodeConsumersClearInheritedLoaderEnvironment(t *testing.T) {
 			assertInheritedLoaderEnvironmentCleared(t, jobName, step)
 		}
 	}
-	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers.
-	if consumers != 8 {
-		t.Fatalf("expected 8 authenticated runtime consumers, got %d", consumers)
+	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and three consumers.
+	if consumers != 7 {
+		t.Fatalf("expected 7 authenticated runtime consumers, got %d", consumers)
 	}
 }
 
