@@ -252,8 +252,9 @@ def configure(client, reference, scope_bytes, scope_digest, *, save):
     current = before[REGEX_KEY]["value"]
     require(isinstance(current, str) and bool(current) and "\n" not in current and "\r" not in current,
             "Unsupported long-lived branch regex")
-    if not current.endswith("|" + quoted):
-        owned_write(client, state, REGEX_KEY, current + "|" + quoted, save)
+    # Always append: a textual suffix check cannot tell an escaped pipe from a
+    # top-level alternative, and a duplicate literal alternative is harmless.
+    owned_write(client, state, REGEX_KEY, current + "|" + quoted, save)
     owned_write(client, state, AUTOSCAN_KEY, "false", save)
     drain(client)
     return state

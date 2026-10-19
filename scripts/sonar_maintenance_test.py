@@ -75,8 +75,9 @@ class SubmittedAnalysisTests(unittest.TestCase):
             client.task.update({"pullRequest": "42", "analysisId": "analysis-1", **change})
             with self.subTest(change=change), self.assertRaises(maintenance.MaintenanceError):
                 maintenance.current_pull_request_analysis(client, 42)
+        client = Client()
         with self.assertRaises(maintenance.MaintenanceError):
-            maintenance.current_pull_request_analysis(Client(), "42")
+            maintenance.current_pull_request_analysis(client, "42")
 
 
 class PermissionTests(unittest.TestCase):
@@ -144,11 +145,13 @@ class TransitionTests(unittest.TestCase):
             with self.subTest(current=current):
                 maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
                 self.assertEqual(client.settings[maintenance.REGEX_KEY]["value"], current + "|" + quoted)
-        client = Client()
-        client.settings[maintenance.REGEX_KEY]["value"] = "main|" + quoted
-        client.original = copy.deepcopy(client.settings)
-        maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
-        self.assertEqual([call[1]["key"] for call in client.calls if call[3]], [maintenance.AUTOSCAN_KEY])
+        # An escaped pipe is not a top-level alternative, so the literal is still appended.
+        for current in ("main|" + quoted, "foo\\|" + quoted):
+            client = Client()
+            client.settings[maintenance.REGEX_KEY]["value"] = current
+            client.original = copy.deepcopy(client.settings)
+            maintenance.configure(client, reference, SCOPE, SCOPE_SHA, save=client.save)
+            self.assertEqual(client.settings[maintenance.REGEX_KEY]["value"], current + "|" + quoted)
         for current in ("", "a\nb"):
             client = Client()
             client.settings[maintenance.REGEX_KEY]["value"] = current
