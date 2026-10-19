@@ -1138,26 +1138,6 @@ jobs:
 
       - *ci_proof_node_verify
 
-      # One-off proof for #1835: its fixed baseline is an earlier amend of that PR.
-      - name: Prove Windows runtime path fix against its baseline
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}
-        shell: pwsh
-        env:
-          LD_PRELOAD: ''
-          LD_AUDIT: ''
-          LD_LIBRARY_PATH: ''
-          NODE_PATH: ''
-          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
-          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
-          GOTOOLCHAIN: local
-          GOENV: off
-          GOWORK: off
-          GOFLAGS: ''
-          GOCACHEPROG: ''
-          GOAUTH: 'off'
-          REGRESSION_PROOF_GO_ROOT: ${{ steps.proof_runtime.outputs.go_root }}
-        run: ./scripts/verify-windows-runtime-paths.ps1
-
       - name: Test native Windows runtime search paths
         shell: pwsh
         env:
