@@ -4,6 +4,8 @@ Unreleased feature-flag migration guidance is maintained in the [v2 stable alias
 
 ## [1.8.10](https://github.com/ben-ranford/lopper/compare/v1.8.9...v1.8.10) (2026-10-19)
 
+* Source builds require Go `1.27.2` or newer (previously `1.27.1`).
+
 
 ### Bug Fixes
 
