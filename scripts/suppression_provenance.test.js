@@ -59,6 +59,7 @@ function harness(options = {}) {
   const expected = {
     repoId: 11, headRepoId: 22, pullNumber: 1750,
     policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2,
+    windowStart: '2026-09-30T12:00:00Z', windowEnd: '2026-09-30T12:40:00Z',
   };
   const context = { repo: { owner: 'owner', repo: 'lopper' } };
   const pull = {
@@ -194,6 +195,21 @@ test('rejects wrong or regressed producer identity before loading trusted code',
       });
       assert.equal(fixture.calls.content.length, 0);
     });
+  }
+});
+
+test('accepts carried-over evidence inside the listed producer window of a later attempt', async () => {
+  const fixture = harness();
+  Object.assign(fixture.run, { run_started_at: '2026-09-30T13:00:00Z', updated_at: '2026-09-30T13:30:00Z' });
+  assert.equal((await verifySuppressionProvenance(fixture.args)).runAttempt, 2);
+});
+
+test('rejects missing or unparseable producer windows before any API access', async () => {
+  for (const change of [(e) => { delete e.windowStart; }, (e) => { e.windowEnd = 'later'; }, (e) => { e.windowStart = 1; }]) {
+    const fixture = harness();
+    change(fixture.args.expected);
+    await assert.rejects(verifySuppressionProvenance(fixture.args), /Suppression provenance: (unexpected snapshot fields|invalid window)/);
+    assert.equal(fixture.calls.runs, 0);
   }
 });
 
@@ -433,8 +449,12 @@ function verifyThroughOuter(fixture, listRuns) {
   github.rest.repos.get = async () => ({ data: { id: 11, full_name: 'owner/lopper', default_branch: 'main' } });
   github.rest.git.getRef = async () => ({ data: { object: { sha: BASE } } });
   github.rest.actions.listWorkflowRuns = listRuns ?? (async () => ({ data: { total_count: 1, workflow_runs: [structuredClone(fixture.run)] } }));
-  github.rest.actions.listJobsForWorkflowRunAttempt = async () => ({ data: { total_count: 1, jobs: [{
+  github.rest.actions.listJobsForWorkflowRunAttempt = async () => ({ data: { total_count: 2, jobs: [{
+    name: 'verify-checks', run_id: 33, run_attempt: 2, head_sha: HEAD, status: 'completed', conclusion: 'success',
+    started_at: '2026-09-30T12:00:00Z',
+  }, {
     name: 'suppression-artifact-55', run_id: 33, run_attempt: 2, head_sha: HEAD, status: 'completed', conclusion: 'success',
+    completed_at: '2026-09-30T12:40:00Z',
   }] } });
   const verify = verifyReuseSuppression.testables.createVerifier(() => verifySuppressionProvenance, async () => fixture.args.archive);
   return verify({ github, context: fixture.context, token: 'test', snapshot: {
