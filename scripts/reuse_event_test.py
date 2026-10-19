@@ -317,6 +317,30 @@ class StackPolicyTests(unittest.TestCase):
         self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 2)
         self.assertTrue(all(post[1]["state"] == "pending" for post in self.api.posts))
 
+    def test_shared_stacked_head_is_refused_before_and_after_publication(self):
+        snapshot = event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        for base in ("main", self.reference):
+            sibling = dict(pull_document(), number=40)
+            sibling["base"] = dict(sibling["base"], ref=base)
+            sibling["head"]["ref"] = "feature/sibling"
+            self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent, sibling]
+            with self.subTest(base=base):
+                with self.assertRaisesRegex(event.EventError, "shared"):
+                    event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+                with self.assertRaisesRegex(event.EventError, "shared"):
+                    event.same_live_pair(self.api, snapshot)
+        self.assertEqual(self.api.posts, [])
+
+    def test_sweep_revokes_stacked_success_reused_by_a_default_branch_pull(self):
+        self.assertEqual(self.sweep(), 0)
+        sibling = dict(pull_document(), number=40)
+        sibling["head"]["ref"] = "feature/sibling"
+        self.api.page_responses[PREFIX + "/pulls"].append(sibling)
+        # Both PRs read the stacked record on the shared head; the default-branch
+        # PR cannot accept a success certified against the parent.
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+
     def test_any_same_repository_branch_chain_reaching_main_is_eligible(self):
         self.deepen()
         self.assertEqual(event.pull_snapshot(self.api, REPOSITORY, 10, 12)["base"], self.parent_sha)

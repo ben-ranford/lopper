@@ -337,6 +337,10 @@ def require_stack_parent(api, repository, identifier, pull, default_branch):
     pulls = api.pages(f"/repos/{repository}/pulls")
     if stack_parent_sha(pulls, identifier, pull, default_branch) != pull["base"]["sha"]:
         raise EventError("Stack target requires one unique live open parent")
+    # A commit status is shared by every PR with this head; a stacked success
+    # must never also satisfy another PR's required reuse-check context.
+    if any(row["number"] != pull["number"] and row["head"]["sha"] == pull["head"]["sha"] for row in pulls):
+        raise EventError("Stacked head is shared with another open pull request")
 
 
 def pull_snapshot(api, repository, identifier, pull_number):
@@ -583,8 +587,7 @@ def invalidate_pulls(api, repository, identifier,
     count, failures = 0, int(current is None)
     for pull in pulls:
         try:
-            if (pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier
-                    or (stale_only and pull["base"]["ref"] == default_branch)):
+            if pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier:
                 continue
             # Only an existing success needs revocation; repeated pending writes
             # would spend API and per-commit status budget on every run.

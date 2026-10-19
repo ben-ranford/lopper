@@ -13,11 +13,13 @@ another parent cannot revoke its children from its own events: that source is no
 the default branch and fails the protected pin. Revocation therefore runs from
 default-branch contexts and compares recorded evidence with live state: each
 success description records the exact target B and policy P it certified. A
-`delete` or the `requested` delivery of any `workflow_run` sweeps open stacked PRs
+`delete` or the `requested` delivery of any `workflow_run` sweeps open PRs
 from one PR listing and one paginated GraphQL status inventory (an incomplete
 inventory revokes rather than skips) and revokes a current success whose record is missing or malformed, whose
 P differs from the default-branch tip, or whose B differs from the live direct
-parent head of a unique open chain to the default branch. Parent moves without CI
+parent head of a unique open chain to the default branch (the default-branch tip for a
+default-branch PR). Commit statuses are per SHA, so a stacked PR whose head is shared
+with any other open PR is never certified. Parent moves without CI
 and closed or deleted parents are therefore revoked by the next such run, not
 instantly; label or edit churn on a parent no longer revokes children.
 
