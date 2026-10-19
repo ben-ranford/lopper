@@ -40,7 +40,7 @@ func TestReuseWorkflowReceivesEvidenceInvalidationEvents(t *testing.T) {
 		t.Fatal("base invalidation and review wakeups must come from the selected protected sources")
 	}
 	invalidate := workflowJobByName(t, workflow.Jobs, "invalidate-base")
-	if invalidate.If != "${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' }}" || invalidate.Permissions["statuses"] != "write" {
+	if invalidate.If != "${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' || github.event_name == 'workflow_run' }}" || invalidate.Permissions["statuses"] != "write" {
 		t.Fatal("main updates must have a trusted writer to invalidate old base evidence")
 	}
 }

@@ -202,8 +202,10 @@ version 2. `policy_source` (P) is the authenticated default-branch executable an
 policy revision. The actual target B, child H and prospective merge M are data;
 parent branch scripts, detector settings and baseline allowances are never adopted
 as executable policy. The candidate inline-suppression report remains version 1.
-Only same-repository `codex/v1.8.10-` targets with one live open parent are eligible
-for stacked reuse analysis. Parent closure/deletion or policy movement revokes
-existing evidence even when new success is no longer eligible. Queue merge
+A non-default target is eligible for stacked reuse analysis only when the child
+head is in this repository and the target is the head of one unique open
+same-repository PR whose chain of open parents reaches the default branch within
+16 levels; branch names grant nothing. Parent closure/deletion or policy movement
+revokes existing evidence even when new success is no longer eligible. Queue merge
 admission remains main-only and requires P=B. See
 [stacked gate maintenance](docs/stacked-gate-maintenance.md) for the revocation prerequisites.

@@ -9,6 +9,7 @@ const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const PAGE_SIZE = 100;
 const LOCATOR_PREFIX = 'suppression-artifact-';
+const STACK_DEPTH = 16;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 
 class EvidenceError extends Error {}
@@ -102,18 +103,26 @@ async function assertLiveSnapshot(github, repo, snapshot) {
   } else {
     const { data: policy } = await github.rest.git.getRef({ ...repo, ref: `heads/${repository.default_branch}` });
     requireEvidence(policy?.object?.sha === snapshot.policy_source, 'protected policy changed');
-    await assertStackParent(github, repo, snapshot);
+    await assertStackParent(github, repo, snapshot, repository.default_branch);
   }
 }
 
-async function assertStackParent(github, repo, snapshot) {
-  requireEvidence(snapshot.repository === 'ben-ranford/lopper' && snapshot.base_ref.startsWith('codex/v1.8.10-') &&
-    snapshot.head_repository_id === snapshot.repository_id, 'target is outside the protected stack batch');
+async function assertStackParent(github, repo, snapshot, defaultBranch) {
+  requireEvidence(snapshot.head_repository_id === snapshot.repository_id, 'stack head must belong to the protected repository');
   const parents = await openParents(github, repo);
-  const matches = parents.filter(pull => pull.state === 'open' && pull.number !== snapshot.pull_number &&
-    pull.head?.ref === snapshot.base_ref && pull.head?.sha === snapshot.base &&
-    pull.head?.repo?.id === snapshot.repository_id && pull.base?.repo?.id === snapshot.repository_id);
-  requireEvidence(matches.length === 1, 'stack requires one unique live open parent');
+  const seen = new Set([snapshot.pull_number]);
+  let target = { ref: snapshot.base_ref, sha: snapshot.base };
+  for (let depth = 0; depth < STACK_DEPTH; depth += 1) {
+    // Only the direct target is bound to an exact SHA; ancestors prove the chain to the default branch is live.
+    const matches = parents.filter(pull => pull.state === 'open' && !seen.has(pull.number) &&
+      pull.head?.ref === target.ref && (target.sha === null || pull.head?.sha === target.sha) &&
+      pull.head?.repo?.id === snapshot.repository_id && pull.base?.repo?.id === snapshot.repository_id);
+    requireEvidence(matches.length === 1, 'stack requires one unique live open parent');
+    if (matches[0].base?.ref === defaultBranch) return;
+    seen.add(matches[0].number);
+    target = { ref: matches[0].base?.ref, sha: null };
+  }
+  throw new EvidenceError('Reuse suppression: stack exceeds its supported depth');
 }
 
 async function openParents(github, repo) {

@@ -199,6 +199,58 @@ test('authenticates the live protected pair before deferring registration or pen
   }
 });
 
+function stackedHarness() {
+  const fixture = harness();
+  const policy = 'c'.repeat(40);
+  fixture.arguments.snapshot = { ...SNAPSHOT, policy_source: policy, head_repository_id: 12, base_ref: 'codex/g045-parent' };
+  fixture.pull.base.ref = 'codex/g045-parent';
+  fixture.pull.head.repo.id = 12;
+  fixture.runs = [];
+  fixture.parents = [
+    { number: 57, state: 'open', head: { ref: 'codex/g045-parent', sha: BASE, repo: { id: 12 } }, base: { ref: 'codex/maven-stack-root', repo: { id: 12 } } },
+    { number: 58, state: 'open', head: { ref: 'codex/maven-stack-root', sha: 'd'.repeat(40), repo: { id: 12 } }, base: { ref: 'main', repo: { id: 12 } } },
+  ];
+  const { git, pulls } = fixture.arguments.github.rest;
+  const getRef = git.getRef;
+  git.getRef = async (parameters) => parameters.ref === 'heads/main' ? { data: { object: { sha: policy } } } : getRef(parameters);
+  pulls.list = async (parameters) => ({ data: parameters.page === 1 ? fixture.parents : [] });
+  return fixture;
+}
+
+test('accepts any same-repository open PR chain to the default branch as a stack target', async () => {
+  const fixture = stackedHarness();
+  await assert.rejects(fixture.verify(), (error) => {
+    assert.equal(verifyReuseSuppression.isDeferred(error), true);
+    assert.deepEqual(error.deferred.snapshot, fixture.arguments.snapshot);
+    assert.equal(error.deferred.reason, 'registration');
+    return true;
+  });
+});
+
+test('broken, ambiguous, foreign or unbounded stack chains fail closed', async () => {
+  const deep = (state) => {
+    state.parents.pop();
+    for (let index = 0; index < 16; index += 1) {
+      state.parents.push({ number: 100 + index, state: 'open', head: { ref: index ? `codex/issue-1731-${index}` : 'codex/maven-stack-root', sha: 'e'.repeat(40), repo: { id: 12 } },
+        base: { ref: index === 15 ? 'main' : `codex/issue-1731-${index + 1}`, repo: { id: 12 } } });
+    }
+  };
+  for (const change of [
+    (state) => { state.arguments.snapshot.head_repository_id = 34; state.pull.head.repo.id = 34; },
+    (state) => { state.parents[0].head.sha = HEAD; },
+    (state) => { state.parents[1].state = 'closed'; },
+    (state) => { state.parents[1].base.ref = 'release'; },
+    (state) => { state.parents[1].head.repo.id = 34; },
+    (state) => { state.parents[1].base.ref = 'codex/g045-parent'; },
+    (state) => { state.parents.push({ ...state.parents[1], number: 59 }); },
+    deep,
+  ]) {
+    const fixture = stackedHarness();
+    change(fixture);
+    await assert.rejects(fixture.verify(), assertHardFailure);
+  }
+});
+
 test('defers authenticated queued and in-progress CI without inspecting artifacts', async () => {
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     const fixture = harness();

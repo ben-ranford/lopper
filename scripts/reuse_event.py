@@ -49,6 +49,7 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
 CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
+STACK_DEPTH = 16
 
 
 def number(value):
@@ -292,21 +293,32 @@ def branch_sha(api, repository, reference):
     return policy.immutable_sha(target["object"]["sha"])
 
 
-def stack_target(reference):
-    return isinstance(reference, str) and reference.startswith("codex/v1.8.10-")
+def head_repository_id(pull):
+    return (pull["head"]["repo"] or {}).get("id")
 
 
-def require_stack_parent(api, repository, identifier, pull):
-    if repository != "ben-ranford/lopper" or not stack_target(pull["base"]["ref"]):
-        raise InactivePull("Pull request target is outside the protected batch")
-    if pull["head"]["repo"]["id"] != identifier:
+def live_stack(pulls, identifier, pull, default_branch):
+    """Accept only a unique same-repository open PR chain from this target to the default branch."""
+    seen, child, sha = {pull["number"]}, pull, pull["base"]["sha"]
+    for _ in range(STACK_DEPTH):
+        parents = [row for row in pulls
+                   if row["state"] == "open" and row["number"] not in seen
+                   and row["head"]["ref"] == child["base"]["ref"] and sha in (None, row["head"]["sha"])
+                   and head_repository_id(row) == identifier and row["base"]["repo"]["id"] == identifier]
+        if len(parents) != 1:
+            return False
+        if parents[0]["base"]["ref"] == default_branch:
+            return True
+        # Only the direct target is bound to an exact SHA; ancestors prove the chain is live.
+        seen.add(parents[0]["number"])
+        child, sha = parents[0], None
+    return False
+
+
+def require_stack_parent(api, repository, identifier, pull, default_branch):
+    if head_repository_id(pull) != identifier:
         raise EventError("Stack head must belong to the protected repository")
-    parents = [row for row in api.pages(f"/repos/{repository}/pulls")
-               if row["state"] == "open" and row["head"]["ref"] == pull["base"]["ref"]
-               and row["head"]["sha"] == pull["base"]["sha"]
-               and row["head"]["repo"]["id"] == identifier
-               and row["base"]["repo"]["id"] == identifier and row["number"] != pull["number"]]
-    if len(parents) != 1:
+    if not live_stack(api.pages(f"/repos/{repository}/pulls"), identifier, pull, default_branch):
         raise EventError("Stack target requires one unique live open parent")
 
 
@@ -321,12 +333,12 @@ def pull_snapshot(api, repository, identifier, pull_number, *, require_current_b
     protected = branch_sha(api, repository, document["default_branch"])
     if require_current_base:
         if pull["base"]["ref"] != document["default_branch"]:
-            require_stack_parent(api, repository, identifier, pull)
+            require_stack_parent(api, repository, identifier, pull, document["default_branch"])
         target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
         if target != pull["base"]["sha"]:
             raise EventError("Pull request base does not match the current protected target")
-    elif pull["base"]["ref"] != document["default_branch"] and not stack_target(pull["base"]["ref"]):
-        raise InactivePull("Pull request is outside the revocation batch")
+    elif pull["base"]["ref"] != document["default_branch"] and head_repository_id(pull) != identifier:
+        raise InactivePull("Fork pull requests cannot target a stack")
     return validate_snapshot({
         "version": 2, "repository": repository, "repository_id": identifier,
         "head_repository_id": pull["head"]["repo"]["id"], "pull_number": pull_number,
@@ -531,25 +543,74 @@ def invalidate_base(api, event, event_name, repository, identifier):
 
 
 def invalidate_stack_event(api, event, event_name, repository, identifier):
-    live_repository(api, repository, identifier)
+    document = live_repository(api, repository, identifier)
     if event["repository"]["id"] != identifier:
         raise EventError("Revocation event repository mismatch")
     if event_name == "delete":
-        if event.get("ref_type") != "branch" or not stack_target(event.get("ref")):
-            raise EventError("Unsupported branch deletion")
-        return invalidate_pulls(api, repository, identifier, event["ref"])
-    if event_name != "pull_request_target" or event.get("action") not in (
-            "opened", "synchronize", "edited", "closed", "reopened", "ready_for_review"):
+        # Tags and branches without dependent PRs simply match nothing.
+        reference = event.get("ref") if event.get("ref_type") == "branch" else None
+    elif event_name == "pull_request_target":
+        if event.get("action") not in ("opened", "synchronize", "edited", "closed", "reopened", "ready_for_review"):
+            raise EventError("Unsupported parent wakeup")
+        pull = api.request(f"/repos/{repository}/pulls/{number(event['number'])}")
+        if pull["number"] != event["number"]:
+            raise EventError("Parent wakeup does not match the live pull request")
+        # Fork and deleted-repository heads can never be stack parents.
+        reference = pull["head"].get("ref") if head_repository_id(pull) == identifier else None
+    elif event_name == "workflow_run":
+        reference = ci_stack_reference(api, event, repository, identifier)
+    else:
         raise EventError("Unsupported parent wakeup")
-    pull = api.request(f"/repos/{repository}/pulls/{number(event['number'])}")
-    if pull["number"] != event["number"] or pull["head"]["repo"]["id"] != identifier:
-        raise EventError("Parent wakeup is not from this repository")
-    reference = pull["head"].get("ref")
-    if not stack_target(reference):
-        return 0
     # Revocation deliberately does not require an open parent, a resolvable
     # target, or an unchanged parent SHA. It can only remove certification.
-    return invalidate_pulls(api, repository, identifier, reference)
+    count = 0
+    if isinstance(reference, str) and reference and reference != document["default_branch"]:
+        count = invalidate_pulls(api, repository, identifier, reference,
+                                 "Stack parent changed; refresh exact-revision reuse analysis")
+    return count + invalidate_orphaned_stacks(api, repository, identifier, document["default_branch"])
+
+
+def ci_stack_reference(api, event, repository, identifier):
+    """A default-branch CI wakeup names the parent branch whose push requires child revocation."""
+    if event.get("action") not in ("requested", "in_progress", "completed"):
+        raise EventError("Unsupported CI wakeup action")
+    run = api.request(f"/repos/{repository}/actions/runs/{number(event['workflow_run']['id'])}")
+    if run["path"] != CI_WORKFLOW:
+        return None
+    validate_ci_identity(run, ci_workflow(api, repository), identifier)
+    if run["id"] != event["workflow_run"]["id"]:
+        raise EventError("CI wakeup run identity changed")
+    return run["head_branch"] if run["head_repository"]["id"] == identifier else None
+
+
+def invalidate_orphaned_stacks(api, repository, identifier, default_branch):
+    """Revoke stacked success whose parent chain is no longer live, from any default-branch run."""
+    pulls = api.pages(f"/repos/{repository}/pulls")
+    count, failures = 0, 0
+    for pull in pulls:
+        try:
+            if (pull["state"] != "open" or pull["base"]["ref"] == default_branch
+                    or head_repository_id(pull) != identifier
+                    or live_stack(pulls, identifier, pull, default_branch)
+                    or not certified(api, repository, pull["head"]["sha"])):
+                continue
+            snapshot = pull_snapshot(api, repository, identifier, number(pull["number"]), require_current_base=False)
+            status(api, snapshot, "pending", "Stack parent is no longer live; refresh exact-revision reuse analysis")
+            count += 1
+        except InactivePull:
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            failures += 1
+    if failures:
+        raise EventError(f"Stack revocation failed for {failures} PRs after attempting every listed PR")
+    return count
+
+
+def certified(api, repository, head):
+    # Only an existing success needs revocation; repeated pending writes would
+    # consume the per-commit status budget on every default-branch run.
+    combined = api.request(f"/repos/{repository}/commits/{policy.immutable_sha(head)}/status?per_page=100&page=1")
+    return any(row["context"] == CONTEXT and row["state"] == "success" for row in combined["statuses"])
 
 
 def invalidate_pulls(api, repository, identifier, branch,
