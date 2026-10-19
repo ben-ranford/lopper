@@ -921,6 +921,16 @@ jobs:
         shell: pwsh
         run: go test ./tools/regressionproof -run '^TestWindowsProof' -count=1
 
+      - name: Test native Windows runtime search paths
+        shell: pwsh
+        run: go test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1
+
+      # One-off proof for #1835: its fixed baseline is an earlier amend of that PR.
+      - name: Prove Windows runtime path fix against its baseline
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}
+        shell: pwsh
+        run: ./scripts/verify-windows-runtime-paths.ps1
+
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3

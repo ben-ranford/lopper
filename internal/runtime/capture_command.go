@@ -492,7 +492,7 @@ func trustedSearchDirs(dirListValue string) []string {
 			continue
 		}
 
-		info, err := os.Stat(dir)
+		info, err := statRuntimeSearchDir(dir)
 		if err != nil || !info.IsDir() {
 			continue
 		}
