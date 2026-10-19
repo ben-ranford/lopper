@@ -777,9 +777,18 @@ async function advanceQueuedPull({
     return true;
   }
   if (onCandidate) {
-    await onCandidate({ github, owner, repo, pullNumber: candidate.number,
-      headSHA: update.headSHA, baseSHA: defaultBranchSHA, baseRef: defaultBranch,
-      trustedPolicySHA, queueLabel });
+    try {
+      await onCandidate({ github, owner, repo, pullNumber: candidate.number,
+        headSHA: update.headSHA, baseSHA: defaultBranchSHA, baseRef: defaultBranch,
+        trustedPolicySHA, queueLabel });
+    } catch (error) {
+      // CI/reuse audit refusals pause this candidate like identity pauses; other errors still fail the run.
+      if (!error?.queuePauseMessage) throw error;
+      await disableAutoMerge(github, owner, repo, candidate.number);
+      await syncStatusComment(github, owner, repo, candidate.number,
+        `## Queue status\n\nQueue paused: ${error.queuePauseMessage}${hasFollower ? ' The queue will continue with the next queued pull request.' : ''}`);
+      return hasFollower;
+    }
     return false;
   }
   await mergeVerifiedQueuedPull({

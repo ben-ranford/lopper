@@ -1964,6 +1964,44 @@ test('prepare disarms the queue and selects without evaluating or merging eviden
   assert.deepEqual(h.calls.armed, []);
 });
 
+function pausePreparation(t, pausedNumbers) {
+  return t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async input => {
+    if (pausedNumbers.includes(input.pullNumber)) {
+      const error = new Error('CI audit paused: candidate changes trusted workflow source .github/workflows/ci.yml.');
+      error.queuePauseMessage = error.message;
+      throw error;
+    }
+    return { ticket: { pull: input.pullNumber }, readiness: { state: 'READY', reasons: [] } };
+  });
+}
+
+test('a CI audit pause on the leader records the hold and prepares the next queued pull', async t => {
+  const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
+  const prepare = pausePreparation(t, [10]);
+  assert.deepEqual(await runController.prepareQueue(h.args), { pull: 20 });
+  assert.deepEqual(prepare.mock.calls.map(call => call.arguments[0].pullNumber), [10, 20]);
+  assert.match(commentsFor(h, 10), /Queue paused: CI audit paused: candidate changes trusted workflow source/);
+  assert.match(commentsFor(h, 10), /continue with the next queued pull request/);
+  assert.deepEqual(h.calls.merged, []);
+  assert.deepEqual(h.calls.armed, []);
+});
+
+test('a CI audit pause on the last queued pull records the hold without a ticket', async t => {
+  const h = makeHarness({ pulls: [makePull(10)] });
+  pausePreparation(t, [10]);
+  assert.equal(await runController.prepareQueue(h.args), undefined);
+  assert.match(commentsFor(h, 10), /Queue paused: CI audit paused: candidate changes trusted workflow source/);
+  assert.doesNotMatch(commentsFor(h, 10), /next queued pull request/);
+  assert.deepEqual(h.calls.merged, []);
+  assert.deepEqual(h.calls.armed, []);
+});
+
+test('a non-pause preparation error still fails the queue run', async t => {
+  const h = makeHarness({ pulls: [makePull(10), makePull(20)] });
+  t.mock.method(require('./queue_me_reuse'), 'prepareCandidate', async () => { throw new Error('controller fault'); });
+  await assert.rejects(runController.prepareQueue(h.args), /controller fault/);
+});
+
 test('blocked preparation disarms queued pulls and records the hold without a ticket or proof', async t => {
   const h = makeHarness({ pulls: [makePull(10), makePull(20)],
     initialStates: { 10: { autoMergeRequest: {} }, 20: { autoMergeRequest: {} } } });
