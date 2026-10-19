@@ -50,6 +50,15 @@ CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requ
 CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
 STACK_DEPTH = 16
+# One GraphQL page reads 100 open PR heads' current reuse-check status instead of one REST GET each.
+STATUS_QUERY = """query($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number commits(last: 1) { nodes { commit { oid status { context(name: "reuse-check") { state description } } } } } }
+    }
+  }
+}"""
 CERTIFICATION = re.compile(r"Reuse, suppression and policy review passed; base=([0-9a-f]{40}) policy=([0-9a-f]{40})")
 
 
@@ -162,8 +171,14 @@ class GitHub:
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def request(self, path, data=None):
+        return self.send(github_api_url(path), data)
+
+    def graphql(self, query, variables):
+        return self.send("https://api.github.com/graphql", {"query": query, "variables": variables})
+
+    def send(self, url, data):
         request = urllib.request.Request(
-            github_api_url(path),
+            url,
             data=None if data is None else json.dumps(data).encode(),
             headers={"Authorization": "Bearer " + self.token,
                      "Accept": "application/vnd.github+json",
@@ -535,18 +550,16 @@ def invalidate_base(api, event, event_name, repository, identifier):
             or event["ref"] != "refs/heads/" + document["default_branch"] or event.get("deleted")):
         raise EventError("Base invalidation requires a push to the authenticated default branch")
     policy.immutable_sha(event["after"])
-    branch = urllib.parse.quote(document["default_branch"], safe="")
-    current = api.request(f"/repos/{repository}/git/ref/heads/{branch}")
-    policy.immutable_sha(current["object"]["sha"])
-    # If another push won the race, invalidate conservatively for that newer
-    # base too. This event never grants a success or dispatches candidate code.
+    # invalidate_pulls reads the current default-branch tip; if another push won
+    # the race, invalidate conservatively for that newer base too. This event
+    # never grants a success or dispatches candidate code.
     return invalidate_pulls(api, repository, identifier)
 
 
 def invalidate_stack_event(api, event, event_name, repository, identifier):
     if event["repository"]["id"] != identifier:
         raise EventError("Revocation event repository mismatch")
-    if event_name not in ("delete", "pull_request_target", "workflow_run"):
+    if event_name not in ("delete", "workflow_run"):
         raise EventError("Unsupported parent wakeup")
     if event_name == "workflow_run" and event.get("action") != "requested":
         # One sweep per run; in_progress/completed deliveries add only API cost.
@@ -566,7 +579,8 @@ def invalidate_pulls(api, repository, identifier,
     default_branch = document["default_branch"]
     protected = branch_sha(api, repository, default_branch)
     pulls = api.pages(f"/repos/{repository}/pulls")
-    count, failures = 0, 0
+    current = current_statuses(api, repository)
+    count, failures = 0, int(current is None)
     for pull in pulls:
         try:
             if (pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier
@@ -574,7 +588,7 @@ def invalidate_pulls(api, repository, identifier,
                 continue
             # Only an existing success needs revocation; repeated pending writes
             # would spend API and per-commit status budget on every run.
-            record = certified_record(api, repository, pull["head"]["sha"])
+            record = certified_record(current, pull)
             if record is None or (stale_only and record == (
                     live_target(pulls, identifier, pull, default_branch, protected), protected)):
                 continue
@@ -587,7 +601,8 @@ def invalidate_pulls(api, repository, identifier,
             # One API failure must not leave every later PR's status untouched.
             failures += 1
     if failures:
-        raise EventError(f"Base invalidation failed for {failures} PRs after attempting every listed PR")
+        raise EventError(f"Base invalidation failed for {failures} PRs or the status inventory "
+                         "after attempting every listed PR")
     return count
 
 
@@ -604,13 +619,37 @@ def certification(snapshot):
     return f"Reuse, suppression and policy review passed; base={snapshot['base']} policy={snapshot['policy_source']}"
 
 
-def certified_record(api, repository, head):
-    """None without a current success; otherwise its recorded (base, policy), or () when unparseable."""
-    combined = api.request(f"/repos/{repository}/commits/{policy.immutable_sha(head)}/status?per_page=100&page=1")
-    rows = [row for row in combined["statuses"] if row["context"] == CONTEXT]
-    if not any(row["state"] == "success" for row in rows):
+def current_statuses(api, repository):
+    """Map open PR numbers to their head and current reuse-check state, or None when incomplete."""
+    owner, name = repository_name(repository).split("/")
+    found, after = {}, None
+    try:
+        for _ in range(100):
+            document = api.graphql(STATUS_QUERY, {"owner": owner, "name": name, "after": after})
+            if document.get("errors"):
+                return None
+            connection = document["data"]["repository"]["pullRequests"]
+            for node in connection["nodes"]:
+                commit = node["commits"]["nodes"][0]["commit"]
+                context = (commit["status"] or {}).get("context") or {}
+                found[number(node["number"])] = (commit["oid"], context.get("state"), context.get("description"))
+            if not connection["pageInfo"]["hasNextPage"]:
+                return found
+            after = connection["pageInfo"]["endCursor"]
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
-    match = CERTIFICATION.fullmatch(rows[0]["description"] or "") if len(rows) == 1 else None
+    return None
+
+
+def certified_record(current, pull):
+    """None without a current success; otherwise its recorded (base, policy), or () when unknown or unparseable."""
+    entry = None if current is None else current.get(pull["number"])
+    if entry is None or entry[0] != pull["head"]["sha"]:
+        # An incomplete or stale inventory cannot prove absence of success.
+        return ()
+    if entry[1] != "SUCCESS":
+        return None
+    match = CERTIFICATION.fullmatch(entry[2] or "")
     return match.groups() if match else ()
 
 

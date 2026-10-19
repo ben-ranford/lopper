@@ -13,9 +13,9 @@ another parent cannot revoke its children from its own events: that source is no
 the default branch and fails the protected pin. Revocation therefore runs from
 default-branch contexts and compares recorded evidence with live state: each
 success description records the exact target B and policy P it certified. A
-`delete`, a `pull_request_target` handled from the default branch, or the
-`requested` delivery of any `workflow_run` sweeps open stacked PRs from one PR
-listing and revokes a current success whose record is missing or malformed, whose
+`delete` or the `requested` delivery of any `workflow_run` sweeps open stacked PRs
+from one PR listing and one paginated GraphQL status inventory (an incomplete
+inventory revokes rather than skips) and revokes a current success whose record is missing or malformed, whose
 P differs from the default-branch tip, or whose B differs from the live direct
 parent head of a unique open chain to the default branch. Parent moves without CI
 and closed or deleted parents are therefore revoked by the next such run, not

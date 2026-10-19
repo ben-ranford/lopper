@@ -120,6 +120,7 @@ class FakeAPI:
         # tests override or observe these current reuse-check statuses.
         self.statuses = {}
         self.reads = []
+        self.graphql_response = None
         self.archive = archive()
 
     def request(self, path, data=None):
@@ -133,6 +134,20 @@ class FakeAPI:
             head = path[len(PREFIX + "/commits/"):].split("/")[0]
             return {"statuses": [copy.deepcopy(self.statuses.get(head, CERTIFIED))]}
         return copy.deepcopy(self.responses[path])
+
+    def graphql(self, query, variables):
+        """Answer the status inventory from the listed rows and modeled current statuses."""
+        self.reads.append("graphql")
+        if query != event.STATUS_QUERY or variables != {"owner": "ben-ranford", "name": "lopper", "after": None}:
+            raise AssertionError("Unexpected GraphQL request")
+        nodes = []
+        for pull in self.page_responses[PREFIX + "/pulls"]:
+            current = self.statuses.get(pull["head"]["sha"], CERTIFIED)
+            context = dict(current, state=current["state"].upper())
+            nodes.append(dict(number=pull["number"], commits=dict(nodes=[dict(commit=dict(
+                oid=pull["head"]["sha"], status=dict(context=context)))])))
+        return copy.deepcopy(self.graphql_response if self.graphql_response is not None else dict(data=dict(repository=dict(pullRequests=dict(
+            pageInfo=dict(hasNextPage=False, endCursor=None), nodes=nodes)))))
 
     def pages(self, path):
         self.reads.append(path)
@@ -206,7 +221,7 @@ class StackPolicyTests(unittest.TestCase):
         del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"]
         deletion = {"repository": {"id": 10}, "ref_type": "branch", "ref": self.reference}
         self.assertEqual(event.invalidate_stack_event(self.api, deletion, "delete", REPOSITORY, 10), 1)
-        self.assertEqual(self.sweep("pull_request_target", action="closed", number=13), 0)
+        self.assertEqual(self.sweep(), 0)
         self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
         with self.assertRaises(event.EventError):
             event.pull_snapshot(self.api, REPOSITORY, 10, 12)
@@ -214,10 +229,12 @@ class StackPolicyTests(unittest.TestCase):
     def test_live_recorded_success_survives_every_wakeup(self):
         for name, payload in (("delete", {"ref_type": "tag", "ref": self.reference}),
                               ("delete", {"ref_type": "branch", "ref": "feature/other"}),
-                              ("pull_request_target", {"action": "labeled", "number": 30}),
                               ("workflow_run", {})):
             with self.subTest(name=name, payload=payload):
                 self.assertEqual(self.sweep(name, **payload), 0)
+        # PR events are not sweep triggers; CI requested/delete/main push cover them.
+        with self.assertRaisesRegex(event.EventError, "Unsupported"):
+            self.sweep("pull_request_target", action="labeled", number=13)
         self.assertEqual(self.api.posts, [])
 
     def test_parent_move_without_ci_is_revoked_by_any_later_default_branch_run(self):
@@ -247,17 +264,42 @@ class StackPolicyTests(unittest.TestCase):
     def test_stack_sweep_reads_listed_rows_and_only_current_success_statuses(self):
         self.deepen()
         self.assertEqual(self.sweep(), 0)
-        status = PREFIX + "/commits/{}/status?per_page=100&page=1"
-        self.assertEqual(self.api.reads, [PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls",
-                                          status.format(HEAD), status.format(self.parent_sha)])
+        self.assertEqual(self.api.reads, [PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls", "graphql"])
+        self.api.reads.clear()
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 3)
+        self.assertEqual(self.api.reads, [PREFIX, PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls", "graphql"])
+
+    def test_incomplete_status_inventory_revokes_and_then_fails(self):
+        nodes = lambda response: response["data"]["repository"]["pullRequests"]["nodes"]
+        changes = (lambda response: response.update(errors=[{"message": "rate limited"}]),
+                   lambda response: response.pop("data"),
+                   lambda response: nodes(response).pop(0),
+                   lambda response: nodes(response)[0]["commits"].update(nodes=[]),
+                   lambda response: nodes(response)[0]["commits"]["nodes"][0]["commit"].update(oid="f" * 40),
+                   lambda response: nodes(response)[0].update(number=0))
+        for change in changes:
+            self.setUp()
+            self.deepen()
+            response = self.api.graphql(event.STATUS_QUERY, {"owner": "ben-ranford", "name": "lopper", "after": None})
+            change(response)
+            self.api.graphql_response = response
+            with self.subTest(response=response):
+                try:
+                    self.sweep()
+                except event.EventError:
+                    pass
+                self.assertIn((PREFIX + "/statuses/" + HEAD, "pending"), self.revoked())
 
     def test_success_record_round_trips_and_stays_within_status_limit(self):
         snapshot = dict(SNAPSHOT, base=self.parent_sha, base_ref=self.reference, head_repository_id=10)
         event.status(self.api, snapshot, "success", event.certification(snapshot))
         self.assertLessEqual(len(self.api.posts[-1][1]["description"]), 140)
-        self.assertEqual(event.certified_record(self.api, REPOSITORY, HEAD), (self.parent_sha, BASE))
+        current = event.current_statuses(self.api, REPOSITORY)
+        self.assertEqual(event.certified_record(current, self.child), (self.parent_sha, BASE))
         event.status(self.api, snapshot, "pending", "Protected reuse analysis and policy review pending")
-        self.assertIsNone(event.certified_record(self.api, REPOSITORY, HEAD))
+        self.assertIsNone(event.certified_record(event.current_statuses(self.api, REPOSITORY), self.child))
+        self.assertEqual(event.certified_record(None, self.child), ())
 
     def test_deleted_head_repository_is_inactive_and_skipped_by_main_push(self):
         deleted = dict(pull_document(), number=31, head=dict(sha="9" * 40, ref="gone", repo=None))
