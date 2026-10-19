@@ -148,10 +148,7 @@ func TestQueueMeControllerAdvancesPastConflictingLeaderContract(t *testing.T) {
 }
 
 func TestQueueMeControllerNodeSuite(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test the queue-me controller")
-	}
+	node := queueLifecycleNode(t)
 	command := exec.Command(node, "--test", "queue_me_controller.test.js", "queue_me_reviews.test.js",
 		"queue_me_sonar.test.js", "queue_me_suppressions.test.js", "queue_me_ci.test.js",
 		"queue_me_ci_intent.test.js", "queue_me_public_api.test.js", "queue_me_reuse.test.js",
