@@ -609,9 +609,11 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
         raise
     except BaseMoved as error:
         # GitHub records a new base only on PR updates; CI evidence is for the old
-        # base, so this PR waits for a branch update rather than failing.
-        post_status(api, repository, error.head, "pending",
-                    "Base moved; update the branch so CI runs against the current target")
+        # base, so this PR waits for a branch update rather than failing. Like the
+        # shared-head path, write only over a current or unreadable success.
+        if current_success(api, repository, error.head) is not False:
+            post_status(api, repository, error.head, "pending",
+                        "Base moved; update the branch so CI runs against the current target")
         raise Settled("Pull request base moved; waiting for a branch update") from error
     if event_name == "pull_request_target":
         pull = event["pull_request"]

@@ -43,6 +43,8 @@ class API:
         if data is not None:
             self.posts.append((path.rsplit("/", 1)[1], data["state"], data["description"]))
             return {}
+        if "/status?per_page=100&page=" in path:
+            return dict(total_count=1, statuses=[dict(context="reuse-check", state="success", description=SUCCESS)])
         return copy.deepcopy(self.responses[path])
 
     def pages(self, path):

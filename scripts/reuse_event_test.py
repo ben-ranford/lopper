@@ -488,6 +488,24 @@ class EventTests(unittest.TestCase):
                          [(PREFIX + "/statuses/" + HEAD, "pending",
                            "Base moved; update the branch so CI runs against the current target")])
 
+    def test_stale_pr_base_rewrites_only_a_current_or_unknown_success(self):
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "c" * 40
+        for action in ("synchronize", "edited", "reopened"):
+            with self.assertRaisesRegex(event.Settled, "base moved"):
+                self.prepare(dict(self.payload, action=action))
+        # The first event revokes the success; later events find nothing to revoke.
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+        for rows in ([dict(CERTIFIED, state="failure")], []):
+            self.api.posts.clear()
+            self.api.status_rows[HEAD] = rows
+            with self.subTest(rows=rows), self.assertRaises(event.Settled):
+                self.prepare()
+            self.assertEqual(self.api.posts, [])
+        self.api.status_errors[HEAD] = OSError("unavailable")
+        with self.assertRaises(event.Settled):
+            self.prepare()
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+
     def test_malformed_current_target_never_publishes_pending(self):
         for target in ("main", "A" * 40, None):
             self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = target
@@ -698,8 +716,8 @@ class EventTests(unittest.TestCase):
         self.assertEqual([payload["state"] for _, payload in self.api.posts], ["success", "pending"])
         with self.assertRaises(event.Settled):
             self.prepare()
-        self.assertEqual([payload["state"] for _, payload in self.api.posts], ["success", "pending", "pending"])
-        self.assertIn("Base moved", self.api.posts[-1][1]["description"])
+        # The success is already revoked, so the moved base adds no further write.
+        self.assertEqual([payload["state"] for _, payload in self.api.posts], ["success", "pending"])
 
     def test_base_invalidation_continues_after_closed_or_broken_pr(self):
         payload = dict(repository=dict(id=10), ref="refs/heads/main", after=BASE)
