@@ -1957,7 +1957,7 @@ test('prepare disarms the queue and selects without evaluating or merging eviden
     assert.deepEqual(h.calls.disabled, [10, 20]);
     return { ticket, readiness: { state: 'READY', reasons: [] } };
   });
-  assert.equal(await runController.prepareQueue(h.args), ticket);
+  assert.deepEqual(await runController.prepareQueue(h.args), { ...ticket, predecessors: [] });
   assert.deepEqual(h.calls.evidence, []);
   assert.deepEqual(h.calls.revalidations, []);
   assert.deepEqual(h.calls.merged, []);
