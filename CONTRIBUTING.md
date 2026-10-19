@@ -205,11 +205,5 @@ as executable policy. The candidate inline-suppression report remains version 1.
 Only same-repository `codex/v1.8.10-` targets with one live open parent are eligible
 for stacked reuse analysis. Parent closure/deletion or policy movement revokes
 existing evidence even when new success is no longer eligible. Queue merge
-admission remains main-only and requires P=B.
-
-The canonical `sonar-maintenance` job, when subsequently deployed in reviewed CI
-source, may appear only as completed/skipped in an ordinary PR inventory. It is
-separate reread evidence, never a required-success job or suppression producer.
-A maintenance dispatch cannot substitute for ordinary PR CI. See
-[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the separate source,
-permission, scope, baseline and publication prerequisites.
+admission remains main-only and requires P=B. See
+[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the revocation prerequisites.
