@@ -92,6 +92,8 @@ class API:
             return {}
         return copy.deepcopy(self.data[path])
     def pages(self, path):
+        if path == prefix + '/pulls':
+            return [pull]
         assert path == prefix + '/pulls/12/reviews'
         return []
 for terminal in (False, True):

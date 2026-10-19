@@ -331,6 +331,25 @@ class StackPolicyTests(unittest.TestCase):
                     event.same_live_pair(self.api, snapshot)
         self.assertEqual(self.api.posts, [])
 
+    def test_default_branch_publisher_sharing_a_stacked_head_is_refused(self):
+        main_pull = dict(pull_document(), number=40)
+        main_pull["head"] = dict(main_pull["head"], ref="feature/main", repo={"id": 10})
+        self.api.responses[PREFIX + "/pulls/40"] = main_pull
+        self.api.page_responses[PREFIX + "/pulls"].append(main_pull)
+        for number_ in (40, 12):
+            with self.subTest(pull=number_), self.assertRaisesRegex(event.EventError, "shared"):
+                event.pull_snapshot(self.api, REPOSITORY, 10, number_)
+        self.assertEqual(self.api.posts, [])
+
+    def test_sweep_revokes_a_valid_default_branch_record_on_a_shared_head_once(self):
+        first, second = dict(pull_document(), number=40), dict(pull_document(), number=41)
+        for row in (first, second):
+            row["head"] = dict(row["head"], sha="9" * 40, ref=f"feature/{row['number']}")
+        self.api.statuses["9" * 40] = self.record(BASE)
+        self.api.page_responses[PREFIX + "/pulls"] += [first, second]
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + "9" * 40, "pending")])
+
     def test_sweep_revokes_stacked_success_reused_by_a_default_branch_pull(self):
         self.assertEqual(self.sweep(), 0)
         sibling = dict(pull_document(), number=40)

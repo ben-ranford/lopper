@@ -331,16 +331,17 @@ def stack_parent_sha(pulls, identifier, pull, default_branch):
     return None
 
 
-def require_stack_parent(api, repository, identifier, pull, default_branch):
+def require_stack_parent(pulls, identifier, pull, default_branch):
     if head_repository_id(pull) != identifier:
         raise EventError("Stack head must belong to the protected repository")
-    pulls = api.pages(f"/repos/{repository}/pulls")
     if stack_parent_sha(pulls, identifier, pull, default_branch) != pull["base"]["sha"]:
         raise EventError("Stack target requires one unique live open parent")
-    # A commit status is shared by every PR with this head; a stacked success
-    # must never also satisfy another PR's required reuse-check context.
-    if any(row["number"] != pull["number"] and row["head"]["sha"] == pull["head"]["sha"] for row in pulls):
-        raise EventError("Stacked head is shared with another open pull request")
+
+
+def shared_head(pulls, pull):
+    # A commit status is shared by every PR with this head, so a success for one
+    # PR's exact base must never also satisfy another PR's reuse-check context.
+    return any(row["number"] != pull["number"] and row["head"]["sha"] == pull["head"]["sha"] for row in pulls)
 
 
 def pull_snapshot(api, repository, identifier, pull_number):
@@ -354,8 +355,11 @@ def pull_snapshot(api, repository, identifier, pull_number):
     if head_repository_id(pull) is None:
         raise InactivePull("Pull request head repository was deleted")
     protected = branch_sha(api, repository, document["default_branch"])
+    pulls = api.pages(f"/repos/{repository}/pulls")
+    if shared_head(pulls, pull):
+        raise EventError("Pull request head is shared with another open pull request")
     if pull["base"]["ref"] != document["default_branch"]:
-        require_stack_parent(api, repository, identifier, pull, document["default_branch"])
+        require_stack_parent(pulls, identifier, pull, document["default_branch"])
     target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
     if target != pull["base"]["sha"]:
         raise EventError("Pull request base does not match the current protected target")
@@ -584,21 +588,23 @@ def invalidate_pulls(api, repository, identifier,
     protected = branch_sha(api, repository, default_branch)
     pulls = api.pages(f"/repos/{repository}/pulls")
     current = current_statuses(api, repository)
-    count, failures = 0, int(current is None)
+    count, failures, revoked = 0, int(current is None), set()
     for pull in pulls:
         try:
-            if pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier:
+            if (pull["state"] != "open" or pull["base"]["repo"]["id"] != identifier
+                    or pull["head"]["sha"] in revoked):
                 continue
             # Only an existing success needs revocation; repeated pending writes
             # would spend API and per-commit status budget on every run.
             record = certified_record(current, pull)
-            if record is None or (stale_only and record == (
+            if record is None or (stale_only and not shared_head(pulls, pull) and record == (
                     live_target(pulls, identifier, pull, default_branch, protected), protected)):
                 continue
             if dismissed_reviewer is not None and not owner_review_dismissed(
                     api, repository, number(pull["number"]), dismissed_reviewer):
                 continue
             post_status(api, repository, pull["head"]["sha"], "pending", description)
+            revoked.add(pull["head"]["sha"])
             count += 1
         except (OSError, ValueError, KeyError, TypeError):
             # One API failure must not leave every later PR's status untouched.
