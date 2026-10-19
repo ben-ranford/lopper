@@ -27,6 +27,9 @@ var (
 	workflowBareGitHubContextPattern       = regexp.MustCompile(`(?:^|[^a-z0-9_])github(?:$|[^a-z0-9_.\[])`)
 )
 
+// Renovate tracks this independent expectation alongside the npm and workflow pins.
+const expectedMarketplaceVSCEVersion = "4.0.0"
+
 const workflowImplicitGitHubToken = "<implicit github.token>"
 
 type workflowCredentialRole uint8
@@ -1586,6 +1589,13 @@ func TestReleaseWorkflowDownloadsReleaseArtifactsByExactName(t *testing.T) {
 	}
 }
 
+func validateMarketplaceToolingPin(version, integrity, expectedVersion string) error {
+	if version != expectedVersion || !strings.HasPrefix(integrity, "sha512-") || len(integrity) == len("sha512-") {
+		return fmt.Errorf("locked Marketplace tool = version %q, integrity %q; want %s with SHA-512 integrity", version, integrity, expectedVersion)
+	}
+	return nil
+}
+
 func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	t.Parallel()
 
@@ -1600,8 +1610,8 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	if !ok {
 		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
 	}
-	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(vsce.Version) || !strings.HasPrefix(vsce.Integrity, "sha512-") {
-		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
+	if err := validateMarketplaceToolingPin(vsce.Version, vsce.Integrity, expectedMarketplaceVSCEVersion); err != nil {
+		t.Fatal(err)
 	}
 
 	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
@@ -1637,15 +1647,15 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		`lockfile="extensions/vscode-lopper/package-lock.json"`,
 		`vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"`,
 		`vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"`,
-		fmt.Sprintf(`if [ "${vsce_version}" != %q ]; then`, vsce.Version),
+		fmt.Sprintf(`if [ "${vsce_version}" != %q ]; then`, expectedMarketplaceVSCEVersion),
 		`case "${vsce_integrity}" in`,
 		`sha512-?*)`,
 	})
 
 	validateStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
 	assertWorkflowStepRunContainsAll(t, validateStep, "Marketplace publication tool version checks", []string{
-		fmt.Sprintf(`jq -e '.packages["node_modules/@vscode/vsce"] | .version == %q and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json"`, vsce.Version),
-		fmt.Sprintf(`jq -e '.version == %q' "${toolchain_dir}/node_modules/@vscode/vsce/package.json"`, vsce.Version),
+		fmt.Sprintf(`jq -e '.packages["node_modules/@vscode/vsce"] | .version == %q and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json"`, expectedMarketplaceVSCEVersion),
+		fmt.Sprintf(`jq -e '.version == %q' "${toolchain_dir}/node_modules/@vscode/vsce/package.json"`, expectedMarketplaceVSCEVersion),
 	})
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
@@ -3057,7 +3067,7 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 	}
 	matches := 0
 	for _, manager := range config.CustomManagers {
-		if manager.DepNameTemplate != "@vscode/vsce" {
+		if manager.DepNameTemplate != "@vscode/vsce" || !slices.Contains(manager.ManagerFilePatterns, `/^\.github/workflows/release\.yml$/`) {
 			continue
 		}
 		if manager.CustomType != "regex" || manager.DatasourceTemplate != "npm" || manager.VersioningTemplate != "npm" {
