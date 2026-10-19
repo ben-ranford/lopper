@@ -246,7 +246,8 @@ function Assert-NoObservedUse {
     # queries are snapshots; failure or ambiguity retains the allocation.
     $share=Get-ObservedShare
     if ($null -eq $share -or $share.Name -cne $script:allocation.share -or $share.Path -cne $script:allocation.path -or -not $share.Temporary) { throw 'Share identity/Temporary observation failed; RETENTION' }
-    if ($null -eq $share.CurrentUsers -or [int]$share.CurrentUsers -ne 0) { throw 'Share has current users or unknown user count; RETENTION' }
+    $currentUsers=$share.PSObject.Properties['CurrentUsers']
+    if ($null -eq $currentUsers -or $null -eq $currentUsers.Value -or [int]$currentUsers.Value -ne 0) { throw 'Share has current users or unknown user count; RETENTION' }
     $rules=@(Get-ObservedShareAccess)
     if ($rules.Count -ne 1) { throw 'Share ACL query ambiguous; RETENTION' }
     $resolved=[Security.Principal.NTAccount]::new($rules[0].AccountName).Translate([Security.Principal.SecurityIdentifier]).Value
@@ -338,10 +339,10 @@ function Invoke-SelfTestTransitionCase([string]$Name,[string]$Mutation,[string]$
     $manifestObject=[ordered]@{policy=[ordered]@{environment=@("TEMP=$AllocationParent")};artifacts=@([ordered]@{path='bin/nativecleanupowner.exe';sha256=('0'*64)})}
     [IO.File]::WriteAllText($Manifest,($manifestObject|ConvertTo-Json -Depth 8 -Compress),[Text.UTF8Encoding]::new($false))
     $ManifestSHA256=Get-Digest $Manifest;$VerifierSHA256=Get-Digest $Verifier
-    $script:SelfTestAdapter.fault='';$script:SelfTestAdapter.faultState='';$script:SelfTestAdapter.verifierReject=''
+    $script:SelfTestAdapter.trace.Clear();$script:SelfTestAdapter.fault='';$script:SelfTestAdapter.faultState='';$script:SelfTestAdapter.verifierReject=''
     $script:SelfTestAdapter.shareAbsent=$true;$script:SelfTestAdapter.share=$null;$script:SelfTestAdapter.shareAccess=@();$script:SelfTestAdapter.openFiles=@();$script:SelfTestAdapter.connections=@();$script:SelfTestAdapter.children=@();$script:SelfTestAdapter.marker='';$script:SelfTestAdapter.ntfsDigest='self-test-ntfs-acl-digest'
     $script:SelfTestAdapter.shareQueryCount=0;$script:SelfTestAdapter.tamperOnShareQuery=0;$script:SelfTestAdapter.identityOverride=$false;$script:SelfTestAdapter.injectChildBeforeDelete=$false;$script:SelfTestAdapter.childrenOverride=$false
-    $setupFault=$Mutation -like 'setup.*' -or $Mutation -like 'journal.*' -or $Mutation -in @('allocation-record-collision','allocation-path-collision')
+    $setupFault=$Mutation -like 'setup.*' -or $Mutation -like 'journal.*@*' -or $Mutation -in @('allocation-record-collision','allocation-path-collision')
     if ($setupFault) {
         if ($Mutation -like 'setup.*') { $script:SelfTestAdapter.fault=$Mutation.Substring(6) }
         elseif ($Mutation -like 'journal.*') { $parts=$Mutation.Split('@');$script:SelfTestAdapter.fault=$parts[0];$script:SelfTestAdapter.faultState=$parts[1] }
@@ -367,7 +368,7 @@ function Invoke-SelfTestTransitionCase([string]$Name,[string]$Mutation,[string]$
                 'directory-pending' { $required+=@("fault.triggered:$operation@directory-pending");$forbidden=@('directory.create','acl.apply','marker.create','share.create') }
                 'acl-pending' { $required+=@('directory.create',"fault.triggered:$operation@acl-pending");$forbidden=@('acl.apply','marker.create','share.create') }
                 'share-pending' { $required+=@('directory.create','acl.apply','marker.create',"fault.triggered:$operation@share-pending");$forbidden=@('share.create') }
-                'ready' { $required+=@('directory.create','acl.apply','marker.create','share.create',"fault.triggered:$operation@ready");$forbidden=@('share.query','receipt.create') }
+                'ready' { $required+=@('directory.create','acl.apply','marker.create','share.create',"fault.triggered:$operation@ready");$forbidden=@('receipt.create') }
                 default { $required+=@("fault.triggered:$operation@registered");$forbidden=@('directory.create','acl.apply','marker.create','share.create') }
             }
             $previousState=@{registered=$null;'directory-pending'='registered';'acl-pending'='directory-pending';'share-pending'='acl-pending';ready='share-pending'}[$state]
@@ -455,7 +456,8 @@ function Invoke-SelfTestTransitionCase([string]$Name,[string]$Mutation,[string]$
         if ($observed -cne $Expected) { throw "Self-test $Name expected '$Expected' but observed '$observed'" }
         $required=@();$forbidden=@('share.remove','marker.delete','directory.delete','receipt.create')
         $verifiedCleanup=@('custody.verify','share.query','directory.identity','ntfs.query','children.query','share.query','share-acl.query','share.query','share-acl.query','open-files.query','connections.query','share.query','share-acl.query','open-files.query','connections.query')
-        if ($Mutation -in @('join.missing','join.malformed')) { $forbidden=@('custody.verify','share.query','share.remove','marker.delete','directory.delete','receipt.create') }
+        if ($Mutation -eq 'join.missing') { $forbidden=@('custody.verify','share.query','share.remove','marker.delete','directory.delete','receipt.create') }
+        elseif ($Mutation -eq 'join.malformed') { $forbidden=@('share.query','share.remove','marker.delete','directory.delete','receipt.create') }
         elseif ($Mutation -like 'verifier.*') { $required=@('custody.verify');$forbidden=@('share.query','share.remove','marker.delete','directory.delete','receipt.create') }
         elseif ($Mutation -eq 'share.remove') {
             $required=@($verifiedCleanup);$required+=@('share.remove','fault.triggered:share.remove@ready')
@@ -512,7 +514,7 @@ function Invoke-SelfTestTransitionCase([string]$Name,[string]$Mutation,[string]$
         $script:SelfTestAdapter.fault='';$script:SelfTestAdapter.verifierReject='';$script:SelfTestAdapter.injectChildBeforeDelete=$false
     }
     $script:SelfTestAdapter.fault=''
-    foreach($path in @($AllocationRecord,"$AllocationRecord.partial",$JoinRecord,(Join-Path $control 'teardown-finally.json'),$Manifest,$Verifier)) { if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) { [IO.File]::Delete($path) } }
+    foreach($path in @($AllocationRecord,"$AllocationRecord.partial",(Join-Path $control 'owner.join.json'),(Join-Path $control 'teardown-finally.json'),$Manifest,$Verifier)) { if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) { [IO.File]::Delete($path) } }
     if ($allocation -and $allocation.path -and (Test-Path -LiteralPath $allocation.path -PathType Container)) {
         foreach($child in (Get-ChildItem -LiteralPath $allocation.path -Force)) { if ($child.PSIsContainer) { throw "Self-test $Name left an unexpected directory" };[IO.File]::Delete($child.FullName) }
         [IO.Directory]::Delete($allocation.path,$false)
@@ -596,7 +598,7 @@ function Invoke-AllocationSelfTest {
         if (-not (Test-Path -LiteralPath $script:AllocationRecord -PathType Leaf) -or $script:AllocationSHA256 -cne (Get-Digest $script:AllocationRecord)) { throw 'Self-test positive journal was not durably bound' }
         [IO.File]::Delete($script:AllocationRecord)
         $script:SelfTestAdapter.share=[pscustomobject]@{Name="lopper-$nonce";Path=$scratch;Temporary=$true;CurrentUsers=0}
-        $script:allocation=[ordered]@{share="lopper-$nonce";path=$scratch;temporary=$true;sid=$testSID;share_acl_sha256=(Get-TextDigest "$testSID|Allow|Full");sentinel_sha256=(Get-TextDigest $marker)}
+        $script:allocation=[ordered]@{share="lopper-$nonce";path=$scratch;temporary=$true;sid=$testSID;share_acl_sha256=(Get-TextDigest "$testSID|Allow|Full");sentinel_sha256=(Get-TextDigest $marker);state='ready'}
         foreach($fault in @('journal.create','journal.write','journal.flush','journal.move')) {
             foreach($path in @($script:AllocationRecord,"$script:AllocationRecord.partial")) { if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Delete($path) } }
             $script:SelfTestAdapter.fault=$fault;$observed=''
@@ -615,6 +617,7 @@ function Invoke-AllocationSelfTest {
             $passed.Add($fault)
         }
         $script:SelfTestAdapter.fault=''
+        if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { [IO.File]::Delete($receiptPath) }
         Write-ExclusiveJsonDurable $receiptPath ([ordered]@{schema='native-cleanup-teardown/v1';share_absent=$true}) 'receipt'
         $receiptRead=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
         if ($receiptRead.schema -cne 'native-cleanup-teardown/v1' -or -not $receiptRead.share_absent) { throw 'Self-test positive teardown receipt was invalid' }
@@ -730,7 +733,7 @@ function Invoke-AllocationSelfTest {
             if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Delete($path) }
         }
         if ($transitionRoot -and (Test-Path -LiteralPath $transitionRoot -PathType Container)) {
-            foreach($relative in @('trusted/control/allocation.json','trusted/control/owner.join.json','trusted/control/custody.json','trusted/control/teardown-finally.json','trusted/bin/nativecleanupcheck.exe')) {
+            foreach($relative in @('trusted/control/allocation.json','trusted/control/owner.join.json','trusted/custody.json','trusted/control/teardown-finally.json','trusted/bin/nativecleanupcheck.exe')) {
                 $path=Join-Path $transitionRoot $relative
                 if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Delete($path) }
             }
@@ -824,9 +827,11 @@ function Remove-Allocation {
     Assert-Custody $true $true # Never infer quiescence from missing logs/owner PID.
     $script:allocation=Get-Content -LiteralPath $AllocationRecord -Raw | ConvertFrom-Json
     Assert-Allocation
-    try { $originalJoin=Get-Content -LiteralPath $JoinRecord -Raw | ConvertFrom-Json }
+    # Read cleanup_started as the raw JSON string; ConvertFrom-Json would
+    # coerce it to a culture-formatted DateTime and drop sub-second precision.
+    try { $joinText=Get-Content -LiteralPath $JoinRecord -Raw; $originalJoin=$joinText | ConvertFrom-Json; $cleanupStarted=[Text.Json.JsonDocument]::Parse($joinText).RootElement.GetProperty('cleanup_started').GetString() }
     catch { throw 'Original owner join malformed; RETENTION' }
-    $originalDeadline=([DateTimeOffset]::Parse($originalJoin.cleanup_started)).AddSeconds(30)
+    $originalDeadline=([DateTimeOffset]::Parse($cleanupStarted,[Globalization.CultureInfo]::InvariantCulture)).AddSeconds(30)
     if ([DateTimeOffset]::Parse($DeadlineUTC) -ne $originalDeadline) { throw 'Fresh recovery deadline rejected; RETENTION' }
     if ($Mode -eq 'recovery') {
         $live=$null

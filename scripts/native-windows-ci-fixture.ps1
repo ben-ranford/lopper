@@ -318,7 +318,8 @@ function Invoke-Owner {
   }
   if (@(Get-ChildItem -LiteralPath $sourceDir -File -Recurse -Force).Count -ne $sourcePaths.Count) { throw 'Copied source inventory has unexpected or missing files' }
   $owner=Join-Path $binDir 'nativecleanupowner.exe'; $verifier=Join-Path $binDir 'nativecleanupcheck.exe'
-  $cachePath=Join-Path $cacheDir ([Guid]::NewGuid().ToString('D'))
+  $invocationNonce=[Guid]::NewGuid().ToString('D')
+  $cachePath=Join-Path $cacheDir $invocationNonce
   $goCache=Join-Path $cachePath 'go-build';$goModCache=Join-Path $cachePath 'go-mod';[IO.Directory]::CreateDirectory($goCache)|Out-Null;[IO.Directory]::CreateDirectory($goModCache)|Out-Null
   $env:PATH="$goRoot\bin;$gitRoot\cmd;$gitRoot\usr\bin;$gccRoot;$env:SystemRoot\System32"
   $env:TEMP=$cachePath;$env:GOCACHE=$goCache;$env:GOMODCACHE=$goModCache
@@ -361,7 +362,7 @@ function Invoke-Owner {
   if ($manifestBytes.Length -gt 1MB) { throw 'Custody manifest exceeds the fixed checker document limit' }
   Write-Durable $manifestPath $manifestBytes
   $manifestSHA=Get-SHA256 $manifestBytes
-  $ownerArgs=@('run','--trusted-root',$TrustedRoot,'--manifest',$manifestPath,'--manifest-sha256',$manifestSHA,'--verifier',$verifier,'--verifier-sha256',$verifierHash,'--expected-source-sha',$sourceSHA,'--expected-policy-sha256',$policySHA,'--subject',(Join-Path $TrustedRoot 'source/scripts/hook_cleanup_native_windows_test.go'),'--subject-sha',(Get-FileBinding $sourceDir 'scripts/hook_cleanup_native_windows_test.go').sha256,'--run-id',[string]$env:GITHUB_RUN_ID,'--run-attempt',[string]$env:GITHUB_RUN_ATTEMPT,'--invocation-nonce',[Guid]::NewGuid().ToString('D'),'--sid',$sid,'--allocation-parent',$cachePath,'--go-cache',$goCache,'--go-mod-cache',$goModCache)
+  $ownerArgs=@('run','--trusted-root',$TrustedRoot,'--manifest',$manifestPath,'--manifest-sha256',$manifestSHA,'--verifier',$verifier,'--verifier-sha256',$verifierHash,'--expected-source-sha',$sourceSHA,'--expected-policy-sha256',$policySHA,'--subject',$repo,'--subject-sha',$sourceSHA,'--run-id',[string]$env:GITHUB_RUN_ID,'--run-attempt',[string]$env:GITHUB_RUN_ATTEMPT,'--invocation-nonce',$invocationNonce,'--sid',$sid,'--allocation-parent',$cachePath,'--go-cache',$goCache,'--go-mod-cache',$goModCache)
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$owner;$psi.WorkingDirectory=$repo;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   foreach($arg in $ownerArgs){$psi.ArgumentList.Add($arg)}
   $process=[Diagnostics.Process]::new();$process.StartInfo=$psi
