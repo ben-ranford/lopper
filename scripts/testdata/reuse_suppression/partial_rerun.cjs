@@ -18,7 +18,7 @@ const detector = Buffer.from('module.exports.testables = { recomputeSuppressionR
 const repo = { owner: 'ben-ranford', repo: 'lopper' };
 
 function reportArchive() {
-  const script = String.raw`
+  const script = `
 import io, sys, zipfile
 output = io.BytesIO()
 with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
@@ -94,8 +94,7 @@ test('carried-over producer evidence verifies on the partial rerun attempt', asy
 });
 
 test('artifacts outside the listed producer and locator jobs fail with the exact reason', async () => {
-  for (const artifactCreatedAt of ['2026-10-19T10:45:15Z', '2026-10-19T11:08:04Z', '2026-10-19T11:30:00Z']) {
-    await assert.rejects(partialRerun({ artifactCreatedAt })(),
-      { message: 'Suppression provenance: artifact is outside the selected producer attempt' });
-  }
+  await Promise.all(['2026-10-19T10:45:15Z', '2026-10-19T11:08:04Z', '2026-10-19T11:30:00Z'].map(artifactCreatedAt =>
+    assert.rejects(partialRerun({ artifactCreatedAt })(),
+      { message: 'Suppression provenance: artifact is outside the selected producer attempt' })));
 });
