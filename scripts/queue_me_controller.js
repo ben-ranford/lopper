@@ -785,8 +785,9 @@ async function advanceQueuedPull({
       // CI/reuse audit refusals pause this candidate like identity pauses; other errors still fail the run.
       if (!error?.queuePauseMessage) throw error;
       await disableAutoMerge(github, owner, repo, candidate.number);
+      // Pause text can embed candidate-controlled CI job names; keep it inert inside a code span.
       await syncStatusComment(github, owner, repo, candidate.number,
-        `## Queue status\n\nQueue paused: ${error.queuePauseMessage}${hasFollower ? ' The queue will continue with the next queued pull request.' : ''}`);
+        `## Queue status\n\nQueue paused: the CI or reuse audit refused this pull request.${hasFollower ? ' The queue will continue with the next queued pull request.' : ''}\n\n\`${safeCommentText(error.queuePauseMessage, 1200)}\``);
       return hasFollower;
     }
     return false;
@@ -883,7 +884,15 @@ async function runController({
     return;
   }
 
+  // Advance may verify and merge only the prepared ticket's pull request. Pulls the
+  // prepare job paused ahead of it were disarmed above and keep their status comment.
+  const ticketed = onCandidate || !queueProof?.ticket ? undefined : queueProof.ticket.snapshot?.pull_number ?? null;
+  if (ticketed !== undefined && !queued.some((pull) => pull.number === ticketed)) {
+    core.notice('The prepared queue ticket does not name a currently queued pull request; nothing was merged.');
+    return;
+  }
   for (const [index, candidate] of queued.entries()) {
+    if (ticketed !== undefined && candidate.number !== ticketed) continue;
     const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
