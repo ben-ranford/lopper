@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/report/model"
@@ -81,7 +82,8 @@ func (s *Service) runCandidateOnRootsWithMaven(ctx context.Context, req Request,
 }
 
 func fatalCandidateError(req Request, err error) bool {
-	return errors.Is(err, model.ErrMavenEvidenceLimit) || shouldFailAdapterError(req) || !isMultiLanguage(req.Language)
+	var gradleFailure *shared.GradleDiscoveryError
+	return errors.As(err, &gradleFailure) || errors.Is(err, model.ErrMavenEvidenceLimit) || shouldFailAdapterError(req) || !isMultiLanguage(req.Language)
 }
 
 // candidateRootScope keeps the candidate's root and isolation boundary tied to
@@ -127,6 +129,9 @@ func (s *Service) runCandidateRoot(ctx context.Context, req Request, scope candi
 		return report.Report{}, false, err
 	}
 	storeCachedReport(cache, candidate.Adapter.ID(), scope.root, cacheEntry, current)
+	if cache != nil && cache.deferWrites && cacheEntry.KeyDigest != "" {
+		current = detachPendingReport(current)
+	}
 	current, err = prepareCandidateReport(req, scope.repoPath, scope.root, candidate.Adapter.ID(), current)
 	return current, false, err
 }
@@ -231,6 +236,10 @@ func prepareAndLoadCachedReportWithIsolationRoots(req Request, cache *analysisCa
 
 func storeCachedReport(cache *analysisCache, adapterID, normalizedRoot string, cacheEntry cacheEntryDescriptor, current report.Report) {
 	if cacheEntry.KeyDigest == "" {
+		return
+	}
+	if cache.deferWrites {
+		cache.pending = append(cache.pending, pendingCacheReport{entry: cacheEntry, report: current})
 		return
 	}
 	if storeErr := cache.store(cacheEntry, current); storeErr != nil {

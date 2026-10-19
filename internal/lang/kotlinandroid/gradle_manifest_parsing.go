@@ -1,6 +1,7 @@
 package kotlinandroid
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -106,4 +107,23 @@ func parseGradleManifestFiles(files []discoveredGradleFile, catalogResolver shar
 		}
 	}
 	return descriptors, shared.DedupeWarnings(warnings)
+}
+
+func parseGradleDependencyContentContext(ctx context.Context, path string, content []byte, resolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string, error) {
+	coordinates, err := shared.ParseGradleDependencyCoordinatesForFileContext(ctx, path, content)
+	if err != nil {
+		return nil, nil, err
+	}
+	catalog, warnings, err := resolver.ParseDependencyReferencesContext(ctx, path, content)
+	if err != nil {
+		return nil, nil, err
+	}
+	descriptors := make([]dependencyDescriptor, 0, len(coordinates)+len(catalog))
+	for _, item := range coordinates {
+		descriptors = append(descriptors, dependencyDescriptor{Name: item.Artifact, Group: item.Group, Artifact: item.Artifact, Version: item.Version})
+	}
+	for _, item := range catalog {
+		descriptors = append(descriptors, dependencyDescriptor{Name: item.Artifact, Group: item.Group, Artifact: item.Artifact, Version: item.Version})
+	}
+	return dedupeDescriptors(descriptors), warnings, nil
 }
