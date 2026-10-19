@@ -399,11 +399,16 @@ jobs:
           fi
 
       # Expected identities come from the pre-Make action outputs, never disk.
+      # Step env overrides loader variables candidate code may append to GITHUB_ENV.
       - &ci_proof_node_verify
         name: Verify restricted regression proof runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           LOPPER_RUNTIME_MODE: verify
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           LOPPER_PROOF_GO_SHA256: ${{ steps.proof_runtime.outputs.go_sha256 }}
@@ -417,6 +422,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1111,6 +1120,10 @@ jobs:
       - name: Test native Windows proof tools
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1130,6 +1143,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1144,6 +1161,10 @@ jobs:
       - name: Test native Windows runtime search paths
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1172,6 +1193,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local

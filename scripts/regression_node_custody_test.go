@@ -142,6 +142,30 @@ func TestRegressionNodeCustodyWorkflowOrder(t *testing.T) {
 	}
 }
 
+func TestRegressionNodeConsumersClearInheritedLoaderEnvironment(t *testing.T) {
+	var config workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &config)
+	consumers := 0
+	for jobName, job := range config.Jobs {
+		for _, step := range job.Steps {
+			if step.ID == "proof_runtime" || step.Env["LOPPER_PROOF_GO"] != "${{ steps.proof_runtime.outputs.go }}" {
+				continue
+			}
+			consumers++
+			// Candidate steps can append these to GITHUB_ENV; only step env overrides them.
+			for _, key := range []string{"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_PATH"} {
+				if value, present := step.Env[key]; !present || value != "" {
+					t.Fatalf("%s/%s must clear inherited %s before the authenticated runtime starts", jobName, step.Name, key)
+				}
+			}
+		}
+	}
+	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers.
+	if consumers != 8 {
+		t.Fatalf("expected 8 authenticated runtime consumers, got %d", consumers)
+	}
+}
+
 func TestRegressionNodePinnedConsumers(t *testing.T) {
 	var config workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &config)
