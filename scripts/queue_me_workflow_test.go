@@ -36,6 +36,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"'queue_me_suppressions.js'",
 		"'inline_suppression_tracker.js'",
 		"'queue_me_ci.js'",
+		"'queue_me_git_object.js'",
 		"'queue_me_ci_intent.js'",
 		"'queue_me_public_api.js'",
 		"'queue_me_reuse.js'",

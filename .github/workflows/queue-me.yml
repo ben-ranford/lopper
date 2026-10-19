@@ -120,7 +120,7 @@ jobs:
             const path = require('node:path');
             for (const name of ['queue_me_reviews.js', 'queue_me_sonar.js',
               'queue_me_suppressions.js', 'inline_suppression_tracker.js',
-              'queue_me_ci.js', 'queue_me_ci_intent.js', 'queue_me_public_api.js',
+              'queue_me_ci.js', 'queue_me_git_object.js', 'queue_me_ci_intent.js', 'queue_me_public_api.js',
               'queue_me_reuse.js']) {
               const response = await github.rest.repos.getContent({
                 owner: context.repo.owner, repo: context.repo.repo,
