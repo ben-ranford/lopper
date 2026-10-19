@@ -589,6 +589,63 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	waitForPreflightInstallRollback(t, fixture, tmpDir, output.String())
 }
 
+func TestHooksPreflightOutputAllocationSurvivesGroupInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"hooks-install", "hooks-uninstall"} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			assertPreflightOutputAllocationInterrupt(t, target)
+		})
+	}
+}
+
+func assertPreflightOutputAllocationInterrupt(t *testing.T, target string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, target)
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatalf("find mktemp: %v", err)
+	}
+	tmpDir, binDir := t.TempDir(), t.TempDir()
+	interrupted := filepath.Join(t.TempDir(), "output-allocated")
+	// Model group cancellation landing after mktemp creates the reader output
+	// file but before its path reaches the installer shell.
+	writeFileMode(t, filepath.Join(binDir, "mktemp"), `#!/bin/sh
+case "$1" in
+	"$TMPDIR"/lopper-hooks-preflight.*)
+		[ ! -e "$HOOK_OUTPUT_ALLOCATED" ] || exec `+shellQuote(realMktemp)+` "$@"
+		path=$(`+shellQuote(realMktemp)+` "$@") || exit "$?"
+		printf x >"$HOOK_OUTPUT_ALLOCATED"
+		kill -TERM 0
+		printf '%s\n' "$path"
+		exit 0
+		;;
+esac
+exec `+shellQuote(realMktemp)+` "$@"
+`, 0o755)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "make", target)
+	command.Dir = fixture.repoDir
+	command.Env = append(withoutGitEnv(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+tmpDir, "HOOK_OUTPUT_ALLOCATED="+interrupted)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s did not exit after output allocation interrupt: %v\n%s", target, err, output)
+	}
+	if _, statErr := os.Stat(interrupted); statErr != nil {
+		t.Fatalf("%s did not reach preflight output allocation: %v\n%s", target, statErr, output)
+	}
+	if err == nil {
+		t.Fatalf("%s succeeded after interruption\n%s", target, output)
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
+	assertPreflightConfigUnchanged(t, fixture, target)
+	assertPreflightHookUnchanged(t, fixture, target)
+}
+
 func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
 	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
