@@ -355,7 +355,7 @@ func (d *driver) execute(ctx context.Context, label, dir string, env []string, t
 	}
 	// Command context is deliberately never cancelled. Only the original retained
 	// closure responds to the separate driver deadline/interrupt.
-	cmd := exec.CommandContext(context.Background(), tool, args...)
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), tool, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	commandruntime.ConfigureCommandCancellation(cmd)
@@ -375,10 +375,10 @@ func (d *driver) execute(ctx context.Context, label, dir string, env []string, t
 	writerCloseErr := d.startDrains(streams)
 	waits := make(chan error, 1)
 	go func() { waits <- cmd.Wait() }()
-	waitCollected, cleanupDone, drainsDone := false, false, false
+	var progress commandProgress
 	defer func() {
 		if p := recover(); p != nil {
-			d.recoverOwnedCommand(p, &r, cleanup, waits, streams, waitCollected, cleanupDone, drainsDone)
+			d.recoverOwnedCommand(p, &r, cleanup, waits, streams, progress)
 		}
 	}()
 
@@ -408,10 +408,10 @@ func (d *driver) execute(ctx context.Context, label, dir string, env []string, t
 		waitErr = <-waits
 		r.Err = errors.New("driver execution budget expired")
 	}
-	waitCollected, cleanupDone = true, true
+	progress.waitCollected, progress.cleanupDone = true, true
 	r.Status, err = terminalStatus(cmd, waitErr)
 	drainErr := d.joinStreams(streams)
-	drainsDone = true
+	progress.drainsDone = true
 	// These are separate error observations: an ExitError never hides a drain or
 	// original cleanup failure. Joined errors containing another fault are unsafe.
 	r.Joined = launchErr == nil && err == nil && cleanupErr == nil && drainErr == nil && writerCloseErr == nil && d.remaining() > 0
@@ -448,15 +448,20 @@ func (d *driver) cleanupCommand(cleanup func() error) error {
 	}
 	return err
 }
-func (d *driver) recoverOwnedCommand(p any, r *commandResult, cleanup func() error, waits chan error, streams []*stream, waitCollected, cleanupDone, drainsDone bool) {
+
+type commandProgress struct {
+	waitCollected, cleanupDone, drainsDone bool
+}
+
+func (d *driver) recoverOwnedCommand(p any, r *commandResult, cleanup func() error, waits chan error, streams []*stream, progress commandProgress) {
 	d.beginCleanup()
-	if !cleanupDone {
+	if !progress.cleanupDone {
 		r.Err = errors.Join(r.Err, cleanup())
 	}
-	if !waitCollected {
+	if !progress.waitCollected {
 		r.Err = errors.Join(r.Err, <-waits)
 	}
-	if !drainsDone {
+	if !progress.drainsDone {
 		r.Err = errors.Join(r.Err, d.joinStreams(streams))
 	}
 	d.allJoined = false

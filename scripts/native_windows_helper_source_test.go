@@ -22,6 +22,15 @@ func sourceSection(t *testing.T, source, startMarker, endMarker string) string {
 	return source[start : start+endOffset]
 }
 
+func requireSourceContains(t *testing.T, source, failure string, required []string) {
+	t.Helper()
+	for _, item := range required {
+		if !strings.Contains(source, item) {
+			t.Fatal(failure, item)
+		}
+	}
+}
+
 // This portable text check does not run provisioning or claim AST/native proof.
 func TestFixedNativeHelperSourceContract(t *testing.T) {
 	data, err := os.ReadFile("native-windows-hook-fixture.ps1")
@@ -29,16 +38,8 @@ func TestFixedNativeHelperSourceContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(data)
-	for _, required := range []string{"ValidateSet('setup','finally','recovery','self-test')", "Assert-Custody $true $true", "SetAccessRuleProtection($true,$false)", "$rules.Count -ne 1", "Assert-DirectoryIdentity", "Assert-ExpectedChildren", "Get-SmbOpenFile -IncludeHidden", "Get-SmbConnection", "Remove-SmbShare -Name $Name -Confirm:$false", "Remove-ObservedAllocationDirectory $script:allocation.path", "Remove-ObservedMarker (Join-Path $script:allocation.path '.allocation-nonce')", "Original owner join/deadline unavailable", "Single owner cleanup reserve expired", "fault.triggered:$Name@$state", "fault.triggered:$operation@$state"} {
-		if !strings.Contains(source, required) {
-			t.Fatal("missing contract", required)
-		}
-	}
-	for _, required := range []string{"@{mutation='marker.delete';expected='SELFTEST_EXPECTED:marker.delete'}", "Self-test marker-delete failure did not retain post-share allocation state", "fault.triggered:marker.delete@ready"} {
-		if !strings.Contains(source, required) {
-			t.Fatal("missing post-share marker-delete transition control", required)
-		}
-	}
+	requireSourceContains(t, source, "missing contract", []string{"ValidateSet('setup','finally','recovery','self-test')", "Assert-Custody $true $true", "SetAccessRuleProtection($true,$false)", "$rules.Count -ne 1", "Assert-DirectoryIdentity", "Assert-ExpectedChildren", "Get-SmbOpenFile -IncludeHidden", "Get-SmbConnection", "Remove-SmbShare -Name $Name -Confirm:$false", "Remove-ObservedAllocationDirectory $script:allocation.path", "Remove-ObservedMarker (Join-Path $script:allocation.path '.allocation-nonce')", "Original owner join/deadline unavailable", "Single owner cleanup reserve expired", "fault.triggered:$Name@$state", "fault.triggered:$operation@$state"})
+	requireSourceContains(t, source, "missing post-share marker-delete transition control", []string{"@{mutation='marker.delete';expected='SELFTEST_EXPECTED:marker.delete'}", "Self-test marker-delete failure did not retain post-share allocation state", "fault.triggered:marker.delete@ready"})
 	setup := sourceSection(t, source, "function Setup-Allocation", "function Find-OwnedShare")
 	saveIndex := strings.Index(setup, "Save-Allocation")
 	createIndex := strings.Index(setup, "[IO.Directory]::CreateDirectory")

@@ -26,6 +26,7 @@ const documentLimit = 1 << 20
 const resultLimit = 64 << 20
 const rootTest = "TestHooksCleanupNativeWindows"
 const subjectPackage = "github.com/ben-ranford/lopper/scripts"
+const gitDistribution = "git-for-windows"
 
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -302,7 +303,7 @@ func verifyPolicy(p policy, expected string) error {
 	return verifyEnvironment(p.Environment)
 }
 func verifyDistributions(ds []distribution) error {
-	names := []string{"go", "git-for-windows", "native-cgo", "powershell"}
+	names := []string{"go", gitDistribution, "native-cgo", "powershell"}
 	if len(ds) != len(names) {
 		return errors.New("distribution inventory mismatch")
 	}
@@ -326,7 +327,7 @@ func verifyDistributions(ds []distribution) error {
 	return requiredRuntimeFiles(ds)
 }
 func requiredRuntimeFiles(ds []distribution) error {
-	expected := map[string][]string{"go": {"go.exe", "compile.exe", "link.exe"}, "git-for-windows": {"git.exe", "bash.exe", "sh.exe", "stat.exe", "xargs.exe", "cygpath.exe"}, "powershell": {"pwsh.exe"}}
+	expected := map[string][]string{"go": {"go.exe", "compile.exe", "link.exe"}, gitDistribution: {"git.exe", "bash.exe", "sh.exe", "stat.exe", "xargs.exe", "cygpath.exe"}, "powershell": {"pwsh.exe"}}
 	for _, d := range ds {
 		names := map[string]bool{}
 		dll := false
@@ -340,7 +341,7 @@ func requiredRuntimeFiles(ds []distribution) error {
 				return fmt.Errorf("missing fixed runtime %s/%s", d.Name, name)
 			}
 		}
-		if d.Name == "git-for-windows" && !dll {
+		if d.Name == gitDistribution && !dll {
 			return errors.New("missing bundled Git runtime DLL identities")
 		}
 		if d.Name == "native-cgo" && !nativeCGOFiles(names, dll) {

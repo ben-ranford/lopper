@@ -597,7 +597,7 @@ func (i *coverageFileInfo) ModTime() time.Time { return time.Time{} }
 func (i *coverageFileInfo) IsDir() bool        { return false }
 func (i *coverageFileInfo) Sys() any           { return i.sys }
 
-func TestCoverageEventStateMachinesRejectInvalidTransitions(t *testing.T) {
+func TestCoveragePackageEventStateMachineRejectsInvalidTransitions(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		action     string
@@ -623,7 +623,9 @@ func TestCoverageEventStateMachinesRejectInvalidTransitions(t *testing.T) {
 			}
 		})
 	}
+}
 
+func TestCoverageLeafEventStateMachineRejectsInvalidTransitions(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		action   string

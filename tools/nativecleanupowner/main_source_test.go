@@ -24,7 +24,7 @@ func TestSourceUsesOriginalOwnershipAPI(t *testing.T) {
 		t.Fatal("ownership must flow through the one existing start/cancellation site")
 	}
 	text := string(source)
-	for _, required := range []string{"exec.CommandContext(context.Background()", "cmd.WaitDelay = commandAllowance", "cleanup()", "waits <- cmd.Wait()", "d.joinStreams(streams)", "win.SetHandleInformation(h, win.HANDLE_FLAG_INHERIT, 0)", "os.O_CREATE|os.O_EXCL", "case <-ctx.Done():"} {
+	for _, required := range []string{"exec.CommandContext(context.WithoutCancel(ctx)", "cmd.WaitDelay = commandAllowance", "cleanup()", "waits <- cmd.Wait()", "d.joinStreams(streams)", "win.SetHandleInformation(h, win.HANDLE_FLAG_INHERIT, 0)", "os.O_CREATE|os.O_EXCL", "case <-ctx.Done():"} {
 		if !strings.Contains(text, required) {
 			t.Fatal("missing source contract", required)
 		}
