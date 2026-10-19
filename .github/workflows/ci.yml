@@ -1171,6 +1171,337 @@ jobs:
         run: |
           & $env:LOPPER_PROOF_GO run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
 
+  action-windows-provider-proof:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout subject source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Checkout trusted Python provider O
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          ref: 75bd830fbf0a3908269dd15c92af35e895e196e7
+          path: .trusted-provider-o
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          # Bootstrap Go is fixed independently of candidate go.mod.
+          go-version: '1.27.2'
+          check-latest: false
+
+      - *ci_proof_node_setup
+
+      - *ci_proof_node_provision
+
+      - *ci_proof_node_verify
+
+      # Authenticate and compile only O's bootstrap before setup-python. A cache
+      # miss or alternate cache root fails closed before any subject Go command.
+      - name: Authenticate trusted provider and preflight Python cache
+        id: provider_preflight
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
+          $expectedCommit = '75bd830fbf0a3908269dd15c92af35e895e196e7'
+          $expectedTree = '592e8d0b3063a4441e7e86cac849268b85b27d72'
+          $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
+          $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
+          $bootstrapSha256 = 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391'
+          $verifySha256 = '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46'
+          git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Trusted provider byte-preserving checkout failed' }
+          function Assert-TrustedProviderSource {
+            if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
+            if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
+            if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -cne $bootstrapSha256) { throw 'Trusted provider bootstrap digest mismatch' }
+            if ((Get-FileHash -LiteralPath $verify -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifySha256) { throw 'Trusted provider verifier digest mismatch' }
+          }
+          $goCandidates = @(Get-Command go -CommandType Application | Select-Object -First 1)
+          if ($goCandidates.Count -ne 1) { throw 'Pinned bootstrap Go command is unavailable' }
+          $go = $goCandidates[0].Source
+          if (-not [System.IO.Path]::IsPathFullyQualified($go)) { throw 'Pinned bootstrap Go must resolve to an absolute executable' }
+          $goVersion = (& $go version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $goVersion -cne 'go version go1.27.2 windows/amd64') { throw "Unexpected bootstrap Go identity: $goVersion" }
+          $goRoot = Split-Path -Parent (Split-Path -Parent $go)
+          $goHash = (Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant()
+          $agentCache = [Environment]::GetEnvironmentVariable('AGENT_TOOLSDIRECTORY', 'Process')
+          if ($null -eq $agentCache) { $agentCache = '' }
+          $verifier = Join-Path $env:RUNNER_TEMP 'trusted-proofpython-verify.exe'
+          $previous = Get-Location
+          try {
+            Set-Location -LiteralPath $trusted
+            $env:GOROOT = $goRoot; $env:GOENV = 'off'; $env:GOWORK = 'off'; $env:GOFLAGS = ''
+            $env:GOTOOLCHAIN = 'local'; $env:GOCACHEPROG = ''; $env:GOAUTH = 'off'
+            $env:GOPROXY = 'off'; $env:GOSUMDB = 'off'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+            Assert-TrustedProviderSource
+            if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant() -cne $goHash) { throw 'Pinned bootstrap Go changed before trusted compile' }
+            & $go build -trimpath -buildvcs=false -o $verifier ./tools/proofpython
+            if ($LASTEXITCODE -ne 0) { throw 'Trusted provider verifier build failed' }
+            $verifierSha256 = (Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant()
+            # Re-authenticate source and executable immediately before invoking O's verifier.
+            Assert-TrustedProviderSource
+            if ((Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifierSha256) { throw 'Trusted preflight verifier changed before invocation' }
+            $cacheArguments = @('cache', $env:RUNNER_TOOL_CACHE, [string]$agentCache)
+            $cacheExit = $null
+            try {
+              # Pre-authenticate literal O and both scripts immediately before use.
+              Assert-TrustedProviderSource
+              & $verifier @cacheArguments
+              $cacheExit = $LASTEXITCODE
+            } finally {
+              # Independent post-authentication after the trusted cache check.
+              Assert-TrustedProviderSource
+              if ((Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifierSha256) { throw 'Trusted preflight verifier changed after invocation' }
+              if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant() -cne $goHash) { throw 'Pinned bootstrap Go changed after trusted compile' }
+            }
+            if ($cacheExit -ne 0) { throw 'Completed official CPython cache entry is unavailable' }
+          } finally {
+            Set-Location -LiteralPath $previous.Path
+          }
+          "trusted_source=$trusted" >> $env:GITHUB_OUTPUT
+          "trusted_bootstrap=$bootstrap" >> $env:GITHUB_OUTPUT
+          "trusted_verify=$verify" >> $env:GITHUB_OUTPUT
+          "trusted_bootstrap_sha256=$bootstrapSha256" >> $env:GITHUB_OUTPUT
+          "trusted_verify_sha256=$verifySha256" >> $env:GITHUB_OUTPUT
+          "go=$go" >> $env:GITHUB_OUTPUT
+          "go_sha256=$goHash" >> $env:GITHUB_OUTPUT
+          "go_version=$goVersion" >> $env:GITHUB_OUTPUT
+          "preflight_verifier=$verifier" >> $env:GITHUB_OUTPUT
+          "preflight_verifier_sha256=$verifierSha256" >> $env:GITHUB_OUTPUT
+
+      - name: Setup trusted cached Python
+        id: setup_python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13.16'
+          architecture: x64
+          check-latest: false
+          update-environment: false
+
+      - name: Verify completed Python cache and provision provider
+        id: trusted_provider
+        shell: pwsh
+        env:
+          TRUSTED_SOURCE: ${{ steps.provider_preflight.outputs.trusted_source }}
+          TRUSTED_BOOTSTRAP: ${{ steps.provider_preflight.outputs.trusted_bootstrap }}
+          TRUSTED_BOOTSTRAP_SHA256: b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391
+          TRUSTED_VERIFY: ${{ steps.provider_preflight.outputs.trusted_verify }}
+          TRUSTED_VERIFY_SHA256: 1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46
+          TRUSTED_GO: ${{ steps.provider_preflight.outputs.go }}
+          TRUSTED_GO_SHA256: ${{ steps.provider_preflight.outputs.go_sha256 }}
+          TRUSTED_PREFLIGHT_VERIFIER: ${{ steps.provider_preflight.outputs.preflight_verifier }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
+          $expectedCommit = '75bd830fbf0a3908269dd15c92af35e895e196e7'
+          $expectedTree = '592e8d0b3063a4441e7e86cac849268b85b27d72'
+          $expectedBootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
+          $expectedVerify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
+          function Assert-TrustedProviderSource {
+            if ($env:TRUSTED_SOURCE -cne $trusted -or $env:TRUSTED_BOOTSTRAP -cne $expectedBootstrap -or $env:TRUSTED_VERIFY -cne $expectedVerify) { throw 'Trusted provider paths differ from literal O checkout' }
+            if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
+            if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
+            if ((Get-FileHash -LiteralPath $expectedBootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_BOOTSTRAP_SHA256) { throw 'Trusted provider bootstrap digest mismatch' }
+            if ((Get-FileHash -LiteralPath $expectedVerify -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_VERIFY_SHA256) { throw 'Trusted provider verifier digest mismatch' }
+          }
+          # O script hashes come from literals, not the bootstrap's output.
+          if ($env:TRUSTED_BOOTSTRAP_SHA256 -cne 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391' -or $env:TRUSTED_VERIFY_SHA256 -cne '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46') { throw 'Trusted O hash bindings differ from reviewed literals' }
+          $cache = Join-Path $env:RUNNER_TOOL_CACHE 'Python/3.13.16/x64'
+          $marker = $cache + '.complete'
+          $python = Join-Path $cache 'python.exe'
+          if (-not (Test-Path -LiteralPath $marker -PathType Leaf) -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Completed CPython cache entry disappeared after setup-python' }
+          $pythonVersion = (& $python --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $pythonVersion -cne 'Python 3.13.16') { throw "Unexpected cached Python identity: $pythonVersion" }
+          $agentCache = [Environment]::GetEnvironmentVariable('AGENT_TOOLSDIRECTORY', 'Process')
+          if ($null -eq $agentCache) { $agentCache = '' }
+          Assert-TrustedProviderSource
+          $bootstrapGoVersion = (& $env:TRUSTED_GO version).Trim()
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $env:TRUSTED_GO -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_GO_SHA256 -or $bootstrapGoVersion -cne 'go version go1.27.2 windows/amd64') { throw 'Pinned bootstrap Go identity mismatch before trusted invocation' }
+          $result = $null; $bootstrapExit = $null
+          try {
+            # Literal O bootstrap is freshly authenticated immediately before invocation.
+            Assert-TrustedProviderSource
+            $result = & $env:TRUSTED_BOOTSTRAP -TrustedSource $env:TRUSTED_SOURCE -Go $env:TRUSTED_GO -GoSha256 $env:TRUSTED_GO_SHA256 -RunnerCache $env:RUNNER_TOOL_CACHE -AgentCache $agentCache
+            $bootstrapExit = $LASTEXITCODE
+          } finally {
+            # Independent post-authentication after bootstrap completes/fails.
+            Assert-TrustedProviderSource
+            if ((Get-FileHash -LiteralPath $env:TRUSTED_GO -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_GO_SHA256) { throw 'Pinned bootstrap Go changed after trusted invocation' }
+          }
+          if ($bootstrapExit -ne 0) { throw 'Trusted provider provisioning failed' }
+          $provider = $result | ConvertFrom-Json
+          if ($provider.source_cache -cne $cache) { throw 'Provider did not use the preflighted official cache' }
+          $goBin = Split-Path -Parent $env:TRUSTED_GO
+          if ($provider.root -cne (Join-Path $goBin 'lopper-proof-python') -or $provider.verifier -cne (Join-Path $goBin 'lopper-proof-python-verify.exe') -or $provider.receipt -cne (Join-Path $goBin 'lopper-proof-python.receipt')) { throw 'Provider outputs differ from the canonical private runtime paths' }
+          if ($provider.bootstrap_sha256 -cne $env:TRUSTED_BOOTSTRAP_SHA256) { throw 'Provider bootstrap receipt differs from the literal O digest' }
+          foreach ($pair in @(
+              @{ Path = $provider.verifier; Sha256 = $provider.verifier_sha256 },
+              @{ Path = $provider.receipt; Sha256 = $provider.receipt_sha256 },
+              @{ Path = (Join-Path $goBin 'python.exe'); Sha256 = $provider.python_sha256 },
+              @{ Path = (Join-Path $goBin 'python3.exe'); Sha256 = $provider.python3_sha256 }
+          )) {
+            $item = Get-Item -LiteralPath $pair.Path
+            if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $pair.Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair.Sha256) { throw "Provider output failed independent post-authentication: $($pair.Path)" }
+          }
+          foreach ($name in @('root','verifier','verifier_sha256','bootstrap_sha256','receipt','receipt_sha256','python_sha256','python3_sha256')) {
+            "${name}=$($provider.$name)" >> $env:GITHUB_OUTPUT
+          }
+          "python=$python" >> $env:GITHUB_OUTPUT
+
+      - name: Run fixed and floating native Windows installer proofs
+        shell: pwsh
+        env:
+          TRUSTED_VERIFY: ${{ steps.provider_preflight.outputs.trusted_verify }}
+          TRUSTED_VERIFY_SHA256: 1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46
+          TRUSTED_GO: ${{ steps.provider_preflight.outputs.go }}
+          TRUSTED_GO_SHA256: ${{ steps.provider_preflight.outputs.go_sha256 }}
+          TRUSTED_BOOTSTRAP: ${{ steps.provider_preflight.outputs.trusted_bootstrap }}
+          TRUSTED_BOOTSTRAP_SHA256: b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391
+          TRUSTED_VERIFIER: ${{ steps.trusted_provider.outputs.verifier }}
+          TRUSTED_VERIFIER_SHA256: ${{ steps.trusted_provider.outputs.verifier_sha256 }}
+          TRUSTED_RECEIPT: ${{ steps.trusted_provider.outputs.receipt }}
+          TRUSTED_RECEIPT_SHA256: ${{ steps.trusted_provider.outputs.receipt_sha256 }}
+          TRUSTED_ROOT: ${{ steps.trusted_provider.outputs.root }}
+          TRUSTED_PYTHON_SHA256: ${{ steps.trusted_provider.outputs.python_sha256 }}
+          TRUSTED_PYTHON3_SHA256: ${{ steps.trusted_provider.outputs.python3_sha256 }}
+          GOROOT: ${{ steps.provider_preflight.outputs.go }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proofArgs = @('test', '-count=1', '-json', '-p=1', '-timeout=20m', '-run', '^TestInstallScriptWindows', './internal/githubaction')
+          $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
+          $expectedCommit = '75bd830fbf0a3908269dd15c92af35e895e196e7'
+          $expectedTree = '592e8d0b3063a4441e7e86cac849268b85b27d72'
+          $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
+          $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
+          function Assert-TrustedProviderInvocation {
+            if ($env:TRUSTED_BOOTSTRAP_SHA256 -cne 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391' -or $env:TRUSTED_VERIFY_SHA256 -cne '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46') { throw 'Trusted script literal bindings differ' }
+            if ($env:TRUSTED_BOOTSTRAP -cne $bootstrap -or $env:TRUSTED_VERIFY -cne $verify) { throw 'Trusted script paths differ from literal O checkout' }
+            if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
+            if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
+            if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_BOOTSTRAP_SHA256) { throw 'Trusted bootstrap digest mismatch' }
+            if ((Get-FileHash -LiteralPath $verify -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_VERIFY_SHA256) { throw 'Trusted verifier digest mismatch' }
+            $goBin = Split-Path -Parent $env:TRUSTED_GO
+            if ($env:TRUSTED_ROOT -cne (Join-Path $goBin 'lopper-proof-python') -or $env:TRUSTED_VERIFIER -cne (Join-Path $goBin 'lopper-proof-python-verify.exe') -or $env:TRUSTED_RECEIPT -cne (Join-Path $goBin 'lopper-proof-python.receipt')) { throw 'Trusted runtime paths differ from the canonical private root' }
+            $expectedFiles = [ordered]@{}
+            $expectedFiles[$env:TRUSTED_GO] = $env:TRUSTED_GO_SHA256
+            $expectedFiles[$env:TRUSTED_VERIFIER] = $env:TRUSTED_VERIFIER_SHA256
+            $expectedFiles[$env:TRUSTED_RECEIPT] = $env:TRUSTED_RECEIPT_SHA256
+            $expectedFiles[(Join-Path (Split-Path -Parent $env:TRUSTED_GO) 'python.exe')] = $env:TRUSTED_PYTHON_SHA256
+            $expectedFiles[(Join-Path (Split-Path -Parent $env:TRUSTED_GO) 'python3.exe')] = $env:TRUSTED_PYTHON3_SHA256
+            foreach ($path in $expectedFiles.Keys) {
+              $item = Get-Item -LiteralPath $path
+              if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedFiles[$path]) { throw "Trusted provider artifact changed: $path" }
+            }
+          }
+          $proofExit = $null
+          try {
+            # Independent pre-authentication is fresh for each joined subject invocation.
+            Assert-TrustedProviderInvocation
+            & $env:TRUSTED_VERIFY -Verifier $env:TRUSTED_VERIFIER -VerifierSha256 $env:TRUSTED_VERIFIER_SHA256 -Bootstrap $env:TRUSTED_BOOTSTRAP -BootstrapSha256 $env:TRUSTED_BOOTSTRAP_SHA256 -Receipt $env:TRUSTED_RECEIPT -ReceiptSha256 $env:TRUSTED_RECEIPT_SHA256 -Go $env:TRUSTED_GO -GoSha256 $env:TRUSTED_GO_SHA256 -CanonicalRoot $env:TRUSTED_ROOT -PythonSha256 $env:TRUSTED_PYTHON_SHA256 -Python3Sha256 $env:TRUSTED_PYTHON3_SHA256 -Repository $env:GITHUB_WORKSPACE -ProofArguments $proofArgs
+            $proofExit = $LASTEXITCODE
+          } finally {
+            # Independent host-side post-authentication after joined subject completion/failure.
+            Assert-TrustedProviderInvocation
+          }
+          if ($proofExit -ne 0) { throw 'Joined native Windows installer proof failed' }
+
+      - *ci_proof_node_verify
+
+      - name: Write PR body for native action proof
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-action-body.md');
+            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            core.exportVariable('PR_ACTION_BODY_FILE', bodyPath);
+
+      - name: Prove native Windows regression tests for fix PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
+        shell: pwsh
+        env:
+          TRUSTED_VERIFY: ${{ steps.provider_preflight.outputs.trusted_verify }}
+          TRUSTED_VERIFY_SHA256: 1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46
+          TRUSTED_GO: ${{ steps.provider_preflight.outputs.go }}
+          TRUSTED_GO_SHA256: ${{ steps.provider_preflight.outputs.go_sha256 }}
+          TRUSTED_BOOTSTRAP: ${{ steps.provider_preflight.outputs.trusted_bootstrap }}
+          TRUSTED_BOOTSTRAP_SHA256: b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391
+          TRUSTED_VERIFIER: ${{ steps.trusted_provider.outputs.verifier }}
+          TRUSTED_VERIFIER_SHA256: ${{ steps.trusted_provider.outputs.verifier_sha256 }}
+          TRUSTED_RECEIPT: ${{ steps.trusted_provider.outputs.receipt }}
+          TRUSTED_RECEIPT_SHA256: ${{ steps.trusted_provider.outputs.receipt_sha256 }}
+          TRUSTED_ROOT: ${{ steps.trusted_provider.outputs.root }}
+          TRUSTED_PYTHON_SHA256: ${{ steps.trusted_provider.outputs.python_sha256 }}
+          TRUSTED_PYTHON3_SHA256: ${{ steps.trusted_provider.outputs.python3_sha256 }}
+          GOROOT: ${{ steps.provider_preflight.outputs.go }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
+        run: |
+          $proofArgs = @('run', './tools/regressionproof', '--repo', '.', '--body-file', $env:PR_ACTION_BODY_FILE, '--title', $env:PR_TITLE, '--base-sha', $env:PR_BASE_SHA, '--regression-exempt-label', $env:PR_REGRESSION_EXEMPT_LABEL, '--target-os', 'windows')
+          $ErrorActionPreference = 'Stop'
+          $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
+          $expectedCommit = '75bd830fbf0a3908269dd15c92af35e895e196e7'
+          $expectedTree = '592e8d0b3063a4441e7e86cac849268b85b27d72'
+          $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
+          $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
+          function Assert-TrustedProviderInvocation {
+            if ($env:TRUSTED_BOOTSTRAP_SHA256 -cne 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391' -or $env:TRUSTED_VERIFY_SHA256 -cne '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46') { throw 'Trusted script literal bindings differ' }
+            if ($env:TRUSTED_BOOTSTRAP -cne $bootstrap -or $env:TRUSTED_VERIFY -cne $verify) { throw 'Trusted script paths differ from literal O checkout' }
+            if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
+            if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
+            if ((Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_BOOTSTRAP_SHA256) { throw 'Trusted bootstrap digest mismatch' }
+            if ((Get-FileHash -LiteralPath $verify -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_VERIFY_SHA256) { throw 'Trusted verifier digest mismatch' }
+            $goBin = Split-Path -Parent $env:TRUSTED_GO
+            if ($env:TRUSTED_ROOT -cne (Join-Path $goBin 'lopper-proof-python') -or $env:TRUSTED_VERIFIER -cne (Join-Path $goBin 'lopper-proof-python-verify.exe') -or $env:TRUSTED_RECEIPT -cne (Join-Path $goBin 'lopper-proof-python.receipt')) { throw 'Trusted runtime paths differ from the canonical private root' }
+            $expectedFiles = [ordered]@{}
+            $expectedFiles[$env:TRUSTED_GO] = $env:TRUSTED_GO_SHA256
+            $expectedFiles[$env:TRUSTED_VERIFIER] = $env:TRUSTED_VERIFIER_SHA256
+            $expectedFiles[$env:TRUSTED_RECEIPT] = $env:TRUSTED_RECEIPT_SHA256
+            $expectedFiles[(Join-Path (Split-Path -Parent $env:TRUSTED_GO) 'python.exe')] = $env:TRUSTED_PYTHON_SHA256
+            $expectedFiles[(Join-Path (Split-Path -Parent $env:TRUSTED_GO) 'python3.exe')] = $env:TRUSTED_PYTHON3_SHA256
+            foreach ($path in $expectedFiles.Keys) {
+              $item = Get-Item -LiteralPath $path
+              if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedFiles[$path]) { throw "Trusted provider artifact changed: $path" }
+            }
+          }
+          $proofExit = $null
+          try {
+            # Independent pre-authentication is fresh for each joined subject invocation.
+            Assert-TrustedProviderInvocation
+            & $env:TRUSTED_VERIFY -Verifier $env:TRUSTED_VERIFIER -VerifierSha256 $env:TRUSTED_VERIFIER_SHA256 -Bootstrap $env:TRUSTED_BOOTSTRAP -BootstrapSha256 $env:TRUSTED_BOOTSTRAP_SHA256 -Receipt $env:TRUSTED_RECEIPT -ReceiptSha256 $env:TRUSTED_RECEIPT_SHA256 -Go $env:TRUSTED_GO -GoSha256 $env:TRUSTED_GO_SHA256 -CanonicalRoot $env:TRUSTED_ROOT -PythonSha256 $env:TRUSTED_PYTHON_SHA256 -Python3Sha256 $env:TRUSTED_PYTHON3_SHA256 -Repository $env:GITHUB_WORKSPACE -ProofArguments $proofArgs
+            $proofExit = $LASTEXITCODE
+          } finally {
+            # Independent host-side post-authentication after joined subject completion/failure.
+            Assert-TrustedProviderInvocation
+          }
+          if ($proofExit -ne 0) { throw 'Joined native Windows regression proof failed' }
+
   regression-proof-darwin:
     runs-on: macos-26
     timeout-minutes: 20
@@ -1240,7 +1571,7 @@ jobs:
 
   verify:
     if: ${{ always() }}
-    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin]
+    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin, action-windows-provider-proof]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1257,8 +1588,9 @@ jobs:
           TESTS_RESULT: ${{ needs.verify-tests.result }}
           WINDOWS_PROOF_RESULT: ${{ needs.regression-proof-windows.result }}
           DARWIN_PROOF_RESULT: ${{ needs.regression-proof-darwin.result }}
+          WINDOWS_ACTION_PROOF_RESULT: ${{ needs.action-windows-provider-proof.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success && test "${WINDOWS_ACTION_PROOF_RESULT}" = success
 
       - name: Initialize suppression verification
         id: suppression_verification

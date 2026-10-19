@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+readonly WINDOWS_OS="windows"
 
 error() {
   echo "::error::$*" >&2
@@ -36,6 +37,14 @@ write_output() {
     return
   fi
   printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+}
+
+validate_windows_path() {
+  local value="$1"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    error "The Windows installation path must not contain line breaks."
+    exit 2
+  fi
 }
 
 curl_with_token() {
@@ -94,7 +103,11 @@ validate_tag() {
 resolve_release_series_tag() {
   local series="$1"
 
-  if ! command -v python3 >/dev/null 2>&1; then
+  local python="python3"
+  if ! command -v "$python" >/dev/null 2>&1 && [[ "$(detect_os)" == "$WINDOWS_OS" ]]; then
+    python="python"
+  fi
+  if ! command -v "$python" >/dev/null 2>&1; then
     error "python3 is required to resolve floating Lopper release ref '${series}'. Use a concrete tag such as v1.7.0 instead."
     exit 1
   fi
@@ -102,11 +115,15 @@ resolve_release_series_tag() {
   local tag
   if ! tag="$(
     curl_with_token -fsSL "https://api.github.com/repos/ben-ranford/lopper/releases?per_page=100" |
-      SERIES="$series" python3 -c '
+      SERIES="$series" "$python" -c '
 import json
 import os
 import re
 import sys
+
+if sys.version_info[0] != 3:
+    sys.stderr.write("Python 3 is required to resolve floating Lopper releases.\n")
+    sys.exit(2)
 
 series = os.environ["SERIES"]
 try:
@@ -194,8 +211,9 @@ detect_os() {
   case "$(lower "$value")" in
     linux) printf 'linux' ;;
     darwin) printf 'darwin' ;;
+    "$WINDOWS_OS" | windows_nt | mingw*_nt-* | msys_nt-*) printf '%s' "$WINDOWS_OS" ;;
     *)
-      error "Unsupported runner OS '${value}'. Lopper release downloads are available for Linux and macOS runners."
+      error "Unsupported runner OS '${value}'. Lopper release downloads are available for Linux, macOS and Windows runners."
       exit 1
       ;;
   esac
@@ -222,8 +240,21 @@ tag="$(resolve_requested_tag)"
 validate_tag "$tag"
 
 goos="$(detect_os)"
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  validate_windows_path "${LOPPER_INSTALL_DIR:-}"
+  validate_windows_path "${RUNNER_TEMP:-}"
+  if [[ -z "$(trim "${RUNNER_TEMP:-}")" ]]; then
+    validate_windows_path "${TMPDIR:-/tmp}"
+  fi
+fi
 goarch="$(detect_arch)"
-archive_name="lopper_${tag}_${goos}_${goarch}.tar.gz"
+archive_extension="tar.gz"
+binary_name="lopper"
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  archive_extension="zip"
+  binary_name="lopper.exe"
+fi
+archive_name="lopper_${tag}_${goos}_${goarch}.${archive_extension}"
 download_url="https://github.com/ben-ranford/lopper/releases/download/${tag}/${archive_name}"
 
 write_output "resolved-version" "$tag"
@@ -239,10 +270,16 @@ runner_temp="$(trim "${RUNNER_TEMP:-}")"
 if [[ -z "$runner_temp" ]]; then
   runner_temp="${TMPDIR:-/tmp}"
 fi
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  runner_temp="$(cygpath -u "$runner_temp")"
+fi
 runner_temp="${runner_temp%/}"
 install_dir="$(trim "${LOPPER_INSTALL_DIR:-}")"
 if [[ -z "$install_dir" ]]; then
   install_dir="${runner_temp}/lopper-action/bin"
+fi
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  install_dir="$(cygpath -u "$install_dir")"
 fi
 mkdir -p "$install_dir"
 
@@ -256,23 +293,52 @@ trap cleanup EXIT INT TERM
 
 archive_path="${work_dir}/${archive_name}"
 curl_with_token -fsSL "$download_url" -o "$archive_path"
-tar -xzf "$archive_path" -C "$work_dir"
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  zip_member="${archive_name%.zip}/${binary_name}"
+  if ! member_count="$(unzip -Z1 "$archive_path" | grep -Fxc -- "$zip_member")" || [[ "$member_count" != "1" ]]; then
+    error "Downloaded ZIP must contain exactly one ${zip_member}."
+    exit 1
+  fi
+  if ! unzip -q "$archive_path" "$zip_member" "${archive_name%.zip}/share/lopper/*" -d "$work_dir"; then
+    error "Downloaded ZIP must contain ${zip_member} and its share/lopper runtime hooks."
+    exit 1
+  fi
+else
+  tar -xzf "$archive_path" -C "$work_dir"
+fi
 
-binary_path="$(find "$work_dir" -type f -name lopper -print | head -n 1)"
+binary_path="$(find "$work_dir" -type f -name "$binary_name" -print | head -n 1)"
 if [[ -z "$binary_path" ]]; then
-  error "Downloaded archive did not contain a lopper binary."
+  error "Downloaded archive did not contain a ${binary_name} binary."
   exit 1
 fi
 
-installed_binary="${install_dir}/lopper"
+installed_binary="${install_dir}/${binary_name}"
 cp "$binary_path" "$installed_binary"
 chmod +x "$installed_binary"
+# The CLI resolves runtime hooks from share/lopper beside its executable.
+share_source="$(dirname "$binary_path")/share/lopper"
+if [[ -d "$share_source" ]]; then
+  rm -rf "${install_dir}/share/lopper"
+  mkdir -p "${install_dir}/share"
+  cp -R "$share_source" "${install_dir}/share/lopper"
+fi
 
+path_entry="$install_dir"
+binary_output="$installed_binary"
+if [[ "$goos" == "$WINDOWS_OS" ]]; then
+  path_entry="$(cygpath -w "$install_dir")"
+  binary_output="$(cygpath -w "$installed_binary")"
+  if [[ "$path_entry" == *$'\n'* || "$path_entry" == *$'\r'* ]]; then
+    error "The Windows installation path must not contain line breaks."
+    exit 2
+  fi
+fi
 if [[ -n "${GITHUB_PATH:-}" ]]; then
-  printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+  printf '%s\n' "$path_entry" >> "$GITHUB_PATH"
 fi
 
 lopper_version="$("$installed_binary" --version)"
 write_output "lopper-version" "$lopper_version"
-write_output "binary-path" "$installed_binary"
+write_output "binary-path" "$binary_output"
 printf 'Installed %s at %s\n' "$lopper_version" "$installed_binary"
