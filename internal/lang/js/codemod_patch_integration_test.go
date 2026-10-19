@@ -49,7 +49,8 @@ func assertCodemodPatchApplies(t *testing.T, filename string, deleteLine bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	// Fixed Git command: apply the real preview parser to the disposable index.
-	command := exec.CommandContext(ctx, "/usr/bin/git", "-C", repo, "apply", "--cached", "--unidiff-zero", "-")
+	command := codemodPatchGitCommand(ctx, t)
+	command.Args = append(command.Args, "-C", repo, "apply", "--cached", "--unidiff-zero", "-")
 	command.Env = gitexec.SanitizedEnv()
 	command.Stdin = strings.NewReader(patch + "\n")
 	if output, err := command.CombinedOutput(); err != nil {
@@ -64,5 +65,22 @@ func assertCodemodPatchApplies(t *testing.T, filename string, deleteLine bool) {
 	original, err := os.ReadFile(filepath.Join(repo, filename))
 	if err != nil || string(original) != "old\nkeep\n" {
 		t.Fatalf("preview modified working source: %q, %v", original, err)
+	}
+}
+
+func codemodPatchGitCommand(ctx context.Context, t *testing.T) *exec.Cmd {
+	t.Helper()
+	path, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git: %v", err)
+	}
+	switch path {
+	case gitexec.ExecutablePrimary:
+		return exec.CommandContext(ctx, "/usr/bin/git")
+	case gitexec.ExecutableFallback:
+		return exec.CommandContext(ctx, "/bin/git")
+	default:
+		t.Fatalf("unsupported git executable: %q", path)
+		return nil
 	}
 }
