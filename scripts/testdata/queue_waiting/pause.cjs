@@ -123,21 +123,23 @@ test('advance verifies and merges only the prepared ticket and keeps the leader 
 });
 
 test('advance merges nothing when the queue ahead of the ticket changed or the ticket is malformed', async () => {
-  for (const ticket of [
+  const tickets = [
     { snapshot: { pull_number: 20 }, intent: {}, predecessors: [] },
     { snapshot: { pull_number: 20 }, intent: {}, predecessors: [10, 15] },
     { snapshot: { pull_number: 20 }, intent: {} },
     { snapshot: { pull_number: 30 }, intent: {}, predecessors: [10, 20] },
     { snapshot: { pull_number: '20' }, intent: {}, predecessors: [10] },
     { intent: {}, predecessors: [10] },
-  ]) {
+  ];
+  // Each ticket gets an independent harness, so the runs need no ordering.
+  await Promise.all(tickets.map(async ticket => {
     const h = harness([10, 20]);
     await runController({ ...h.args, queueProof: { ticket } });
     assert.deepEqual(h.calls.evidence, []);
     assert.deepEqual(h.calls.merged, []);
     assert.deepEqual(h.calls.armed, []);
     assert.match(h.calls.notices.join('\n'), /nothing was merged/);
-  }
+  }));
 });
 
 test('a newly queued lower-numbered pull blocks the prepared ticket', async t => {
