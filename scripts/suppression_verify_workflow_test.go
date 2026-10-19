@@ -32,6 +32,7 @@ func TestSuppressionVerifyWorkflowUsesReadOnlyCurrentRunArtifact(t *testing.T) {
 		t.Fatalf("suppression verify job permissions = %v, want %v", got, want)
 	}
 	assertWorkflowStepOrder(t, verify,
+		"Record verification job start",
 		"Require every verification job",
 		"Initialize suppression verification",
 		"Download PR report inputs",
@@ -40,7 +41,7 @@ func TestSuppressionVerifyWorkflowUsesReadOnlyCurrentRunArtifact(t *testing.T) {
 		"Verify inline suppression tracking issues were published",
 	)
 	for _, name := range []string{
-		"Initialize suppression verification", "Download PR report inputs",
+		"Record verification job start", "Initialize suppression verification", "Download PR report inputs",
 		"Validate PR report inputs", "Require explicit suppression evidence", "Verify inline suppression tracking issues were published",
 	} {
 		step := workflowStepByName(t, workflow.Jobs, "verify", name)
@@ -84,10 +85,6 @@ func TestSuppressionVerifyInitializationRejectsMissingArtifact(t *testing.T) {
 			if err != nil {
 				t.Fatalf("valid artifact ID failed: %v: %s", err, output)
 			}
-			data, err := os.ReadFile(outputPath)
-			if err != nil || !strings.HasPrefix(string(data), "job-start-ms=") {
-				t.Fatalf("initialization must publish the shared deadline origin: %s (%v)", data, err)
-			}
 		})
 	}
 }
@@ -115,7 +112,7 @@ func TestCIWorkflowAggregatesSuppressionTrackingResult(t *testing.T) {
 		"GH_REPO":           "${{ github.repository }}",
 		"PR_NUMBER":         "${{ github.event.pull_request.number }}",
 		"SUPPRESSIONS_FILE": "${{ runner.temp }}/pr-report-inputs/inline-suppressions.json",
-		"JOB_START_MS":      "${{ steps.suppression_verification.outputs.job-start-ms }}",
+		"JOB_START_MS":      "${{ steps.verify_job_start.outputs.job-start-ms }}",
 	})
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		"jq -r '.suppressions[].fingerprint'",
@@ -133,7 +130,7 @@ func TestCIWorkflowAggregatesSuppressionTrackingResult(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
-		// Share the initialization timestamp with a margin before the job timeout.
+		// Share the job start timestamp with a margin before the job timeout.
 		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
 		`now_ms="$(date +%s%3N)"`,
 		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,

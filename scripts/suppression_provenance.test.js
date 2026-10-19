@@ -495,3 +495,57 @@ test('removes private source files and module cache if the trusted detector thro
   assert.deepEqual(temporarySources(), before);
   assert.equal(Object.keys(require.cache).filter((filename) => filename.includes('lopper-suppression-provenance-')).length, 0);
 });
+
+test('exact producer selection ignores stale same-head inventory and creation timestamps', async (t) => {
+  const consumerStarted = '2026-09-30T12:10:00Z';
+  for (const createdAt of ['2026-09-30T12:00:00Z', '2026-09-30T12:20:00Z']) {
+    await t.test(createdAt, async () => {
+      const fixture = harness();
+      fixture.run.created_at = createdAt;
+      fixture.pull.updated_at = consumerStarted;
+      const stale = ['failure', 'cancelled'].map((conclusion, index) => ({
+        ...structuredClone(fixture.run), id: 90 + index, conclusion,
+        created_at: index === 0 ? '2026-09-30T11:00:00Z' : '2026-09-30T12:30:00Z',
+      }));
+      let inventoryReads = 0;
+      fixture.args.github.rest.actions.listWorkflowRuns = async () => {
+        inventoryReads++;
+        return { data: { total_count: stale.length, workflow_runs: stale } };
+      };
+      fixture.args.github.rest.actions.listWorkflowRunArtifacts = async () => {
+        assert.fail('exact producer verification must not fall back to artifact inventory');
+      };
+      const receipt = await verifySuppressionProvenance(fixture.args);
+      assert.equal(receipt.runId, fixture.expected.runId);
+      assert.equal(receipt.artifactId, fixture.args.artifactId);
+      assert.equal(inventoryReads, 0, 'producer selection must use trusted run ID, never timestamp-ranked inventory');
+      assert.equal(fixture.calls.runs, 2, 'exact producer must be revalidated before returning its receipt');
+    });
+  }
+});
+
+test('exact current producer failures reject immediately regardless of creation time', async (t) => {
+  for (const createdAt of ['2026-09-30T12:00:00Z', '2026-09-30T12:20:00Z']) {
+    await t.test(createdAt, async () => {
+      for (const conclusion of ['failure', 'cancelled']) {
+        const fixture = harness();
+        Object.assign(fixture.run, { created_at: createdAt, conclusion });
+        fixture.pull.updated_at = '2026-09-30T12:10:00Z';
+        await assert.rejects(verifySuppressionProvenance(fixture.args), /producer is not a successful completed pull_request run/);
+        assert.equal(fixture.calls.runs, 1, 'a correlated terminal failure must not poll another producer');
+        assert.equal(fixture.calls.pagination, 0);
+        assert.deepEqual(fixture.calls.content, [], 'terminal failure must precede loading trusted detector code');
+      }
+    });
+  }
+});
+
+test('matching timestamps and head cannot substitute a different producer run', async () => {
+  const fixture = harness();
+  fixture.run.id++;
+  fixture.run.created_at = '2026-09-30T12:10:00Z';
+  fixture.pull.updated_at = fixture.run.created_at;
+  await assert.rejects(verifySuppressionProvenance(fixture.args), /producer workflow mismatch/);
+  assert.equal(fixture.calls.runs, 1);
+  assert.deepEqual(fixture.calls.content, []);
+});
