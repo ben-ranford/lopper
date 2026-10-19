@@ -1171,6 +1171,56 @@ jobs:
         run: |
           & $env:LOPPER_PROOF_GO run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
 
+  native-windows-hook-cleanup:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Bootstrap native proof receipt
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode bootstrap
+
+      - name: Exercise native fixture helper controls
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode self-test
+
+      - name: Run fixed native cleanup owner
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode execute
+
+      - name: Finalize native fixture evidence
+        if: ${{ always() }}
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode finally
+
+      - name: Validate native proof files
+        if: ${{ always() }}
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode validate
+
+      - name: Upload native Windows proof
+        if: ${{ always() && !env.ACT }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-windows-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lopper-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+
   regression-proof-darwin:
     runs-on: macos-26
     timeout-minutes: 20
@@ -1240,7 +1290,7 @@ jobs:
 
   verify:
     if: ${{ always() }}
-    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin]
+    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin, native-windows-hook-cleanup]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1257,8 +1307,9 @@ jobs:
           TESTS_RESULT: ${{ needs.verify-tests.result }}
           WINDOWS_PROOF_RESULT: ${{ needs.regression-proof-windows.result }}
           DARWIN_PROOF_RESULT: ${{ needs.regression-proof-darwin.result }}
+          NATIVE_WINDOWS_CLEANUP_RESULT: ${{ needs.native-windows-hook-cleanup.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success && test "${NATIVE_WINDOWS_CLEANUP_RESULT}" = success
 
       - name: Initialize suppression verification
         id: suppression_verification
@@ -2224,7 +2275,7 @@ jobs:
   verify-rolling:
     name: verify (rolling)
     if: ${{ always() }}
-    needs: [verify-rolling-checks, verify-rolling-tests]
+    needs: [verify-rolling-checks, verify-rolling-tests, native-windows-hook-cleanup]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -2232,8 +2283,9 @@ jobs:
         env:
           CHECKS_RESULT: ${{ needs.verify-rolling-checks.result }}
           TESTS_RESULT: ${{ needs.verify-rolling-tests.result }}
+          NATIVE_WINDOWS_CLEANUP_RESULT: ${{ needs.native-windows-hook-cleanup.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${NATIVE_WINDOWS_CLEANUP_RESULT}" = success
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})

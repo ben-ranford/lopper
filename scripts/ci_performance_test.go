@@ -40,7 +40,9 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 	job := workflowJobByName(t, jobs, aggregate)
 	needs := workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"}
 	if aggregate == "verify" {
-		needs = append(needs, "regression-proof-windows", "regression-proof-darwin")
+		needs = append(needs, "regression-proof-windows", "regression-proof-darwin", "native-windows-hook-cleanup")
+	} else {
+		needs = append(needs, "native-windows-hook-cleanup")
 	}
 	assertWorkflowJobNeeds(t, job, aggregate, needs)
 	if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" {
@@ -61,6 +63,7 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 		env["WINDOWS_PROOF_RESULT"] = "${{ needs.regression-proof-windows.result }}"
 		env["DARWIN_PROOF_RESULT"] = "${{ needs.regression-proof-darwin.result }}"
 	}
+	env["NATIVE_WINDOWS_CLEANUP_RESULT"] = "${{ needs.native-windows-hook-cleanup.result }}"
 	assertWorkflowStepEnv(t, gate, aggregate, env)
 	assertCIVerificationOutcomes(t, gate.Run)
 }
@@ -69,9 +72,11 @@ func assertCIVerificationOutcomes(t *testing.T, script string) {
 	t.Helper()
 	for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
-			output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success"})
-			if (err == nil) != (checks == "success" && tests == "success") {
-				t.Fatalf("checks=%q tests=%q: %v\n%s", checks, tests, err, output)
+			for _, native := range []string{"success", "failure", "cancelled", "skipped", ""} {
+				output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success", "NATIVE_WINDOWS_CLEANUP_RESULT": native})
+				if (err == nil) != (checks == "success" && tests == "success" && native == "success") {
+					t.Fatalf("checks=%q tests=%q native=%q: %v\n%s", checks, tests, native, err, output)
+				}
 			}
 		}
 	}

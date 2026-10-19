@@ -37,7 +37,7 @@ func TestCIRequiresNativeWindowsRegressionProof(t *testing.T) {
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Require every verification job")
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		output, err := runShellCommand(t.TempDir(), gate.Run, map[string]string{
-			"CHECKS_RESULT": "success", "TESTS_RESULT": "success", "WINDOWS_PROOF_RESULT": result, "DARWIN_PROOF_RESULT": "success",
+			"CHECKS_RESULT": "success", "TESTS_RESULT": "success", "WINDOWS_PROOF_RESULT": result, "DARWIN_PROOF_RESULT": "success", "NATIVE_WINDOWS_CLEANUP_RESULT": "success",
 		})
 		if (err == nil) != (result == "success") {
 			t.Fatalf("Windows result %q: %v\n%s", result, err, output)
