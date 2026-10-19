@@ -2,6 +2,20 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.10](https://github.com/ben-ranford/lopper/compare/v1.8.9...v1.8.10) (2026-10-19)
+
+
+### Bug Fixes
+
+* **advisory:** bound cumulative snapshot metadata retention ([#1828](https://github.com/ben-ranford/lopper/issues/1828)) ([796eb3f](https://github.com/ben-ranford/lopper/commit/796eb3fab765356e434a21ecab197d2187710f00))
+* **ci:** compare benchmark initialization edges accurately ([#1837](https://github.com/ben-ranford/lopper/issues/1837)) ([9e59ac3](https://github.com/ben-ranford/lopper/commit/9e59ac375f5f38f72184bdcc0d130e6ed5c4c1d5))
+* **ci:** pause instead of failing on queue CI audit refusals ([#1886](https://github.com/ben-ranford/lopper/issues/1886)) ([0de553b](https://github.com/ben-ranford/lopper/commit/0de553b1b022e76e744640fc39e0dbed15ea3e7c))
+* **ci:** separate stacked gate subjects from trusted policy ([#1840](https://github.com/ben-ranford/lopper/issues/1840)) ([8cc2635](https://github.com/ben-ranford/lopper/commit/8cc2635a65e5ea12d343f7ea3e544b0c8694d2ff))
+* **codemod:** quote patch paths to prevent header injection ([#1827](https://github.com/ben-ranford/lopper/issues/1827)) ([ac3ab58](https://github.com/ben-ranford/lopper/commit/ac3ab58ac67a924f4022a440c0299f3a1b148aae))
+* **mcp:** reject trailing data in JSON-RPC frames ([#1826](https://github.com/ben-ranford/lopper/issues/1826)) ([e3e67e4](https://github.com/ben-ranford/lopper/commit/e3e67e4116103384587324a3a8ef270f8d286270))
+* **report:** preserve filename semantics in SARIF locations ([#1836](https://github.com/ben-ranford/lopper/issues/1836)) ([35ae16d](https://github.com/ben-ranford/lopper/commit/35ae16d8c9d326c42950df43c572f927b157e2a9))
+* **vscode:** bound Gradle reads during Android inference ([#1839](https://github.com/ben-ranford/lopper/issues/1839)) ([9d5628e](https://github.com/ben-ranford/lopper/commit/9d5628e0a5e13fc0a6a3cc93681434c416aa9545))
+
 ## [1.8.9](https://github.com/ben-ranford/lopper/compare/v1.8.8...v1.8.9) (2026-10-05)
 
 
