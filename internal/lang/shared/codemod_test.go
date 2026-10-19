@@ -75,3 +75,17 @@ func TestLoadCodemodSourceLines(t *testing.T) {
 		t.Fatalf("expected missing-file warning, warning=%q loaded=%t", warning, loaded)
 	}
 }
+
+func TestCodemodPatchHeadersEscapeFilenameBytes(t *testing.T) {
+	const filename = "space \"\\\t\r\n\x01\x7f\xc3\xa9\xff.js"
+	const encoded = `space \"\\\011\015\012\001\177\303\251\377.js`
+	header := "--- \"a/" + encoded + "\"\n+++ \"b/" + encoded + "\"\n"
+	for _, patch := range []string{
+		BuildSingleLinePatch(filename, 1, "old", "new"),
+		BuildDeleteLinePatch(filename, 1, "old"),
+	} {
+		if !strings.HasPrefix(patch, header) {
+			t.Fatalf("filename bytes leaked into patch structure: %q", patch)
+		}
+	}
+}
