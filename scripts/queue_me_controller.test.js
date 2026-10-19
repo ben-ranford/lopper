@@ -2010,10 +2010,10 @@ test('final revalidation defers only private authenticated CI waiting errors', a
 test('final shared validation defers only protected bridge errors', async t => {
   let waitingError;
   const snapshot = {};
-  for (const key of ['version', 'repository', 'repository_id', 'head_repository_id', 'pull_number', 'base', 'head', 'base_ref']) snapshot[key] = key;
+  for (const key of ['version', 'repository', 'repository_id', 'head_repository_id', 'pull_number', 'base', 'head', 'base_ref', 'policy_source']) snapshot[key] = key;
   try {
     require('./queue_me_reuse').testables.validatorResult({ status: 75,
-      stdout: JSON.stringify({ version: 1, kind: 'ci-deferred', snapshot }) }, { snapshot });
+      stdout: JSON.stringify({ version: 2, kind: 'ci-deferred', snapshot }) }, { snapshot });
   } catch (error) { waitingError = error; }
   assert.equal(require('./queue_me_reuse').isDeferred(waitingError), true);
   for (const sharedWaitingAt of [2, 3]) await t.test(`shared boundary ${sharedWaitingAt}`, async child => {

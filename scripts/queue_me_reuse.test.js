@@ -5,7 +5,7 @@ const test = require('node:test');
 const { testables, prepareCandidate } = require('./queue_me_reuse');
 
 function fixture() {
-  const snapshot = { version: 1, repository: 'ben-ranford/lopper', repository_id: 1155023607,
+  const snapshot = { version: 2, policy_source: 'a'.repeat(40), repository: 'ben-ranford/lopper', repository_id: 1155023607,
     head_repository_id: 1155023607, pull_number: 1772, base: 'a'.repeat(40), head: 'b'.repeat(40), base_ref: 'main' };
   const intent = { queueEventId: 'label', ciNotBefore: '2026-10-01T00:00:00Z' };
   return {
@@ -68,12 +68,12 @@ test('shared validator rejection cannot turn into approval', async () => {
 test('protected bridge deferral requires exact exit discriminator and same snapshot', async t => {
   const { input, ci } = fixture();
   const document = { snapshot: input.queueProof.ticket.snapshot };
-  const result = { status: 75, stdout: JSON.stringify({ version: 1, kind: 'ci-deferred', ...document }) };
+  const result = { status: 75, stdout: JSON.stringify({ version: 2, kind: 'ci-deferred', ...document }) };
   const isDeferred = require('./queue_me_reuse').isDeferred;
   assert.throws(() => testables.validatorResult(result, document), isDeferred);
   for (const change of [{ status: 1 }, { status: 0 }, { error: new Error('timeout') },
     { stdout: '{}' }, { stdout: 'not json' },
-    { stdout: JSON.stringify({ version: 1, kind: 'ci-deferred', snapshot: { ...document.snapshot, head: 'c'.repeat(40) } }) }]) {
+    { stdout: JSON.stringify({ version: 2, kind: 'ci-deferred', snapshot: { ...document.snapshot, head: 'c'.repeat(40) } }) }]) {
     assert.throws(() => testables.validatorResult({ ...result, ...change }, document), error => !isDeferred(error));
   }
   t.mock.method(require('./queue_me_ci_intent'), 'collectCIIntent', async () => ci.intent);

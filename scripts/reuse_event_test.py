@@ -27,8 +27,10 @@ BASE = "a" * 40
 HEAD = "b" * 40
 SIGNAL = ".github/workflows/reuse-review-signal.yml"
 PREFIX = "/repos/" + REPOSITORY
-SNAPSHOT = dict(version=1, repository=REPOSITORY, repository_id=10,
+SNAPSHOT = dict(version=2, policy_source=BASE, repository=REPOSITORY, repository_id=10,
                 head_repository_id=20, pull_number=12, base=BASE, head=HEAD, base_ref="main")
+CERTIFIED = dict(context="reuse-check", state="success",
+                 description=f"Reuse, suppression and policy review passed; base={BASE} policy={BASE}")
 CI_RUNS = PREFIX + "/actions/workflows/ci.yml/runs?per_page=100&page=1&head_sha=" + HEAD + "&event=pull_request"
 
 
@@ -54,12 +56,12 @@ def review_document():
 
 
 def result_document(paths=None):
-    return dict(version=1, snapshot=copy.deepcopy(SNAPSHOT), candidate="c" * 40,
+    return dict(version=2, snapshot=copy.deepcopy(SNAPSHOT), candidate="c" * 40,
                 detector_exit=0, policy_paths=paths or [])
 
 
 def suppression_document():
-    return dict(headSHA=HEAD, baseSHA=BASE, runId=41, runAttempt=2, artifactId=101, suppressionCount=0)
+    return dict(version=2, policySHA=BASE, headSHA=HEAD, baseSHA=BASE, runId=41, runAttempt=2, artifactId=101, suppressionCount=0)
 
 
 def ci_document():
@@ -114,15 +116,46 @@ class FakeAPI:
             PREFIX + "/pulls": [pull_document()],
         }
         self.posts = []
+        # Unlisted heads carry a valid success for the default pair; revocation
+        # tests override or observe these current reuse-check statuses.
+        self.statuses = {}
+        self.status_rows = {}
+        self.status_errors = {}
+        self.reads = []
+        self.graphql_response = None
         self.archive = archive()
 
     def request(self, path, data=None):
         if data is not None:
             self.posts.append((path, copy.deepcopy(data)))
+            if "/statuses/" in path:
+                self.statuses[path.rsplit("/", 1)[1]] = {key: data[key] for key in ("context", "state", "description")}
             return {}
+        self.reads.append(path)
+        if path.startswith(PREFIX + "/commits/") and "/status?per_page=100&page=" in path:
+            head, page = path[len(PREFIX + "/commits/"):].split("/status?per_page=100&page=")
+            if head in self.status_errors:
+                raise self.status_errors[head]
+            rows = self.status_rows.get(head, [self.statuses.get(head, CERTIFIED)])
+            return {"total_count": len(rows), "statuses": copy.deepcopy(rows[(int(page) - 1) * 100:int(page) * 100])}
         return copy.deepcopy(self.responses[path])
 
+    def graphql(self, query, variables):
+        """Answer the status inventory from the listed rows and modeled current statuses."""
+        self.reads.append("graphql")
+        if query != event.STATUS_QUERY or variables != {"owner": "ben-ranford", "name": "lopper", "after": None}:
+            raise AssertionError("Unexpected GraphQL request")
+        nodes = []
+        for pull in self.page_responses[PREFIX + "/pulls"]:
+            current = self.statuses.get(pull["head"]["sha"], CERTIFIED)
+            context = dict(current, state=current["state"].upper())
+            nodes.append(dict(number=pull["number"], commits=dict(nodes=[dict(commit=dict(
+                oid=pull["head"]["sha"], status=dict(context=context)))])))
+        return copy.deepcopy(self.graphql_response if self.graphql_response is not None else dict(data=dict(repository=dict(pullRequests=dict(
+            pageInfo=dict(hasNextPage=False, endCursor=None), nodes=nodes)))))
+
     def pages(self, path):
+        self.reads.append(path)
         return copy.deepcopy(self.page_responses[path])
 
     def artifact_archive(self, repository, artifact_id):
@@ -130,6 +163,240 @@ class FakeAPI:
             raise AssertionError("Wrong artifact identity")
         return self.archive
 
+
+class StackPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeAPI()
+        self.reference = "codex/maven-stack-parent"
+        self.parent_sha = "c" * 40
+        self.child = pull_document()
+        self.child["base"].update(ref=self.reference, sha=self.parent_sha)
+        self.child["head"]["repo"]["id"] = 10
+        self.child["head"]["ref"] = "codex/maven-stack-child"
+        self.parent = pull_document()
+        self.parent["number"] = 13
+        self.parent["head"].update(sha=self.parent_sha, ref=self.reference, repo={"id": 10})
+        self.api.responses[PREFIX + "/pulls/12"] = self.child
+        self.api.responses[PREFIX + "/pulls/13"] = self.parent
+        self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"] = {"object": {"sha": self.parent_sha}}
+        self.api.statuses[HEAD] = self.record(self.parent_sha)
+        self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent]
+
+    @staticmethod
+    def record(base, policy_source=BASE):
+        return dict(CERTIFIED, description=event.certification(dict(base=base, policy_source=policy_source)))
+
+    def sweep(self, name="workflow_run", **payload):
+        payload = dict({"repository": {"id": 10}, "action": "requested", "workflow_run": {"id": 99}}, **payload)
+        return event.invalidate_stack_event(self.api, payload, name, REPOSITORY, 10)
+
+    def revoked(self):
+        return [(path, data["state"]) for path, data in self.api.posts]
+
+    def deepen(self):
+        """Retarget the parent onto a middle PR so the child sits two levels above main."""
+        middle = pull_document()
+        middle["number"] = 14
+        middle["head"].update(sha="e" * 40, ref="codex/g042-middle", repo={"id": 10})
+        self.parent["base"].update(ref="codex/g042-middle", sha="e" * 40)
+        self.api.statuses[self.parent_sha] = self.record("e" * 40)
+        self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent, middle]
+        return middle
+
+    def test_policy_source_is_main_while_actual_target_is_unique_live_parent(self):
+        snapshot = event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        self.assertEqual(snapshot["policy_source"], BASE)
+        self.assertEqual(snapshot["base"], self.parent_sha)
+        self.assertEqual(snapshot["head"], HEAD)
+        event.same_live_pair(self.api, snapshot)
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "d" * 40
+        with self.assertRaisesRegex(event.EventError, "changed"):
+            event.same_live_pair(self.api, snapshot)
+
+    def test_missing_closed_duplicate_or_foreign_parent_cannot_grant_success(self):
+        for parents in ([], [dict(self.parent, state="closed")], [self.parent, self.parent]):
+            with self.subTest(parents=parents):
+                self.api.page_responses[PREFIX + "/pulls"] = [self.child, *parents]
+                with self.assertRaisesRegex(event.EventError, "unique live open parent"):
+                    event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        self.assertEqual(self.api.posts, [])
+
+    def test_closed_or_deleted_parent_revokes_recorded_child_success_once(self):
+        self.parent["state"] = "closed"
+        del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"]
+        deletion = {"repository": {"id": 10}, "ref_type": "branch", "ref": self.reference}
+        self.assertEqual(event.invalidate_stack_event(self.api, deletion, "delete", REPOSITORY, 10), 1)
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+        with self.assertRaises(event.EventError):
+            event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+
+    def test_live_recorded_success_survives_every_wakeup(self):
+        for name, payload in (("delete", {"ref_type": "tag", "ref": self.reference}),
+                              ("delete", {"ref_type": "branch", "ref": "feature/other"}),
+                              ("workflow_run", {})):
+            with self.subTest(name=name, payload=payload):
+                self.assertEqual(self.sweep(name, **payload), 0)
+        # PR events are not sweep triggers; CI requested/delete/main push cover them.
+        with self.assertRaisesRegex(event.EventError, "Unsupported"):
+            self.sweep("pull_request_target", action="labeled", number=13)
+        self.assertEqual(self.api.posts, [])
+
+    def test_parent_move_without_ci_is_revoked_by_any_later_default_branch_run(self):
+        self.deepen()
+        self.assertEqual(self.sweep(), 0)
+        self.parent["head"]["sha"] = "f" * 40
+        self.api.statuses["f" * 40] = dict(CERTIFIED, state="pending")
+        for action in ("in_progress", "completed"):
+            self.api.reads.clear()
+            self.assertEqual(self.sweep(action=action), 0)
+            self.assertEqual(self.api.reads, [])
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+        self.assertEqual(self.sweep(), 0)
+
+    def test_missing_malformed_or_policy_moved_record_fails_closed(self):
+        legacy = dict(CERTIFIED, description="Protected reuse, suppression provenance and policy review passed")
+        truncated = dict(CERTIFIED, description=self.record(self.parent_sha)["description"][:-1])
+        for current in (legacy, truncated, dict(CERTIFIED, description=None), self.record(self.parent_sha.upper()),
+                        self.record(self.parent_sha, "d" * 40), self.record("d" * 40)):
+            self.api.posts.clear()
+            self.api.statuses[HEAD] = current
+            with self.subTest(current=current):
+                self.assertEqual(self.sweep(), 1)
+                self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+
+    def test_stack_sweep_reads_listed_rows_and_only_current_success_statuses(self):
+        self.deepen()
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.api.reads, [PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls", "graphql"])
+        self.api.reads.clear()
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 3)
+        self.assertEqual(self.api.reads, [PREFIX, PREFIX, PREFIX + "/git/ref/heads/main", PREFIX + "/pulls", "graphql"])
+
+    def test_incomplete_status_inventory_revokes_and_then_fails(self):
+        nodes = lambda response: response["data"]["repository"]["pullRequests"]["nodes"]
+        changes = (lambda response: response.update(errors=[{"message": "rate limited"}]),
+                   lambda response: response.pop("data"),
+                   lambda response: nodes(response).pop(0),
+                   lambda response: nodes(response)[0]["commits"].update(nodes=[]),
+                   lambda response: nodes(response)[0]["commits"]["nodes"][0]["commit"].update(oid="f" * 40),
+                   lambda response: nodes(response)[0].update(number=0))
+        for change in changes:
+            self.setUp()
+            self.deepen()
+            response = self.api.graphql(event.STATUS_QUERY, {"owner": "ben-ranford", "name": "lopper", "after": None})
+            change(response)
+            self.api.graphql_response = response
+            with self.subTest(response=response):
+                try:
+                    self.sweep()
+                except event.EventError:
+                    pass
+                self.assertIn((PREFIX + "/statuses/" + HEAD, "pending"), self.revoked())
+
+    def test_success_record_round_trips_and_stays_within_status_limit(self):
+        snapshot = dict(SNAPSHOT, base=self.parent_sha, base_ref=self.reference, head_repository_id=10)
+        event.status(self.api, snapshot, "success", event.certification(snapshot))
+        self.assertLessEqual(len(self.api.posts[-1][1]["description"]), 140)
+        current = event.current_statuses(self.api, REPOSITORY)
+        self.assertEqual(event.certified_record(current, self.child), (self.parent_sha, BASE))
+        event.status(self.api, snapshot, "pending", "Protected reuse analysis and policy review pending")
+        self.assertIsNone(event.certified_record(event.current_statuses(self.api, REPOSITORY), self.child))
+        self.assertEqual(event.certified_record(None, self.child), ())
+
+    def test_deleted_head_repository_is_inactive_and_skipped_by_main_push(self):
+        deleted = dict(pull_document(), number=31, head=dict(sha="9" * 40, ref="gone", repo=None))
+        self.api.responses[PREFIX + "/pulls/31"] = deleted
+        self.api.page_responses[PREFIX + "/pulls"].append(deleted)
+        with self.assertRaisesRegex(event.InactivePull, "deleted"):
+            event.pull_snapshot(self.api, REPOSITORY, 10, 31)
+        self.api.statuses["9" * 40] = dict(CERTIFIED, state="failure")
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 2)
+
+    def test_policy_push_revokes_stack_even_when_target_disappears(self):
+        del self.api.responses[PREFIX + "/git/ref/heads/codex%2Fmaven-stack-parent"]
+        payload = {"repository": {"id": 10}, "ref": "refs/heads/main", "after": BASE}
+        self.assertEqual(event.invalidate_base(self.api, payload, "push", REPOSITORY, 10), 2)
+        self.assertTrue(all(post[1]["state"] == "pending" for post in self.api.posts))
+
+    def test_shared_stacked_head_is_refused_before_and_after_publication(self):
+        snapshot = event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+        for base in ("main", self.reference):
+            sibling = dict(pull_document(), number=40)
+            sibling["base"] = dict(sibling["base"], ref=base)
+            sibling["head"]["ref"] = "feature/sibling"
+            self.api.page_responses[PREFIX + "/pulls"] = [self.child, self.parent, sibling]
+            with self.subTest(base=base):
+                with self.assertRaisesRegex(event.EventError, "shared"):
+                    event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+                with self.assertRaisesRegex(event.EventError, "shared"):
+                    event.same_live_pair(self.api, snapshot)
+        self.assertEqual(self.api.posts, [])
+
+    def test_default_branch_publisher_sharing_a_stacked_head_is_refused(self):
+        main_pull = dict(pull_document(), number=40)
+        main_pull["head"] = dict(main_pull["head"], ref="feature/main", repo={"id": 10})
+        self.api.responses[PREFIX + "/pulls/40"] = main_pull
+        self.api.page_responses[PREFIX + "/pulls"].append(main_pull)
+        for number_ in (40, 12):
+            with self.subTest(pull=number_), self.assertRaisesRegex(event.EventError, "shared"):
+                event.pull_snapshot(self.api, REPOSITORY, 10, number_)
+        self.assertEqual(self.api.posts, [])
+
+    def test_sweep_revokes_a_valid_default_branch_record_on_a_shared_head_once(self):
+        first, second = dict(pull_document(), number=40), dict(pull_document(), number=41)
+        for row in (first, second):
+            row["head"] = dict(row["head"], sha="9" * 40, ref=f"feature/{row['number']}")
+        self.api.statuses["9" * 40] = self.record(BASE)
+        self.api.page_responses[PREFIX + "/pulls"] += [first, second]
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + "9" * 40, "pending")])
+
+    def test_sweep_revokes_stacked_success_reused_by_a_default_branch_pull(self):
+        self.assertEqual(self.sweep(), 0)
+        sibling = dict(pull_document(), number=40)
+        sibling["head"]["ref"] = "feature/sibling"
+        self.api.page_responses[PREFIX + "/pulls"].append(sibling)
+        # Both PRs read the stacked record on the shared head; the default-branch
+        # PR cannot accept a success certified against the parent.
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.revoked(), [(PREFIX + "/statuses/" + HEAD, "pending")])
+
+    def test_any_same_repository_branch_chain_reaching_main_is_eligible(self):
+        self.deepen()
+        self.assertEqual(event.pull_snapshot(self.api, REPOSITORY, 10, 12)["base"], self.parent_sha)
+        self.assertEqual(self.api.posts, [])
+
+    def test_broken_ambiguous_foreign_or_cyclic_chains_fail_closed(self):
+        for change in (lambda middle, pulls: middle.update(state="closed"),
+                       lambda middle, pulls: middle["base"].update(ref="release"),
+                       lambda middle, pulls: middle["head"].update(repo={"id": 99}),
+                       lambda middle, pulls: middle["head"].update(repo=None),
+                       lambda middle, pulls: middle["base"].update(ref=self.reference),
+                       lambda middle, pulls: pulls.append(dict(copy.deepcopy(middle), number=15))):
+            self.setUp()
+            middle = self.deepen()
+            change(middle, self.api.page_responses[PREFIX + "/pulls"])
+            with self.subTest(middle=middle), self.assertRaisesRegex(event.EventError, "unique live open parent"):
+                event.pull_snapshot(self.api, REPOSITORY, 10, 12)
+            self.assertEqual(self.api.posts, [])
+
+    def test_stack_depth_is_bounded(self):
+        def chain(length):
+            pulls = [self.child]
+            for index in range(length):
+                parent = pull_document()
+                parent["number"] = 100 + index
+                parent["head"].update(sha=pulls[-1]["base"]["sha"], ref=pulls[-1]["base"]["ref"], repo={"id": 10})
+                parent["base"].update(ref=f"codex/issue-1731-{index}", sha="f" * 40)
+                pulls.append(parent)
+            pulls[-1]["base"]["ref"] = "main"
+            return pulls
+        self.assertEqual(event.stack_parent_sha(chain(event.STACK_DEPTH), 10, self.child, "main"), self.parent_sha)
+        self.assertIsNone(event.stack_parent_sha(chain(event.STACK_DEPTH + 1), 10, self.child, "main"))
 
 class EventTests(unittest.TestCase):
     def setUp(self):
@@ -145,6 +412,60 @@ class EventTests(unittest.TestCase):
         self.assertEqual(self.api.posts[-1][0], PREFIX + "/statuses/" + HEAD)
         self.assertEqual(self.api.posts[-1][1]["state"], "pending")
         self.assertEqual(self.api.posts[-1][1]["context"], "reuse-check")
+
+    def test_shared_head_refusal_revokes_inherited_success_before_failing(self):
+        event.status(self.api, SNAPSHOT, "success", event.certification(SNAPSHOT))
+        second = dict(pull_document(), number=40)
+        self.api.responses[PREFIX + "/pulls/40"] = second
+        self.api.page_responses[PREFIX + "/pulls"].append(second)
+        payload = dict(self.payload, number=40, action="opened", pull_request=second)
+        with self.assertRaisesRegex(event.EventError, "shared"):
+            self.prepare(payload)
+        self.assertEqual([(path, data["state"]) for path, data in self.api.posts],
+                         [(PREFIX + "/statuses/" + HEAD, "success"), (PREFIX + "/statuses/" + HEAD, "pending")])
+        self.assertIsNone(event.certified_record(event.current_statuses(self.api, REPOSITORY), second))
+        # Repeated duplicate-PR events find no success left and write nothing more.
+        for action in ("edited", "synchronize", "reopened"):
+            with self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(dict(payload, action=action))
+        self.assertEqual(len(self.api.posts), 2)
+
+    def shared_payload(self):
+        second = dict(pull_document(), number=40)
+        self.api.responses[PREFIX + "/pulls/40"] = second
+        self.api.page_responses[PREFIX + "/pulls"].append(second)
+        return dict(self.payload, number=40, action="opened", pull_request=second)
+
+    def test_shared_head_refusal_writes_nothing_without_a_current_success(self):
+        payload = self.shared_payload()
+        for rows in ([dict(CERTIFIED, state="pending")], [dict(CERTIFIED, state="failure")], [],
+                     [dict(context="other", state="success")]):
+            self.api.status_rows[HEAD] = rows
+            with self.subTest(rows=rows), self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(payload)
+        self.assertEqual(self.api.posts, [])
+
+    def test_shared_head_refusal_finds_success_on_a_later_status_page(self):
+        payload = self.shared_payload()
+        others = [dict(context=f"other-{index}", state="success") for index in range(100)]
+        self.api.status_rows[HEAD] = [*others, CERTIFIED]
+        with self.assertRaisesRegex(event.EventError, "shared"):
+            self.prepare(payload)
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+        self.assertIn(PREFIX + "/commits/" + HEAD + "/status?per_page=100&page=2", self.api.reads)
+
+    def test_shared_head_refusal_revokes_when_the_status_read_is_unknown(self):
+        payload = self.shared_payload()
+        unknown = (lambda: self.api.status_errors.update({HEAD: OSError("unavailable")}),
+                   lambda: self.api.status_rows.update({HEAD: [None]}),
+                   lambda: self.api.status_rows.update({HEAD: [dict(CERTIFIED, state="pending")] * 1001}))
+        for make_unknown in unknown:
+            self.api.posts.clear()
+            self.api.status_errors.clear()
+            make_unknown()
+            with self.assertRaisesRegex(event.EventError, "shared"):
+                self.prepare(payload)
+            self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
 
     def test_stale_or_other_repository_event_never_posts(self):
         for field in ("head", "base", "repository", "head_repository"):
@@ -314,19 +635,22 @@ class EventTests(unittest.TestCase):
             second["head"]["sha"] = "e" * 40
             api.page_responses[PREFIX + "/pulls"].append(second)
             api.responses[PREFIX + "/pulls/13"] = second
-            first = api.responses[PREFIX + "/pulls/12"]
+            # Revocation acts on the listed rows; it never re-fetches each PR.
+            first = api.page_responses[PREFIX + "/pulls"][0]
             if scenario == "closed":
                 first["state"] = "closed"
             elif scenario == "retargeted":
                 first["base"]["ref"] = "other"
             else:
-                first["head"]["repo"] = None
+                first["head"]["sha"] = "main"
             with self.subTest(scenario=scenario):
                 if scenario == "broken":
                     with self.assertRaises(event.EventError):
                         event.invalidate_base(api, payload, "push", REPOSITORY, 10)
                 else:
-                    self.assertEqual(event.invalidate_base(api, payload, "push", REPOSITORY, 10), 1)
+                    # A retargeted PR's existing success is still removed.
+                    self.assertEqual(event.invalidate_base(api, payload, "push", REPOSITORY, 10),
+                                     2 if scenario == "retargeted" else 1)
                 self.assertEqual(api.posts[-1][0], PREFIX + "/statuses/" + "e" * 40)
 
 
@@ -396,6 +720,7 @@ class ReviewDismissalTests(unittest.TestCase):
             run["pull_requests"] = associations
             self.api.archive = b"unreadable"
             self.api.posts.clear()
+            self.api.statuses.clear()
             with self.subTest(associations=associations), self.assertRaises(event.EventError):
                 self.prepare()
             self.assertEqual([path for path, _ in self.api.posts], [PREFIX + "/statuses/" + HEAD])
@@ -889,7 +1214,7 @@ class InputBoundaryTests(unittest.TestCase):
 
 class PendingCITests(unittest.TestCase):
     def deferred(self, reason="pending", run_id=41, attempt=2):
-        return dict(version=1, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,
+        return dict(version=2, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,
                     runId=run_id, runAttempt=attempt)
 
     def publish(self, api, **kwargs):
@@ -1139,7 +1464,7 @@ class CandidateTests(unittest.TestCase):
             hook = root / ".git/hooks/post-commit"
             hook.write_text("#!/bin/sh\ntouch EXECUTED\n")
             hook.chmod(0o700)
-            snapshot = dict(SNAPSHOT, base=base, head=head)
+            snapshot = dict(SNAPSHOT, base=base, head=head, policy_source=base)
             original = event.git
 
             def offline_git(directory, *args, **kwargs):

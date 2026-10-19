@@ -194,3 +194,18 @@ regression's permission, output, and failure boundaries.
 Repository size and advisory test-clone reports are available with
 `make --silent source-size-report DUPLICATION_BASE=origin/main`. See
 [the methodology and helper ownership guidance](docs/source-size-report.md).
+
+### Protected policy and stacked comparisons
+
+Protected reuse snapshots, analysis results and protected suppression receipts use
+version 2. `policy_source` (P) is the authenticated default-branch executable and
+policy revision. The actual target B, child H and prospective merge M are data;
+parent branch scripts, detector settings and baseline allowances are never adopted
+as executable policy. The candidate inline-suppression report remains version 1.
+A non-default target is eligible for stacked reuse analysis only when the child
+head is in this repository and the target is the head of one unique open
+same-repository PR whose chain of open parents reaches the default branch within
+16 levels; branch names grant nothing. Parent closure/deletion or policy movement
+revokes existing evidence even when new success is no longer eligible. Queue merge
+admission remains main-only and requires P=B. See
+[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the revocation prerequisites.

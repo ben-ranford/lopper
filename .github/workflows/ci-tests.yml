@@ -50,6 +50,9 @@ jobs:
             apt-get install -y nodejs
           fi
 
+      - name: Record native Git object backend evidence
+        run: go test -v -count=1 ./scripts -run '^TestTrustedGitObjectBackendEvidence$'
+
       - name: Run normal and leak tests
         env:
           BUILD_CHANNEL: ${{ inputs.build_channel }}
