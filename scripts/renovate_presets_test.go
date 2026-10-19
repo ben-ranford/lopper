@@ -219,26 +219,35 @@ func TestRenovatePolicyFixtureRejectsInvalidEnginePath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(engine, "package.json"), []byte(`{"version":"44.145.1"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	foreign := t.TempDir()
 	unsupportedName := "unsupported version"
 	publicName := "publicly writable installation"
 	unsupportedWant := "unsupported Renovate engine version: 43.0.0"
 	publicWant := "publicly writable directory"
+	foreignName := "foreign-owned installation"
+	foreignWant := "must be owned by the current user"
+	foreignPreload := []string{"--import", fmt.Sprintf("data:text/javascript,process.getuid=()=>%d", os.Getuid()+1)}
 	if runtime.GOOS == "windows" {
 		unsupportedName = "absolute unsupported-version path"
 		publicName = "absolute public-installation path"
 		unsupportedWant = "engine privacy validation requires POSIX ownership checks"
 		publicWant = unsupportedWant
+		foreignName = "absolute foreign-installation path"
+		foreignWant = unsupportedWant
+		foreignPreload = nil
 	}
 	for _, tc := range []struct {
 		name, engine, want string
+		preload            []string
 	}{
 		{name: "missing", want: "usage: explicit-policy.mjs"},
 		{name: "relative", engine: "relative/node_modules/renovate", want: "Renovate engine package path must be absolute"},
 		{name: publicName, engine: engine, want: publicWant},
 		{name: unsupportedName, engine: unsupported, want: unsupportedWant},
+		{name: foreignName, engine: foreign, want: foreignWant, preload: foreignPreload},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{fixture}
+			args := append(append([]string{}, tc.preload...), fixture)
 			if tc.engine != "" {
 				args = append(args, tc.engine)
 			}

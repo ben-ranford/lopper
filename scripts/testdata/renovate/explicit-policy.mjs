@@ -13,7 +13,6 @@ const checkPrivateEnginePath = (path) => {
   const root = parse(path).root;
   const parts = path.slice(root.length).split(sep).filter(Boolean);
   let current = root;
-  let sharedTempSeen = false;
   let privateChildRequired = false;
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
   const checkDirectory = () => {
@@ -25,16 +24,15 @@ const checkPrivateEnginePath = (path) => {
         `Renovate engine path has a publicly writable directory: ${current}`);
       assert.notEqual(current, path, 'Renovate engine package directory must be private');
       assert.notEqual(uid, undefined, 'cannot verify ownership below a shared temporary directory');
-      sharedTempSeen = true;
       privateChildRequired = true;
       return;
     }
     if (privateChildRequired) {
       assert.equal(info.uid, uid, `Renovate engine child of shared temporary directory must be owned by the current user: ${current}`);
       privateChildRequired = false;
-    } else if (sharedTempSeen) {
+    } else {
       assert.ok(info.uid === uid || info.uid === 0,
-        `Renovate engine path below shared temporary directory has an untrusted owner: ${current}`);
+        `Renovate engine path component must be owned by the current user or root: ${current}`);
     }
   };
   checkDirectory();
