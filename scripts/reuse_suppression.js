@@ -9,6 +9,8 @@ const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const PAGE_SIZE = 100;
 const LOCATOR_PREFIX = 'suppression-artifact-';
+const PRODUCER_JOB = 'verify-checks';
+const PROVENANCE_FAILURE = /^Suppression provenance: [A-Za-z0-9 ,.'_-]{1,200}$/;
 const STACK_DEPTH = 16;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 
@@ -193,11 +195,27 @@ function locatorID(job, run) {
   return id;
 }
 
+function jobTime(value) {
+  const time = typeof value === 'string' ? Date.parse(value) : Number.NaN;
+  requireEvidence(Number.isFinite(time), 'invalid producer job time');
+  return value;
+}
+
+// A partial rerun carries successful jobs and their artifact into the new
+// attempt, so the artifact window is bound to the jobs this attempt lists as
+// its producer and locator rather than to the attempt's own start time.
 async function artifactLocator(github, repo, run) {
   const jobs = await collectPages(github.rest.actions.listJobsForWorkflowRunAttempt, { ...repo, run_id: run.id, attempt_number: run.run_attempt }, 'jobs', 10000);
-  const locators = jobs.map((job) => locatorID(job, run)).filter((id) => id !== undefined);
+  const locators = jobs.filter((job) => locatorID(job, run) !== undefined);
   requireEvidence(locators.length === 1, 'missing or ambiguous artifact locator');
-  return locators[0];
+  const producers = jobs.filter((job) => job.name === PRODUCER_JOB);
+  requireEvidence(producers.length === 1, 'missing or ambiguous artifact producer job');
+  const [producer, locator] = [producers[0], locators[0]];
+  requireEvidence(producer.run_id === run.id && producer.run_attempt === run.run_attempt && producer.head_sha === run.head_sha &&
+    producer.status === 'completed' && producer.conclusion === 'success', 'artifact producer job is not successful');
+  const window = { windowStart: jobTime(producer.started_at), windowEnd: jobTime(locator.completed_at) };
+  requireEvidence(Date.parse(window.windowStart) <= Date.parse(window.windowEnd), 'invalid producer job window');
+  return { artifactId: locatorID(locator, run), window };
 }
 
 function signedArchiveURL(location) {
@@ -291,9 +309,9 @@ function createVerifier(loadVerifier = () => require('./suppression_provenance.j
     try {
       const { repo, snapshot } = inputs(context, supplied);
       const run = await latestProducer(github, repo, snapshot);
-      const artifactId = await artifactLocator(github, repo, run);
+      const { artifactId, window } = await artifactLocator(github, repo, run);
       const archive = await download(repo, artifactId, token);
-      const expected = { policySHA: snapshot.policy_source, repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt };
+      const expected = { policySHA: snapshot.policy_source, repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt, ...window };
       const adapter = loadVerifier();
       let receipt;
       try {
@@ -309,10 +327,12 @@ function createVerifier(loadVerifier = () => require('./suppression_provenance.j
       }
       assertReceipt(receipt, receiptFor(snapshot, run, artifactId));
       const current = await latestProducer(github, repo, snapshot, run);
-      requireEvidence(await artifactLocator(github, repo, current) === artifactId, 'artifact locator changed');
+      requireEvidence(JSON.stringify(await artifactLocator(github, repo, current)) === JSON.stringify({ artifactId, window }), 'artifact locator changed');
       return receipt;
     } catch (error) {
       if (error instanceof EvidenceError || error instanceof CIDeferred) throw error;
+      // The adapter's fixed failure text names the failed check without any API data.
+      if (PROVENANCE_FAILURE.test(error?.message)) throw new EvidenceError(error.message);
       throw new EvidenceError('Reuse suppression: evidence could not be verified');
     }
   }
