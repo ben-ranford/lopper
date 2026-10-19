@@ -292,20 +292,32 @@ function Get-Distribution([string]$Name,[string]$Root,[string]$Revision,[string]
   $inventory = $Utf8.GetBytes(($files | ConvertTo-Json -Depth 8 -Compress))
   [ordered]@{name=$Name;revision=$Revision;artifact=$Artifact;sha256=(Get-SHA256 $inventory);files=$files}
 }
+function Resolve-ToolPath([string]$Path) {
+  # Hosted runners expose the tool cache through a C: junction to D:. Bind the
+  # final target so every selected tool path is free of reparse components.
+  $resolved=[IO.Path]::GetPathRoot($Path)
+  foreach ($part in $Path.Substring($resolved.Length).Split([IO.Path]::DirectorySeparatorChar)) {
+    $resolved=Join-Path $resolved $part
+    $item=Get-Item -LiteralPath $resolved -Force
+    if ($item.LinkTarget) { $resolved=$item.ResolveLinkTarget($true).FullName }
+  }
+  $resolved
+}
 function Get-OwnerToolchain {
-  $go = (Get-Command go.exe -ErrorAction Stop).Source
-  $git = (Get-Command git.exe -ErrorAction Stop).Source
+  $go = Resolve-ToolPath (Get-Command go.exe -ErrorAction Stop).Source
+  $git = Resolve-ToolPath (Get-Command git.exe -ErrorAction Stop).Source
   $bash = Get-ChildItem -Path "$env:ProgramFiles\Git\bin\bash.exe","$env:ProgramFiles\Git\usr\bin\bash.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($null -eq $bash) { throw 'Git Bash executable unavailable' }
-  $gcc = (Get-Command gcc.exe -ErrorAction Stop).Source
-  $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
-  $toolBindings=@((Get-AbsoluteToolBinding $go),(Get-AbsoluteToolBinding $git),(Get-AbsoluteToolBinding $bash.FullName),(Get-AbsoluteToolBinding $gcc),(Get-AbsoluteToolBinding $pwsh))
-  $goRoot = (Invoke-CheckedNative $go @('env','GOROOT') 'go env GOROOT').Trim()
+  $bash = Resolve-ToolPath $bash.FullName
+  $gcc = Resolve-ToolPath (Get-Command gcc.exe -ErrorAction Stop).Source
+  $pwsh = Resolve-ToolPath (Get-Command pwsh.exe -ErrorAction Stop).Source
+  $toolBindings=@((Get-AbsoluteToolBinding $go),(Get-AbsoluteToolBinding $git),(Get-AbsoluteToolBinding $bash),(Get-AbsoluteToolBinding $gcc),(Get-AbsoluteToolBinding $pwsh))
+  $goRoot = Resolve-ToolPath (Invoke-CheckedNative $go @('env','GOROOT') 'go env GOROOT').Trim()
   $goVersion = (Invoke-CheckedNative $go @('version') 'go version').Trim().Split(' ')[2]
   if ($goVersion -cne 'go1.27.2') { throw "Unexpected Go version: $goVersion" }
   if ([string]::IsNullOrWhiteSpace([string]$env:ImageOS) -or [string]::IsNullOrWhiteSpace([string]$env:ImageVersion)) { throw 'Hosted runner image identity unavailable' }
   [ordered]@{
-    go=$go;git=$git;bash=$bash.FullName;gcc=$gcc;pwsh=$pwsh;bindings=$toolBindings;goRoot=$goRoot;goVersion=$goVersion
+    go=$go;git=$git;bash=$bash;gcc=$gcc;pwsh=$pwsh;bindings=$toolBindings;goRoot=$goRoot;goVersion=$goVersion
     gitRoot=(Split-Path (Split-Path $git -Parent) -Parent);gccRoot=(Split-Path $gcc -Parent);pwshRoot=(Split-Path $pwsh -Parent)
   }
 }
