@@ -81,6 +81,19 @@ class SelfHealingTests(unittest.TestCase):
         self.assertEqual(api.posts, [("b" * 40, "pending",
                                       "Base moved; update the branch so CI runs against the current target")])
 
+    def test_cancelled_concurrency_twin_does_not_hide_its_successful_run(self):
+        head = "b" * 40
+        api = API([pull(12, head)])
+        twins = [dict(api.responses[PREFIX + "/actions/runs/41"], id=41, head_sha=head, created_at="2026-10-19T19:08:37Z"),
+                 dict(api.responses[PREFIX + "/actions/runs/41"], id=42, head_sha=head, conclusion="cancelled",
+                      created_at="2026-10-19T19:08:37Z")]
+        api.responses[PREFIX + "/actions/runs/41"] = twins[0]
+        api.responses[PREFIX + "/actions/runs/42"] = twins[1]
+        api.responses[f"{PREFIX}/actions/workflows/ci.yml/runs?per_page=100&page=1&head_sha={head}&event=pull_request"] = dict(
+            total_count=2, workflow_runs=twins)
+        snapshot = dict(repository=REPOSITORY, repository_id=10, head=head)
+        self.assertEqual(event.latest_ci_run(api, snapshot)["id"], 41)
+
 
 if __name__ == "__main__":
     unittest.main()

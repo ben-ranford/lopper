@@ -896,6 +896,18 @@ def append_ci_runs(runs, rows, workflow, repository_id):
         runs[run["id"]] = run
 
 
+def superseded_twin(run, runs):
+    """A cancelled run counts as superseded only when a successful run on this head started no earlier."""
+    if (run["status"], run["conclusion"]) != ("completed", "cancelled"):
+        return False
+    successes = [other for other in runs.values()
+                 if other["id"] != run["id"] and (other["status"], other["conclusion"]) == ("completed", "success")]
+    if not successes:
+        return False
+    created = producer_time(run["created_at"])
+    return any(producer_time(other["created_at"]) >= created for other in successes)
+
+
 def latest_ci_run(api, snapshot, *, allow_empty=False, workflow=None):
     endpoint = f"/repos/{snapshot['repository']}/actions/workflows/ci.yml/runs"
     runs, total = {}, None
@@ -913,7 +925,8 @@ def latest_ci_run(api, snapshot, *, allow_empty=False, workflow=None):
         raise EventError("CI run pagination did not establish the complete current producer set")
     # Select before checking success, base or association: a newer failed,
     # stale or malformed producer must never fall back to an older green run.
-    selected = max(runs)
+    # Only a cancelled concurrency twin of a successful run is passed over.
+    selected = max(identifier for identifier, run in runs.items() if not superseded_twin(run, runs))
     run = api.request(f"/repos/{snapshot['repository']}/actions/runs/{selected}")
     if run["id"] != selected or number(run["run_attempt"]) < number(runs[selected]["run_attempt"]):
         raise EventError("Latest CI producer identity changed")

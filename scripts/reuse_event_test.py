@@ -1333,6 +1333,41 @@ class InputBoundaryTests(unittest.TestCase):
                 self.assertEqual(external.read_text(), '{"untrusted":true}')
 
 
+class ConcurrencyTwinTests(unittest.TestCase):
+    """A ci run cancelled as a concurrency twin of a successful run on the same head is not current CI."""
+
+    def api(self, *runs):
+        api = FakeAPI()
+        rows = []
+        for identifier, conclusion, created in runs:
+            row = dict(ci_document(), id=identifier, conclusion=conclusion, created_at=created)
+            api.responses[PREFIX + f"/actions/runs/{identifier}"] = row
+            rows.append(row)
+        api.responses[CI_RUNS] = dict(total_count=len(rows), workflow_runs=rows)
+        return api
+
+    def test_cancelled_twin_of_a_successful_run_is_passed_over(self):
+        for created in ("2026-10-19T19:08:37Z", "2026-10-19T19:08:36Z"):
+            api = self.api((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", created))
+            with self.subTest(created=created):
+                self.assertEqual(event.current_ci(api, SNAPSHOT)["id"], 41)
+
+    def test_cancelled_or_failed_newest_producer_never_falls_back_to_older_success(self):
+        for runs in (((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", "2026-10-19T19:08:38Z")),
+                     ((40, "success", "2026-10-19T19:00:00Z"), (41, "failure", "2026-10-19T19:08:37Z"),
+                      (42, "cancelled", "2026-10-19T19:08:37Z")),
+                     ((41, "cancelled", "2026-10-19T19:08:37Z"), (42, "cancelled", "2026-10-19T19:08:37Z"))):
+            with self.subTest(runs=runs), self.assertRaises(event.EventError) as raised:
+                event.current_ci(self.api(*runs), SNAPSHOT)
+            self.assertIsInstance(raised.exception, event._CIBlocked)
+
+    def test_unparseable_creation_time_fails_closed(self):
+        for created in (None, "2026-10-19 19:08:37"):
+            api = self.api((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", created))
+            with self.subTest(created=created), self.assertRaisesRegex(event.EventError, "timestamp"):
+                event.current_ci(api, SNAPSHOT)
+
+
 class PendingCITests(unittest.TestCase):
     def deferred(self, reason="pending", run_id=41, attempt=2):
         return dict(version=2, snapshot=copy.deepcopy(SNAPSHOT), reason=reason,

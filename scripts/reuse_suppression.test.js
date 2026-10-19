@@ -543,6 +543,24 @@ test('surfaces only fixed provenance failure text from the adapter', async () =>
   }
 });
 
+test('passes over only a cancelled concurrency twin of a successful producer', async () => {
+  const twin = (id, conclusion, created) => ({ ...makeRun(id), conclusion, created_at: created });
+  const fixture = harness();
+  fixture.run.created_at = '2026-10-19T19:08:37Z';
+  fixture.runs = [fixture.run, twin(101, 'cancelled', '2026-10-19T19:08:37Z')];
+  assert.deepEqual(await fixture.verify(), receipt());
+  assert.equal(fixture.adapterCalls[0].expected.runId, 100);
+  for (const [created, pattern] of [['2026-10-19T19:08:38Z', /latest producer is not successful/],
+    [undefined, /invalid producer creation time/]]) {
+    const later = harness();
+    later.run.created_at = '2026-10-19T19:08:37Z';
+    later.runs = [later.run, twin(101, 'cancelled', created)];
+    later.arguments.github.rest.actions.getWorkflowRun = async () => ({ data: later.runs[1] });
+    await assert.rejects(later.verify(), pattern);
+    assert.equal(later.adapterCalls.length, 0);
+  }
+});
+
 test('rejects mismatched or extended adapter receipts', async () => {
   for (const output of [{ ...receipt(), suppressionCount: 1 }, { ...receipt(), extra: true }, { ...receipt(), runId: 99 }, undefined]) {
     const fixture = harness();
