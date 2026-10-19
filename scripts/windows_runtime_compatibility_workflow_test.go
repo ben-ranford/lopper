@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -19,10 +20,11 @@ func TestWindowsRuntimeSearchPathTestsRunNatively(t *testing.T) {
 	const jobName = "regression-proof-windows"
 	const stepName = "Test native Windows runtime search paths"
 	step := workflowStepByName(t, workflow.Jobs, jobName, stepName)
-	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || step.Run != "go test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1" {
+	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || strings.TrimSpace(step.Run) != "& $env:LOPPER_PROOF_GO test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1" {
 		t.Fatal("Windows runtime search path tests must run natively and fail closed for every event")
 	}
-	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Resolve native Go toolchain", "Test native Windows proof tools", stepName, "Prove Windows regression tests for fix PRs")
+	assertPinnedNodeConsumerEnvironment(t, step)
+	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Provision restricted regression proof runtime", "Test native Windows proof tools", "Verify restricted regression proof runtime", stepName, "Prove Windows regression tests for fix PRs")
 }
 
 func TestWindowsRuntimeBaselineProofIsScopedToItsPullRequest(t *testing.T) {
@@ -38,7 +40,16 @@ func TestWindowsRuntimeBaselineProofIsScopedToItsPullRequest(t *testing.T) {
 	if step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
 		t.Fatal("scoped runtime baseline proof must run natively and fail closed")
 	}
-	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Test native Windows runtime search paths", stepName, "Prove Windows regression tests for fix PRs")
+	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Provision restricted regression proof runtime", "Test native Windows proof tools", "Verify restricted regression proof runtime", stepName, "Prove Windows regression tests for fix PRs")
+	assertPinnedNodeConsumerEnvironment(t, step)
+	if step.Env["REGRESSION_PROOF_GO_ROOT"] != "${{ steps.proof_runtime.outputs.go_root }}" {
+		t.Fatal("runtime compatibility proof must select the authenticated compiler root")
+	}
+	index := workflowStepIndexByName(t, workflow.Jobs, jobName, stepName)
+	verifier := workflowStepByName(t, workflow.Jobs, "verify-checks", "Verify restricted regression proof runtime")
+	if index == 0 || !reflect.DeepEqual(workflow.Jobs[jobName].Steps[index-1], verifier) {
+		t.Fatal("runtime compatibility proof must immediately follow the reviewed authenticated verifier")
+	}
 	script := readConfig(t, "scripts/verify-windows-runtime-paths.ps1")
 	assertWindowsRuntimeProofBoundaries(t, script)
 }

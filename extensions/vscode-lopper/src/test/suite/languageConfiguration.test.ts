@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as assert from "node:assert/strict";
 
 import {
+  AndroidModuleSignalCache,
   clearAndroidModuleSignalCache,
   invalidateAndroidModuleSignalCacheForPath,
   inferLopperLanguageForDocument,
@@ -72,6 +73,27 @@ suite("language configuration", () => {
     } finally {
       clearAndroidModuleSignalCache();
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds Gradle inference while preserving late markers within the limit", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "lopper-vscode-gradle-limit-"));
+    const fileName = path.join(root, "Main.kt");
+    const gradle = path.join(root, "build.gradle.kts");
+    const marker = 'plugins { id("com.android.library") }';
+    const infer = () => inferLopperLanguageForDocument(
+      { fileName, languageId: "kotlin" }, root, new AndroidModuleSignalCache(),
+    );
+    try {
+      await writeFile(gradle, " ".repeat(256 * 1024 - marker.length) + marker);
+      assert.equal(await infer(), "kotlin-android");
+      await writeFile(gradle, " ".repeat(256 * 1024) + marker);
+      assert.equal(await infer(), "jvm");
+      await rm(gradle);
+      await mkdir(gradle);
+      assert.equal(await infer(), "jvm");
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
