@@ -23,6 +23,7 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event_name == 'delete' || github.event_name == 'pull_request_target' || github.event_name == 'workflow_run' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: read
       statuses: write
