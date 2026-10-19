@@ -34,6 +34,15 @@ trap 'printf "deadline=%s\n" "$job_deadline_ms"' EXIT
 			}
 		})
 	}
+	// The margin below is only meaningful if the deadline origin is the job's
+	// first step; otherwise earlier steps consume it unaccounted.
+	first := workflow.Jobs["verify"].Steps[0]
+	if first.ID != "verify_job_start" || first.Run != `echo "job-start-ms=$(date +%s%3N)" >> "${GITHUB_OUTPUT}"` {
+		t.Fatalf("verify job must record its start in its first step, got %q: %q", first.Name, first.Run)
+	}
+	if got, want := gate.Env["JOB_START_MS"], "${{ steps.verify_job_start.outputs.job-start-ms }}"; got != want {
+		t.Fatalf("suppression deadline origin = %q, want %q", got, want)
+	}
 	var timeout struct {
 		Jobs map[string]struct {
 			Minutes int `yaml:"timeout-minutes"`

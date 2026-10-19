@@ -958,6 +958,11 @@ jobs:
     outputs:
       pr_report_artifact_id: ${{ needs.verify-checks.outputs.pr_report_artifact_id }}
     steps:
+      - name: Record verification job start
+        id: verify_job_start
+        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        run: echo "job-start-ms=$(date +%s%3N)" >> "${GITHUB_OUTPUT}"
+
       - name: Require every verification job
         env:
           CHECKS_RESULT: ${{ needs.verify-checks.result }}
@@ -967,7 +972,6 @@ jobs:
           test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success
 
       - name: Initialize suppression verification
-        id: suppression_verification
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
         env:
           PR_REPORT_ARTIFACT_ID: ${{ needs.verify-checks.outputs.pr_report_artifact_id }}
@@ -976,7 +980,6 @@ jobs:
             echo "::error::The current verification run did not produce a valid PR report artifact ID." >&2
             exit 1
           fi
-          echo "job-start-ms=$(date +%s%3N)" >> "${GITHUB_OUTPUT}"
 
       - name: Download PR report inputs
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
@@ -1081,7 +1084,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SUPPRESSIONS_FILE: ${{ runner.temp }}/pr-report-inputs/inline-suppressions.json
-          JOB_START_MS: ${{ steps.suppression_verification.outputs.job-start-ms }}
+          JOB_START_MS: ${{ steps.verify_job_start.outputs.job-start-ms }}
         run: |
           # This read-only verifier is PR-controlled, like the rest of ci.yml.
           # Issue creation stays in the separate trusted pull_request_target
@@ -1890,8 +1893,9 @@ jobs:
           # deadline, not an independent wait per fingerprint -- otherwise a
           # persistently failed tracker run could make this step sleep for
           # up to MAX_RECORDS x 10 minutes instead of reporting promptly.
-          # Initialization before download and validation starts one shared
-          # budget, leaving margin before the job's 20-minute timeout.
+          # The job's first step records the shared budget's start, so every
+          # earlier step counts against it; only runner setup precedes it,
+          # and the remaining margin covers that before the 20-minute timeout.
           job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))
           missing=("${fingerprints[@]}")
           while [ "${#missing[@]}" -gt 0 ]; do
