@@ -234,6 +234,8 @@ jobs:
           REUSE_SNAPSHOT: ${{ needs.prepare.outputs.snapshot }}
           GH_TOKEN: ${{ github.token }}
         with:
+          # Idempotent evidence reads retry transient 5xx and transport failures.
+          retries: 3
           script: |
             const verify = require('./scripts/reuse_suppression.js');
             try {

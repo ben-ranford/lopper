@@ -15,6 +15,16 @@ func TestReuseRunnerTrustBoundaries(t *testing.T) {
 	}
 }
 
+// Wakeups that cannot be evaluated must settle the PRs they can affect rather
+// than strand every open PR or fail a PR whose base merely moved.
+func TestReuseControllerSelfHealing(t *testing.T) {
+	command := exec.Command("python3", "-B", repoPath(t, "scripts/testdata/reuse_event/self_healing.py"), repoPath(t, "scripts"))
+	command.Env = gitexec.SanitizedEnv()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("reuse controller self-healing: %v\n%s", err, output)
+	}
+}
+
 func TestReuseSuppressionNodeSuite(t *testing.T) {
 	node := queueLifecycleNode(t)
 	command := exec.Command(node, "--test", "reuse_suppression.test.js", "testdata/reuse_suppression/partial_rerun.cjs")

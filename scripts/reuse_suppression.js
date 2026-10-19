@@ -142,6 +142,20 @@ function requireCurrentEpoch(run, previous) {
   requireEvidence(run.id > previous.id || (run.id === previous.id && run.run_attempt >= previous.run_attempt), 'producer epoch regressed');
 }
 
+function createdAt(run) {
+  const time = typeof run.created_at === 'string' ? Date.parse(run.created_at) : Number.NaN;
+  requireEvidence(Number.isFinite(time), 'invalid producer creation time');
+  return time;
+}
+
+function supersededTwin(run, runs) {
+  if (run.status !== 'completed' || run.conclusion !== 'cancelled') return false;
+  const successes = runs.filter((other) => other.id !== run.id && other.status === 'completed' && other.conclusion === 'success');
+  if (successes.length === 0) return false;
+  const created = createdAt(run);
+  return successes.some((other) => createdAt(other) >= created);
+}
+
 async function latestProducer(github, repo, snapshot, previous) {
   await assertLiveSnapshot(github, repo, snapshot);
   const { data: workflow } = await github.rest.actions.getWorkflow({ ...repo, workflow_id: 'ci.yml' });
@@ -156,6 +170,11 @@ async function latestProducer(github, repo, snapshot, previous) {
     assertRunIdentity(run, workflow, snapshot);
     requireEvidence(!seen.has(run.id), 'duplicate producer run');
     seen.add(run.id);
+  }
+  for (const run of runs) {
+    // Only a cancelled concurrency twin of a successful run is passed over; a
+    // newer failed or cancelled producer never falls back to older success.
+    if (supersededTwin(run, runs)) continue;
     if (!selected || run.id > selected.id) selected = run;
   }
   if (!selected) {
@@ -333,6 +352,10 @@ function createVerifier(loadVerifier = () => require('./suppression_provenance.j
       if (error instanceof EvidenceError || error instanceof CIDeferred) throw error;
       // The adapter's fixed failure text names the failed check without any API data.
       if (PROVENANCE_FAILURE.test(error?.message)) throw new EvidenceError(error.message);
+      // Octokit request failures carry only a numeric HTTP status worth logging.
+      if (Number.isSafeInteger(error?.status) && error.status >= 100 && error.status <= 599) {
+        throw new EvidenceError(`Reuse suppression: GitHub API request failed with HTTP ${error.status}`);
+      }
       throw new EvidenceError('Reuse suppression: evidence could not be verified');
     }
   }

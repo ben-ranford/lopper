@@ -187,6 +187,30 @@ revisions changed during publication. Failed, cancelled, skipped,
 missing or malformed analysis never passes. Main pushes invalidate statuses for
 open default-branch PRs to pending because an old base signoff is stale. A new
 head or an owner `/reuse-check` comment runs analysis for the current pair.
+
+Wakeups settle without an owner refresh. A CI run whose PR association cannot
+be resolved (a closed or superseded PR, a fork run without association, or a
+PR whose base moved) only matters to open PRs whose current head is that run's
+head. The controller revokes a current or unreadable success on those heads and
+exits cleanly; other open PRs keep their state. Review-signal deliveries other
+than `completed` carry no decision and settle without reads. GitHub records a
+PR's new base only on PR updates, and CI evidence binds the base it ran on, so a
+PR behind the protected target gets `pending: Base moved; update the branch so
+CI runs against the current target` from preparation or publication instead of
+a failure. The next branch update starts CI and a fresh evaluation.
+
+Idempotent controller and suppression-verifier reads retry transient 5xx and
+transport failures a bounded number of times; writes never retry. Failures log
+the controller cause (fixed text, or only the exception type) and, for GitHub API
+reads, the HTTP status, never response bodies.
+
+A queue App branch update changes the head, so it needs a new exact-revision
+signoff when the PR touches policy paths. Carrying a signoff across that merge
+is intentionally not implemented: it would need the merge's verified App
+authorship, parents `[reviewed head, protected main ancestor]`, and a tree equal
+to the clean merge-tree of those parents, checked in the analysis checkout. The
+signoff also binds the old base, which the update replaces.
+
 Events are asynchronous; the custom merge queue must also validate current
 revisions and authorization immediately before admission/merge.
 

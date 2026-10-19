@@ -516,6 +516,21 @@ test('binds the artifact window to exactly one successful listed producer job', 
   }
 });
 
+test('names the HTTP status of a failed GitHub API read without its message', async () => {
+  for (const status of [502, 503, 404]) {
+    const fixture = harness();
+    fixture.arguments.github.rest.actions.getWorkflow = async () => {
+      throw Object.assign(new Error('secret-token or signed-url'), { status });
+    };
+    await assert.rejects(fixture.verify(), { message: `Reuse suppression: GitHub API request failed with HTTP ${status}` });
+  }
+  for (const status of [0, 600, '502', 1.5]) {
+    const fixture = harness();
+    fixture.arguments.github.rest.actions.getWorkflow = async () => { throw Object.assign(new Error('x'), { status }); };
+    await assert.rejects(fixture.verify(), { message: 'Reuse suppression: evidence could not be verified' });
+  }
+});
+
 test('surfaces only fixed provenance failure text from the adapter', async () => {
   const fixed = 'Suppression provenance: artifact is outside the selected producer attempt';
   for (const [message, expected] of [[fixed, fixed],
@@ -525,6 +540,24 @@ test('surfaces only fixed provenance failure text from the adapter', async () =>
     const fixture = harness();
     fixture.adapter = async () => { throw new Error(message); };
     await assert.rejects(fixture.verify(), { message: expected });
+  }
+});
+
+test('passes over only a cancelled concurrency twin of a successful producer', async () => {
+  const twin = (id, conclusion, created) => ({ ...makeRun(id), conclusion, created_at: created });
+  const fixture = harness();
+  fixture.run.created_at = '2026-10-19T19:08:37Z';
+  fixture.runs = [fixture.run, twin(101, 'cancelled', '2026-10-19T19:08:37Z')];
+  assert.deepEqual(await fixture.verify(), receipt());
+  assert.equal(fixture.adapterCalls[0].expected.runId, 100);
+  for (const [created, pattern] of [['2026-10-19T19:08:38Z', /latest producer is not successful/],
+    [undefined, /invalid producer creation time/]]) {
+    const later = harness();
+    later.run.created_at = '2026-10-19T19:08:37Z';
+    later.runs = [later.run, twin(101, 'cancelled', created)];
+    later.arguments.github.rest.actions.getWorkflowRun = async () => ({ data: later.runs[1] });
+    await assert.rejects(later.verify(), pattern);
+    assert.equal(later.adapterCalls.length, 0);
   }
 });
 

@@ -480,8 +480,34 @@ class EventTests(unittest.TestCase):
                 self.prepare(payload)
         self.assertEqual(self.api.posts, [])
 
-    def test_stale_pr_base_or_malformed_current_target_never_publishes_pending(self):
-        for target in ("c" * 40, "main", "A" * 40, None):
+    def test_stale_pr_base_waits_for_a_branch_update_without_failing(self):
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "c" * 40
+        with self.assertRaisesRegex(event.Settled, "base moved"):
+            self.prepare()
+        self.assertEqual([(path, data["state"], data["description"]) for path, data in self.api.posts],
+                         [(PREFIX + "/statuses/" + HEAD, "pending",
+                           "Base moved; update the branch so CI runs against the current target")])
+
+    def test_stale_pr_base_rewrites_only_a_current_or_unknown_success(self):
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "c" * 40
+        for action in ("synchronize", "edited", "reopened"):
+            with self.assertRaisesRegex(event.Settled, "base moved"):
+                self.prepare(dict(self.payload, action=action))
+        # The first event revokes the success; later events find nothing to revoke.
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+        for rows in ([dict(CERTIFIED, state="failure")], []):
+            self.api.posts.clear()
+            self.api.status_rows[HEAD] = rows
+            with self.subTest(rows=rows), self.assertRaises(event.Settled):
+                self.prepare()
+            self.assertEqual(self.api.posts, [])
+        self.api.status_errors[HEAD] = OSError("unavailable")
+        with self.assertRaises(event.Settled):
+            self.prepare()
+        self.assertEqual([data["state"] for _, data in self.api.posts], ["pending"])
+
+    def test_malformed_current_target_never_publishes_pending(self):
+        for target in ("main", "A" * 40, None):
             self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = target
             with self.subTest(target=target):
                 self.assertEqual(self.payload["pull_request"]["base"]["sha"], BASE)
@@ -556,6 +582,72 @@ class EventTests(unittest.TestCase):
             self.assertEqual([data["state"] for _, data in self.api.posts], ["success", "pending"])
             self.assertIn("CI wakeup unresolved", self.api.posts[-1][1]["description"])
 
+    def test_unresolvable_ci_wakeup_only_touches_open_prs_on_the_run_head(self):
+        payload = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=41))
+        other = dict(pull_document(), number=13, head=dict(sha="e" * 40, repo=dict(id=20)))
+        for scenario in ("closed_pr_run", "superseded_head", "uncertified_head"):
+            self.api = FakeAPI()
+            self.api.page_responses[PREFIX + "/pulls"].append(other)
+            run = self.api.responses[PREFIX + "/actions/runs/41"]
+            if scenario == "closed_pr_run":
+                run.update(head_sha="9" * 40, pull_requests=[])
+            elif scenario == "superseded_head":
+                run["head_sha"] = "9" * 40
+                run["pull_requests"][0]["head"]["sha"] = "9" * 40
+            else:
+                run["pull_requests"] = []
+                self.api.statuses[HEAD] = dict(CERTIFIED, state="pending")
+            with self.subTest(scenario=scenario), self.assertRaises(event.Settled):
+                self.prepare(payload, "workflow_run")
+            # Other open PRs are never swept into "CI wakeup unresolved".
+            self.assertEqual(self.api.posts, [])
+
+    def test_ci_wakeup_for_a_behind_pr_waits_for_a_branch_update(self):
+        payload = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=41))
+        self.api.responses[PREFIX + "/git/ref/heads/main"]["object"]["sha"] = "c" * 40
+        with self.assertRaisesRegex(event.Settled, "base"):
+            self.prepare(payload, "workflow_run")
+        self.assertEqual([(data["state"], data["description"]) for _, data in self.api.posts],
+                         [("pending", "Base moved; update the branch so CI runs against the current target")])
+
+    def test_incomplete_review_signal_deliveries_settle_without_api_reads(self):
+        for action in ("requested", "in_progress"):
+            api = FakeAPI()
+            signal = dict(repository=dict(id=10), action=action, workflow_run=dict(id=7))
+            with self.subTest(action=action), self.assertRaisesRegex(event.Settled, "not complete"):
+                event.prepare(api, signal, "workflow_run", REPOSITORY, 10, SIGNAL, OWNER)
+            self.assertEqual(api.posts, [])
+
+    def test_settled_prepare_emits_no_snapshot_and_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "event.json").write_text(json.dumps(dict(repository=dict(id=10), action="requested",
+                                                             workflow_run=dict(id=7))))
+            environment = dict(GITHUB_EVENT_PATH=str(root / "event.json"), GITHUB_EVENT_NAME="workflow_run",
+                               GITHUB_REPOSITORY=REPOSITORY, GITHUB_REPOSITORY_ID="10", RUNNER_TEMP=str(root),
+                               GITHUB_OUTPUT=str(root / "output"), GH_TOKEN="test-token")
+            api = FakeAPI()
+            with patch.dict(os.environ, environment), patch.object(event, "GitHub", return_value=api), \
+                    patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                self.assertEqual(event.main(["prepare", "--snapshot", str(root / "reuse-snapshot.json"),
+                                             "--refresh-actor", OWNER]), 0)
+            self.assertFalse((root / "output").exists())
+            self.assertIn("settled: Review signal is not complete yet", stdout.getvalue())
+
+    def test_controller_failure_logs_its_cause_without_echoing_api_text(self):
+        for cause, expected in ((event.EventError("Live pull request repository or number does not match"),
+                                 "Caused by: Live pull request repository or number does not match"),
+                                (KeyError("token-like secret"), "Caused by: KeyError")):
+            def fail(*_args, **_kwargs):
+                raise event.EventError("Outer failure") from cause
+            with self.subTest(cause=cause), patch.object(event, "validate_snapshot", side_effect=fail), \
+                    patch.object(event, "evidence_path", **{"return_value.read_text.return_value": "{}"}), \
+                    patch.object(event, "GitHub"), \
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(event.main(["analyze", "--snapshot", "s", "--result", "r"]), 2)
+            self.assertIn(expected, stderr.getvalue())
+            self.assertNotIn("token-like secret", stderr.getvalue())
+
     def test_missing_fork_association_uses_bounded_attempt_artifact(self):
         signal = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=7))
         self.api.responses[PREFIX + "/actions/runs/7"]["pull_requests"] = []
@@ -622,8 +714,9 @@ class EventTests(unittest.TestCase):
         self.assertEqual(event.invalidate_pulls(self.api, REPOSITORY, 10, "main"), 1)
         self.assertEqual(self.api.posts[-1][0], PREFIX + "/statuses/" + HEAD)
         self.assertEqual([payload["state"] for _, payload in self.api.posts], ["success", "pending"])
-        with self.assertRaises(event.EventError):
+        with self.assertRaises(event.Settled):
             self.prepare()
+        # The success is already revoked, so the moved base adds no further write.
         self.assertEqual([payload["state"] for _, payload in self.api.posts], ["success", "pending"])
 
     def test_base_invalidation_continues_after_closed_or_broken_pr(self):
@@ -976,8 +1069,15 @@ class PublicationTests(unittest.TestCase):
             else:
                 api.responses[PREFIX + "/pulls/12"]["base"]["sha"] = "d" * 40
             result = result_document(["Makefile"])
-            with self.subTest(scenario=scenario), self.assertRaises(event.EventError):
-                self.publish(api, SNAPSHOT, result, "success", [OWNER])
+            with self.subTest(scenario=scenario):
+                if scenario == "stale":
+                    # A moved base is not a failure of this PR: it waits for a branch update.
+                    self.publish(api, SNAPSHOT, result, "success", [OWNER])
+                    self.assertEqual(api.posts[-1][1]["state"], "pending")
+                    self.assertIn("Base moved", api.posts[-1][1]["description"])
+                    continue
+                with self.assertRaises(event.EventError):
+                    self.publish(api, SNAPSHOT, result, "success", [OWNER])
             self.assertEqual(api.posts[-1][1]["state"], "failure")
 
     def test_review_change_between_reads_cannot_publish_success(self):
@@ -1030,9 +1130,30 @@ class PublicationTests(unittest.TestCase):
             def read(self, size=-1):
                 raise http.client.IncompleteRead(b"partial", 100)
 
-        with patch.object(api.opener, "open", return_value=BrokenResponse()):
+        with patch.object(api.opener, "open", side_effect=lambda *_args, **_kwargs: BrokenResponse()) as opened, \
+                patch.object(event.time, "sleep") as slept:
             with self.assertRaises(event.EventError):
                 api.request(PREFIX)
+        # A read is retried a bounded number of times before failing closed.
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual([call.args for call in slept.call_args_list], [(1,), (2,)])
+
+    def test_api_retries_only_transient_reads(self):
+        api = event.GitHub("test-token")
+
+        def failure(code):
+            return urllib.error.HTTPError("https://api.github.com", code, "error", {}, io.BytesIO(b""))
+
+        with patch.object(api.opener, "open", side_effect=[failure(502), io.BytesIO(b'{"ok": true}')]) as opened, \
+                patch.object(event.time, "sleep"):
+            self.assertEqual(api.request(PREFIX), {"ok": True})
+        self.assertEqual(opened.call_count, 2)
+        for code, data in ((404, None), (403, None), (502, {"state": "pending"})):
+            with self.subTest(code=code, write=data is not None), \
+                    patch.object(api.opener, "open", side_effect=failure(code)) as opened, \
+                    patch.object(event.time, "sleep"), self.assertRaisesRegex(event.EventError, f"HTTP {code}"):
+                api.request(PREFIX + "/statuses/" + HEAD if data else PREFIX, data)
+            self.assertEqual(opened.call_count, 1)
 
     def test_all_review_pages_are_loaded_and_truncation_fails(self):
         api = event.GitHub("test-token")
@@ -1210,6 +1331,41 @@ class InputBoundaryTests(unittest.TestCase):
                 with self.assertRaises(event.EventError):
                     event.evidence_path(expected, "snapshot")
                 self.assertEqual(external.read_text(), '{"untrusted":true}')
+
+
+class ConcurrencyTwinTests(unittest.TestCase):
+    """A ci run cancelled as a concurrency twin of a successful run on the same head is not current CI."""
+
+    def api(self, *runs):
+        api = FakeAPI()
+        rows = []
+        for identifier, conclusion, created in runs:
+            row = dict(ci_document(), id=identifier, conclusion=conclusion, created_at=created)
+            api.responses[PREFIX + f"/actions/runs/{identifier}"] = row
+            rows.append(row)
+        api.responses[CI_RUNS] = dict(total_count=len(rows), workflow_runs=rows)
+        return api
+
+    def test_cancelled_twin_of_a_successful_run_is_passed_over(self):
+        for created in ("2026-10-19T19:08:37Z", "2026-10-19T19:08:36Z"):
+            api = self.api((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", created))
+            with self.subTest(created=created):
+                self.assertEqual(event.current_ci(api, SNAPSHOT)["id"], 41)
+
+    def test_cancelled_or_failed_newest_producer_never_falls_back_to_older_success(self):
+        for runs in (((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", "2026-10-19T19:08:38Z")),
+                     ((40, "success", "2026-10-19T19:00:00Z"), (41, "failure", "2026-10-19T19:08:37Z"),
+                      (42, "cancelled", "2026-10-19T19:08:37Z")),
+                     ((41, "cancelled", "2026-10-19T19:08:37Z"), (42, "cancelled", "2026-10-19T19:08:37Z"))):
+            with self.subTest(runs=runs), self.assertRaises(event.EventError) as raised:
+                event.current_ci(self.api(*runs), SNAPSHOT)
+            self.assertIsInstance(raised.exception, event._CIBlocked)
+
+    def test_unparseable_creation_time_fails_closed(self):
+        for created in (None, "2026-10-19 19:08:37"):
+            api = self.api((41, "success", "2026-10-19T19:08:37Z"), (42, "cancelled", created))
+            with self.subTest(created=created), self.assertRaisesRegex(event.EventError, "timestamp"):
+                event.current_ci(api, SNAPSHOT)
 
 
 class PendingCITests(unittest.TestCase):
