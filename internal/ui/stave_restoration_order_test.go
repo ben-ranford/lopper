@@ -88,14 +88,11 @@ func checkRestorationOrder(t *testing.T, exit string) {
 	if exit == "close-error" {
 		wantErr = closeErr
 	}
-	finishRestorationRead(t, input, reader, wantErr, func() {
+	finishRestorationRead(t, input, reader, restore, wantErr, func() {
 		if *rawModeLeaseState(t, terminal) != *raw {
 			t.Fatal("terminal restored while cancelled read remained pending")
 		}
 	})
-	if err := restore(); err != nil {
-		t.Fatal(err)
-	}
 	if *rawModeLeaseState(t, terminal) != *original {
 		t.Fatal("exact original terminal state not restored")
 	}
@@ -174,10 +171,12 @@ func TestStaveRestorationBeforeInputStart(t *testing.T) {
 	}
 }
 
-func finishRestorationRead(t *testing.T, input *staveTerminalInput, reader *rawModeLeaseReader, wantErr error, assertRaw func()) {
+func finishRestorationRead(t *testing.T, input *staveTerminalInput, reader *rawModeLeaseReader, restore func() error, wantErr error, assertRaw func()) {
 	t.Helper()
 	closed := make(chan error, 1)
-	go func() { closed <- input.close() }()
+	// Run the production shutdown sequence so reversing it restores the
+	// terminal while the cancelled read is still pending.
+	go func() { closed <- shutdownStaveTerminalInput(input, restore) }()
 	waitRestorationGate(t, reader.cancelled, "cancel request")
 	select {
 	case err := <-closed:
