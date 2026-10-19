@@ -797,7 +797,7 @@ func TestSyncOSVManifestWriteSizeLimit(t *testing.T) {
 
 	for _, tc := range []advisoryManifestSizeCase{
 		{name: "exact limit succeeds", target: maxCacheManifestBytes},
-		{name: "one byte over limit preserves prior manifest", target: maxCacheManifestBytes + 1, wantError: true},
+		{name: "one byte over limit prunes history", target: maxCacheManifestBytes + 1, wantPrune: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runAdvisoryManifestSizeCase(t, server, now, snapshot, tc)
@@ -808,14 +808,12 @@ func TestSyncOSVManifestWriteSizeLimit(t *testing.T) {
 type advisoryManifestSizeCase struct {
 	name      string
 	target    int64
-	wantError bool
+	wantPrune bool
 }
 
 type advisoryManifestSizeFixture struct {
 	cachePath        string
 	manifestPath     string
-	priorManifest    CacheManifest
-	priorPayload     []byte
 	wantFinalPayload []byte
 	snapshot         CacheSnapshot
 }
@@ -833,9 +831,11 @@ func runAdvisoryManifestSizeCase(t *testing.T, server *httptest.Server, now time
 	if readErr != nil {
 		t.Fatalf("read manifest after sync: %v", readErr)
 	}
-	if tc.wantError {
-		advisoryAssertRejectedManifestSizeUpdate(t, fixture, gotPayload, err)
-		return
+	if tc.wantPrune {
+		fixture.wantFinalPayload = testCacheManifestPayload(t, CacheManifest{
+			SchemaVersion: manifestSchemaVersion, UpdatedAt: now.Format(time.RFC3339),
+			Latest: snapshot.ID, Snapshots: []CacheSnapshot{snapshot},
+		})
 	}
 	if err != nil {
 		t.Fatalf("sync OSV at manifest size limit: %v", err)
@@ -886,33 +886,8 @@ func newAdvisoryManifestSizeFixture(t *testing.T, now time.Time, snapshot CacheS
 	return advisoryManifestSizeFixture{
 		cachePath:        cachePath,
 		manifestPath:     manifestPath,
-		priorManifest:    priorManifest,
-		priorPayload:     priorPayload,
 		wantFinalPayload: wantFinalPayload,
 		snapshot:         snapshot,
-	}
-}
-
-func advisoryAssertRejectedManifestSizeUpdate(t *testing.T, fixture advisoryManifestSizeFixture, gotPayload []byte, syncErr error) {
-	t.Helper()
-	if !errors.Is(syncErr, safeio.ErrFileTooLarge) {
-		t.Fatalf("expected manifest size error, got %v", syncErr)
-	}
-	if !strings.Contains(syncErr.Error(), "write advisory cache manifest") {
-		t.Fatalf("expected advisory manifest write context, got %v", syncErr)
-	}
-	if !bytes.Equal(gotPayload, fixture.priorPayload) {
-		t.Fatal("rejected manifest update replaced the prior manifest")
-	}
-	if _, statErr := os.Stat(filepath.Join(fixture.cachePath, fixture.snapshot.Path)); !os.IsNotExist(statErr) {
-		t.Fatalf("expected rejected manifest update to remove new snapshot %q, got %v", fixture.snapshot.Path, statErr)
-	}
-	manifest, loadErr := LoadCacheManifest(fixture.cachePath)
-	if loadErr != nil {
-		t.Fatalf("load prior manifest after rejected update: %v", loadErr)
-	}
-	if manifest.Latest != fixture.priorManifest.Latest || len(manifest.Snapshots) != 1 {
-		t.Fatalf("unexpected prior manifest after rejected update: latest=%q snapshots=%d", manifest.Latest, len(manifest.Snapshots))
 	}
 }
 
