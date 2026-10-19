@@ -31,6 +31,8 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "trailing nul diagnostic", notice: "nul", wantStatus: 1},
 		{name: "unterminated diagnostic", notice: "unterminated", wantStatus: 1},
 		{name: "other group diagnostic", notice: "other", wantStatus: 1},
+		{name: "recognised plus wrong group diagnostic", notice: "combined", wantStatus: 1},
+		{name: "duplicate recognised diagnostic", notice: "duplicate", wantStatus: 1},
 		{name: "missing owned group", noGroup: true, wantStatus: 1},
 		{name: "diagnostic without owned group", noGroup: true, notice: "expected", wantStatus: 1},
 		{name: "interrupted startup", interrupt: true, wantStatus: 124},
@@ -73,18 +75,12 @@ run_preflight_git sh -c 'printf x >"$1"; printf "reader output\n"; printf "reade
 	command.Env = append(os.Environ(), "TMPDIR="+state)
 	command.WaitDelay = time.Second
 	stdout, stderr, status := preflightDiagnosticResult(t, command)
+	native := readPreflightNativeStartup(t, tc.notice, pidFile)
 	if ctx.Err() != nil || status != tc.wantStatus {
 		t.Fatalf("status=%d want=%d context=%v stderr=%q", status, tc.wantStatus, ctx.Err(), stderr)
 	}
 	assertPreflightStartupStreams(t, tc, marker, stdout, stderr)
-	pidBytes, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	pid := readPreflightStartupPID(t, pidFile)
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("anchor %d survived: %v", pid, err)
 	}
@@ -94,7 +90,21 @@ run_preflight_git sh -c 'printf x >"$1"; printf "reader output\n"; printf "reade
 	if entries, err := os.ReadDir(state); err != nil || len(entries) != 0 {
 		t.Fatalf("startup left state: %v %v", entries, err)
 	}
+	assertPreflightNativeStartup(t, tc, pid, native)
 	assertPreflightStartupDiagnostic(t, tc, pid, stderr)
+}
+
+func readPreflightStartupPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	pidBytes, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
 }
 
 func assertPreflightStartupStreams(t *testing.T, tc preflightStartupCase, marker, stdout, stderr string) {
@@ -137,6 +147,65 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	injection := `	while [ ! -f "$state_dir/test-anchor-pid" ]; do :; done
 	while ! read -r test_anchor_pid <"$state_dir/test-anchor-pid"; do :; done
 	printf "%s\n" "$test_anchor_pid" >` + shellQuote(pidFile) + "\n"
+	injection += preflightStartupDiagnosticInjection(notice)
+	if interrupt {
+		injection += "\tkill -TERM \"$supervisor_pid\"\n"
+	}
+	const restore = "\texec 2>&3 3>&-\n"
+	// Keep real shell launch bytes separate from each prescribed diagnostic.
+	// Reopen fd2 so the synthetic stream starts at offset zero.
+	if preflightStartupHasSyntheticNotice(notice) {
+		const launch = "} 2>\"$state_dir/launch-error\"\n"
+		source = replacePreflightStartupBoundary(t, source, launch, "} 2>"+shellQuote(pidFile+".native-stderr")+"\n")
+		injection = "\texec 2>\"$state_dir/launch-error\"\n" + injection
+	}
+	source = replacePreflightStartupBoundary(t, source, restore, injection+restore)
+	source = strings.Replace(source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n", 1)
+	if noGroup {
+		// Disable job-control group creation in this fixture. The real kernel
+		// negative-PGID probe must fail; no fake kill implementation is involved.
+		source = strings.Replace(source, "\nset -m\n", "\nset +m\n", 1)
+	}
+	return source
+}
+
+func preflightStartupHasSyntheticNotice(notice string) bool {
+	return notice != "" && notice != "exited"
+}
+
+func readPreflightNativeStartup(t *testing.T, notice, pidFile string) string {
+	t.Helper()
+	if !preflightStartupHasSyntheticNotice(notice) {
+		return ""
+	}
+	native, err := os.ReadFile(pidFile + ".native-stderr")
+	t.Logf("native startup diagnostic: %q", native)
+	if err != nil {
+		t.Fatalf("read native startup diagnostic: %v", err)
+	}
+	return string(native)
+}
+
+func assertPreflightNativeStartup(t *testing.T, tc preflightStartupCase, pid int, native string) {
+	t.Helper()
+	if native == "" {
+		return
+	}
+	if tc.noGroup || native != preflightStartupNotice("expected", pid) {
+		t.Fatalf("unexpected native startup diagnostic: %q", native)
+	}
+}
+
+func replacePreflightStartupBoundary(t *testing.T, source, boundary, replacement string) string {
+	t.Helper()
+	if strings.Count(source, boundary) != 1 {
+		t.Fatalf("expected exactly one startup boundary %q", boundary)
+	}
+	return strings.Replace(source, boundary, replacement, 1)
+}
+
+func preflightStartupDiagnosticInjection(notice string) string {
+	var injection string
 	switch notice {
 	case "expected", "multiline", "nul", "unterminated":
 		format := "%s\\n"
@@ -150,6 +219,10 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 		if notice == "nul" {
 			injection += "\tprintf \"\\0\" >&2\n"
 		}
+	case "combined":
+		injection += "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
+	case "duplicate":
+		injection += "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" >&2\n"
 	case "exited":
 		injection += "\texit 1\n"
 	case "unknown":
@@ -157,21 +230,7 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	case "other":
 		injection += "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
 	}
-	if interrupt {
-		injection += "\tkill -TERM \"$supervisor_pid\"\n"
-	}
-	const restore = "\texec 2>&3 3>&-\n"
-	if !strings.Contains(source, restore) {
-		t.Fatal("startup diagnostic boundary unavailable")
-	}
-	source = strings.Replace(source, restore, injection+restore, 1)
-	source = strings.Replace(source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n", 1)
-	if noGroup {
-		// Disable job-control group creation in this fixture. The real kernel
-		// negative-PGID probe must fail; no fake kill implementation is involved.
-		source = strings.Replace(source, "\nset -m\n", "\nset +m\n", 1)
-	}
-	return source
+	return injection
 }
 
 func preflightStartupNotice(notice string, pid int) string {
@@ -188,6 +247,10 @@ func preflightStartupNotice(notice string, pid int) string {
 		return expected
 	case "unknown":
 		return "unknown startup diagnostic\n"
+	case "combined":
+		return expected + "\n" + preflightStartupNotice("other", pid)
+	case "duplicate":
+		return expected + "\n" + expected + "\n"
 	case "other":
 		return "--: child setpgid (" + number + " to 1): Operation not permitted\n"
 	default:
