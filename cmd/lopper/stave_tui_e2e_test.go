@@ -625,44 +625,43 @@ func readPTYUntilContext(t *testing.T, r io.Reader, timeout time.Duration, phase
 	}
 	var out bytes.Buffer
 	readDone := make(chan ptyReadResult, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		n, err := r.Read(buf)
-		readDone <- ptyReadResult{n: n, buf: buf, err: err}
-	}()
+	go readPTYChunk(r, readDone)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		select {
 		case result := <-readDone:
-			if result.n > 0 {
-				out.Write(result.buf[:result.n])
-				if done(out.String()) {
-					return out.String()
-				}
+			out.Write(result.buf[:result.n])
+			if result.n > 0 && done(out.String()) {
+				return out.String()
 			}
 			if result.err != nil {
-				if errors.Is(result.err, io.EOF) {
-					if phase != "" && !done(out.String()) {
-						t.Fatalf("PTY reached EOF%s before expected output; captured=%q", contextLabel, out.String())
-					}
-					return out.String()
-				}
-				t.Fatalf("read PTY output%s: %v; captured=%q", contextLabel, result.err, out.String())
+				return finishPTYRead(t, result.err, phase, contextLabel, out.String(), done)
 			}
-			go func() {
-				buf := make([]byte, 4096)
-				n, err := r.Read(buf)
-				readDone <- struct {
-					n   int
-					buf []byte
-					err error
-				}{n, buf, err}
-			}()
+			go readPTYChunk(r, readDone)
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for PTY output after %s%s: %q", timeout, contextLabel, out.String())
 		}
 	}
+}
+
+func readPTYChunk(r io.Reader, results chan<- ptyReadResult) {
+	buf := make([]byte, 4096)
+	n, err := r.Read(buf)
+	results <- ptyReadResult{n: n, buf: buf, err: err}
+}
+
+// finishPTYRead accepts EOF as the end of output unless a named phase has not
+// produced its expected output yet; any other read error fails the test.
+func finishPTYRead(t *testing.T, err error, phase, contextLabel, captured string, done func(string) bool) string {
+	t.Helper()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("read PTY output%s: %v; captured=%q", contextLabel, err, captured)
+	}
+	if phase != "" && !done(captured) {
+		t.Fatalf("PTY reached EOF%s before expected output; captured=%q", contextLabel, captured)
+	}
+	return captured
 }
 
 func selectedLine(output string) string {
