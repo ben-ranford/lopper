@@ -29,6 +29,14 @@ class InactivePull(EventError):
     """A listed pull request is no longer open against the default branch."""
 
 
+class SharedHead(EventError):
+    """Another open pull request shares this head, so its commit status is not PR-specific."""
+
+    def __init__(self, head):
+        super().__init__("Pull request head is shared with another open pull request")
+        self.head = policy.immutable_sha(head)
+
+
 class CIDeferred(EventError):
     """Authenticated CI has not supplied a current proof yet; never approval."""
 
@@ -357,7 +365,7 @@ def pull_snapshot(api, repository, identifier, pull_number):
     protected = branch_sha(api, repository, document["default_branch"])
     pulls = api.pages(f"/repos/{repository}/pulls")
     if shared_head(pulls, pull):
-        raise EventError("Pull request head is shared with another open pull request")
+        raise SharedHead(pull["head"]["sha"])
     if pull["base"]["ref"] != document["default_branch"]:
         require_stack_parent(pulls, identifier, pull, document["default_branch"])
     target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
@@ -538,7 +546,14 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
         pull_number = refresh_pull_number(api, event, repository, identifier, refresh_actor)
     else:
         raise EventError("Unsupported event; merge_group is not activated")
-    snapshot = pull_snapshot(api, repository, identifier, pull_number)
+    try:
+        snapshot = pull_snapshot(api, repository, identifier, pull_number)
+    except SharedHead as error:
+        # A success inherited from the other PR's evidence must not stay usable
+        # until the next sweep; this write needs only the authenticated head.
+        post_status(api, repository, error.head, "pending",
+                    "Head is shared with another open pull request; reuse evidence is not certified")
+        raise
     if event_name == "pull_request_target":
         pull = event["pull_request"]
         if (pull["number"] != pull_number or pull["base"]["sha"] != snapshot["base"]

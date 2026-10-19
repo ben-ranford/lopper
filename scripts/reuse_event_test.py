@@ -408,6 +408,18 @@ class EventTests(unittest.TestCase):
         self.assertEqual(self.api.posts[-1][1]["state"], "pending")
         self.assertEqual(self.api.posts[-1][1]["context"], "reuse-check")
 
+    def test_shared_head_refusal_revokes_inherited_success_before_failing(self):
+        event.status(self.api, SNAPSHOT, "success", event.certification(SNAPSHOT))
+        second = dict(pull_document(), number=40)
+        self.api.responses[PREFIX + "/pulls/40"] = second
+        self.api.page_responses[PREFIX + "/pulls"].append(second)
+        payload = dict(self.payload, number=40, action="opened", pull_request=second)
+        with self.assertRaisesRegex(event.EventError, "shared"):
+            self.prepare(payload)
+        self.assertEqual([(path, data["state"]) for path, data in self.api.posts],
+                         [(PREFIX + "/statuses/" + HEAD, "success"), (PREFIX + "/statuses/" + HEAD, "pending")])
+        self.assertIsNone(event.certified_record(event.current_statuses(self.api, REPOSITORY), second))
+
     def test_stale_or_other_repository_event_never_posts(self):
         for field in ("head", "base", "repository", "head_repository"):
             payload = copy.deepcopy(self.payload)
