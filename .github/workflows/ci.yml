@@ -409,6 +409,9 @@ jobs:
           LD_AUDIT: ''
           LD_LIBRARY_PATH: ''
           NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           LOPPER_PROOF_GO_SHA256: ${{ steps.proof_runtime.outputs.go_sha256 }}
@@ -1237,6 +1240,13 @@ jobs:
       - name: Test native Darwin proof tools
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1265,6 +1275,13 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
