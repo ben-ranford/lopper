@@ -513,11 +513,19 @@ function maintenanceAudit(changeParent = value => value, auditOptions = {}) {
   const audit = harness({ pulls: [{ ...analysis(), base: reference, target: reference }],
     checks: [{ ...check(), pull_requests: [linked] }], suites: [{ ...suite(), pull_requests: [linked] }], ...auditOptions });
   let reads = 0;
+  let childReads = 0;
   const fetchImpl = async (raw, options) => {
     const url = new URL(raw);
     let body;
     if (url.pathname === '/api/project_branches/list') {
       body = { branches: [{ name: reference, type: 'LONG' }] };
+    } else if (url.pathname === '/api/project_analyses/search' && url.searchParams.has('pullRequest')) {
+      assert.equal(url.searchParams.get('pullRequest'), String(INPUT.pullNumber));
+      body = { analyses: [{ key: 'child-analysis', date: analysis().analysisDate }],
+        paging: { pageIndex: 1, pageSize: 1000, total: 1 } };
+      childReads++;
+      return new Response(JSON.stringify(changeParent(body, '/api/project_analyses/search?pullRequest', childReads)),
+        { headers: { 'content-type': 'application/json' } });
     } else if (url.pathname === '/api/project_analyses/search') {
       assert.equal(url.searchParams.get('branch'), reference);
       body = { analyses: [{ key: 'parent-analysis', revision: 'b'.repeat(40), date: '2026-09-30T14:00:00Z' }],
@@ -527,7 +535,7 @@ function maintenanceAudit(changeParent = value => value, auditOptions = {}) {
     return new Response(JSON.stringify(changeParent(body, url.pathname, reads)), { headers: { 'content-type': 'application/json' } });
   };
   return () => require('./sonar_maintenance_verify').verifyMaintenanceAnalysis({ ...INPUT, baseRef: reference,
-    baseSHA: 'b'.repeat(40), fetchImpl });
+    baseSHA: 'b'.repeat(40), childAnalysisId: 'child-analysis', fetchImpl, ...auditOptions.input });
 }
 
 test('maintenance adds actual committed LONG parent to unchanged strict child verification', async () => {
@@ -537,6 +545,22 @@ test('maintenance adds actual committed LONG parent to unchanged strict child ve
   assert.equal(result.child.qualityGate, 'OK');
   assert.equal(result.child.activeOrWaivedIssues, 0);
   assert.equal(result.child.hotspots, 0);
+  assert.equal(result.child.analysisId, 'child-analysis');
+});
+
+test('maintenance certifies only the submitted child analysis', async () => {
+  const child = '/api/project_analyses/search?pullRequest';
+  await assert.rejects(maintenanceAudit(undefined, { input: { childAnalysisId: undefined } })(), /identity is required/);
+  await assert.rejects(maintenanceAudit(undefined, { input: { childAnalysisId: 'reviewed-task-analysis' } })(),
+    /not the submitted analysis/);
+  await assert.rejects(maintenanceAudit((body, endpoint) => endpoint === child
+    ? { ...body, analyses: body.analyses.map(row => ({ ...row, date: '2026-09-30T15:20:36+0000' })) } : body)(),
+  /not the submitted analysis/);
+  await assert.rejects(maintenanceAudit((body, endpoint, count) => endpoint === child && count > 1
+    ? { analyses: [{ key: 'newer-scan', date: '2026-09-30T15:30:00Z' }, ...body.analyses],
+      paging: { ...body.paging, total: 2 } } : body)(), /not the submitted analysis|changed/);
+  await assert.rejects(maintenanceAudit((body, endpoint) => endpoint === child ? { ...body, analyses: [] } : body)(),
+    /missing or malformed/);
 });
 
 test('maintenance rejects wrong, partial, newer, or moving parent baseline', async () => {

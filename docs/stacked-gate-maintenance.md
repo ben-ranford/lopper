@@ -72,7 +72,10 @@ Analyze the actual committed B independently as the actual LONG target branch,
 then H as the PR with both target and base equal that branch. Never synthesize a
 revision or substitute main. A completed scanner/CE task is not certification:
 `sonar_maintenance_verify.js` adds the stable exact-parent-baseline guard around
-unchanged `queue_me_sonar.js` App12526/check/suite/head/base/time/quality checks.
+unchanged `queue_me_sonar.js` App12526/check/suite/head/base/time/quality checks,
+and certifies only the child analysis whose ID the submission task recorded: the
+latest pull-request analysis must be that ID, with the verified analysis time,
+before and after verification.
 Zero active-or-waived issues, zero hotspots and no ignored gate conditions remain
 mandatory. Deployment, actual native/authenticated scanner execution, hosted CI,
 Sonar and Codex review clearance are separate pending gates.
