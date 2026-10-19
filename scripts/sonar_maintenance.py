@@ -27,6 +27,8 @@ CE_TASK = "ce/task"
 SETTINGS_SET = "settings/set"
 SETTINGS_RESET = "settings/reset"
 SHA_PATTERN = r"[a-f0-9]{40}"
+# project_analyses/search accepts at most 500 rows; a longer history fails closed.
+ANALYSIS_PAGE = 500
 PROPERTY_KEY = re.compile(r"[A-Za-z0-9_.-]+")
 
 
@@ -302,7 +304,7 @@ def parent_baseline(branches, history, reference, revision):
     require(len(selected) == 1 and selected[0].get("type") == "LONG", "Actual target lacks an independent LONG baseline")
     analyses = history.get("analyses")
     paging = history.get("paging")
-    require(isinstance(analyses, list) and len(analyses) <= 1000 and isinstance(paging, dict) and
+    require(isinstance(analyses, list) and len(analyses) <= ANALYSIS_PAGE and isinstance(paging, dict) and
             paging.get("total") == len(analyses) and paging.get("pageIndex") == 1,
             "Incomplete parent analysis history")
     require(bool(analyses) and analyses[0].get("revision") == revision and
@@ -311,6 +313,18 @@ def parent_baseline(branches, history, reference, revision):
     validate_parent_history(analyses)
     return {"branch": reference, "revision": revision, "analysisId": analyses[0]["key"],
             "date": analyses[0]["date"]}
+
+
+def current_pull_request_analysis(client, pull_number):
+    """Analysis ID of the current REPORT task for one pull request; certification binds to it."""
+    require(type(pull_number) is int and pull_number > 0, "Invalid pull request number")
+    activity = client.request(CE_ACTIVITY, {"component": PROJECT, "type": "REPORT", "onlyCurrents": "true", "ps": 1000})
+    rows = [task for task in activity_tasks(activity) if task.get("pullRequest") == str(pull_number)]
+    require(len(rows) == 1 and rows[0].get("status") == "SUCCESS" and
+            isinstance(rows[0].get("analysisId"), str) and bool(rows[0]["analysisId"]),
+            "Pull request has no single successful current analysis")
+    task_identity(rows[0])
+    return rows[0]["analysisId"]
 
 
 def git_read(root, *arguments):
@@ -498,7 +512,7 @@ def verify_bootstrap(context, expected_workflow, expected_ref, driver_root, driv
 def current_parent(client, pair):
     return parent_baseline(client.request("project_branches/list", {"project": PROJECT}),
                            client.request("project_analyses/search", {"project": PROJECT,
-                                                                     "branch": pair["base_ref"], "p": 1, "ps": 1000}),
+                                                                     "branch": pair["base_ref"], "p": 1, "ps": ANALYSIS_PAGE}),
                            pair["base_ref"], pair["base"])
 
 

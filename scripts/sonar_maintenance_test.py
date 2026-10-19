@@ -63,6 +63,22 @@ class Client:
         raise AssertionError("Unexpected endpoint")
 
 
+class SubmittedAnalysisTests(unittest.TestCase):
+    def test_current_pull_request_analysis_is_the_single_successful_current_task(self):
+        client = Client()
+        client.task.update(pullRequest="42", analysisId="analysis-1")
+        self.assertEqual(maintenance.current_pull_request_analysis(client, 42), "analysis-1")
+        self.assertEqual(client.calls[-1][1], {"component": maintenance.PROJECT, "type": "REPORT",
+                                               "onlyCurrents": "true", "ps": 1000})
+        for change in ({"pullRequest": "43"}, {"status": "FAILED"}, {"analysisId": ""}, {"componentKey": "other"}):
+            client = Client()
+            client.task.update({"pullRequest": "42", "analysisId": "analysis-1", **change})
+            with self.subTest(change=change), self.assertRaises(maintenance.MaintenanceError):
+                maintenance.current_pull_request_analysis(client, 42)
+        with self.assertRaises(maintenance.MaintenanceError):
+            maintenance.current_pull_request_analysis(Client(), "42")
+
+
 class PermissionTests(unittest.TestCase):
     def test_task_and_admin_reads_are_distinct_and_do_not_claim_principal_or_submission(self):
         client = Client()

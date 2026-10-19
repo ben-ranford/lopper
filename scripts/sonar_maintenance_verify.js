@@ -25,27 +25,16 @@ function validateHistory(rows) {
   }
 }
 
-async function latestAnalysis(api, scope, message) {
-  const history = await api('project_analyses/search', { project: 'ben-ranford_lopper', ...scope, p: '1', ps: '1000' });
-  const latest = history?.analyses;
-  if (!Array.isArray(latest) || latest.length < 1 || latest.length > 1000 || history.paging?.pageIndex !== 1 ||
-      !Number.isSafeInteger(history.paging?.total) || history.paging.total !== latest.length ||
-      typeof latest[0].key !== 'string' || !latest[0].key || !validTime(latest[0].date)) {
-    throw pause(message);
-  }
-  validateHistory(latest);
-  return latest[0];
-}
-
 // The scanner submission records its task's analysis ID. Only that exact
-// analysis may be certified; a later scan of the same child SHA with other
-// properties must not replace it during verification.
-async function childAnalysis(input) {
-  const api = createPublicAPI({ pause, fetchImpl: input.fetchImpl ?? fetch });
-  const latest = await latestAnalysis(api, { pullRequest: String(input.pullNumber) },
-    'latest pull request analysis is missing or malformed');
-  if (latest.key !== input.childAnalysisId) throw pause('latest pull request analysis is not the submitted analysis');
-  return { analysisId: latest.key, date: latest.date };
+// analysis may be certified, so a later scan of the same child SHA with other
+// properties cannot replace it. Public PR analyses carry no analysis ID, so the
+// protected caller supplies the authenticated current-task reader.
+async function submittedChild(input) {
+  let current;
+  try { current = await input.currentChildAnalysis(); } catch {
+    throw pause('current pull request analysis could not be read');
+  }
+  if (current !== input.childAnalysisId) throw pause('current pull request analysis is not the submitted analysis');
 }
 
 async function parentBaseline(input) {
@@ -56,9 +45,9 @@ async function parentBaseline(input) {
   if (!Array.isArray(rows) || rows.length !== 1 || rows[0].type !== 'LONG') {
     throw pause('actual target lacks one independent LONG baseline');
   }
-  const history = await api('project_analyses/search', { project, branch: input.baseRef, p: '1', ps: '1000' });
+  const history = await api('project_analyses/search', { project, branch: input.baseRef, p: '1', ps: '500' });
   const latest = history?.analyses;
-  if (!Array.isArray(latest) || latest.length < 1 || latest.length > 1000 || history.paging?.pageIndex !== 1 ||
+  if (!Array.isArray(latest) || latest.length < 1 || latest.length > 500 || history.paging?.pageIndex !== 1 ||
       !Number.isSafeInteger(history.paging?.total) || history.paging.total !== latest.length ||
       latest[0].revision !== input.baseSHA || typeof latest[0].key !== 'string' || !latest[0].key ||
       !validTime(latest[0].date)) {
@@ -70,16 +59,17 @@ async function parentBaseline(input) {
 
 async function verifyMaintenanceAnalysis(input) {
   if (!/^[a-f0-9]{40}$/.test(input.baseSHA ?? '')) throw pause('exact base revision is required');
-  if (typeof input.childAnalysisId !== 'string' || !input.childAnalysisId) throw pause('submitted child analysis identity is required');
+  if (typeof input.childAnalysisId !== 'string' || !input.childAnalysisId || typeof input.currentChildAnalysis !== 'function') {
+    throw pause('submitted child analysis identity is required');
+  }
   const before = await parentBaseline(input);
-  const submitted = await childAnalysis(input);
+  await submittedChild(input);
   const child = await verifySonar(input);
-  if (Date.parse(child.analysisDate) !== Date.parse(submitted.date)) throw pause('verified child analysis is not the submitted analysis');
   if (Date.parse(child.analysisDate) <= Date.parse(before.date)) throw pause('child analysis predates its parent baseline');
   const after = await parentBaseline(input);
   if (JSON.stringify(before) !== JSON.stringify(after)) throw pause('parent baseline changed during child verification');
-  if (JSON.stringify(await childAnalysis(input)) !== JSON.stringify(submitted)) throw pause('child analysis changed during verification');
-  return { parent: before, child: { ...child, analysisId: submitted.analysisId } };
+  await submittedChild(input);
+  return { parent: before, child: { ...child, analysisId: input.childAnalysisId } };
 }
 
 module.exports = { verifyMaintenanceAnalysis, parentBaseline };

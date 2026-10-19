@@ -186,6 +186,11 @@ class ParentAndCleanupTests(unittest.TestCase):
                      [row, row], [row, dict(row, key="two")], [dict(row, revision="b" * 40)]):
             with self.subTest(rows=rows), self.assertRaises(maintenance.MaintenanceError):
                 verify(rows)
+        # project_analyses/search serves at most 500 rows; a longer history fails closed.
+        many = [dict(row, key=f"k{index}", date=f"2026-09-{30 - index // 24:02d}T{23 - index % 24:02d}:00:00Z")
+                for index in range(maintenance.ANALYSIS_PAGE + 1)]
+        with self.assertRaisesRegex(maintenance.MaintenanceError, "Incomplete parent analysis history"):
+            verify(many)
 
     def test_term_refusal_still_attempts_due_kill_and_retains_uncertainty(self):
         from unittest.mock import Mock, call

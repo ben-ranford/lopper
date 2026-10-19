@@ -73,9 +73,11 @@ then H as the PR with both target and base equal that branch. Never synthesize a
 revision or substitute main. A completed scanner/CE task is not certification:
 `sonar_maintenance_verify.js` adds the stable exact-parent-baseline guard around
 unchanged `queue_me_sonar.js` App12526/check/suite/head/base/time/quality checks,
-and certifies only the child analysis whose ID the submission task recorded: the
-latest pull-request analysis must be that ID, with the verified analysis time,
-before and after verification.
+and certifies only the child analysis whose ID the submission task recorded. Public
+pull-request analyses carry no analysis ID, so the protected caller supplies an
+authenticated reader (`current_pull_request_analysis`, the PR's single successful
+current REPORT task) that must return that ID before and after verification.
+Analysis history reads use Sonar's 500-row page limit; a longer history fails closed.
 Zero active-or-waived issues, zero hotspots and no ignored gate conditions remain
 mandatory. Deployment, actual native/authenticated scanner execution, hosted CI,
 Sonar and Codex review clearance are separate pending gates.
