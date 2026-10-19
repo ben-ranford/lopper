@@ -130,7 +130,7 @@ func appendUnusedImportResults(results []sarifResult, rules *sarifRuleBuilder, d
 		})
 
 		locations := toSARIFLocations(imp.Locations)
-		if len(locations) == 0 && anchor != nil {
+		if len(imp.Locations) == 0 && anchor != nil {
 			locations = []sarifLocation{*anchor}
 		}
 		results = append(results, sarifResult{
