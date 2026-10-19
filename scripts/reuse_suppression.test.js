@@ -516,6 +516,21 @@ test('binds the artifact window to exactly one successful listed producer job', 
   }
 });
 
+test('names the HTTP status of a failed GitHub API read without its message', async () => {
+  for (const status of [502, 503, 404]) {
+    const fixture = harness();
+    fixture.arguments.github.rest.actions.getWorkflow = async () => {
+      throw Object.assign(new Error('secret-token or signed-url'), { status });
+    };
+    await assert.rejects(fixture.verify(), { message: `Reuse suppression: GitHub API request failed with HTTP ${status}` });
+  }
+  for (const status of [0, 600, '502', 1.5]) {
+    const fixture = harness();
+    fixture.arguments.github.rest.actions.getWorkflow = async () => { throw Object.assign(new Error('x'), { status }); };
+    await assert.rejects(fixture.verify(), { message: 'Reuse suppression: evidence could not be verified' });
+  }
+});
+
 test('surfaces only fixed provenance failure text from the adapter', async () => {
   const fixed = 'Suppression provenance: artifact is outside the selected producer attempt';
   for (const [message, expected] of [[fixed, fixed],

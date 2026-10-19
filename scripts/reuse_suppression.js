@@ -333,6 +333,10 @@ function createVerifier(loadVerifier = () => require('./suppression_provenance.j
       if (error instanceof EvidenceError || error instanceof CIDeferred) throw error;
       // The adapter's fixed failure text names the failed check without any API data.
       if (PROVENANCE_FAILURE.test(error?.message)) throw new EvidenceError(error.message);
+      // Octokit request failures carry only a numeric HTTP status worth logging.
+      if (Number.isSafeInteger(error?.status) && error.status >= 100 && error.status <= 599) {
+        throw new EvidenceError(`Reuse suppression: GitHub API request failed with HTTP ${error.status}`);
+      }
       throw new EvidenceError('Reuse suppression: evidence could not be verified');
     }
   }

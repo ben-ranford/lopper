@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +35,18 @@ class SharedHead(EventError):
 
     def __init__(self, head):
         super().__init__("Pull request head is shared with another open pull request")
+        self.head = policy.immutable_sha(head)
+
+
+class Settled(EventError):
+    """The wakeup needs no evaluation; any status it could affect was already corrected."""
+
+
+class BaseMoved(EventError):
+    """The target branch moved since GitHub last recorded this PR's base; CI evidence is for the old base."""
+
+    def __init__(self, head):
+        super().__init__("Pull request base does not match the current protected target")
         self.head = policy.immutable_sha(head)
 
 
@@ -193,14 +206,28 @@ class GitHub:
                      "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28",
                      "Content-Type": "application/json"})
-        try:
-            with self.opener.open(request, timeout=30) as response:
-                content = response.read(16 * 1024 * 1024 + 1)
-        except (OSError, http.client.HTTPException) as error:
-            raise EventError("GitHub API request failed") from error
+        content = self.read(request, retry=data is None)
         if len(content) > 16 * 1024 * 1024:
             raise EventError("GitHub API response exceeded its safety bound")
         return json.loads(content)
+
+    def read(self, request, *, retry):
+        # Reads are idempotent: retry transient server and transport failures a
+        # bounded number of times. Writes and client errors are never retried.
+        for attempt in range(3 if retry else 1):
+            try:
+                with self.opener.open(request, timeout=30) as response:
+                    return response.read(16 * 1024 * 1024 + 1)
+            except urllib.error.HTTPError as error:
+                failure = error
+                if error.code < 500:
+                    break
+            except (OSError, http.client.HTTPException) as error:
+                failure = error
+            if attempt < 2 and retry:
+                time.sleep(2 ** attempt)
+        detail = f" (HTTP {failure.code})" if isinstance(failure, urllib.error.HTTPError) else ""
+        raise EventError("GitHub API request failed" + detail) from failure
 
     def pages(self, path):
         if "?" in path:
@@ -371,7 +398,7 @@ def pull_snapshot(api, repository, identifier, pull_number):
         require_stack_parent(pulls, identifier, pull, document["default_branch"])
     target = protected if pull["base"]["ref"] == document["default_branch"] else branch_sha(api, repository, pull["base"]["ref"])
     if target != pull["base"]["sha"]:
-        raise EventError("Pull request base does not match the current protected target")
+        raise BaseMoved(pull["head"]["sha"])
     return validate_snapshot({
         "version": 2, "repository": repository, "repository_id": identifier,
         "head_repository_id": pull["head"]["repo"]["id"], "pull_number": pull_number,
@@ -386,8 +413,11 @@ def same_live_pair(api, snapshot):
 
 
 def signal_pull_number(api, event, repository, identifier, workflow, actor):
+    if event["action"] != "completed":
+        # Only a completed review signal carries a decision; earlier deliveries are wakeup noise.
+        raise Settled("Review signal is not complete yet")
     run = api.request(f"/repos/{repository}/actions/runs/{number(event['workflow_run']['id'])}")
-    if (event["action"] != "completed" or run["status"] != "completed"
+    if (run["status"] != "completed"
             or run["event"] != "pull_request_review" or run["path"] != workflow
             or run["repository"]["id"] != identifier or run["id"] != event["workflow_run"]["id"]
             or run["name"] != "Reuse review signal"):
@@ -469,11 +499,29 @@ def ci_pull_number(api, event, repository, identifier):
     try:
         return resolve_ci_pull(api, run, repository, identifier)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        live_repository(api, repository, identifier)
-        invalidate_pulls(api, repository, identifier,
-                         "CI wakeup unresolved; refresh exact-revision reuse analysis")
-        raise EventError("Authenticated CI wakeup could not resolve its current exact pair; "
-                         "invalidated open target PRs pending explicit refresh") from error
+        # Runs of closed, superseded, fork or behind PRs cannot be resolved.
+        # Their outcome can only matter to open PRs whose current head is this
+        # run's head, so revoke a success there instead of pending every PR.
+        description = ("Base moved; update the branch so CI runs against the current target"
+                       if isinstance(error, BaseMoved) else "CI wakeup unresolved; refresh exact-revision reuse analysis")
+        revoked = revoke_head(api, repository, identifier, run["head_sha"], description)
+        reason = str(error) if isinstance(error, EventError) else type(error).__name__
+        raise Settled(f"CI wakeup has no current exact pair ({reason}); revoked {revoked} matching head status") from error
+
+
+def revoke_head(api, repository, identifier, head, description):
+    """Write pending on a head only when an open PR uses it and its reuse-check is or may be success."""
+    head = policy.immutable_sha(head)
+    pulls = [row for row in api.pages(f"/repos/{repository}/pulls")
+             if row["state"] == "open" and row["base"]["repo"]["id"] == identifier and row["head"]["sha"] == head]
+    if not pulls:
+        return 0
+    current = current_statuses(api, repository)
+    # An incomplete inventory cannot prove absence of success; revoke.
+    if current is not None and not any(certified_record(current, row) is not None for row in pulls):
+        return 0
+    post_status(api, repository, head, "pending", description)
+    return 1
 
 
 def resolve_ci_pull(api, run, repository, identifier):
@@ -559,6 +607,12 @@ def prepare(api, event, event_name, repository, identifier, signal_workflow, ref
             post_status(api, repository, error.head, "pending",
                         "Head is shared with another open pull request; reuse evidence is not certified")
         raise
+    except BaseMoved as error:
+        # GitHub records a new base only on PR updates; CI evidence is for the old
+        # base, so this PR waits for a branch update rather than failing.
+        post_status(api, repository, error.head, "pending",
+                    "Base moved; update the branch so CI runs against the current target")
+        raise Settled("Pull request base moved; waiting for a branch update") from error
     if event_name == "pull_request_target":
         pull = event["pull_request"]
         if (pull["number"] != pull_number or pull["base"]["sha"] != snapshot["base"]
@@ -1017,6 +1071,8 @@ def publish(api, snapshot, result, analysis_result, reviewers, suppression=None,
         # A genuine new CI epoch invalidates this proof without making an
         # optional PR-head job permanently fail. Correct our own old success.
         status(api, snapshot, "pending", "Current CI requires fresh protected reuse evidence")
+    except BaseMoved:
+        status(api, snapshot, "pending", "Base moved; update the branch so CI runs against the current target")
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
         status(api, snapshot, "failure", "Reuse, suppression provenance or policy review failed; see run")
         raise EventError(str(error)) from error
@@ -1091,7 +1147,12 @@ def main(argv=None):
             elif args.command == "invalidate-stack":
                 print(f"Invalidated {invalidate_stack_event(*event_arguments)} dependent PR statuses")
             else:
-                snapshot = prepare(*event_arguments, args.signal_workflow, args.refresh_actor)
+                try:
+                    snapshot = prepare(*event_arguments, args.signal_workflow, args.refresh_actor)
+                except Settled as outcome:
+                    # No snapshot output: analysis, suppression and publication are skipped.
+                    print("Protected reuse controller settled: " + str(outcome))
+                    return 0
                 emit(args.snapshot, "snapshot", snapshot)
                 emit_readiness(prepare_readiness(api, snapshot))
         else:
@@ -1108,6 +1169,11 @@ def main(argv=None):
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print("Protected reuse controller failed: " + str(error), file=sys.stderr)
+        cause = error.__cause__
+        if cause is not None:
+            # Controller messages are fixed text; other causes are named, not echoed.
+            detail = str(cause) if isinstance(cause, EventError) else type(cause).__name__
+            print("Caused by: " + detail, file=sys.stderr)
         return 2
 
 

@@ -277,6 +277,9 @@ func TestReuseWorkflowSuppressionEvidenceUsesBoundReadonlySource(t *testing.T) {
 	assertWorkflowStepEnv(t, step, "suppression verifier", map[string]string{
 		"REUSE_SNAPSHOT": "${{ needs.prepare.outputs.snapshot }}", "GH_TOKEN": "${{ github.token }}",
 	})
+	if step.With["retries"] != "3" {
+		t.Fatal("suppression verifier reads must retry transient GitHub API failures")
+	}
 	script := step.With["script"]
 	for _, binding := range []string{
 		"require('./scripts/reuse_suppression.js')", "snapshot: JSON.parse(process.env.REUSE_SNAPSHOT)",
