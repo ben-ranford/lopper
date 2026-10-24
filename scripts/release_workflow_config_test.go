@@ -5017,10 +5017,19 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 		}
 	}
 
-	covPattern := regexp.MustCompile(`(?m)^cov:\n(?:\t.*\n)+`)
+	covPattern := regexp.MustCompile(`(?m)^cov:[^\n]*\n(?:\t.*\n)+`)
 	covTarget := covPattern.FindString(makefile)
 	if covTarget == "" {
 		t.Fatal("Makefile must define the cov target")
+	}
+	if !strings.Contains(covTarget, `cov-produce`) || !strings.Contains(covTarget, `@$(MAKE) cov-check`) {
+		t.Fatalf("cov target must run the producer before the reusable checker, got:\n%s", covTarget)
+	}
+
+	covProducerPattern := regexp.MustCompile(`(?m)^cov-produce:\n(?:\t.*\n)+`)
+	covProducer := covProducerPattern.FindString(makefile)
+	if covProducer == "" {
+		t.Fatal("Makefile must define the cov-produce target")
 	}
 	for _, want := range []string{
 		`grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'`,
@@ -5030,12 +5039,29 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 		`awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"`,
 		`awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
 		`} > "$(COVERAGE_FILE)"`,
-		`mkdir -p .artifacts`,
-		`-coverprofile="$(COVERAGE_FILE)"`,
-		`-package-min="$(COVERAGE_PACKAGE_MIN)"`,
 	} {
-		if !strings.Contains(covTarget, want) {
-			t.Fatalf("cov target must contain %q", want)
+		if !strings.Contains(covProducer, want) {
+			t.Fatalf("cov-produce target must contain %q", want)
+		}
+	}
+
+	covCheckPattern := regexp.MustCompile(`(?m)^cov-check:\n(?:\t.*\n)+`)
+	covCheck := covCheckPattern.FindString(makefile)
+	if covCheck == "" {
+		t.Fatal("Makefile must define the cov-check target")
+	}
+	for _, want := range []string{
+		`mkdir -p .artifacts`,
+		`$(GO_CMD) run ./tools/coveragegate`,
+		`-coverprofile="$(COVERAGE_FILE)"`,
+		`-min="$(COVERAGE_MIN)"`,
+		`-package-min="$(COVERAGE_PACKAGE_MIN)"`,
+		`-total-out=".artifacts/coverage-total.txt"`,
+		`-packages-out=".artifacts/coverage-packages.txt"`,
+		`-package-failures-out=".artifacts/coverage-package-failures.txt"`,
+	} {
+		if !strings.Contains(covCheck, want) {
+			t.Fatalf("cov-check target must contain %q", want)
 		}
 	}
 }
@@ -5092,6 +5118,44 @@ func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) 
 		assertFileExists(t, totalOutput)
 		assertFileExists(t, packagesOutput)
 		assertFileExists(t, packageFailuresOutput)
+	})
+
+	t.Run("cov-check reuses merged profile", func(t *testing.T) {
+		root := newTempCoverageMakeRepo(t)
+		artifacts := filepath.Join(root, ".artifacts")
+		profile := filepath.Join(artifacts, "coverage.out")
+		if err := os.MkdirAll(artifacts, 0o755); err != nil {
+			t.Fatalf("create coverage artifacts directory: %v", err)
+		}
+		if err := os.WriteFile(profile, []byte("mode: atomic\npkg/file.go:1.1,1.2 1 1\n"), 0o644); err != nil {
+			t.Fatalf("write existing merged profile: %v", err)
+		}
+
+		runMakeTargetInDir(t, root, "cov-check", map[string]string{
+			"GO":                   fakeGo,
+			"GO_TOOLCHAIN":         "local",
+			"COVERAGE_MIN":         "98",
+			"COVERAGE_PACKAGE_MIN": "98",
+		})
+
+		assertFileExists(t, filepath.Join(artifacts, "coverage-total.txt"))
+		assertFileExists(t, filepath.Join(artifacts, "coverage-packages.txt"))
+		assertFileExists(t, filepath.Join(artifacts, "coverage-package-failures.txt"))
+		assertPathAbsent(t, filepath.Join(artifacts, "coverage-default.out"))
+		assertPathAbsent(t, filepath.Join(artifacts, "coverage-lockfiledrift-head.out"))
+	})
+
+	t.Run("cov-check fails when merged profile is missing", func(t *testing.T) {
+		root := newTempCoverageMakeRepo(t)
+		output, exitCode := runMakeTargetInDirExpectExitCode(t, root, "cov-check", map[string]string{
+			"GO":                   fakeGo,
+			"GO_TOOLCHAIN":         "local",
+			"COVERAGE_MIN":         "98",
+			"COVERAGE_PACKAGE_MIN": "98",
+		}, 2)
+		if !strings.Contains(output, "missing coverage profile for coveragegate") {
+			t.Fatalf("cov-check exit code %d did not report the missing profile:\n%s", exitCode, output)
+		}
 	})
 }
 
