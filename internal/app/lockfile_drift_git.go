@@ -143,19 +143,34 @@ func classifyGitCandidatePaths(ctx context.Context, repoPath string, paths []str
 }
 
 func gitChangedFilesForClassifiedPaths(ctx context.Context, repoPath string, trackedPaths, untrackedPaths []string) (map[string]struct{}, error) {
-	changed := map[string]struct{}{}
-	tracked, err := gitTrackedChangesForPaths(ctx, repoPath, trackedPaths)
+	return collectGitChangedFiles(ctx, repoPath, gitSelectedChangedPaths, trackedPaths, untrackedPaths)
+}
+
+// gitChangedPathPolicy keeps an empty selected set distinct from the entire worktree.
+type gitChangedPathPolicy uint8
+
+const (
+	gitSelectedChangedPaths gitChangedPathPolicy = iota
+	gitAllChangedPaths
+)
+
+// Selected paths have already been classified by the caller, which also owns
+// lockfile filter policy. All-path collection includes every untracked file.
+func collectGitChangedFiles(ctx context.Context, repoPath string, policy gitChangedPathPolicy, trackedPaths, untrackedPaths []string) (map[string]struct{}, error) {
+	tracked, err := gitTrackedChanges(ctx, repoPath, trackedPaths, policy)
 	if err != nil {
 		return nil, err
 	}
-	for _, path := range tracked {
+	if policy == gitAllChangedPaths {
+		untrackedPaths, err = gitUntrackedFiles(ctx, repoPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	changed := make(map[string]struct{}, len(tracked)+len(untrackedPaths))
+	for _, path := range mergeSortedGitPaths(tracked, untrackedPaths) {
 		changed[path] = struct{}{}
 	}
-
-	for _, path := range untrackedPaths {
-		changed[path] = struct{}{}
-	}
-
 	return changed, nil
 }
 
@@ -219,7 +234,11 @@ func hasGitMetadataInAncestry(path string) (bool, error) {
 }
 
 func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
-	if len(paths) == 0 {
+	return gitTrackedChanges(ctx, repoPath, paths, gitSelectedChangedPaths)
+}
+
+func gitTrackedChanges(ctx context.Context, repoPath string, paths []string, policy gitChangedPathPolicy) ([]string, error) {
+	if policy == gitSelectedChangedPaths && len(paths) == 0 {
 		return nil, nil
 	}
 	hasHead, err := gitHasVerifiedHead(ctx, repoPath)
@@ -227,18 +246,18 @@ func gitTrackedChangesForPaths(ctx context.Context, repoPath string, paths []str
 		return nil, err
 	}
 	if hasHead {
-		return gitDiffNameOnlyForPaths(ctx, repoPath, paths, "HEAD")
+		return gitDiffNameOnlyForPolicy(ctx, repoPath, paths, policy, "HEAD")
 	}
 	// Unborn HEAD: derive tracked changes from staged + working tree diffs.
-	staged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths, gitCachedFlag)
+	staged, err := gitDiffNameOnlyForPolicy(ctx, repoPath, paths, policy, gitCachedFlag)
 	if err != nil {
 		return nil, err
 	}
-	unstaged, err := gitDiffNameOnlyForPaths(ctx, repoPath, paths)
+	unstaged, err := gitDiffNameOnlyForPolicy(ctx, repoPath, paths, policy)
 	if err != nil {
 		return nil, err
 	}
-	return mergeGitPaths(staged, unstaged), nil
+	return mergeSortedGitPaths(staged, unstaged), nil
 }
 
 func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
@@ -257,8 +276,12 @@ func gitHasVerifiedHead(ctx context.Context, repoPath string) (bool, error) {
 }
 
 func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
+	return gitDiffNameOnlyForPolicy(ctx, repoPath, paths, gitSelectedChangedPaths, diffArgs...)
+}
+
+func gitDiffNameOnlyForPolicy(ctx context.Context, repoPath string, paths []string, policy gitChangedPathPolicy, diffArgs ...string) ([]string, error) {
 	groups := make([][]string, 0)
-	for _, batch := range gitPathspecBatches(paths) {
+	for _, batch := range gitChangedPathBatches(paths, policy) {
 		changed, err := gitDiffNameOnly(ctx, repoPath, batch, diffArgs...)
 		if err != nil {
 			return nil, err
@@ -266,6 +289,13 @@ func gitDiffNameOnlyForPaths(ctx context.Context, repoPath string, paths []strin
 		groups = append(groups, changed)
 	}
 	return mergeSortedGitPaths(groups...), nil
+}
+
+func gitChangedPathBatches(paths []string, policy gitChangedPathPolicy) [][]string {
+	if policy == gitAllChangedPaths {
+		return [][]string{nil}
+	}
+	return gitPathspecBatches(paths)
 }
 
 func gitDiffNameOnly(ctx context.Context, repoPath string, paths []string, diffArgs ...string) ([]string, error) {
@@ -344,15 +374,7 @@ func gitLiteralPathspecs(paths []string) []string {
 }
 
 func gitUntrackedFiles(ctx context.Context, repoPath string) ([]string, error) {
-	command, err := gitCommandContext(ctx, repoPath, gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg)
-	if err != nil {
-		return nil, err
-	}
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("run git %s %s %s: %w", gitLsFilesSubcommand, gitOthersFlag, gitExcludeStandardArg, err)
-	}
-	return parseGitOutputLines(output), nil
+	return gitFilesForPolicy(ctx, repoPath, nil, gitAllChangedPaths, gitOthersFlag, gitExcludeStandardArg)
 }
 
 func gitUntrackedFilesForPaths(ctx context.Context, repoPath string, paths []string) ([]string, error) {
@@ -364,11 +386,12 @@ func gitVisibleFilesForPaths(ctx context.Context, repoPath string, paths []strin
 }
 
 func gitFilesForPaths(ctx context.Context, repoPath string, paths []string, flags ...string) ([]string, error) {
-	if len(paths) == 0 {
-		return nil, nil
-	}
+	return gitFilesForPolicy(ctx, repoPath, paths, gitSelectedChangedPaths, flags...)
+}
+
+func gitFilesForPolicy(ctx context.Context, repoPath string, paths []string, policy gitChangedPathPolicy, flags ...string) ([]string, error) {
 	groups := make([][]string, 0)
-	for _, batch := range gitPathspecBatches(paths) {
+	for _, batch := range gitChangedPathBatches(paths, policy) {
 		args := make([]string, 0, 3+len(flags)+len(batch))
 		args = append(args, gitLsFilesSubcommand)
 		args = append(args, flags...)
@@ -407,14 +430,6 @@ func gitCommandContextWithBinary(ctx context.Context, gitPath, repoPath string, 
 	}
 	command.Env = sanitizedGitEnv()
 	return command, nil
-}
-
-func parseGitOutputLines(output []byte) []string {
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
-	}
-	return lines
 }
 
 func parseNULTerminatedGitOutput(output []byte) []string {

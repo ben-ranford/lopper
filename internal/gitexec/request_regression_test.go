@@ -74,6 +74,7 @@ func TestCommandPreservesSupportedCallerArguments(t *testing.T) {
 		{"unborn unstaged", safe, []string{"diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--", ":(literal)go.mod"}},
 		{"visible files", safe, []string{"ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ":(literal)go.mod"}},
 		{"untracked files", safe, []string{"ls-files", "--others", "--exclude-standard", "-z", "--", ":(literal)go.mod"}},
+		{"all untracked NUL", safe, []string{"ls-files", "--others", "--exclude-standard", "-z", "--"}},
 		{"legacy untracked", safe, []string{"ls-files", "--others", "--exclude-standard"}},
 		{"attributes", safe, []string{"check-attr", "--stdin", "-z", "--all"}},
 		{"filter config", safe, []string{"config", "--null", "--includes", "--get-regexp", `^filter\..*\.(clean|process)$`}},

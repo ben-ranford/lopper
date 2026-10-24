@@ -1958,13 +1958,6 @@ func TestLockfileDriftHelpers(t *testing.T) {
 		t.Fatalf("expected unchanged path not to be detected")
 	}
 
-	lines := parseGitOutputLines([]byte("a\nb\n"))
-	if len(lines) != 2 || lines[0] != "a" || lines[1] != "b" {
-		t.Fatalf("unexpected parsed git output lines: %#v", lines)
-	}
-	if got := parseGitOutputLines([]byte("")); len(got) != 0 {
-		t.Fatalf("expected empty git output lines, got %#v", got)
-	}
 	merged := mergeGitPaths([]string{"a", "b"}, []string{"b", "c"})
 	if len(merged) != 3 || merged[0] != "a" || merged[1] != "b" || merged[2] != "c" {
 		t.Fatalf("unexpected merged git paths: %#v", merged)
