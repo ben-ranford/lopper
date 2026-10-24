@@ -43,3 +43,17 @@ source set totals 6,154 lines before and 6,149 after, including the new shared
 fixture and permission/content contract tests. This measures the final refactor,
 not a mandatory size budget; retaining distinct regression assertions matters more
 than maximizing deleted lines.
+
+Automation rejection fixtures retain the child execution error when expected
+checker output is missing. The action-pinning rejection assertion includes the
+command, working directory, process status (or `not started`), and child error.
+Each context field is limited to 512 bytes before quoting, with a `[truncated]`
+marker when needed; inherited environment variables are not dumped. The related
+automation-examples helper uses the same context for empty-output failures and
+returns the original child error, preserving `errors.Is`/`errors.As` inspection.
+
+For #1702, the archived verify-checks log from run `35849293531`, job
+`107142876879`, confirms an empty-output assertion during coverage but contains
+no child execution error. A silent child failure and missing executable/working
+directory are deliberate diagnostic regression scenarios, not established causes
+of that historical failure. Production action-pinning policy remains unchanged.
