@@ -28,7 +28,10 @@ go run ./cmd/lopper analyse --top 20 --repo . --language all --format csv > repo
 CSV characteristics:
 
 - Header row is fixed and emitted even when there are no dependency rows.
-- Dependency rows are sorted by `language`, then `dependency_name`.
+- Dependency rows are sorted by `language`, then `dependency_name`. Duplicate
+  rows are ordered by normalized identity ecosystem, namespace/name, version,
+  and PURL, with serialized visible fields and identity presence as the final
+  tie-breaker. Input permutations therefore produce identical CSV output.
 - Multi-value cells use `|` as the inner delimiter.
 - Numeric columns use decimal strings; optional nested fields are emitted as empty
   cells when absent.
@@ -108,7 +111,9 @@ CycloneDX characteristics:
   inventory and should complement, not replace, dedicated SBOM generators for
   full package-manager or container inventories.
 - `spdx-json` emits a preview SPDX 2.3 JSON direct-dependency SBOM when
-  `spdx-sbom-export-preview` is enabled.
+  `spdx-sbom-export-preview` is enabled. It shares CSV dependency ordering, so
+  duplicate package IDs, relationships, and the document namespace remain
+  stable when input dependencies are reordered.
 - `cyclonedx-vex-json` emits preview CycloneDX VEX vulnerability analysis
   records when `vulnerability-exceptions-vex-preview` is enabled.
 - Dashboard-wide combined CycloneDX SBOMs are emitted by `lopper dashboard
