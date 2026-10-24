@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -295,9 +298,19 @@ func printCodemodActionHint(out io.Writer, suggestions []detailCodemodSuggestion
 	if len(suggestions) == 0 {
 		return nil
 	}
-	actionTarget := firstNonEmpty(actionTargets...)
+	actionTarget := ""
+	for _, target := range actionTargets {
+		if strings.TrimSpace(target) != "" {
+			actionTarget = target
+			break
+		}
+	}
 	if actionTarget == "" {
 		return nil
+	}
+	if !utf8.ValidString(actionTarget) || strings.HasPrefix(actionTarget, "-") || strings.ContainsAny(actionTarget, `"\`) ||
+		strings.IndexFunc(actionTarget, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		actionTarget = strconv.Quote(actionTarget)
 	}
 	return writef(out, "  - action: apply-codemod %s --confirm\n", actionTarget)
 }
