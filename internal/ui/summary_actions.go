@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -62,6 +64,10 @@ func parseSummaryAction(input string, state *summaryState) (summaryAction, bool,
 
 	switch command {
 	case "apply-codemod", "codemod-apply":
+		args, err := splitSummaryCodemodArguments(strings.TrimSpace(input)[len(command):])
+		if err != nil {
+			return summaryAction{}, true, err
+		}
 		return parseSummaryCodemodApplyAction(args, state)
 	case "save-baseline", "baseline-save":
 		return parseSummaryBaselineSaveAction(args)
@@ -70,6 +76,49 @@ func parseSummaryAction(input string, state *summaryState) (summaryAction, bool,
 	default:
 		return summaryAction{}, false, nil
 	}
+}
+
+// Quoted tokens retain their delimiters until option parsing so a quoted flag
+// is dependency data. This is a string-literal grammar, never shell evaluation.
+func splitSummaryCodemodArguments(input string) ([]string, error) {
+	var args []string
+	for input = strings.TrimSpace(input); input != ""; input = strings.TrimSpace(input) {
+		token, err := summaryCodemodArgumentPrefix(input)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, token)
+		input = input[len(token):]
+	}
+	return args, nil
+}
+
+func summaryCodemodArgumentPrefix(input string) (string, error) {
+	if strings.HasPrefix(input, `"`) {
+		token, err := strconv.QuotedPrefix(input)
+		if err != nil {
+			return "", fmt.Errorf("invalid quoted codemod dependency: %w", err)
+		}
+		rest := input[len(token):]
+		if rest != "" && strings.TrimLeftFunc(rest, unicode.IsSpace) == rest {
+			return "", fmt.Errorf("quoted codemod dependency must be followed by whitespace")
+		}
+		return token, nil
+	}
+	if end := strings.IndexFunc(input, unicode.IsSpace); end >= 0 {
+		return input[:end], nil
+	}
+	return input, nil
+}
+
+func summaryCodemodDependencyArgument(arg string) (string, error) {
+	if strings.HasPrefix(arg, `"`) {
+		return strconv.Unquote(arg)
+	}
+	if strings.HasPrefix(arg, "-") {
+		return "", fmt.Errorf("unknown apply-codemod option: %s", arg)
+	}
+	return arg, nil
 }
 
 func parseSummaryCodemodApplyAction(args []string, state *summaryState) (summaryAction, bool, error) {
@@ -83,10 +132,11 @@ func parseSummaryCodemodApplyAction(args []string, state *summaryState) (summary
 		case "--allow-dirty":
 			action.allowDirty = true
 		default:
-			if strings.HasPrefix(arg, "-") {
-				return action, true, fmt.Errorf("unknown apply-codemod option: %s", arg)
+			dependency, err := summaryCodemodDependencyArgument(arg)
+			if err != nil {
+				return action, true, err
 			}
-			dependencyParts = append(dependencyParts, arg)
+			dependencyParts = append(dependencyParts, dependency)
 		}
 	}
 	if len(dependencyParts) > 0 {
