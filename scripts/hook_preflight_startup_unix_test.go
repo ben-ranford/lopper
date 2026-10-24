@@ -16,10 +16,10 @@ import (
 )
 
 type preflightStartupCase struct {
-	name, notice       string
-	noGroup, interrupt bool
-	wantStatus         int
-	wantReader         bool
+	name, notice                     string
+	noGroup, interrupt, nativeNotice bool
+	wantStatus                       int
+	wantReader                       bool
 }
 
 func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
@@ -28,8 +28,10 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "verified setpgid diagnostic", notice: "expected", wantStatus: 7, wantReader: true},
 		{name: "unknown diagnostic", notice: "unknown", wantStatus: 1},
 		{name: "additional diagnostic", notice: "multiline", wantStatus: 1},
+		{name: "duplicate diagnostic", notice: "duplicate", wantStatus: 1},
 		{name: "trailing nul diagnostic", notice: "nul", wantStatus: 1},
 		{name: "unterminated diagnostic", notice: "unterminated", wantStatus: 1},
+		{name: "unterminated fixture isolates native launch noise", notice: "unterminated", nativeNotice: true, wantStatus: 1},
 		{name: "other group diagnostic", notice: "other", wantStatus: 1},
 		{name: "missing owned group", noGroup: true, wantStatus: 1},
 		{name: "diagnostic without owned group", noGroup: true, notice: "expected", wantStatus: 1},
@@ -48,7 +50,7 @@ func assertPreflightStartup(t *testing.T, tc preflightStartupCase) {
 		t.Fatal(err)
 	}
 	marker, pidFile := filepath.Join(tmp, "reader-started"), filepath.Join(tmp, "anchor-pid")
-	source := preflightStartupFixture(t, tc.notice, tc.noGroup, tc.interrupt, pidFile)
+	source := preflightStartupFixture(t, tc.notice, tc.noGroup, tc.interrupt, pidFile, tc.nativeNotice)
 	helper := filepath.Join(tmp, "preflight.sh")
 	writeFile(t, helper, source)
 	sentinel := exec.Command("sleep", "60")
@@ -125,7 +127,7 @@ func assertPreflightStartupDiagnostic(t *testing.T, tc preflightStartupCase, pid
 	}
 }
 
-func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt bool, pidFile string) string {
+func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt bool, pidFile string, nativeNotice bool) string {
 	t.Helper()
 	contents, err := os.ReadFile("hook-config-preflight.sh")
 	if err != nil {
@@ -137,19 +139,32 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	injection := `	while [ ! -f "$state_dir/test-anchor-pid" ]; do :; done
 	while ! read -r test_anchor_pid <"$state_dir/test-anchor-pid"; do :; done
 	printf "%s\n" "$test_anchor_pid" >` + shellQuote(pidFile) + "\n"
+	diagnostic := `"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted"`
+	if nativeNotice {
+		// Force the pre-existing capture content that made injected cases
+		// platform-dependent. The fixture must replace it before publishing ready.
+		injection += "\tprintf \"%s\\n\" " + diagnostic + " >&2\n"
+	}
+	if notice != "" {
+		// Launch has completed at the PID handshake. Give each synthetic case
+		// its exact input, independently of Bash's native launch diagnostics.
+		injection += "\texec 2>\"$state_dir/launch-error\"\n"
+	}
 	switch notice {
 	case "expected", "multiline", "nul", "unterminated":
 		format := "%s\\n"
 		if notice == "unterminated" {
 			format = "%s"
 		}
-		injection += "\tprintf \"" + format + "\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" >&2\n"
+		injection += "\tprintf \"" + format + "\" " + diagnostic + " >&2\n"
 		if notice == "multiline" {
 			injection += "\tprintf \"additional diagnostic\\n\" >&2\n"
 		}
 		if notice == "nul" {
 			injection += "\tprintf \"\\0\" >&2\n"
 		}
+	case "duplicate":
+		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " " + diagnostic + " >&2\n"
 	case "exited":
 		injection += "\texit 1\n"
 	case "unknown":
@@ -182,6 +197,8 @@ func preflightStartupNotice(notice string, pid int) string {
 		return expected + "\n"
 	case "multiline":
 		return expected + "\nadditional diagnostic\n"
+	case "duplicate":
+		return expected + "\n" + expected + "\n"
 	case "nul":
 		return expected + "\n\x00"
 	case "unterminated":

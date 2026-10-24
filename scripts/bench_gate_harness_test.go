@@ -13,6 +13,7 @@ import (
 )
 
 func TestBenchGateFingerprintsHelperTestFiles(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
 		"bench_test.go": `package benchpkg
@@ -107,6 +108,7 @@ func TestBenchGateFixtureDoesNotMutateInheritedGitIndex(t *testing.T) {
 // [decl.Pos(), decl.End()) would miss it even though it can change
 // inlining, escape analysis, and therefore the benchmark's own allocations.
 func TestBenchGateFingerprintsCompilerDirectiveOnSelectedDeclaration(t *testing.T) {
+	t.Parallel()
 	assertBenchGateFingerprintsBaseThenHeadFiles(t,
 		map[string]string{
 			"bench_test.go": `package benchpkg
@@ -141,6 +143,7 @@ func helperValue() int {
 }
 
 func TestBenchGateFingerprintsTestMainHarnessFiles(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
 		"main_test.go": testMainHarnessFile("base"),
@@ -155,6 +158,7 @@ func TestBenchGateFingerprintsTestMainHarnessFiles(t *testing.T) {
 }
 
 func TestBenchGateFingerprintsPackageLevelInitializedVars(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
 		"setup_test.go": initializedVarHarnessFile("base"),
@@ -169,6 +173,7 @@ func TestBenchGateFingerprintsPackageLevelInitializedVars(t *testing.T) {
 }
 
 func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		baseFile string
@@ -198,6 +203,7 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", importInitSetupPackageFiles(tc.baseFile))
 			fixture.commit("base")
@@ -218,6 +224,7 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 // otherwise excluded (see importCanAffectBenchmark) to avoid making nearly
 // every test file a root via universally-imported packages like "testing".
 func TestBenchGateFingerprintsStdlibRegistrationSideEffectImport(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		headFile string
@@ -255,6 +262,7 @@ func TestOnly(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
 				"setup_test.go": `package benchpkg
@@ -280,6 +288,7 @@ func TestOnly(t *testing.T) {}
 // into the same test binary, so that import's init() runs regardless of
 // whether the import path looks like a typical hosted module path.
 func TestBenchGateFingerprintsDotlessExternalModuleImport(t *testing.T) {
+	t.Parallel()
 	assertBenchGateFingerprintsExternalModuleImport(t, "require foo v0.0.0\n\nreplace foo => ./foovendor\n")
 }
 
@@ -291,6 +300,7 @@ func TestBenchGateFingerprintsDotlessExternalModuleImport(t *testing.T) {
 // carries, so the import would be missed regardless of tracking it by
 // module membership.
 func TestBenchGateFingerprintsQuotedGoModRequireImport(t *testing.T) {
+	t.Parallel()
 	assertBenchGateFingerprintsExternalModuleImport(t, "require \"foo\" v0.0.0\n\nreplace \"foo\" => ./foovendor\n")
 }
 
@@ -364,6 +374,7 @@ func importInitSetupTestFile(importDecl, body string) string {
 }
 
 func TestBenchGateFingerprintsInterfaceDispatchedMethods(t *testing.T) {
+	t.Parallel()
 	assertBenchGateFingerprintsBaseThenHeadFiles(t,
 		map[string]string{
 			"bench_test.go": `package benchpkg
@@ -425,6 +436,7 @@ func assertBenchGateFingerprintsBaseThenHeadFiles(t *testing.T, baseFiles, headF
 // uses it, so the fingerprint stayed equal despite the benchmark now
 // executing different code.
 func TestBenchGateFingerprintsSwitchedImportBehindRetainedAlias(t *testing.T) {
+	t.Parallel()
 	assertBenchGateFingerprintsBaseThenHeadFiles(t,
 		map[string]string{
 			"bench_test.go": `package benchpkg
@@ -470,6 +482,7 @@ func BenchmarkValue(b *testing.B) {
 // to reachable receiver types keeps that support while no longer
 // invalidating benchmarks on unrelated ordinary-test method changes.
 func TestBenchGateIgnoresMethodOnUnreachableReceiverType(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
 		"helper_test.go": `package benchpkg
@@ -560,6 +573,7 @@ var setupValue = "` + value + `"
 }
 
 func TestBenchGateFingerprintsBenchmarkEmbedsWithGoSemantics(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		files       map[string]string
@@ -672,6 +686,7 @@ func BenchmarkValue(b *testing.B) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", tc.files)
 			fixture.commit("base")
@@ -684,6 +699,7 @@ func BenchmarkValue(b *testing.B) {
 }
 
 func TestBenchGateIgnoresOrdinaryTestOnlyEmbedFixtures(t *testing.T) {
+	t.Parallel()
 	assertBenchGateIgnoresChangedOrdinaryFixture(t, map[string]string{
 		"bench_test.go": `package benchpkg
 
@@ -718,6 +734,7 @@ func TestOrdinary(t *testing.T) {
 // the same group, even though selecting the benchmark's own var marks the
 // whole surrounding *ast.GenDecl as reached.
 func TestBenchGateIgnoresOrdinaryTestOnlyEmbedSharingVarGroupWithBenchmark(t *testing.T) {
+	t.Parallel()
 	assertBenchGateIgnoresChangedOrdinaryFixture(t, map[string]string{
 		"bench_test.go": `package benchpkg
 
@@ -768,6 +785,7 @@ func assertBenchGateIgnoresChangedOrdinaryFixture(t *testing.T, baseFiles map[st
 }
 
 func TestBenchGateIgnoresPackageCommentAndStringBenchmarkText(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchmarkpkg")
 	fixture.writeBenchmarkPackage("benchmarkpkg", map[string]string{
 		"bench_test.go": `package benchmarkpkg
@@ -819,6 +837,7 @@ func TestNoise(t *testing.T) {
 // source text, not the whole file, so TestNoise's own body -- never
 // selected, since the benchmark never references it -- can't affect it.
 func TestBenchGateIgnoresOrdinaryTestBodyChangeSharingFileWithBenchmark(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
 		"bench_test.go": `package benchpkg
@@ -871,6 +890,7 @@ func TestNoise(t *testing.T) {
 // invalid-status artifact and leave a stale summary/status from a previous
 // run in place.
 func TestBenchGateRoutesSelectorBuildFailureThroughInvalidGate(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 	fixture.commit("base")

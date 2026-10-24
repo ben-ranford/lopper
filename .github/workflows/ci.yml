@@ -483,9 +483,9 @@ jobs:
         run: |
           set +e
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+            PATH="$(go env GOPATH)/bin:$PATH" make cov-check COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           else
-            make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+            make cov-check COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           fi
           status=$?
           mkdir -p .artifacts

@@ -9,7 +9,7 @@ if [ "${GO+x}" != x ]; then
 fi
 : "${GO_BIN:=}"
 if [ "${GO_TOOLCHAIN+x}" != x ]; then
-	GO_TOOLCHAIN="go1.27.2"
+	GO_TOOLCHAIN="go1.27.3"
 fi
 if [ "${BENCH_COUNT+x}" != x ]; then
 	BENCH_COUNT="3"
@@ -1515,7 +1515,7 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 GOEOF
-if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -trimpath -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
 	fail_invalid_memory_gate "benchmark harness selector could not be built.";
 fi;
 echo "Running memory benchmark delta against $base_ref.";

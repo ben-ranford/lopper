@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint reuse-check actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint reuse-check actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-produce cov-check cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -21,7 +21,7 @@ LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
 GO_BIN ?=
-GO_TOOLCHAIN ?= go1.27.2
+GO_TOOLCHAIN ?= go1.27.3
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
 MANPAGE_DATE ?= 1970-01-01
@@ -244,7 +244,10 @@ benchdelta-cov:
 
 ci: benchdelta-cov
 
-cov:
+cov: cov-produce
+	@$(MAKE) cov-check
+
+cov-produce:
 	@mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
 		GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_DEFAULT_FILE)"
@@ -254,6 +257,8 @@ cov:
 		awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"; \
 		awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
 	} > "$(COVERAGE_FILE)"
+
+cov-check:
 	@mkdir -p .artifacts
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
 		-coverprofile="$(COVERAGE_FILE)" \

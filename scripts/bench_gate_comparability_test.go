@@ -7,8 +7,10 @@ import (
 const comparabilitySetupPath = "github.com/ben-ranford/lopper/benchpkg/setup"
 
 func TestBenchGateReusesInitializedImportEdges(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"duplicate alias", "production edge", "reflect import only"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			base, head := comparableImportFiles(kind)
 			fixture.writeBenchmarkPackage("benchpkg", base)
@@ -50,6 +52,7 @@ func comparabilityOrdinaryFile(suffix string, reflection bool) string {
 }
 
 func TestBenchGateProtectsDefaultImportBindings(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	base := defaultBindingFiles("math/rand", "math/rand/v2")
 	fixture.writeBenchmarkPackage("benchpkg", base)
