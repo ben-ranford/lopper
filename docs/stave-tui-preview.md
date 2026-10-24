@@ -126,6 +126,14 @@ The existing summary command grammar remains available at the command prompt:
 unconfirmed codemod is rejected; a confirmed codemod is issued through the
 typed Stave action registry and Lopper's existing action runner.
 
+Codemod hints quote dependency targets containing whitespace, quotes, backslashes,
+control characters, or a leading dash using Go double-quoted string syntax
+(for example, `apply-codemod "js-ts:dep --allow-dirty" --confirm`). Quoted
+text is one dependency argument; it cannot supply options. Escape sequences
+inside the quotes preserve the target without emitting terminal controls. This
+command grammar does not evaluate shell expressions. Ordinary unquoted targets
+and the `codemod-apply` alias remain supported.
+
 ## Capability and safety behavior
 
 The renderer negotiates truecolor, ANSI 256-color, ANSI 16-color, monochrome,
