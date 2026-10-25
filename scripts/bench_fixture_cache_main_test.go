@@ -9,10 +9,6 @@ import (
 	"testing"
 )
 
-// Compiler/test cache entries use the caller's Go cache. Each benchmark
-// fixture retains its own HOME, repository, worktrees and assertion output.
-var benchFixtureGoCache string
-
 func TestMain(m *testing.M) {
 	flag.Parse()
 	if err := configureFixtureParallelism(flag.CommandLine); err != nil {
@@ -23,12 +19,6 @@ func TestMain(m *testing.M) {
 		log.Printf("prepare Gradle inference proof: %v", err)
 		os.Exit(1)
 	}
-	cache, err := callerGoCache()
-	if err != nil {
-		log.Printf("resolve benchmark fixture Go cache: %v", err)
-		os.Exit(1)
-	}
-	benchFixtureGoCache = cache
 	os.Exit(m.Run())
 }
 

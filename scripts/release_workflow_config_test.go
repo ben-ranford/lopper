@@ -7079,6 +7079,12 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	if err != nil {
 		t.Fatalf("resolve go binary: %v", err)
 	}
+	// Resolve the caller's effective cache only for Go fixtures, before replacing
+	// HOME. Other fixtures deliberately put a test-binary launcher on PATH as go.
+	cache, err := callerGoCache()
+	if err != nil {
+		t.Fatalf("resolve benchmark fixture Go cache: %v", err)
+	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	moduleCacheDir := currentGoModuleCache(t, goPath)
 	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
@@ -7094,7 +7100,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"GO_BIN":       goPath,
 		"GO_TOOLCHAIN": "local",
 		"HOME":         homeDir,
-		"GOCACHE":      benchFixtureGoCache,
+		"GOCACHE":      cache,
 		"GOMODCACHE":   moduleCacheDir,
 		"BENCH_COUNT":  "1",
 		"BENCH_TIME":   "1x",
