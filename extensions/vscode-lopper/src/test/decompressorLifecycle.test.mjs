@@ -42,40 +42,58 @@ async function waitForPidExit(pid) {
   throw new Error(`Child process ${pid} was not reaped`);
 }
 
-test("input failure waits for a ready TERM-ignoring child to be reaped before retry", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "lopper-decompressor-child-"));
-  const readyPath = path.join(tempDir, "ready");
-  const termPath = path.join(tempDir, "term");
-  const input = new PassThrough();
-  const childCode = [
-    "const fs = require('node:fs');",
-    `fs.writeFileSync(${JSON.stringify(readyPath)}, String(process.pid));`,
-    `process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termPath)}, 'term'));`,
-    "setInterval(() => {}, 1000);",
-  ].join(" ");
-  let childPid;
-  const pending = spawnDecompressorChild(process.execPath, ["-e", childCode], input);
-  try {
-    childPid = Number(await waitForFile(readyPath));
-    input.write(Buffer.alloc(4096));
-    input.destroy(new Error("simulated truncated archive"));
-    await assert.rejects(pending, /simulated truncated archive/);
-    assert.equal(await readFile(termPath, "utf8"), "term", "TERM escalation should be exercised");
-    await waitForPidExit(childPid);
+for (const { name, closeInput, expectedError } of [
+  {
+    name: "input failure waits for a ready TERM-ignoring child to be reaped before retry",
+    closeInput: (input) => input.destroy(new Error("simulated truncated archive")),
+    expectedError: /simulated truncated archive/,
+  },
+  {
+    name: "premature input close reaps a ready TERM-ignoring child before retry",
+    closeInput: (input) => input.destroy(),
+    expectedError: /Premature close/,
+  },
+]) {
+  test(name, async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "lopper-decompressor-child-"));
+    const readyPath = path.join(tempDir, "ready");
+    const termPath = path.join(tempDir, "term");
+    const input = new PassThrough();
+    const childCode = [
+      "const fs = require('node:fs');",
+      `process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termPath)}, 'term'));`,
+      `fs.writeFileSync(${JSON.stringify(readyPath)}, String(process.pid));`,
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    let childPid;
+    let timer;
+    const pending = spawnDecompressorChild(process.execPath, ["-e", childCode], input);
+    try {
+      childPid = Number(await waitForFile(readyPath));
+      input.write(Buffer.alloc(4096));
+      closeInput(input);
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("decompressor did not terminate after input closure")), 5000);
+      });
+      await assert.rejects(Promise.race([pending, deadline]), expectedError);
+      assert.equal(await readFile(termPath, "utf8"), "term", "TERM escalation should be exercised");
+      await waitForPidExit(childPid);
 
-    // Model the package retry: prove the first child is already gone before
-    // the next decompressor starts.
-    await spawnDecompressorChild(process.execPath, ["-e", "process.stdin.resume()"], Readable.from(["retry archive"]));
-  } finally {
-    if (childPid) {
-      try {
-        process.kill(childPid, "SIGKILL");
-      } catch {}
-      await waitForPidExit(childPid).catch(() => {});
+      // Model the package retry: prove the first child is already gone before
+      // the next decompressor starts.
+      await spawnDecompressorChild(process.execPath, ["-e", "process.stdin.resume()"], Readable.from(["retry archive"]));
+    } finally {
+      clearTimeout(timer);
+      if (childPid) {
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {}
+        await waitForPidExit(childPid).catch(() => {});
+      }
+      await rm(tempDir, { recursive: true, force: true });
     }
-    await rm(tempDir, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 test("successful decompression completes; nonzero exit wins over secondary stdin EPIPE", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "lopper-decompressor-success-"));

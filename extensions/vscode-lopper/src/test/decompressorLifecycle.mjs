@@ -111,8 +111,7 @@ export function spawnDecompressorChild(command, args, input, spawn = cp.spawn) {
       if (error && error !== failure && !lateInputErrors.includes(error)) {
         if (childClosed) lateInputErrors.push(error);
         else if (!failure) {
-          failure = error;
-          failureSource = "input";
+          fail(error, "input");
         }
       }
       settleWhenComplete();
