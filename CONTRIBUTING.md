@@ -31,6 +31,8 @@ independently of `GOMAXPROCS`. An explicit `go test -parallel` setting takes
 precedence. Fixtures retain their own working directories and home directories,
 and reuse the caller's standard Go build cache instead of rebuilding a fresh
 cache for each normal, race and coverage run.
+Hosted OS smoke and VS Code smoke jobs key their Go caches separately, allowing
+each workload to retain its own compiler artifacts.
 
 The VS Code smoke harness repairs a download cleanup defect in the locked
 `@vscode/test-electron` 3.1.0 before importing it. Failed decompressors are closed
