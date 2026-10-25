@@ -177,8 +177,9 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	source = strings.Replace(source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n", 1)
 	if exited {
 		source = preflightExitObserver(t, source, pidFile)
+		noGroup = true
 	}
-	if noGroup || exited {
+	if noGroup {
 		// Disable job-control group creation in this fixture. The real kernel
 		// negative-PGID probe must fail; no fake kill implementation is involved.
 		source = preflightDisableJobControl(t, source)
