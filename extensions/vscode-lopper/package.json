@@ -369,7 +369,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest:e2e": "npm run compile",
-    "test:e2e": "node --test ./src/test/macOSBackgroundLauncherSupport.test.mjs && node ./src/test/runTest.mjs",
+    "test:e2e": "node --test ./src/test/macOSBackgroundLauncherSupport.test.mjs ./src/test/decompressorLifecycle.test.mjs && node ./src/test/runTest.mjs",
     "package:vsix": "vsce package"
   },
   "dependencies": {

@@ -25,6 +25,19 @@ make demos-check
 ```
 
 `make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
+
+The scripts package runs isolated subprocess fixtures with 16 parallel test slots,
+independently of `GOMAXPROCS`. An explicit `go test -parallel` setting takes
+precedence. Fixtures retain their own working directories and home directories,
+and reuse the caller's standard Go build cache instead of rebuilding a fresh
+cache for each normal, race and coverage run.
+Hosted OS smoke and VS Code smoke jobs key their Go caches separately, allowing
+each workload to retain its own compiler artifacts.
+
+The VS Code smoke harness repairs a download cleanup defect in the locked
+`@vscode/test-electron` 3.1.0 before importing it. Failed decompressors are closed
+and reaped before a retry. The repair checks the dependency version and exact
+affected source; review and retire it when upgrading to a fixed upstream version.
 `make lint` uses golangci-lint's `--allow-serial-runners` to wait for its shared
 global lock when another runner is active. It keeps the common temporary-directory
 namespace and all lint checks; lock waiting has no fixed deadline, while the

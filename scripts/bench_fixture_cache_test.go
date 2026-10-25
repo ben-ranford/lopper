@@ -47,13 +47,14 @@ func assertBenchFixtureCacheLifecycle(t *testing.T, mode string) {
 	}, testBinary, "-test.run=^TestBenchGateFixtureCacheProbe$", "-test.v")
 	t.Logf("cache lifecycle probe:\n%s", output)
 	assertBenchFixtureCacheProbeResult(t, mode, output, runErr)
-	assertBenchFixturePathRemoved(t, readFile(t, report))
-	entries, err := os.ReadDir(inheritedCache)
-	if err != nil {
-		t.Fatalf("read inherited cache after child exit: %v", err)
+	if got := readFile(t, report); got != inheritedCache {
+		t.Fatalf("fixture GOCACHE = %q, want caller cache %q", got, inheritedCache)
 	}
-	if len(entries) != 1 || entries[0].Name() != "sentinel" || readFile(t, sentinel) != "caller-owned cache\n" {
-		t.Fatal("fixture modified the caller-owned cache")
+	if got := readFile(t, sentinel); got != "caller-owned cache\n" {
+		t.Fatalf("caller cache sentinel = %q", got)
+	}
+	if _, err := os.Stat(inheritedCache); err != nil {
+		t.Fatalf("caller cache was removed: %v", err)
 	}
 }
 
@@ -72,8 +73,8 @@ func assertBenchFixtureCacheProbeResult(t *testing.T, mode, output string, runEr
 	}
 }
 
-// A separate test process starts with an empty package cache and lets its parent
-// verify cleanup after TestMain returns, including an ordinary failing test.
+// A separate test process checks caller-cache preservation after TestMain
+// returns, including when an ordinary test fails.
 func TestBenchGateFixtureCacheProbe(t *testing.T) {
 	mode := os.Getenv(benchFixtureCacheProbeEnv)
 	if mode == "" {
@@ -95,7 +96,10 @@ func TestBenchGateFixtureCacheProbe(t *testing.T) {
 		writeFile(t, os.Getenv("LOPPER_BENCH_CACHE_REPORT"), vars["GOCACHE"])
 		output := buildAndRunBenchFixtureProgram(t, repo, vars, "first")
 		if !strings.Contains(output, " -p fmt ") {
-			t.Fatal("fresh fixture cache did not compile fmt; cache reuse proof was not cold")
+			t.Fatal("fresh caller cache did not compile fmt; cache reuse proof was not cold")
+		}
+		if vars["GOCACHE"] != os.Getenv("GOCACHE") {
+			t.Fatalf("first fixture GOCACHE = %q, want caller cache %q", vars["GOCACHE"], os.Getenv("GOCACHE"))
 		}
 	})
 	assertBenchFixturePathRemoved(t, previousRepo)
@@ -105,9 +109,12 @@ func TestBenchGateFixtureCacheProbe(t *testing.T) {
 		if repo == previousRepo || vars["HOME"] == previousHome {
 			t.Fatal("fixtures reused their repository or HOME")
 		}
+		if vars["GOCACHE"] != os.Getenv("GOCACHE") {
+			t.Fatalf("second fixture GOCACHE = %q, want caller cache %q", vars["GOCACHE"], os.Getenv("GOCACHE"))
+		}
 		output := buildAndRunBenchFixtureProgram(t, repo, vars, "second")
 		if strings.Contains(output, " -p fmt ") {
-			t.Fatal("second fixture recompiled fmt instead of reusing compiler artifacts after first fixture cleanup")
+			t.Fatal("second fixture recompiled fmt instead of reusing compiler artifacts")
 		}
 	})
 }
