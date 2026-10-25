@@ -111,7 +111,8 @@ func parseFSharpImportLine(line []byte, relativePath string, lineNumber, column 
 	if !ok {
 		return nil
 	}
-	dependency, resolved := resolveImportDependency(strings.TrimPrefix(module, "global."), mapper, meta)
+	lookupModule := strings.TrimPrefix(stripFSharpTypeArguments(module), "global.")
+	dependency, resolved := resolveImportDependency(lookupModule, mapper, meta)
 	if !resolved {
 		return nil
 	}
@@ -201,7 +202,7 @@ func parseFSharpOpenBytes(line []byte) (module string, ok bool) {
 		return "", false
 	}
 	if target, hasTypeModifier := consumeKeyword(next, "type"); hasTypeModifier {
-		next = target
+		return parseFSharpOpenTypeTarget(target)
 	}
 	if len(next) == 0 || !isNamespaceStartByte(next[0]) {
 		return "", false
@@ -212,6 +213,105 @@ func parseFSharpOpenBytes(line []byte) (module string, ok bool) {
 	}
 	module = normalizeNamespace(string(next[:end]))
 	return module, module != ""
+}
+
+func parseFSharpOpenTypeTarget(target []byte) (string, bool) {
+	if len(target) == 0 || !isNamespaceStartByte(target[0]) {
+		return "", false
+	}
+	var groups []byte
+	end := 0
+	for end < len(target) {
+		consumed, stop, ok := consumeFSharpTypeTargetByte(target, end, &groups)
+		if !ok {
+			return "", false
+		}
+		if stop {
+			if len(groups) != 0 {
+				return "", false
+			}
+			break
+		}
+		end += consumed
+	}
+	remainder := bytes.TrimSpace(target[end:])
+	if len(groups) != 0 || (len(remainder) > 0 && !bytes.HasPrefix(remainder, []byte("//"))) {
+		return "", false
+	}
+	module := normalizeNamespace(string(target[:end]))
+	return module, module != ""
+}
+
+func consumeFSharpTypeTargetByte(target []byte, index int, groups *[]byte) (consumed int, stop, ok bool) {
+	if index+1 < len(target) && target[index] == '/' && target[index+1] == '/' {
+		return 0, true, true
+	}
+	ch := target[index]
+	if isNamespaceByte(ch) {
+		return 1, false, true
+	}
+	if isFSharpTypeGroupOpen(ch) {
+		*groups = append(*groups, ch)
+		return 1, false, true
+	}
+	if isFSharpTypeGroupClose(ch) && (ch != '>' || index == 0 || target[index-1] != '-') {
+		if !fsharpTypeGroupMatches(*groups, ch) {
+			return 0, false, false
+		}
+		*groups = (*groups)[:len(*groups)-1]
+		return 1, false, true
+	}
+	if len(*groups) > 0 {
+		// Generic arguments contain F# type syntax; preserve it and only
+		// validate balanced delimiters here.
+		return 1, false, true
+	}
+	if isSpaceByte(ch) {
+		return 0, true, true
+	}
+	return 0, false, false
+}
+
+func isFSharpTypeGroupOpen(ch byte) bool {
+	return ch == '<' || ch == '(' || ch == '[' || ch == '{'
+}
+
+func isFSharpTypeGroupClose(ch byte) bool {
+	return ch == '>' || ch == ')' || ch == ']' || ch == '}'
+}
+
+func fsharpTypeGroupMatches(groups []byte, closer byte) bool {
+	if len(groups) == 0 {
+		return false
+	}
+	open := groups[len(groups)-1]
+	return (open == '<' && closer == '>') ||
+		(open == '(' && closer == ')') ||
+		(open == '[' && closer == ']') ||
+		(open == '{' && closer == '}')
+}
+
+func stripFSharpTypeArguments(target string) string {
+	var result strings.Builder
+	depth := 0
+	for i := 0; i < len(target); i++ {
+		switch target[i] {
+		case '<':
+			depth++
+		case '>':
+			if i > 0 && target[i-1] == '-' {
+				continue
+			}
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				result.WriteByte(target[i])
+			}
+		}
+	}
+	return result.String()
 }
 
 func consumeKeyword(line []byte, keyword string) ([]byte, bool) {

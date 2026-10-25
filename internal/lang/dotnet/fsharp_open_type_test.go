@@ -15,6 +15,13 @@ func TestFSharpOpenTypeParsesFullNamespace(t *testing.T) {
 		"open type Acme.Logging.Log",
 		" \topen\ttype\tAcme.Logging.Log \r",
 		"open type global.Acme.Logging.Log",
+		"open type Acme.Logging.Container<int>.Nested",
+		"open type Acme.Logging.Container<string, int>.Nested",
+		"open type Acme.Logging.Box<int * string>",
+		"open type Acme.Logging.Box<Outer<int * string>, (int -> string)>.Nested",
+		"open type Acme.Logging.Box<float<m/s>>",
+		"open type Acme.Logging.Box<{| Value: float<m/s>; Name: string |}>",
+		"open type Acme.Logging.Log // comment",
 	} {
 		t.Run(input, func(t *testing.T) {
 			want := "Acme.Logging.Log"
@@ -23,6 +30,20 @@ func TestFSharpOpenTypeParsesFullNamespace(t *testing.T) {
 				want = "System.Math"
 			case "open type global.Acme.Logging.Log":
 				want = "global.Acme.Logging.Log"
+			case "open type Acme.Logging.Container<int>.Nested":
+				want = "Acme.Logging.Container<int>.Nested"
+			case "open type Acme.Logging.Container<string, int>.Nested":
+				want = "Acme.Logging.Container<string, int>.Nested"
+			case "open type Acme.Logging.Box<int * string>":
+				want = "Acme.Logging.Box<int * string>"
+			case "open type Acme.Logging.Box<Outer<int * string>, (int -> string)>.Nested":
+				want = "Acme.Logging.Box<Outer<int * string>, (int -> string)>.Nested"
+			case "open type Acme.Logging.Box<float<m/s>>":
+				want = "Acme.Logging.Box<float<m/s>>"
+			case "open type Acme.Logging.Box<{| Value: float<m/s>; Name: string |}>":
+				want = "Acme.Logging.Box<{| Value: float<m/s>; Name: string |}>"
+			case "open type Acme.Logging.Log // comment":
+				want = "Acme.Logging.Log"
 			}
 			module, ok := parseFSharpOpen(input)
 			if !ok || module != want {
@@ -49,6 +70,14 @@ func TestFSharpOpenDirectiveControls(t *testing.T) {
 		{"open type \t", ""},
 		{"open type 1Invalid.Namespace", ""},
 		{"open type .Acme.Logging", ""},
+		{"open type Acme.Logging.Log trailing", ""},
+		{"open type Acme.Logging.Container<int>.Nested\ttrailing", ""},
+		{"open type Acme.Logging.Container<int", ""},
+		{"open type Acme.Logging.Container<int>>", ""},
+		{"open type Acme.Logging.Box<(int * string>", ""},
+		{"open type Acme.Logging.Box<[int * string>", ""},
+		{"open type Acme.Logging.Box<Box<int)>", ""},
+		{"open type Acme.Logging.Box<float<m // truncated comment", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
@@ -83,7 +112,14 @@ func TestFSharpOpenTypeImportAttribution(t *testing.T) {
 	if len(meta.ambiguousByDependency) != 0 || len(meta.undeclaredByDependency) != 0 {
 		t.Fatalf("unexpected mapping diagnostics: %#v", meta)
 	}
+	for _, source := range []string{"open type Acme.Logging.Log trailing", "open type Acme.Logging.Container<int>.Nested\ttrailing"} {
+		assertQualifiedSourceAttribution(t, source, "")
+	}
 	assertQualifiedOpenTypeAttribution(t)
+	imports, _ = parseImports([]byte("open type Acme.Logging.Container<int>.Nested\nopen type Acme.Logging.Container<string>.Nested\n"), "Types.fs", mapper)
+	if len(imports) != 2 || imports[0].Module == imports[1].Module {
+		t.Fatalf("expected distinct generic opened types to remain distinct, got %#v", imports)
+	}
 }
 
 func TestAdapterAnalyseFSharpOpenTypeDependency(t *testing.T) {
@@ -112,6 +148,21 @@ func assertQualifiedOpenTypeAttribution(t *testing.T) {
 		{"CSharp qualified package", "using static global::Acme.Logging.Log;", "Acme.Logging.Log"},
 	}
 	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertQualifiedSourceAttribution(t, tc.source, tc.module)
+		})
+	}
+	for _, tc := range []struct {
+		name, source, module string
+	}{
+		{"generic opened type", "open type Acme.Logging.Container<int>", "Acme.Logging.Container<int>"},
+		{"nested generic opened type", "open type Acme.Logging.Container<int>.Nested", "Acme.Logging.Container<int>.Nested"},
+		{"multiple generic arguments", "open type Acme.Logging.Container<string, int>.Nested", "Acme.Logging.Container<string, int>.Nested"},
+		{"tuple generic argument", "open type Acme.Logging.Box<int * string>", "Acme.Logging.Box<int * string>"},
+		{"nested tuple and function arguments", "open type Acme.Logging.Box<Outer<int * string>, (int -> string)>.Nested", "Acme.Logging.Box<Outer<int * string>, (int -> string)>.Nested"},
+		{"unit of measure argument", "open type Acme.Logging.Box<float<m/s>>", "Acme.Logging.Box<float<m/s>>"},
+		{"anonymous record argument", "open type Acme.Logging.Box<{| Value: float<m/s>; Name: string |}>", "Acme.Logging.Box<{| Value: float<m/s>; Name: string |}>"},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertQualifiedSourceAttribution(t, tc.source, tc.module)
 		})
