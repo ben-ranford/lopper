@@ -155,10 +155,11 @@ export function transformTestElectronSource(source, version) {
     throw new Error(`Expected @vscode/test-electron ${EXPECTED_TEST_ELECTRON_VERSION}; found ${version}. Review its decompressor lifecycle before updating this test patch.`);
   }
   const patchedFunction = `function spawnDecompressorChild(command, args, input) {\n    return (${spawnDecompressorChild.toString()})(command, args, input);\n}`;
-  if (source.includes(patchedFunction)) return source;
   const occurrences = source.split(KNOWN_BROKEN_DECOMPRESSOR).length - 1;
-  if (occurrences !== 1) {
-    throw new Error(`Could not safely patch @vscode/test-electron ${EXPECTED_TEST_ELECTRON_VERSION}: expected one known defective decompressor function, found ${occurrences}.`);
+  const patchedOccurrences = source.split(patchedFunction).length - 1;
+  if (occurrences === 0 && patchedOccurrences === 1) return source;
+  if (occurrences !== 1 || patchedOccurrences !== 0) {
+    throw new Error(`Could not safely patch @vscode/test-electron ${EXPECTED_TEST_ELECTRON_VERSION}: expected one original or one repaired decompressor function, found ${occurrences} original and ${patchedOccurrences} repaired.`);
   }
   return source.replace(KNOWN_BROKEN_DECOMPRESSOR, patchedFunction);
 }

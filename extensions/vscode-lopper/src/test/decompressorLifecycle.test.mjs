@@ -227,6 +227,9 @@ test("guarded transform patches exactly once and rejects version or source drift
   const patched = transformTestElectronSource(source, EXPECTED_TEST_ELECTRON_VERSION);
   assert.notEqual(patched, source);
   assert.equal(transformTestElectronSource(patched, EXPECTED_TEST_ELECTRON_VERSION), patched);
+  assert.throws(() => transformTestElectronSource(patched + KNOWN_BROKEN_DECOMPRESSOR, EXPECTED_TEST_ELECTRON_VERSION), /Could not safely patch/);
+  assert.throws(() => transformTestElectronSource(patched + patched, EXPECTED_TEST_ELECTRON_VERSION), /Could not safely patch/);
+  assert.throws(() => transformTestElectronSource(source + KNOWN_BROKEN_DECOMPRESSOR, EXPECTED_TEST_ELECTRON_VERSION), /Could not safely patch/);
   assert.throws(() => transformTestElectronSource(source, "3.2.0"), /Expected @vscode\/test-electron/);
   assert.throws(() => transformTestElectronSource("unknown source", EXPECTED_TEST_ELECTRON_VERSION), /found 0/);
 
