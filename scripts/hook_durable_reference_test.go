@@ -13,6 +13,7 @@ import (
 func TestHooksCleanupRetainsShadowedDurablePaths(t *testing.T) {
 	for _, scope := range []string{"system", "global", "local", "worktree"} {
 		t.Run(scope, func(t *testing.T) {
+			t.Parallel()
 			repo, managed, env := shadowedDurableHookFixture(t, scope, false)
 			assertDurableHookRetention(t, repo, managed, env)
 		})

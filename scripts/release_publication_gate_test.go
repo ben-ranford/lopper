@@ -28,6 +28,7 @@ func TestReleaseSonarEvidence(t *testing.T) {
 		"history-current-hotspots-reviewed-safe", "history-gate-ignored",
 	} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			mock := `#!/usr/bin/env bash
 set -eu
