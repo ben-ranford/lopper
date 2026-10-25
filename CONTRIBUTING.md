@@ -207,5 +207,11 @@ head is in this repository and the target is the head of one unique open
 same-repository PR whose chain of open parents reaches the default branch within
 16 levels; branch names grant nothing. Parent closure/deletion or policy movement
 revokes existing evidence even when new success is no longer eligible. Queue merge
-admission remains main-only and requires P=B. See
-[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the revocation prerequisites.
+admission remains main-only and requires P=B.
+
+The canonical `sonar-maintenance` job, when subsequently deployed in reviewed CI
+source, may appear only as completed/skipped in an ordinary PR inventory. It is
+separate reread evidence, never a required-success job or suppression producer.
+A maintenance dispatch cannot substitute for ordinary PR CI. See
+[stacked gate maintenance](docs/stacked-gate-maintenance.md) for the separate source,
+permission, scope, baseline and publication prerequisites.

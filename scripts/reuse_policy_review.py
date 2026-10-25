@@ -22,7 +22,7 @@ POLICY_SCRIPT_PREFIXES = (
     "scripts/check_reuse", "scripts/reuse_policy_review", "scripts/reuse_event", "scripts/check_duplication",
     "scripts/duplication_", "scripts/reuse_suppression", "scripts/suppression_provenance",
     "scripts/inline_suppression_tracker", "scripts/check-inline-suppressions.sh",
-    "scripts/queue_me_",
+    "scripts/queue_me_", "scripts/sonar_maintenance",
 )
 SIGNOFF_HEADER = "agent-reviewed\n"
 SIGNOFF_KEYS = frozenset(("version", "repository", "pull_request", "base", "head", "decision"))
