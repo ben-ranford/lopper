@@ -443,14 +443,14 @@ hooks-install:
 	@set -eu; \
 		preflight_runner_pid=; preflight_watchdog_pid=; preflight_state_dir=; preflight_output_file=; preflight_git_output=; config_error=; value_file=; values_file=; error_file=; markers_file=; references_file=; tmp_hook=; managed_dir=; managed_hook=; local_path=; local_path_present=0; created_dir=0; created_hook=0; install_started=0; activation_may_be_written=0; install_completed=0; \
 		. ./scripts/hook-config-preflight.sh; \
-		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(trap '' HUP INT TERM; mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
 		cleanup_preflight_temps() { trap - EXIT; trap ':' HUP INT TERM; cleanup_preflight_git; if [ "$$install_started" -eq 1 ] && [ "$$install_completed" -eq 0 ]; then config_restored=0; if [ "$$activation_may_be_written" -eq 1 ]; then if run_preflight_git git config --local --fixed-value --unset core.hooksPath "$$managed_dir" >/dev/null 2>"$$config_error"; then config_restored=1; else rollback_status=$$?; if [ "$$rollback_status" -eq 5 ] && [ ! -s "$$config_error" ]; then config_restored=1; fi; fi; fi; if [ "$$config_restored" -eq 1 ] || [ "$$activation_may_be_written" -eq 0 ]; then [ -z "$$tmp_hook" ] || [ ! "$$managed_hook" -ef "$$tmp_hook" ] || rm -f "$$managed_hook"; rm -f "$$tmp_hook"; tmp_hook=; [ "$$created_dir" -eq 0 ] || rmdir "$$managed_dir" 2>/dev/null || :; else echo "Unable to restore core.hooksPath; retaining managed hook at $$managed_hook" >&2; fi; fi; rm -f "$$config_error" "$$value_file" "$$values_file" "$$error_file" "$$markers_file" "$$references_file" "$$tmp_hook"; }; trap 'preflight_signal_status=129; preflight_handle_signal' HUP; trap 'preflight_signal_status=130; preflight_handle_signal' INT; trap 'preflight_signal_status=143; preflight_handle_signal' TERM; trap 'cleanup_preflight_temps' EXIT; \
 		source_hook=".githooks/pre-commit"; \
 		[ -f "$$source_hook" ] && [ ! -L "$$source_hook" ] || { echo "Missing reviewed pre-commit hook: $$source_hook" >&2; exit 1; }; \
 		read_preflight_git git rev-parse --path-format=absolute --git-common-dir; common_dir="$$preflight_git_output"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
 		managed_hook="$$managed_dir/pre-commit"; \
-		config_error="$$(mktemp)"; \
+		config_error="$$(trap '' HUP INT TERM; mktemp)"; \
 		read_config() { preflight_git_output=; read_preflight_git "$$@" 2>"$$config_error" && { value="$$preflight_git_output"; value_present=1; return 0; }; status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] && { value=; value_present=0; return 0; }; cat "$$config_error" >&2; exit "$$status"; }; \
 		read_config git config --get core.hooksPath; effective_path="$$value"; \
 		read_config git config --local --get core.hooksPath; local_path="$$value"; local_path_present="$$value_present"; \
@@ -469,7 +469,7 @@ hooks-install:
 			[ -f "$$managed_hook" ] && [ ! -L "$$managed_hook" ] || { echo "Unsafe managed pre-commit hook: $$managed_hook" >&2; exit 1; }; \
 			[ -x "$$managed_hook" ] || { echo "Managed pre-commit hook is not executable: $$managed_hook" >&2; exit 1; }; \
 		else \
-			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
+			tmp_hook="$$(trap '' HUP INT TERM; mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
 			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; if ! ln "$$tmp_hook" "$$managed_hook" 2>/dev/null; then mv -n "$$tmp_hook" "$$managed_hook"; [ ! -e "$$tmp_hook" ] || { echo "Concurrent managed hook publication; leaving existing hook untouched" >&2; exit 1; }; fi; created_hook=1; \
 		fi; \
 		if [ "$$local_path_present" -eq 0 ] || [ "$$local_path" != "$$managed_dir" ]; then activation_may_be_written=1; activation_status=0; run_preflight_git git config --local --add core.hooksPath "$$managed_dir" || activation_status=$$?; if [ "$$activation_status" -ne 0 ]; then [ "$$activation_status" -eq 124 ] || activation_may_be_written=0; exit "$$activation_status"; fi; fi; \
@@ -478,7 +478,7 @@ hooks-install:
 			echo "Unable to activate managed core.hooksPath" >&2; exit 1; \
 		fi; \
 		if [ "$$created_hook" -eq 0 ]; then \
-			tmp_hook="$$(mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
+			tmp_hook="$$(trap '' HUP INT TERM; mktemp "$$managed_dir/pre-commit.XXXXXX")"; \
 			cp "$$source_hook" "$$tmp_hook"; chmod 755 "$$tmp_hook"; mv "$$tmp_hook" "$$managed_hook"; \
 		fi; \
 		install_completed=1; echo "Installed full-CI pre-commit hook at $$managed_hook"
@@ -489,12 +489,12 @@ hooks-uninstall:
 		value_file=; values_file=; error_file=; markers_file=; references_file=; config_error=; \
 		preflight_runner_pid=; preflight_watchdog_pid=; preflight_state_dir=; preflight_output_file=; preflight_git_output=; \
 		. ./scripts/hook-config-preflight.sh; \
-		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
+		read_preflight_git() { preflight_git_output=; preflight_output_file="$$(trap '' HUP INT TERM; mktemp "$${TMPDIR:-/tmp}/lopper-hooks-preflight.XXXXXX")" || return 1; run_preflight_git "$$@" >"$$preflight_output_file" || { status=$$?; rm -f "$$preflight_output_file"; preflight_output_file=; return "$$status"; }; preflight_git_output="$$(cat "$$preflight_output_file")"; rm -f "$$preflight_output_file"; preflight_output_file=; }; \
 		cleanup_preflight_temps() { cleanup_preflight_git; rm -f "$$config_error"; }; trap 'preflight_signal_status=129; preflight_handle_signal' HUP; trap 'preflight_signal_status=130; preflight_handle_signal' INT; trap 'preflight_signal_status=143; preflight_handle_signal' TERM; trap 'cleanup_preflight_temps' EXIT; \
 		read_preflight_git git rev-parse --path-format=absolute --absolute-git-dir; git_dir="$$preflight_git_output"; \
 		read_preflight_git git rev-parse --path-format=absolute --git-common-dir; common_dir="$$preflight_git_output"; \
 		managed_dir="$$common_dir/lopper-hooks"; \
-		config_error="$$(mktemp)"; \
+		config_error="$$(trap '' HUP INT TERM; mktemp)"; \
 		read_preflight_git git config --local --get core.hooksPath 2>"$$config_error" || { status=$$?; [ "$$status" -eq 1 ] && [ ! -s "$$config_error" ] || { cat "$$config_error" >&2; exit "$$status"; }; }; configured_path="$$preflight_git_output"; \
 		case "$$configured_path" in "$$managed_dir"|.githooks) for managed_value in "$$managed_dir" .githooks; do run_preflight_git git config --local --fixed-value --unset-all core.hooksPath "$$managed_value" || { status=$$?; [ "$$status" -eq 5 ] || exit "$$status"; }; done ;; esac; \
 		echo "Removed managed core.hooksPath hook configuration"; \

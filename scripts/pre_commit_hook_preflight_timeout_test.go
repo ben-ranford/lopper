@@ -589,6 +589,80 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	waitForPreflightInstallRollback(t, fixture, tmpDir, output.String())
 }
 
+func TestHooksPreflightOutputAllocationSurvivesGroupInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, target, fixtureTarget, site string
+	}{
+		{"hooks-install", "hooks-install", "hooks-install", "output"},
+		{"hooks-install/config-error", "hooks-install", "hooks-install", "config-error"},
+		{"hooks-install/new-hook", "hooks-install", "hooks-install", "hook"},
+		{"hooks-install/replace-hook", "hooks-install", "hooks-uninstall", "hook"},
+		{"hooks-uninstall", "hooks-uninstall", "hooks-uninstall", "output"},
+		{"hooks-uninstall/config-error", "hooks-uninstall", "hooks-uninstall", "config-error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assertTempAllocationInterrupt(t, test.target, test.fixtureTarget, test.site)
+		})
+	}
+}
+
+func assertTempAllocationInterrupt(t *testing.T, target, fixtureTarget, site string) {
+	t.Helper()
+	fixture := newPreflightTimeoutFixture(t, fixtureTarget)
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatalf("find mktemp: %v", err)
+	}
+	tmpDir, binDir := t.TempDir(), t.TempDir()
+	interrupted := filepath.Join(t.TempDir(), "temp-allocated")
+	// Model group cancellation landing after mktemp creates a recipe temp but
+	// before its path reaches the installer shell. A bare mktemp uses TMPDIR as
+	// GNU mktemp does, so its leak stays observable on every host.
+	writeFileMode(t, filepath.Join(binDir, "mktemp"), `#!/bin/sh
+site=$HOOK_INTERRUPT_SITE:$#:${1-}
+[ "$#" -ne 0 ] || set -- "$TMPDIR/tmp.XXXXXXXXXX"
+case "$site" in
+	output:1:"$TMPDIR"/lopper-hooks-preflight.*|config-error:0:|hook:1:*/lopper-hooks/pre-commit.*)
+		[ ! -e "$HOOK_TEMP_ALLOCATED" ] || exec `+shellQuote(realMktemp)+` "$@"
+		path=$(`+shellQuote(realMktemp)+` "$@") || exit "$?"
+		printf x >"$HOOK_TEMP_ALLOCATED"
+		kill -TERM 0
+		printf '%s\n' "$path"
+		exit 0
+		;;
+esac
+exec `+shellQuote(realMktemp)+` "$@"
+`, 0o755)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "make", target)
+	command.Dir = fixture.repoDir
+	command.Env = append(withoutGitEnv(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+tmpDir, "HOOK_INTERRUPT_SITE="+site, "HOOK_TEMP_ALLOCATED="+interrupted)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.WaitDelay = time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s did not exit after %s allocation interrupt: %v\n%s", target, site, err, output)
+	}
+	if _, statErr := os.Stat(interrupted); statErr != nil {
+		t.Fatalf("%s did not reach %s allocation: %v\n%s", target, site, statErr, output)
+	}
+	if err == nil {
+		t.Fatalf("%s succeeded after interruption\n%s", target, output)
+	}
+	assertNoPreflightTimeoutTemps(t, tmpDir)
+	for _, pattern := range []string{filepath.Join(tmpDir, "tmp.*"), filepath.Join(filepath.Dir(fixture.managedHook), "pre-commit.*")} {
+		if leaked, globErr := filepath.Glob(pattern); globErr != nil || len(leaked) != 0 {
+			t.Fatalf("%s leaked temps after %s allocation interrupt: %v err=%v\n%s", target, site, leaked, globErr, output)
+		}
+	}
+	assertPreflightConfigUnchanged(t, fixture, target)
+	assertPreflightHookUnchanged(t, fixture, fixtureTarget)
+}
+
 func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
 	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
