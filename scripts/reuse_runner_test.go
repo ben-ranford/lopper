@@ -8,6 +8,8 @@ import (
 )
 
 func TestReuseRunnerTrustBoundaries(t *testing.T) {
+	t.Parallel()
+
 	command := exec.Command("python3", "-B", repoPath(t, "scripts/check_reuse_test.py"))
 	command.Env = gitexec.SanitizedEnv()
 	if output, err := command.CombinedOutput(); err != nil {

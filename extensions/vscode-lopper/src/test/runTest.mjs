@@ -3,11 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
-
+import { patchTestElectronDecompressor } from "./decompressorLifecycle.mjs";
 import { isBackgroundMacOSTestRun } from "./macOSBackgroundLauncherSupport.mjs";
 
 async function main() {
+  await patchTestElectronDecompressor();
+  const { downloadAndUnzipVSCode, runTests } = await import("@vscode/test-electron");
   const vscodeVersion = process.env.LOPPER_VSCODE_TEST_VERSION ?? "1.101.0";
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const extensionDevelopmentPath = path.resolve(currentDir, "..", "..");
