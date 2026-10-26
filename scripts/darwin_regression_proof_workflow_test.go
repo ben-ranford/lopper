@@ -40,6 +40,8 @@ func TestDarwinProofInheritsApprovedRuntimeCustody(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	job := workflowJobByName(t, workflow.Jobs, "regression-proof-darwin")
 	assertWorkflowStepOrder(t, job, "Setup Go", "Setup regression proof Node", "Provision restricted regression proof runtime", "Test native Darwin proof tools", "Verify restricted regression proof runtime", "Prove Darwin regression tests for fix PRs")
+	body := workflowStepByName(t, workflow.Jobs, "regression-proof-darwin", "Write PR body for regression proof")
+	assertInheritedLoaderEnvironmentCleared(t, "regression-proof-darwin", body)
 	for _, name := range []string{"Setup regression proof Node", "Provision restricted regression proof runtime", "Verify restricted regression proof runtime"} {
 		darwin := workflowStepByName(t, workflow.Jobs, "regression-proof-darwin", name)
 		linux := workflowStepByName(t, workflow.Jobs, "verify-checks", name)
