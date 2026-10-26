@@ -127,14 +127,7 @@ func TestRegressionNodeCustodyWorkflowOrder(t *testing.T) {
 			job := config.Jobs[item.job]
 			assertWorkflowStepOrder(t, job, "Provision restricted regression proof runtime", item.intervening, "Verify restricted regression proof runtime", item.proof)
 			capture := workflowStepByName(t, config.Jobs, item.job, "Provision restricted regression proof runtime")
-			if capture.ID != "proof_runtime" {
-				t.Fatal("runtime capture needs a stable pre-execution output identity")
-			}
-			for _, key := range []string{"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"} {
-				if value, present := capture.Env[key]; !present || value != "" {
-					t.Fatalf("%s runtime capture must clear inherited %s before Node starts", item.job, key)
-				}
-			}
+			assertRegressionRuntimeCapture(t, item.job, capture)
 			verify := workflowStepByName(t, config.Jobs, item.job, "Verify restricted regression proof runtime")
 			if verify.Env["LOPPER_RUNTIME_MODE"] != "verify" || capture.Env["LOPPER_RUNTIME_MODE"] != "capture" || verify.Uses != capture.Uses || verify.If != "" || verify.ContinueOnError {
 				t.Fatal("runtime verification must always fail closed through the pinned trusted action")
@@ -145,6 +138,18 @@ func TestRegressionNodeCustodyWorkflowOrder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func assertRegressionRuntimeCapture(t *testing.T, jobName string, capture workflowStepConfig) {
+	t.Helper()
+	if capture.ID != "proof_runtime" {
+		t.Fatal("runtime capture needs a stable pre-execution output identity")
+	}
+	for _, key := range []string{"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"} {
+		if value, present := capture.Env[key]; !present || value != "" {
+			t.Fatalf("%s runtime capture must clear inherited %s before Node starts", jobName, key)
+		}
 	}
 }
 
