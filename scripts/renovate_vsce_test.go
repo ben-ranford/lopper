@@ -204,8 +204,13 @@ func readMarketplaceNPMSnapshots(t *testing.T) (marketplaceNPMManifest, marketpl
 	if err := json.Unmarshal([]byte(readConfig(t, "extensions/vscode-lopper/package-lock.json")), &lockfile); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.DevDependencies["@vscode/vsce"] == "" || lockfile.Packages[""].DevDependencies["@vscode/vsce"] == "" {
-		t.Fatal("VSCE must be present in manifest and lockfile root devDependencies")
+	for name, got := range map[string]string{
+		"manifest":      manifest.DevDependencies["@vscode/vsce"],
+		"lockfile root": lockfile.Packages[""].DevDependencies["@vscode/vsce"],
+	} {
+		if want := "^" + expectedMarketplaceVSCEVersion; got != want {
+			t.Fatalf("current %s VSCE range = %q, want %q", name, got, want)
+		}
 	}
 	vsce, ok := lockfile.Packages["node_modules/@vscode/vsce"]
 	if !ok || vsce.Version != expectedMarketplaceVSCEVersion {
