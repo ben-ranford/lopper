@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -207,6 +208,11 @@ func TestStaveRestorationTimingRequiresNativeRepeatedEvidence(t *testing.T) {
 	rootPass := restorationTimingEvent(t, "pass", root, 0.05, true)
 	rootRun := restorationTimingEvent(t, "run", root, nil, false)
 	subtestPass := restorationTimingEvent(t, "pass", subtest, 0.01, true)
+	signalRoot := restorationTimingRoots[1]
+	sigterm := signalRoot + "/SIGTERM"
+	sigint := signalRoot + "/SIGINT"
+	sigtermRun := restorationTimingEvent(t, "run", sigterm, nil, false)
+	sigintPass := restorationTimingEvent(t, "pass", sigint, 0.01, true)
 	packagePass := restorationTimingEvent(t, "pass", "", 2.5, true)
 	cases := []struct{ name, input, want string }{
 		{"twenty root summaries", valid, nativeError},
@@ -216,6 +222,10 @@ func TestStaveRestorationTimingRequiresNativeRepeatedEvidence(t *testing.T) {
 		{"root failed", strings.Replace(valid, rootPass, restorationTimingEvent(t, "fail", root, 0.05, true), 1), "failed"},
 		{"subtest skipped", strings.Replace(valid, subtestPass, restorationTimingEvent(t, "skip", subtest, 0.01, true), 1), "was skipped"},
 		{"subtest failed", strings.Replace(valid, subtestPass, restorationTimingEvent(t, "fail", subtest, 0.01, true), 1), "failed"},
+		{"missing all first-root children", omitRestorationSubtests(valid, root), "quit ran 0 times"},
+		{"missing SIGTERM run", strings.Replace(valid, sigtermRun, "", 1), "SIGTERM ran 19 times"},
+		{"missing SIGINT pass", strings.Replace(valid, sigintPass, "", 1), "SIGINT passed 19 times"},
+		{"duplicate child repeat", valid + sigtermRun + restorationTimingEvent(t, "pass", sigterm, 0.01, true), "SIGTERM ran 21 times"},
 		{"unexpected test", valid + restorationTimingEvent(t, "run", "TestStaveOther", nil, false), "unexpected UI test"},
 		{"unexpected subtest", valid + restorationTimingEvent(t, "run", root+"/unexpected", nil, false), "unexpected UI test"},
 		{"missing root duration", strings.Replace(valid, rootPass, restorationTimingEvent(t, "pass", root, nil, false), 1), "numeric elapsed"},
@@ -231,6 +241,14 @@ func TestStaveRestorationTimingRequiresNativeRepeatedEvidence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assertRestorationTimingCheckerCase(t, tc) })
+	}
+}
+
+func TestStaveRestorationTimingRejectsMissingSubtestEvidence(t *testing.T) {
+	input := omitRestorationSubtests(restorationTimingInput(t), restorationTimingRoots[0])
+	output, err := runRestorationTimingChecker(t, input)
+	if err == nil || !strings.Contains(string(output), "quit ran 0 times") {
+		t.Fatalf("checker output = %q, want missing-child rejection (%v)", output, err)
 	}
 }
 
@@ -278,6 +296,19 @@ func assertRestorationTimingSummary(t *testing.T, line string, index int, wantPh
 	if !reflect.DeepEqual(summary.RestorationPhaseBoundsSeconds, wantPhaseBounds) {
 		t.Fatalf("restoration phase bounds = %v, want %v", summary.RestorationPhaseBoundsSeconds, wantPhaseBounds)
 	}
+	if summary.Subtests == nil {
+		t.Fatal("subtest summary is missing")
+	}
+	wantSubtests := restorationTimingSubtests[summary.Test]
+	if len(summary.Subtests) != len(wantSubtests) {
+		t.Fatalf("subtest summaries = %v, want %v children", summary.Subtests, len(wantSubtests))
+	}
+	for _, child := range wantSubtests {
+		evidence := summary.Subtests[child]
+		if evidence.RunCount != 20 || evidence.PassCount != 20 || len(evidence.SuccessfulElapsedSeconds) != 20 || evidence.MaximumTestElapsedSeconds != 0.01 {
+			t.Fatalf("subtest %s evidence = %+v", child, evidence)
+		}
+	}
 }
 
 var restorationTimingRoots = []string{
@@ -287,15 +318,23 @@ var restorationTimingRoots = []string{
 }
 
 type restorationTimingSummary struct {
-	Package                       string             `json:"package"`
-	Test                          string             `json:"test"`
-	HostOS                        string             `json:"hostOS"`
-	RepeatCount                   int                `json:"repeatCount"`
-	SuccessfulElapsedSeconds      []float64          `json:"successfulElapsedSeconds"`
-	MaximumTestElapsedSeconds     float64            `json:"maximumTestElapsedSeconds"`
-	PackageElapsedSeconds         float64            `json:"packageElapsedSeconds"`
-	PackageTimeoutMarginSeconds   float64            `json:"packageTimeoutMarginSeconds"`
-	RestorationPhaseBoundsSeconds map[string]float64 `json:"restorationPhaseBoundsSeconds"`
+	Package                       string                                     `json:"package"`
+	Test                          string                                     `json:"test"`
+	HostOS                        string                                     `json:"hostOS"`
+	RepeatCount                   int                                        `json:"repeatCount"`
+	SuccessfulElapsedSeconds      []float64                                  `json:"successfulElapsedSeconds"`
+	MaximumTestElapsedSeconds     float64                                    `json:"maximumTestElapsedSeconds"`
+	PackageElapsedSeconds         float64                                    `json:"packageElapsedSeconds"`
+	PackageTimeoutMarginSeconds   float64                                    `json:"packageTimeoutMarginSeconds"`
+	RestorationPhaseBoundsSeconds map[string]float64                         `json:"restorationPhaseBoundsSeconds"`
+	Subtests                      map[string]restorationSubtestTimingSummary `json:"subtests"`
+}
+
+type restorationSubtestTimingSummary struct {
+	RunCount                  int       `json:"runCount"`
+	PassCount                 int       `json:"passCount"`
+	SuccessfulElapsedSeconds  []float64 `json:"successfulElapsedSeconds"`
+	MaximumTestElapsedSeconds float64   `json:"maximumTestElapsedSeconds"`
 }
 
 func restorationTimingInput(t *testing.T) string {
@@ -304,12 +343,14 @@ func restorationTimingInput(t *testing.T) string {
 	for _, root := range restorationTimingRoots {
 		for range 20 {
 			input.WriteString(restorationTimingEvent(t, "run", root, nil, false))
+			for _, child := range restorationTimingSubtests[root] {
+				testName := root + "/" + child
+				input.WriteString(restorationTimingEvent(t, "run", testName, nil, false))
+				input.WriteString(restorationTimingEvent(t, "pass", testName, 0.01, true))
+			}
 			input.WriteString(restorationTimingEvent(t, "pass", root, 0.05, true))
 		}
 	}
-	subtest := restorationTimingRoots[0] + "/quit"
-	input.WriteString(restorationTimingEvent(t, "run", subtest, nil, false))
-	input.WriteString(restorationTimingEvent(t, "pass", subtest, 0.01, true))
 	input.WriteString(restorationTimingEvent(t, "pass", "", 2.5, true))
 	return input.String()
 }
@@ -332,7 +373,28 @@ func restorationTimingEvent(t *testing.T, action, testName string, elapsed any, 
 
 func runRestorationTimingChecker(t *testing.T, input string) ([]byte, error) {
 	t.Helper()
-	cmd := exec.Command("python3", repoPath(t, "scripts/check-stave-test-results.py"), "--restoration-timing")
+	checker := os.Getenv("LOPPER_STAVE_TEST_RESULTS_CHECKER")
+	if checker == "" {
+		checker = repoPath(t, "scripts/check-stave-test-results.py")
+	}
+	cmd := exec.Command("python3", checker, "--restoration-timing")
 	cmd.Stdin = strings.NewReader(input)
 	return cmd.CombinedOutput()
+}
+
+func omitRestorationSubtests(input, root string) string {
+	var output strings.Builder
+	prefix := `"Test":"` + root + "/"
+	for _, line := range strings.Split(strings.TrimSpace(input), "\n") {
+		if !strings.Contains(line, prefix) {
+			output.WriteString(line + "\n")
+		}
+	}
+	return output.String()
+}
+
+var restorationTimingSubtests = map[string][]string{
+	"TestStaveRestorationWaitsForReaderAcrossShutdown": {"quit", "parent-cancel", "program-error", "close-error"},
+	"TestStaveRestorationSignalProcess":                {"SIGINT", "SIGTERM"},
+	"TestStaveRestorationBeforeInputStart":             {},
 }

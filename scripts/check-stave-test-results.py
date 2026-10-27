@@ -28,17 +28,13 @@ RESTORATION_TESTS = {
     "TestStaveRestorationBeforeInputStart": {},
 }
 RESTORATION_SUBTESTS = {
-    "TestStaveRestorationWaitsForReaderAcrossShutdown": {
-        "quit",
-        "parent-cancel",
-        "program-error",
-        "close-error",
-    },
-    "TestStaveRestorationSignalProcess": {"SIGINT", "SIGTERM"},
-    "TestStaveRestorationBeforeInputStart": set(),
+    "TestStaveRestorationWaitsForReaderAcrossShutdown": ("quit", "parent-cancel", "program-error", "close-error"),
+    "TestStaveRestorationSignalProcess": ("SIGINT", "SIGTERM"),
+    "TestStaveRestorationBeforeInputStart": (),
 }
 RESTORATION_REPEATS = 20
 RESTORATION_TIMEOUT_SECONDS = 300
+JSON_OBJECT_ERROR = "test output must contain JSON objects"
 
 
 def verify_results(stream):
@@ -47,7 +43,7 @@ def verify_results(stream):
     for line in stream:
         result = json.loads(line)
         if not isinstance(result, dict):
-            raise ValueError("test output must contain JSON objects")
+            raise ValueError(JSON_OBJECT_ERROR)
         if result.get("Package") != PACKAGE:
             continue
         if result.get("Action") == "fail":
@@ -87,7 +83,7 @@ def verify_parent_cancellation_timing(stream):
 
 def record_parent_timing_event(result, state):
     if not isinstance(result, dict):
-        raise ValueError("test output must contain JSON objects")
+        raise ValueError(JSON_OBJECT_ERROR)
     if result.get("Package") != UI_PACKAGE:
         return
     action = result.get("Action")
@@ -140,7 +136,14 @@ def parent_timing_summary(state):
 
 def verify_restoration_timing(stream):
     state = {
-        test_name: {"runs": 0, "samples": [], "packageElapsed": None}
+        test_name: {
+            "runs": 0,
+            "samples": [],
+            "packageElapsed": None,
+            "subtests": {
+                name: {"runs": 0, "samples": []} for name in RESTORATION_SUBTESTS[test_name]
+            },
+        }
         for test_name in RESTORATION_TESTS
     }
     state["packagePasses"] = 0
@@ -155,7 +158,7 @@ def verify_restoration_timing(stream):
 
 def record_restoration_timing_event(result, state):
     if not isinstance(result, dict):
-        raise ValueError("test output must contain JSON objects")
+        raise ValueError(JSON_OBJECT_ERROR)
     action = result.get("Action")
     test_name = result.get("Test")
     if result.get("Package") != UI_PACKAGE:
@@ -176,16 +179,24 @@ def record_restoration_timing_event(result, state):
         if action in {"run", "pass", "fail", "skip"}:
             raise ValueError("unexpected UI test appeared in restoration timing output: " + test_name)
         return
-    if action == "run" and test_name == root:
-        state[root]["runs"] += 1
-    elif action == "pass":
-        record_restoration_test_event(result, state, root, test_name)
+    record_restoration_test_event(result, state, root, test_name)
 
 
 def record_restoration_test_event(result, state, root, test_name):
-    elapsed = elapsed_seconds(result, "restoration test pass")
+    action = result.get("Action")
+    root_state = state[root]
     if test_name == root:
-        state[root]["samples"].append(elapsed)
+        if action == "run":
+            root_state["runs"] += 1
+        elif action == "pass":
+            root_state["samples"].append(elapsed_seconds(result, "restoration test pass"))
+        return
+    subtest = test_name[len(root) + 1 :]
+    subtest_state = root_state["subtests"][subtest]
+    if action == "run":
+        subtest_state["runs"] += 1
+    elif action == "pass":
+        subtest_state["samples"].append(elapsed_seconds(result, "restoration subtest pass"))
 
 
 def restoration_test_root(test_name):
@@ -215,11 +226,32 @@ def validate_restoration_timing_state(state):
             raise ValueError(f"{test_name} ran {result['runs']} times; want {RESTORATION_REPEATS}")
         if len(result["samples"]) != RESTORATION_REPEATS:
             raise ValueError(f"{test_name} passed {len(result['samples'])} times; want {RESTORATION_REPEATS}")
-        summaries.append(restoration_timing_summary(test_name, result["samples"], package_elapsed, phase_bounds))
+        subtests = restoration_subtest_summaries(result["subtests"])
+        summaries.append(restoration_timing_summary(test_name, result["samples"], package_elapsed, phase_bounds, subtests))
     return summaries
 
 
-def restoration_timing_summary(test_name, samples, package_elapsed, phase_bounds):
+def restoration_subtest_summaries(subtests):
+    summaries = {}
+    for name, state in subtests.items():
+        if state["runs"] != RESTORATION_REPEATS:
+            raise ValueError(f"{name} ran {state['runs']} times; want {RESTORATION_REPEATS}")
+        if len(state["samples"]) != RESTORATION_REPEATS:
+            raise ValueError(f"{name} passed {len(state['samples'])} times; want {RESTORATION_REPEATS}")
+        summaries[name] = restoration_subtest_summary(state)
+    return summaries
+
+
+def restoration_subtest_summary(state):
+    return {
+        "runCount": state["runs"],
+        "passCount": len(state["samples"]),
+        "successfulElapsedSeconds": state["samples"],
+        "maximumTestElapsedSeconds": max(state["samples"]),
+    }
+
+
+def restoration_timing_summary(test_name, samples, package_elapsed, phase_bounds, subtests):
     return {
         "package": UI_PACKAGE,
         "test": test_name,
@@ -230,6 +262,7 @@ def restoration_timing_summary(test_name, samples, package_elapsed, phase_bounds
         "packageTimeoutSeconds": RESTORATION_TIMEOUT_SECONDS,
         "packageTimeoutMarginSeconds": RESTORATION_TIMEOUT_SECONDS - package_elapsed,
         "restorationPhaseBoundsSeconds": phase_bounds,
+        "subtests": subtests,
     }
 
 
