@@ -51,3 +51,11 @@ tests but cannot run this POSIX PTY harness.
 The opt-in Stave preview (`--enable-feature stave-tui-preview`) retains its
 separate navigation/command modes documented in `docs/stave-tui-preview.md`.
 This fix targets the default summary UI selected without that explicit opt-in.
+
+The native Linux/macOS `stave-ui-check` also repeats
+`TestStavePreviewParentCancellationRestoresTerminalAndReturnsCause` twenty
+times. Its JSON test stream is checked for every successful run and summarized
+in the CI log with individual elapsed times, the maximum test time, package
+elapsed time, and remaining margin under the five-minute Go test timeout. The
+test's 15-second startup/reader-control and one-second cancellation/return
+phase bounds remain separate from that whole-package timeout.
