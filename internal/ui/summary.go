@@ -81,10 +81,10 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	}
 }
 
-// Feedback is already sanitized by the command renderer. Replay only the latest
-// command after clearing the screen, until the reader delivers the next input.
-func (s *Summary) renderSummaryFrame(reportView summaryReportView, state *summaryState, refresh bool, feedback string) error {
-	if refresh {
+// Replay the latest command output after clearing an in-place screen, until the
+// reader delivers the next input.
+func (s *Summary) renderSummaryFrame(reportView summaryReportView, state *summaryState, refreshInPlace bool, feedback string) error {
+	if refreshInPlace {
 		if err := clearSummaryScreen(s.Out); err != nil {
 			return err
 		}

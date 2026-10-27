@@ -99,6 +99,16 @@ func newFeedbackSummary(t *testing.T, out io.Writer, in io.Reader) *Summary {
 
 func summaryVisibleFrame(t *testing.T, output string) string {
 	t.Helper()
+	sequence := summaryClearSequence(t)
+	if index := strings.LastIndex(output, sequence); index >= 0 {
+		return output[index+len(sequence):]
+	}
+	t.Fatalf("output has no clear-screen sequence: %q", output)
+	return ""
+}
+
+func summaryClearSequence(t *testing.T) string {
+	t.Helper()
 	var clearScreen strings.Builder
 	if err := clearSummaryScreen(&clearScreen); err != nil {
 		t.Fatalf("capture clear-screen sequence: %v", err)
@@ -107,11 +117,7 @@ func summaryVisibleFrame(t *testing.T, output string) string {
 	if sequence == "" {
 		t.Fatal("clear-screen sequence is empty")
 	}
-	if index := strings.LastIndex(output, sequence); index >= 0 {
-		return output[index+len(sequence):]
-	}
-	t.Fatalf("output has no clear-screen sequence: %q", output)
-	return ""
+	return sequence
 }
 
 type summaryFeedbackReader struct {
@@ -141,7 +147,7 @@ func TestSummaryRedirectedFeedbackRemainsSingleCopy(t *testing.T) {
 			t.Fatalf("feedback %q appeared %d times", feedback, count)
 		}
 	}
-	if strings.Contains(output.String(), "\x1b[2J") {
+	if strings.Contains(output.String(), summaryClearSequence(t)) {
 		t.Fatal("redirected output cleared")
 	}
 }
