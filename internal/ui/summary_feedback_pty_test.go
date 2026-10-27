@@ -5,8 +5,10 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -35,7 +37,7 @@ func checkSummaryFeedbackPTY(t *testing.T, command, want string) {
 			t.Fatal(err)
 		}
 		waitSignalOutput(t, capture, nil, func(output string) bool { return strings.Contains(output, marker) })
-		visible := summaryVisibleFrame(capture.String())
+		visible := summaryVisibleFrame(t, capture.String())
 		if index == 1 && !strings.Contains(visible, want) {
 			t.Fatalf("feedback erased before next input: want %q, visible=%q", want, visible)
 		}
@@ -55,6 +57,37 @@ func checkSummaryFeedbackPTY(t *testing.T, command, want string) {
 	}
 }
 
+func TestSummaryInPlaceCancellationReturnsInputErrorUnchanged(t *testing.T) {
+	master, terminal := openSummaryFeedbackPTY(t)
+	capture := newSignalPTYCapture(master)
+	t.Cleanup(func() { waitSignalCapture(t, capture) })
+	cleanupStaveTestCloser(t, "feedback cancellation master", master)
+	cleanupStaveTestCloser(t, "feedback cancellation terminal", terminal)
+
+	inputErr := &staveInputError{err: context.Canceled}
+	input := io.MultiReader(strings.NewReader("open alpha\n"), &errReader{err: inputErr})
+	summary := newFeedbackSummary(t, terminal, input)
+	if !supportsScreenRefresh(summary.Out) || supportsStaveInteractiveTerminal(summary.In, summary.Out) {
+		t.Fatal("fixture must exercise line input with actual terminal refresh output")
+	}
+
+	err := summary.Start(context.Background(), Options{})
+	if !reflect.ValueOf(err).Equal(reflect.ValueOf(inputErr)) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("input cancellation identity lost: %v", err)
+	}
+	if summary.In != input || summary.Out != terminal {
+		t.Fatal("input error changed stream ownership")
+	}
+	const marker = "CANCELLATION-FRAME-END"
+	if _, err := fmt.Fprintln(terminal, marker); err != nil {
+		t.Fatal(err)
+	}
+	waitSignalOutput(t, capture, nil, func(output string) bool { return strings.Contains(output, marker) })
+	if frame := summaryVisibleFrame(t, capture.String()); !strings.Contains(frame, "Dependency detail") {
+		t.Fatalf("feedback missing from the cancelled session's final frame: %q", frame)
+	}
+}
+
 func newFeedbackSummary(t *testing.T, out io.Writer, in io.Reader) *Summary {
 	t.Helper()
 	analyzer := &stubAnalyzer{}
@@ -64,12 +97,21 @@ func newFeedbackSummary(t *testing.T, out io.Writer, in io.Reader) *Summary {
 	return NewSummary(out, in, analyzer, nil)
 }
 
-func summaryVisibleFrame(output string) string {
-	const clearScreen = "\x1b[H\x1b[2J"
-	if index := strings.LastIndex(output, clearScreen); index >= 0 {
-		return output[index+len(clearScreen):]
+func summaryVisibleFrame(t *testing.T, output string) string {
+	t.Helper()
+	var clearScreen strings.Builder
+	if err := clearSummaryScreen(&clearScreen); err != nil {
+		t.Fatalf("capture clear-screen sequence: %v", err)
 	}
-	return output
+	sequence := clearScreen.String()
+	if sequence == "" {
+		t.Fatal("clear-screen sequence is empty")
+	}
+	if index := strings.LastIndex(output, sequence); index >= 0 {
+		return output[index+len(sequence):]
+	}
+	t.Fatalf("output has no clear-screen sequence: %q", output)
+	return ""
 }
 
 type summaryFeedbackReader struct {

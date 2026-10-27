@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package ui
 
 import (
@@ -25,7 +27,7 @@ func TestSummaryFeedbackFramePreservesWriteErrors(t *testing.T) {
 	}
 }
 
-func TestSummaryFeedbackPreservesInputCancellation(t *testing.T) {
+func TestSummaryInputErrorIsReturnedUnchanged(t *testing.T) {
 	inputErr := &staveInputError{err: context.Canceled}
 	input := &errReader{err: inputErr}
 	output := &strings.Builder{}
