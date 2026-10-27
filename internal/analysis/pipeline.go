@@ -58,6 +58,8 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 		return nil, err
 	}
 
+	cache := newAnalysisCache(req, repoPath, analysisRepoPath)
+	cache.observeInputRead = s.observeCacheInputRead
 	return &analysisPipeline{
 		service:          s,
 		request:          req,
@@ -66,11 +68,14 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 		scopeWarnings:    scopeWarnings,
 		cleanupFn:        cleanupFn,
 		candidates:       candidates,
-		cache:            newAnalysisCache(req, repoPath, analysisRepoPath),
+		cache:            cache,
 	}, nil
 }
 
 func (p *analysisPipeline) cleanup() {
+	for i := range p.reports {
+		clearMavenEvidence(&p.reports[i])
+	}
 	if p.cleanupFn != nil {
 		p.cleanupFn()
 	}
@@ -95,6 +100,11 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 	return p.finalReportWithContext(context.Background())
 }
 func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.Report, error) {
+	defer func() {
+		for i := range p.reports {
+			clearMavenEvidence(&p.reports[i])
+		}
+	}()
 	reportData := report.Report{
 		RepoPath: p.repoPath,
 		Warnings: p.collectWarnings(),
@@ -105,7 +115,13 @@ func (p *analysisPipeline) finalReportWithContext(ctx context.Context) (report.R
 		return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
 	}
 
+	maven, present, err := mergedMavenEvidence(p.analysisRepoPath, p.reports)
+	if err != nil {
+		return report.Report{}, err
+	}
 	merged := mergeReportsWithIdentityRoot(p.repoPath, p.analysisRepoPath, p.reports)
+	merged.MavenManifests = maven
+	merged.MavenManifestCatalog = present
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
 	return finalizeReportWithContext(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
@@ -131,7 +147,8 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReportWithContext(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+func finalizeReportWithContext(ctx context.Context, req Request, repoPath, identityRepoPath string, analyzedRoots []string, reportData report.Report) (result report.Report, resultErr error) {
+	defer func() { clearMavenEvidence(&reportData); clearMavenEvidence(&result) }()
 	if err := ctx.Err(); err != nil {
 		return report.Report{}, err
 	}

@@ -13,6 +13,8 @@ import (
 const analysisCacheSchemaVersion = "v8"
 
 type cacheEntryDescriptor struct {
+	AdapterID   string
+	RootPath    string
 	KeyLabel    string
 	KeyDigest   string
 	InputDigest string
@@ -98,7 +100,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersionAndIsolationRoots(req Reque
 		return cacheEntryDescriptor{}, err
 	}
 	return cacheEntryDescriptor{
-		KeyLabel:    adapterID + ":" + stableRoot,
+		AdapterID: adapterID, RootPath: normalizedRoot, KeyLabel: adapterID + ":" + stableRoot,
 		KeyDigest:   baseDigest,
 		InputDigest: inputDigest,
 	}, nil
@@ -183,7 +185,7 @@ func (c *analysisCache) computeInputDigestWithExclusions(rootPath, configPath st
 	})
 	hasher := sha256.New()
 	for _, input := range inputs {
-		if err := writeInputDigestRecord(hasher, input); err != nil {
+		if err := writeInputDigestRecord(hasher, input, c.observeInputRead); err != nil {
 			return "", err
 		}
 	}
@@ -208,7 +210,7 @@ func normalizeCacheLanguage(languageID string) string {
 	return strings.ToLower(strings.TrimSpace(languageID))
 }
 
-func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
+func writeInputDigestRecord(w io.Writer, input cacheDigestInput, observe ...func(string, int64)) error {
 	if _, err := io.WriteString(w, input.sortKey); err != nil {
 		return err
 	}
@@ -220,10 +222,10 @@ func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
 			return err
 		}
 	} else if input.allowMissing {
-		if err := writeFileDigestOrMissing(w, input.path); err != nil {
+		if err := writeFileDigestOrMissing(w, input.path, observe...); err != nil {
 			return err
 		}
-	} else if err := writeFileDigest(w, input.path); err != nil {
+	} else if err := writeFileDigest(w, input.path, observe...); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(w, "\n"); err != nil {
