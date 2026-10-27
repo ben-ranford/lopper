@@ -24,7 +24,7 @@ func TestTargetDeclarationRouting(t *testing.T) {
 		{name: "Windows tag", filename: "buggy_test.go", source: "//go:build windows\n\n" + testSource, target: "windows"},
 		{name: "mixed OS and cgo", filename: "buggy_test.go", source: "//go:build (linux && !cgo) || (windows && cgo)\n\n" + testSource, target: "windows"},
 		{name: "proof tag", filename: "buggy_test.go", source: "//go:build regressionproof\n\n" + testSource, target: "linux"},
-		{name: "unsupported OS", filename: "buggy_darwin_test.go", source: testSource, wantErr: "cannot run on a supported native"},
+		{name: "unsupported OS", filename: "buggy_freebsd_test.go", source: testSource, wantErr: "cannot run on a supported native"},
 		{name: "unsupported tag", filename: "buggy_test.go", source: "//go:build customtag\n\n" + testSource, wantErr: "cannot run on a supported native"},
 		{name: "invalid tag", filename: "buggy_test.go", source: "//go:build windows &&\n\n" + testSource, wantErr: "parsing //go:build line"},
 		{name: "missing test", filename: "buggy_test.go", source: "package buggy\n", wantErr: "no matching test function"},
@@ -43,7 +43,7 @@ func TestTargetDeclarationRouting(t *testing.T) {
 func assertTargetDeclarationRouting(t *testing.T, repo, wantTarget, wantErr string) {
 	t.Helper()
 	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestRegressionProof"}
-	for _, target := range []string{"linux", "windows"} {
+	for _, target := range []string{"linux", "windows", "darwin"} {
 		selected, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, target)
 		if wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), wantErr) {
@@ -84,16 +84,16 @@ func TestDeclarationTargetRejectsAmbiguityAndEscapes(t *testing.T) {
 
 func TestProofTargetValidation(t *testing.T) {
 	t.Parallel()
-	for _, target := range []string{"", "linux", "windows"} {
+	for _, target := range []string{"", "linux", "windows", "darwin"} {
 		if err := validateProofTarget(target); err != nil {
 			t.Fatal(err)
 		}
-		if err := requireNativeProofTarget(target); (err != nil) != (target != "" && (target != runtime.GOOS || runtime.GOARCH != "amd64")) {
+		if err := requireNativeProofTarget(target); (err != nil) != (target != "" && (target != runtime.GOOS || runtime.GOARCH != proofTargetArchitecture(target))) {
 			t.Fatalf("native target %q returned %v on %s", target, err, runtime.GOOS)
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--target-os", "darwin"}, func(string) string { return "" }, &stdout, &stderr); code != 1 {
+	if code := run([]string{"--target-os", "freebsd"}, func(string) string { return "" }, &stdout, &stderr); code != 1 {
 		t.Fatalf("unsupported target returned %d: %s", code, &stderr)
 	}
 }
