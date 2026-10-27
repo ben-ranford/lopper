@@ -59,3 +59,13 @@ in the CI log with individual elapsed times, the maximum test time, package
 elapsed time, and remaining margin under the five-minute Go test timeout. The
 test's 15-second startup/reader-control and one-second cancellation/return
 phase bounds remain separate from that whole-package timeout.
+
+When line-command input is piped to terminal output, automatic in-place redraws
+retain the latest dependency detail or command feedback until the next input.
+For example, after `open alpha` or an unknown command, the feedback remains below
+the refreshed summary while input waits. The next command replaces it. Redirected
+output retains its existing transcript without replaying duplicate feedback.
+
+`TestSummaryRefreshPreservesCommandFeedback` exercises this path with real PTY
+output and reader-handoff markers. It checks visibility after the latest screen
+clear, then checks replacement after the next input, without sleep-based timing.

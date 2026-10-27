@@ -198,3 +198,12 @@ func (s *summaryBlockingRunner) SaveBaseline(ctx context.Context, _ BaselineSave
 	<-ctx.Done()
 	return report.Report{}, "", ctx.Err()
 }
+
+func openSummaryFeedbackPTY(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return master, terminal
+}

@@ -54,13 +54,15 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 	reader := bufio.NewReader(s.In)
 	state := buildSummaryState(opts)
 	refreshInPlace := supportsScreenRefresh(s.Out)
+	var feedback strings.Builder
+	commandSummary := s
+	if refreshInPlace {
+		commandView := *s
+		commandView.Out = io.MultiWriter(s.Out, &feedback)
+		commandSummary = &commandView
+	}
 	for {
-		if refreshInPlace {
-			if err := clearSummaryScreen(s.Out); err != nil {
-				return err
-			}
-		}
-		if err := s.renderSummaryOutput(reportView, &state); err != nil {
+		if err := s.renderSummaryFrame(reportView, &state, refreshInPlace, feedback.String()); err != nil {
 			return err
 		}
 
@@ -68,7 +70,8 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		quit, err := s.handleSummaryInputMutable(ctx, &opts, &reportView, &state, input)
+		feedback.Reset()
+		quit, err := commandSummary.handleSummaryInputMutable(ctx, &opts, &reportView, &state, input)
 		if err != nil {
 			return err
 		}
@@ -76,6 +79,24 @@ func (s *Summary) Start(ctx context.Context, opts Options) error {
 			return nil
 		}
 	}
+}
+
+// Feedback is already sanitized by the command renderer. Replay only the latest
+// command after clearing the screen, until the reader delivers the next input.
+func (s *Summary) renderSummaryFrame(reportView summaryReportView, state *summaryState, refresh bool, feedback string) error {
+	if refresh {
+		if err := clearSummaryScreen(s.Out); err != nil {
+			return err
+		}
+	}
+	if err := s.renderSummaryOutput(reportView, state); err != nil {
+		return err
+	}
+	if feedback == "" {
+		return nil
+	}
+	_, err := io.WriteString(s.Out, feedback)
+	return err
 }
 
 func (s *Summary) renderSummaryOutput(reportView summaryReportView, state *summaryState) error {
