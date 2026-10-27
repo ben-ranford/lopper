@@ -69,3 +69,42 @@ output retains its existing transcript without replaying duplicate feedback.
 `TestSummaryRefreshPreservesCommandFeedback` exercises this path with real PTY
 output and reader-handoff markers. It checks visibility after the latest screen
 clear, then checks replacement after the next input, without sleep-based timing.
+
+## Terminal restoration acceptance
+
+The terminal input reader owns its shutdown independently of Bubble Tea. The
+Unix raw-mode lease must remain active until both the program and reader stop;
+cleanup then restores the caller's exact original mode without closing its file.
+Windows retains its console reader's existing mode ownership and no-flush close.
+On Darwin/BSD, full-screen input from `/dev/tty` at fd >= `FD_SETSIZE` is
+rejected before raw-mode entry because that exact path uses a non-cancellable
+`select` fallback. The error reports the descriptor and limit; high descriptors
+using the kqueue path remain supported. Solaris uses `select` for every input and
+rejects any descriptor >= `FD_SETSIZE`. Linux epoll and Windows console input
+retain their existing behavior. Other platforms without a cancellable reader fail
+closed before entering full-screen mode.
+
+`TestStaveRestorationWaitsForReaderAcrossShutdown` gates an independent read
+through normal quit, parent cancellation, program failure and reader-close error.
+It observes mode after program exit and after cancellation, releases the read,
+then verifies the close result, exact restoration and borrowed-file ownership.
+`TestStaveRestorationSignalProcess` runs SIGINT/SIGTERM cases in isolated helper
+processes with lifecycle sentinels and bounded, reaped exits. Unstarted-reader
+cleanup has a separate acceptance case. Scoped leak assertions add no ignores.
+
+These are acceptance tests for the restoration fix already merged in #1760.
+They exercise the lease/input/Bubble Tea lifecycle directly; the existing
+`TestStaveInFlightActionProcessSignalsRestoreTerminal` and parent-cancellation
+suite exercise the real program orchestration. Mutation controls that remove
+the reader join or prematurely restore raw mode must fail behaviorally. Native
+Linux and Windows verification still requires their own runners; cross-compiling
+is not evidence of terminal behavior.
+
+The native Linux/macOS `stave-ui-check` runs the three restoration roots twenty
+times with the race detector and leak checks enabled. Its JSON stream rejects
+skips, failures, unexpected tests and incomplete package results; each root
+reports its twenty elapsed samples and maximum alongside package elapsed time
+and margin under the five-minute test timeout. The reader shutdown gates and
+signal helper use their shared fifteen-second bound; the unstarted-reader case
+has no phase timeout. These restoration bounds are separate from parent-preview
+cancellation timing.

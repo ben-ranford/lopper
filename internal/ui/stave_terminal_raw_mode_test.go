@@ -22,11 +22,17 @@ type rawModeLeaseReader struct {
 	cancelled chan struct{}
 	release   chan struct{}
 	once      sync.Once
+	closeErr  error
+	stopped   chan struct{}
+	onClose   func()
 }
 
 func (r *rawModeLeaseReader) Read([]byte) (int, error) {
 	close(r.entered)
 	<-r.release
+	if r.stopped != nil {
+		close(r.stopped)
+	}
 	return 0, io.EOF
 }
 
@@ -35,7 +41,12 @@ func (r *rawModeLeaseReader) Cancel() bool {
 	return true
 }
 
-func (*rawModeLeaseReader) Close() error { return nil }
+func (r *rawModeLeaseReader) Close() error {
+	if r.onClose != nil {
+		r.onClose()
+	}
+	return r.closeErr
+}
 
 func (r *rawModeLeaseReader) finish() { r.once.Do(func() { close(r.release) }) }
 
@@ -43,12 +54,17 @@ type rawModeLeaseModel struct {
 	input   *staveTerminalInput
 	program *tea.Program
 	reader  *rawModeLeaseReader
+	stop    func()
 }
 
 func (m *rawModeLeaseModel) Init() tea.Cmd {
 	m.input.start(m.program)
 	return func() tea.Msg {
 		<-m.reader.entered
+		if m.stop != nil {
+			m.stop()
+			return nil
+		}
 		return tea.Quit()
 	}
 }
@@ -168,4 +184,21 @@ func rawModeLeaseState(t *testing.T, terminal *os.File) *term.State {
 		t.Fatalf("read borrowed terminal state: %v", err)
 	}
 	return state
+}
+
+func newRestorationOrderModel(ctx context.Context, input *staveTerminalInput, reader *rawModeLeaseReader) *rawModeLeaseModel {
+	model := &rawModeLeaseModel{input: input, reader: reader}
+	model.program = tea.NewProgram(model, tea.WithInput(input.terminal()), tea.WithOutput(io.Discard), tea.WithContext(ctx), tea.WithoutSignalHandler())
+	return model
+}
+
+func openRestorationOrderTerminal(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaveTestCloser(t, "restoration master", master)
+	cleanupStaveTestCloser(t, "restoration terminal", terminal)
+	return master, terminal
 }
