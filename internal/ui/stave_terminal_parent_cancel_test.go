@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
@@ -191,6 +192,11 @@ func newParentCancellationRefreshAnalyzer() *parentCancellationRefreshAnalyzer {
 }
 
 func TestParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
+	synctest.Test(t, testParentCancellationRefreshAnalyzerLifecycle)
+}
+
+func testParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
+	t.Helper()
 	analyzer := newParentCancellationRefreshAnalyzer()
 	ctx, cancel := context.WithCancelCause(t.Context())
 	t.Cleanup(func() {
@@ -207,6 +213,7 @@ func TestParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
 		_, err := analyzer.Analyse(ctx, analysis.Request{})
 		returned <- err
 	}()
+	synctest.Wait()
 	select {
 	case <-analyzer.started:
 	case <-time.After(staveSignalSubprocessBound):
@@ -216,6 +223,7 @@ func TestParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
 	assertParentCancellationRefreshPending(t, analyzer.finished, "completion before parent cancel")
 	parentCause := errors.New("lifecycle parent cancellation")
 	cancel(parentCause)
+	synctest.Wait()
 	select {
 	case <-analyzer.cancelled:
 	case <-time.After(staveSignalSubprocessBound):
@@ -223,6 +231,7 @@ func TestParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
 	}
 	assertParentCancellationRefreshPending(t, analyzer.finished, "completion before backend release")
 	releaseParentCancellationRefresh(t, analyzer, true)
+	synctest.Wait()
 	select {
 	case err := <-returned:
 		if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(ctx), parentCause) {
