@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -11,7 +12,7 @@ import (
 const POMByteLimit = 2 * 1024 * 1024
 
 // ParsedPOM owns private decoded evidence. Consumer views are defensive copies.
-// It is intentionally absent from the public report and has no cache integration.
+// It is intentionally absent from public report output.
 type ParsedPOM struct{ project pomProjectModel }
 
 // POMConsumerView is caller-owned evidence, before consumer-specific resolution.
@@ -92,13 +93,7 @@ type pomPropertyModel struct {
 	Value   string `xml:",chardata"`
 }
 
-type POMDependency struct {
-	GroupID    string `xml:"groupId"`
-	ArtifactID string `xml:"artifactId"`
-	Version    string `xml:"version"`
-	Type       string `xml:"type"`
-	Scope      string `xml:"scope"`
-}
+type POMDependency = report.MavenDeclaration
 
 func inventoryPOMProperties(project pomProjectModel) map[string]string {
 	properties := make(map[string]string)

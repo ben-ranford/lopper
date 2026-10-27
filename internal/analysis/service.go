@@ -16,6 +16,8 @@ type Analyser interface {
 type Service struct {
 	Registry *language.Registry
 	InitErr  error
+
+	observeCacheInputRead func(string, int64)
 }
 
 func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, error) {

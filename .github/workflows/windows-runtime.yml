@@ -29,6 +29,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test Windows Maven host-path validation
+        shell: pwsh
+        run: |
+          $testName = 'TestMavenWindowsHostPathRejection'
+          $eventLog = Join-Path $env:RUNNER_TEMP 'maven-host-path-test.jsonl'
+          $testOutput = & go test ./internal/report/model -run '^TestMavenWindowsHostPathRejection$' -json -count=1 -timeout 30s
+          $testExitCode = $LASTEXITCODE
+          $testOutput | Tee-Object -FilePath $eventLog | Out-Host
+          if ($testExitCode -ne 0) {
+              throw "Windows Maven host-path test failed with exit code $testExitCode"
+          }
+          $events = @($testOutput | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+          $testEvents = @($events | Where-Object { $_.Test -eq $testName })
+          $runCount = @($testEvents | Where-Object { $_.Action -eq 'run' }).Count
+          $passCount = @($testEvents | Where-Object { $_.Action -eq 'pass' }).Count
+          $badEvents = @($events | Where-Object { $_.Action -eq 'fail' -or $_.Action -eq 'skip' })
+          $packagePassCount = @($events | Where-Object { $_.Package -eq 'github.com/ben-ranford/lopper/internal/report/model' -and $_.Action -eq 'pass' -and -not $_.Test }).Count
+          if ($runCount -ne 1 -or $passCount -ne 1 -or $badEvents.Count -ne 0 -or $packagePassCount -ne 1) {
+              throw "Expected exactly one passing $testName and a clean package result; run=$runCount pass=$passCount failuresOrSkips=$($badEvents.Count) packagePass=$packagePassCount"
+          }
+
       - name: Test Windows preference and console input handoff
         shell: pwsh
         run: go test ./internal/ui -run '^(TestPreferenceConsole|TestStaveConsole)' -v -count=1 -timeout 30s

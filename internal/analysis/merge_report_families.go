@@ -34,6 +34,8 @@ func mergeReportsWithIdentityRoot(repoPath, identityRoot string, reports []repor
 	}
 
 	for _, current := range reports {
+		result.MavenManifestCatalog = result.MavenManifestCatalog || current.MavenManifestCatalog
+		result.MavenManifests = append(result.MavenManifests, current.MavenManifests...)
 		result.PythonManifestCatalog = result.PythonManifestCatalog || current.PythonManifestCatalog
 		for _, document := range current.PythonManifests {
 			relativeRoot, err := filepath.Rel(identityRoot, current.RepoPath)
