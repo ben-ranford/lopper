@@ -3,7 +3,6 @@ package analysis
 import (
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1923,39 +1922,22 @@ func collectJVMIdentityEvidenceFromSnapshot(ctx context.Context, repoPath string
 	collectGradleIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.gradleBuildFiles, snapshot.gradleLockFiles, warnings)
 }
 
-type pomModel struct {
-	Properties          pomProperties   `xml:"properties"`
-	Dependencies        []pomDependency `xml:"dependencies>dependency"`
-	ManagedDependencies []pomDependency `xml:"dependencyManagement>dependencies>dependency"`
-}
-
-type pomDependency struct {
-	GroupID    string `xml:"groupId"`
-	ArtifactID string `xml:"artifactId"`
-	Version    string `xml:"version"`
-}
-
-type pomProperties struct {
-	Entries []pomProperty `xml:",any"`
-}
-
-type pomProperty struct {
-	XMLName xml.Name
-	Value   string `xml:",chardata"`
-}
-
 func collectPomIdentityEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, shared.POMByteLimit)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
 	}
-	var pom pomModel
-	if err := xml.Unmarshal(data, &pom); err != nil {
+	parsed, err := shared.DecodePOM(data)
+	if err != nil {
 		warnings.addFailure("parse", path, identityParseFailed, err)
 		return
 	}
-	properties := pom.Properties.values()
+	addPomIdentityEvidence(parsed.IdentityPolicy(), relativeIdentitySource(repoPath, path), index)
+}
+
+func addPomIdentityEvidence(pom shared.POMConsumerView, source string, index identityIndex) {
+	properties := pom.Properties
 	managedVersions := make(map[string][]string, len(pom.ManagedDependencies))
 	for _, dep := range pom.ManagedDependencies {
 		group := resolveMavenVersion(dep.GroupID, properties)
@@ -1963,7 +1945,6 @@ func collectPomIdentityEvidence(repoPath, path string, index identityIndex, warn
 		key := mavenCoordinateKey(group, artifact)
 		managedVersions[key] = append(managedVersions[key], resolveMavenVersion(dep.Version, properties))
 	}
-	source := relativeIdentitySource(repoPath, path)
 	directCoordinates := make(map[string]struct{}, len(pom.Dependencies))
 	for _, dep := range pom.Dependencies {
 		group := resolveMavenVersion(dep.GroupID, properties)
@@ -2093,18 +2074,6 @@ func addMavenEvidence(index identityIndex, group, artifact, version, source, sta
 			Confidence: "high",
 		})
 	}
-}
-
-func (p *pomProperties) values() map[string]string {
-	values := make(map[string]string, len(p.Entries))
-	for _, entry := range p.Entries {
-		name := strings.TrimSpace(entry.XMLName.Local)
-		if name == "" {
-			continue
-		}
-		values[name] = strings.TrimSpace(entry.Value)
-	}
-	return values
 }
 
 func resolveMavenVersion(version string, properties map[string]string) string {
