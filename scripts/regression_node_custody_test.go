@@ -121,14 +121,13 @@ func TestRegressionNodeCustodyWorkflowOrder(t *testing.T) {
 	for _, item := range []struct{ job, intervening, proof string }{
 		{"verify-checks", "Run CI target", "Prove regression tests for fix PRs"},
 		{"regression-proof-windows", "Test native Windows proof tools", "Prove Windows regression tests for fix PRs"},
+		{"regression-proof-darwin", "Test native Darwin proof tools", "Prove Darwin regression tests for fix PRs"},
 	} {
 		t.Run(item.job, func(t *testing.T) {
 			job := config.Jobs[item.job]
 			assertWorkflowStepOrder(t, job, "Provision restricted regression proof runtime", item.intervening, "Verify restricted regression proof runtime", item.proof)
 			capture := workflowStepByName(t, config.Jobs, item.job, "Provision restricted regression proof runtime")
-			if capture.ID != "proof_runtime" {
-				t.Fatal("runtime capture needs a stable pre-execution output identity")
-			}
+			assertRegressionRuntimeCapture(t, item.job, capture)
 			verify := workflowStepByName(t, config.Jobs, item.job, "Verify restricted regression proof runtime")
 			if verify.Env["LOPPER_RUNTIME_MODE"] != "verify" || capture.Env["LOPPER_RUNTIME_MODE"] != "capture" || verify.Uses != capture.Uses || verify.If != "" || verify.ContinueOnError {
 				t.Fatal("runtime verification must always fail closed through the pinned trusted action")
@@ -139,6 +138,18 @@ func TestRegressionNodeCustodyWorkflowOrder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func assertRegressionRuntimeCapture(t *testing.T, jobName string, capture workflowStepConfig) {
+	t.Helper()
+	if capture.ID != "proof_runtime" {
+		t.Fatal("runtime capture needs a stable pre-execution output identity")
+	}
+	for _, key := range []string{"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"} {
+		if value, present := capture.Env[key]; !present || value != "" {
+			t.Fatalf("%s runtime capture must clear inherited %s before Node starts", jobName, key)
+		}
 	}
 }
 
@@ -155,16 +166,22 @@ func TestRegressionNodeConsumersClearInheritedLoaderEnvironment(t *testing.T) {
 			assertInheritedLoaderEnvironmentCleared(t, jobName, step)
 		}
 	}
-	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers.
-	if consumers != 8 {
-		t.Fatalf("expected 8 authenticated runtime consumers, got %d", consumers)
+	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers;
+	// regression-proof-darwin: one verifier and two consumers.
+	if consumers != 11 {
+		t.Fatalf("expected 11 authenticated runtime consumers, got %d", consumers)
 	}
 }
 
 func assertInheritedLoaderEnvironmentCleared(t *testing.T, jobName string, step workflowStepConfig) {
 	t.Helper()
 	// Candidate steps can append these to GITHUB_ENV; only step env overrides them.
-	for _, key := range []string{"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_PATH"} {
+	keys := []string{"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_PATH"}
+	if jobName == "regression-proof-darwin" {
+		// dyld ignores LD_* variables and reads its own injection paths.
+		keys = append(keys, "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH")
+	}
+	for _, key := range keys {
 		if value, present := step.Env[key]; !present || value != "" {
 			t.Fatalf("%s/%s must clear inherited %s before the authenticated runtime starts", jobName, step.Name, key)
 		}
@@ -178,6 +195,8 @@ func TestRegressionNodePinnedConsumers(t *testing.T) {
 		{"verify-checks", "Prove regression tests for fix PRs", `"${LOPPER_PROOF_GO}" run`},
 		{"regression-proof-windows", "Test native Windows proof tools", "& $env:LOPPER_PROOF_GO test"},
 		{"regression-proof-windows", "Prove Windows regression tests for fix PRs", "& $env:LOPPER_PROOF_GO run"},
+		{"regression-proof-darwin", "Test native Darwin proof tools", `"${LOPPER_PROOF_GO}" test`},
+		{"regression-proof-darwin", "Prove Darwin regression tests for fix PRs", `"${LOPPER_PROOF_GO}" run`},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			step := workflowStepByName(t, config.Jobs, item.job, item.name)
