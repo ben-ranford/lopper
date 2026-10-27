@@ -2,7 +2,6 @@ package jvm
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -20,39 +19,7 @@ type dependencyDescriptor struct {
 	Artifact string
 }
 
-type pomProjectModel struct {
-	GroupID              string               `xml:"groupId"`
-	ArtifactID           string               `xml:"artifactId"`
-	Version              string               `xml:"version"`
-	Parent               pomParentModel       `xml:"parent"`
-	Properties           pomPropertiesModel   `xml:"properties"`
-	Dependencies         []pomDependencyModel `xml:"dependencies>dependency"`
-	DependencyManagement struct {
-		Dependencies []pomDependencyModel `xml:"dependencies>dependency"`
-	} `xml:"dependencyManagement"`
-}
-
-type pomParentModel struct {
-	GroupID string `xml:"groupId"`
-	Version string `xml:"version"`
-}
-
-type pomPropertiesModel struct {
-	Properties []pomPropertyModel `xml:",any"`
-}
-
-type pomPropertyModel struct {
-	XMLName xml.Name
-	Value   string `xml:",chardata"`
-}
-
-type pomDependencyModel struct {
-	GroupID    string `xml:"groupId"`
-	ArtifactID string `xml:"artifactId"`
-	Version    string `xml:"version"`
-	Type       string `xml:"type"`
-	Scope      string `xml:"scope"`
-}
+type pomDependencyModel = shared.POMDependency
 
 type pomDependencyKind int
 
@@ -224,15 +191,16 @@ func parsePomDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, 
 }
 
 func parsePomDependencyContent(relativePath, content string) ([]dependencyDescriptor, []string) {
-	var project pomProjectModel
-	if err := xml.Unmarshal([]byte(content), &project); err != nil {
+	pom, err := shared.DecodePOM([]byte(content))
+	if err != nil {
 		return nil, []string{fmt.Sprintf("unable to parse Maven POM %s: %v", relativePath, err)}
 	}
 
-	propertyMap := buildPomPropertyMap(project)
+	view := pom.InventoryPolicy()
+	propertyMap := view.Properties
 	budget := newPomExpansionBudget()
-	directDescriptors, directWarnings := parsePomDependencyList(project.Dependencies, propertyMap, pomDependencyDirect, relativePath, budget)
-	managedDescriptors, managedWarnings := parsePomDependencyList(project.DependencyManagement.Dependencies, propertyMap, pomDependencyManaged, relativePath, budget)
+	directDescriptors, directWarnings := parsePomDependencyList(view.Dependencies, propertyMap, pomDependencyDirect, relativePath, budget)
+	managedDescriptors, managedWarnings := parsePomDependencyList(view.ManagedDependencies, propertyMap, pomDependencyManaged, relativePath, budget)
 
 	descriptors := make([]dependencyDescriptor, 0, len(directDescriptors)+len(managedDescriptors))
 	descriptors = append(descriptors, directDescriptors...)
@@ -304,53 +272,6 @@ func parsePomDependencyWithBudget(dependency pomDependencyModel, propertyMap map
 func isPomImportedBOM(dependency pomDependencyModel) bool {
 	return strings.EqualFold(strings.TrimSpace(dependency.Type), "pom") &&
 		strings.EqualFold(strings.TrimSpace(dependency.Scope), "import")
-}
-
-func buildPomPropertyMap(project pomProjectModel) map[string]string {
-	properties := make(map[string]string)
-	for _, property := range project.Properties.Properties {
-		key := strings.TrimSpace(property.XMLName.Local)
-		value := strings.TrimSpace(property.Value)
-		if key == "" || value == "" {
-			continue
-		}
-		properties[key] = value
-	}
-
-	groupID := strings.TrimSpace(project.GroupID)
-	if groupID == "" {
-		groupID = strings.TrimSpace(project.Parent.GroupID)
-	}
-	version := strings.TrimSpace(project.Version)
-	if version == "" {
-		version = strings.TrimSpace(project.Parent.Version)
-	}
-	artifactID := strings.TrimSpace(project.ArtifactID)
-
-	setPomPropertyValue(properties, "project.groupId", groupID)
-	setPomPropertyValue(properties, "pom.groupId", groupID)
-	setPomPropertyValue(properties, "groupId", groupID)
-
-	setPomPropertyValue(properties, "project.version", version)
-	setPomPropertyValue(properties, "pom.version", version)
-	setPomPropertyValue(properties, "version", version)
-
-	setPomPropertyValue(properties, "project.artifactId", artifactID)
-	setPomPropertyValue(properties, "pom.artifactId", artifactID)
-	setPomPropertyValue(properties, "artifactId", artifactID)
-
-	setPomPropertyValue(properties, "project.parent.groupId", strings.TrimSpace(project.Parent.GroupID))
-	setPomPropertyValue(properties, "project.parent.version", strings.TrimSpace(project.Parent.Version))
-	return properties
-}
-
-func setPomPropertyValue(properties map[string]string, key, value string) {
-	key = strings.TrimSpace(key)
-	value = strings.TrimSpace(value)
-	if key == "" || value == "" {
-		return
-	}
-	properties[key] = value
 }
 
 const (
