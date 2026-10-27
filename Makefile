@@ -209,6 +209,12 @@ stave-ui-check:
 	python3 scripts/check-stave-test-results.py --parent-cancellation-timing < "$$results"
 	@results=$$(mktemp); \
 	trap 'rm -f "$$results"' EXIT INT TERM; \
+	if ! GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -json -race -count=20 -failfast -timeout=5m ./internal/ui -run '^(TestStaveRestorationWaitsForReaderAcrossShutdown|TestStaveRestorationSignalProcess|TestStaveRestorationBeforeInputStart)$$' > "$$results"; then \
+		cat "$$results"; exit 1; \
+	fi; \
+	python3 scripts/check-stave-test-results.py --restoration-timing < "$$results"
+	@results=$$(mktemp); \
+	trap 'rm -f "$$results"' EXIT INT TERM; \
 	if ! $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -json -count=1 ./cmd/lopper -run '^(TestStaveTUI.*|TestTUIWithoutStaveFlagUsesLegacyLinePath)$$' > "$$results"; then \
 		cat "$$results"; exit 1; \
 	fi; \

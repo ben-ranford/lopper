@@ -617,9 +617,8 @@ func (p *StavePreview) runStaveTerminal(ctx context.Context, opts Options, prepa
 	}()
 	_, err = program.Run()
 	close(programFinished)
-	inputErr := terminalInput.close()
-	restoreErr := restoreTerminal()
-	return errors.Join(finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err), inputErr, restoreErr)
+	shutdownErr := shutdownStaveTerminalInput(terminalInput, restoreTerminal)
+	return errors.Join(finishStaveTerminalRun(ctx, runCtx, m.bridge, prepared, sendEvent, err), shutdownErr)
 }
 
 func finishStaveTerminalRun(ctx, runCtx context.Context, bridge *staveTerminal, prepared any, sendEvent func(context.Context, any, event.Event) error, runErr error) error {
