@@ -28,7 +28,7 @@ var (
 )
 
 // Renovate tracks this independent expectation alongside the npm and workflow pins.
-const expectedMarketplaceVSCEVersion = "4.0.0"
+const expectedMarketplaceVSCEVersion = "4.1.0"
 
 const workflowImplicitGitHubToken = "<implicit github.token>"
 
