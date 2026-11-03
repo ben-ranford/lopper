@@ -371,3 +371,5 @@ test('fully validated newer successful epochs defer but same epoch evidence drif
   changed.workflows[0].runNumber--;
   assert.throws(() => assertUnchangedCI(previous, changed), error => !isWaiting(error));
 });
+
+require('./testdata/queue_waiting/maintenance.cjs');
