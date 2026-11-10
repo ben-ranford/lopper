@@ -89,12 +89,107 @@ def verify_graph(text, version):
         raise GateError("tool receipt is missing the configured official module")
 
 
-def build_tool(compiler, environment, extension, version, temporary):
+def load_receipt(fixtures, version):
+    reference = json.loads((fixtures / "upstream-receipt.json").read_text(encoding="utf-8"))
+    if reference["Path"] != MODULE or reference["Version"] != version:
+        raise GateError("configured gostyle differs from the reviewed upstream receipt")
+    return reference
+
+
+def verify_download(actual, reference, origin=False):
+    keys = ("Path", "Version", "Sum", "GoModSum", "Origin") if origin else ("Path", "Version", "Sum", "GoModSum")
+    for key in keys:
+        if actual.get(key) != reference[key]:
+            raise GateError(f"official module receipt differs at {key}")
+
+
+def checksum_records(text):
+    records = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) != 3 or not fields[2].startswith("h1:"):
+            raise GateError("invalid tool checksum receipt record")
+        key = tuple(fields[:2])
+        if key in records:
+            raise GateError("duplicate tool checksum receipt record")
+        records[key] = fields[2]
+    return records
+
+
+def verify_graph_versions(text, expected):
+    actual = {}
+    for record in module_records(text):
+        if record.get("Main"):
+            continue
+        path = record["Path"]
+        if path in actual:
+            raise GateError("duplicate selected graph module")
+        actual[path] = record["Version"]
+    if actual != expected:
+        raise GateError("selected graph module versions differ from reviewed receipt")
+
+
+def verify_closure(text, checksums, reference):
+    modules = {}
+    for package in module_records(text):
+        record = package.get("Module")
+        if record is not None:
+            verify_build_module(record, checksums)
+            modules[record["Path"]] = record["Version"]
+    for required in (reference, reference["tools"]):
+        if modules.get(required["Path"]) != required["Version"]:
+            raise GateError("actual build closure is missing reviewed main/importer")
+
+
+def verify_build_module(record, checksums):
+    if "Replace" in record:
+        raise GateError("actual build closure contains a replacement")
+    for suffix, field in (("", "Sum"), ("/go.mod", "GoModSum")):
+        key = (record["Path"], record["Version"] + suffix)
+        if key not in checksums or record.get(field) != checksums[key]:
+            raise GateError(f"actual build closure differs from checksum receipt: {key}")
+
+
+def binary_module(line, checksums):
+    fields = line.split()
+    if not fields:
+        return None
+    if fields[0] == "=>" or "(devel)" in fields:
+        raise GateError("replacement/development tool binary rejected")
+    if fields[0] not in ("mod", "dep"):
+        return None
+    if len(fields) != 4:
+        raise GateError("invalid binary module record")
+    key = tuple(fields[1:3])
+    if checksums.get(key) != fields[3]:
+        raise GateError("binary dependency differs from tool checksum receipt")
+    return key, (fields[0], fields[3])
+
+
+def verify_binary(metadata, reference, checksums):
+    modules = {}
+    for line in metadata.splitlines():
+        record = binary_module(line, checksums)
+        if record is not None:
+            key, value = record
+            if key in modules:
+                raise GateError("duplicate binary module record")
+            modules[key] = value
+    for item, kind in ((reference, "mod"), (reference["tools"], "dep")):
+        if modules.get((item["Path"], item["Version"])) != (kind, item["Sum"]):
+            raise GateError("binary main/importer differs from reviewed receipt")
+
+
+def build_tool(compiler, environment, extension, version, temporary, fixtures):
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version, re.ASCII):
         raise GateError("gostyle version must be an explicit release or pseudo-version")
+    reference = load_receipt(fixtures, version)
+    checksum_text = (fixtures / "upstream-go.sum").read_text(encoding="utf-8")
+    checksums = checksum_records(checksum_text)
     receipt = temporary / "receipt"
     receipt.mkdir()
     (receipt / "go.mod").write_text("module example.com/lopper-gostyle-receipt\n", encoding="utf-8")
+    (receipt / "go.sum").write_text(checksum_text, encoding="utf-8")
     deadline = time.monotonic() + TOOL_TIMEOUT
 
     def run(*arguments):
@@ -103,14 +198,23 @@ def build_tool(compiler, environment, extension, version, temporary):
             raise GateError("gostyle module/build budget expired")
         return checked([compiler, *arguments], receipt, environment, remaining)
 
+    actual = json.loads(run("mod", "download", "-json", MODULE + "@" + version))
+    verify_download(actual, reference, origin=True)
     run("get", MODULE + "@" + version)
     run("mod", "download", "all")
-    verify_graph(run("list", "-m", "-json", "all"), version)
+    graph = run("list", "-m", "-json", "all")
+    verify_graph(graph, version)
+    verify_graph_versions(graph, reference["graph_versions"])
+    verify_closure(run("list", "-deps", "-json", MODULE), checksums, reference)
+    importer = reference["tools"]
+    verify_download(json.loads(run("mod", "download", "-json", importer["Path"] + "@" + importer["Version"])), importer)
     verification = run("mod", "verify")
     print(f"gostyle {version} selected graph: {verification.strip()}")
     environment = dict(environment, GOBIN=str(temporary / "bin"))
     run("install", MODULE + "@" + version)
-    return temporary / "bin" / ("gostyle" + extension)
+    binary = temporary / "bin" / ("gostyle" + extension)
+    verify_binary(run("version", "-m", str(binary)), reference, checksums)
+    return binary
 
 
 def verify_diagnostics(result, expected, fixture):
@@ -128,6 +232,8 @@ def fixture_scan(binary, config, root, environment, temporary):
     fixture = temporary / "fixture"
     shutil.copytree(root / "scripts/testdata/gostyle-regression", fixture)
     (fixture / "anonymous/fixture_test.go.txt").rename(fixture / "anonymous/fixture_test.go")
+    (fixture / "multiple/fixture.go.txt").rename(fixture / "multiple/fixture.go")
+    (fixture / "named/fixture.go.txt").rename(fixture / "named/fixture.go")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
     result = execute([str(binary), "run", "-c", str(config), "./..."], fixture,
                      environment, FIXTURE_TIMEOUT)
@@ -135,7 +241,7 @@ def fixture_scan(binary, config, root, environment, temporary):
         verify_diagnostics(result, expected, fixture)
     except GateError as error:
         raise GateError(f"{error}\n{result.stdout}{result.stderr}") from error
-    print("gostyle anonymous-context fixture: expected exit 3 and exact diagnostic; valid controls clean")
+    print(f"gostyle contexts fixtures: expected exit 3 and {len(expected)} exact diagnostics; valid controls clean")
 
 
 def scan_both(binary, config, root, environment, temporary):
@@ -166,7 +272,7 @@ def run(args):
             temporary = Path(directory).resolve()
             if temporary.is_relative_to(root):
                 raise GateError("gostyle temporary directory must be outside the source checkout")
-            binary = build_tool(compiler, environment, extension, args.version, temporary)
+            binary = build_tool(compiler, environment, extension, args.version, temporary, root / "scripts/testdata/gostyle-regression")
             return scan_both(binary, config, root, environment, temporary)
     except (GateError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         print(f"gostyle regression setup failed: {error}", file=sys.stderr)
