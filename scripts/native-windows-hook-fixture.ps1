@@ -157,6 +157,24 @@ function Assert-Digest([string]$Path, [string]$Expected) {
 function Assert-Deadline {
     if ($Mode -notin @('setup','self-test') -and ([DateTimeOffset]::UtcNow -ge [DateTimeOffset]::Parse($DeadlineUTC))) { throw 'Single owner cleanup reserve expired; RETENTION' }
 }
+function Invoke-FixedCustodyVerifier([string[]]$Arguments) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Verifier
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add([string]$argument) }
+    $verifierProcess = [Diagnostics.Process]::new()
+    $verifierProcess.StartInfo = $start
+    if (-not $verifierProcess.Start()) { throw 'Fixed custody/allocation/original-join verifier rejected operation' }
+    $verifierStdoutTask = $verifierProcess.StandardOutput.ReadToEndAsync()
+    $verifierStderrTask = $verifierProcess.StandardError.ReadToEndAsync()
+    $verifierProcess.WaitForExit()
+    $verifierStderr = $verifierStderrTask.GetAwaiter().GetResult()
+    $verifierStdout = $verifierStdoutTask.GetAwaiter().GetResult()
+    if ($verifierProcess.ExitCode -ne 0) { throw "Fixed custody/allocation/original-join verifier rejected operation: $($verifierStderr.Trim())" }
+    if (-not [string]::IsNullOrEmpty($verifierStdout)) { [Console]::Out.Write($verifierStdout) }
+}
 function Assert-Custody([bool]$WithAllocation, [bool]$WithJoin) {
     Assert-Deadline
     if ($Manifest -cne (Join-Path $TrustedRoot 'custody.json') -or $Verifier -cne (Join-Path $TrustedRoot 'bin/nativecleanupcheck.exe')) { throw 'Anchor layout mismatch' }
@@ -170,24 +188,7 @@ function Assert-Custody([bool]$WithAllocation, [bool]$WithJoin) {
         $script:SelfTestAdapter.trace.Add('custody.verify')
         if (-not [string]::IsNullOrEmpty([string]$script:SelfTestAdapter.verifierReject)) { throw "SELFTEST_EXPECTED:verifier.$($script:SelfTestAdapter.verifierReject)" }
         Invoke-TestFault 'custody.verify'
-    } else {
-        $start = [Diagnostics.ProcessStartInfo]::new()
-        $start.FileName = $Verifier
-        $start.UseShellExecute = $false
-        $start.RedirectStandardOutput = $true
-        $start.RedirectStandardError = $true
-        foreach ($argument in $arguments) { $start.ArgumentList.Add([string]$argument) }
-        $verifierProcess = [Diagnostics.Process]::new()
-        $verifierProcess.StartInfo = $start
-        if (-not $verifierProcess.Start()) { throw 'Fixed custody/allocation/original-join verifier rejected operation' }
-        $verifierStdoutTask = $verifierProcess.StandardOutput.ReadToEndAsync()
-        $verifierStderrTask = $verifierProcess.StandardError.ReadToEndAsync()
-        $verifierProcess.WaitForExit()
-        $verifierStderr = $verifierStderrTask.GetAwaiter().GetResult()
-        $verifierStdout = $verifierStdoutTask.GetAwaiter().GetResult()
-        if ($verifierProcess.ExitCode -ne 0) { throw "Fixed custody/allocation/original-join verifier rejected operation: $($verifierStderr.Trim())" }
-        if (-not [string]::IsNullOrEmpty($verifierStdout)) { [Console]::Out.Write($verifierStdout) }
-    }
+    } else { Invoke-FixedCustodyVerifier $arguments }
     Assert-Deadline
     if ($script:identityInitialized) { Assert-ControlIdentity }
     Assert-Deadline
@@ -554,12 +555,18 @@ function Invoke-SelfTestRemovalCase([string]$Name,[string]$Mutation,[string]$Exp
     $script:SelfTestAdapter.fault='';$script:SelfTestAdapter.verifierReject='';$script:SelfTestAdapter.injectChildBeforeDelete=$false
     return $allocation
 }
+function Remove-SelfTestAllocationTree([string]$Name,$Allocation) {
+    if (-not $Allocation -or -not $Allocation.path) { return }
+    if (-not (Test-Path -LiteralPath $Allocation.path -PathType Container)) { return }
+    foreach($child in (Get-ChildItem -LiteralPath $Allocation.path -Force)) {
+        if ($child.PSIsContainer) { throw "Self-test $Name left an unexpected directory" }
+        [IO.File]::Delete($child.FullName)
+    }
+    [IO.Directory]::Delete($Allocation.path,$false)
+}
 function Remove-SelfTestTransitionCase([string]$Name,$Allocation,[string]$CollisionPath,[string[]]$Files,[string[]]$Directories) {
     foreach($path in $Files) { if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) { [IO.File]::Delete($path) } }
-    if ($Allocation -and $Allocation.path -and (Test-Path -LiteralPath $Allocation.path -PathType Container)) {
-        foreach($child in (Get-ChildItem -LiteralPath $Allocation.path -Force)) { if ($child.PSIsContainer) { throw "Self-test $Name left an unexpected directory" };[IO.File]::Delete($child.FullName) }
-        [IO.Directory]::Delete($Allocation.path,$false)
-    }
+    Remove-SelfTestAllocationTree $Name $Allocation
     if ($CollisionPath -and (Test-Path -LiteralPath $CollisionPath -PathType Container)) { [IO.Directory]::Delete($CollisionPath,$false) }
     foreach($directory in $Directories) { if (Test-Path -LiteralPath $directory -PathType Container) { [IO.Directory]::Delete($directory,$false) } }
 }
@@ -656,16 +663,20 @@ function Invoke-SelfTestJournalFaults([Collections.Generic.List[string]]$Passed,
         $Passed.Add($fault)
     }
 }
+function Assert-SelfTestReceiptFault([string]$Fault,[string]$ReceiptPath) {
+    if (Test-Path -LiteralPath $ReceiptPath -PathType Leaf) { [IO.File]::Delete($ReceiptPath) }
+    $script:SelfTestAdapter.fault=$Fault
+    $observed=''
+    try { Write-ExclusiveJsonDurable $ReceiptPath ([ordered]@{schema='native-cleanup-teardown/v1'}) 'receipt' } catch { $observed=$_.Exception.Message }
+    if ($observed -cne "SELFTEST_EXPECTED:$Fault") { throw "Self-test $Fault diagnostic mismatch: $observed" }
+    $published=Test-Path -LiteralPath $ReceiptPath -PathType Leaf
+    if ($Fault -eq 'receipt.create' -and $published) { throw 'Receipt-create fault published a receipt' }
+    if ($Fault -ne 'receipt.create' -and -not $published) { throw 'Receipt write/flush fault lost its retained partial diagnostic' }
+}
 function Invoke-SelfTestReceiptFaults([Collections.Generic.List[string]]$Passed,[string]$Scratch) {
     $receiptPath=Join-Path $Scratch 'teardown.json'
     foreach($fault in @('receipt.create','receipt.write','receipt.flush')) {
-        if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { [IO.File]::Delete($receiptPath) }
-        $script:SelfTestAdapter.fault=$fault;$observed=''
-        try { Write-ExclusiveJsonDurable $receiptPath ([ordered]@{schema='native-cleanup-teardown/v1'}) 'receipt' } catch { $observed=$_.Exception.Message }
-        if ($observed -cne "SELFTEST_EXPECTED:$fault") { throw "Self-test $fault diagnostic mismatch: $observed" }
-        $published=Test-Path -LiteralPath $receiptPath -PathType Leaf
-        if ($fault -eq 'receipt.create' -and $published) { throw 'Receipt-create fault published a receipt' }
-        if ($fault -ne 'receipt.create' -and -not $published) { throw 'Receipt write/flush fault lost its retained partial diagnostic' }
+        Assert-SelfTestReceiptFault $fault $receiptPath
         $Passed.Add($fault)
     }
     $script:SelfTestAdapter.fault=''
