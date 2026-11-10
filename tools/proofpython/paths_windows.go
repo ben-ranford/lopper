@@ -18,45 +18,74 @@ func canonicalPath(path string, directory bool) error {
 	if err := validatePathSize(path); err != nil {
 		return err
 	}
+	if err := requireCanonicalDrive(path); err != nil {
+		return err
+	}
+	return walkCanonicalPath(path, directory)
+}
+
+func requireCanonicalDrive(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || len(filepath.VolumeName(path)) != 2 {
 		return errors.New("expected canonical local drive path")
 	}
+	return nil
+}
+
+func walkCanonicalPath(path string, directory bool) error {
 	current := path
 	reparseHops := 0
 	for {
-		name, err := windows.UTF16PtrFromString(current)
-		if err != nil {
-			return err
-		}
-		attributes, err := windows.GetFileAttributes(name)
+		attributes, err := fileAttributes(current)
 		if err != nil {
 			return err
 		}
 		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			// A file symlink can retarget the interpreter. A directory junction
-			// is how the hosted tool cache is mounted; follow it and keep
-			// checking the resolved local path.
-			if current == path && !directory {
-				return errors.New("reparse path rejected")
+			next, err := advanceDirectoryReparse(path, current, directory, &reparseHops)
+			if err != nil {
+				return err
 			}
-			reparseHops++
-			if reparseHops > 8 {
-				return errors.New("reparse path rejected")
-			}
-			resolved, err := resolvedDirectory(current)
-			if err != nil || resolved == current {
-				return errors.New("reparse path rejected")
-			}
-			current = resolved
+			current = next
 			continue
 		}
-		if current == path && (attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0) != directory {
-			return errors.New("wrong path type")
+		if err := requireLeafType(path, current, attributes, directory); err != nil {
+			return err
 		}
-		if current == filepath.Dir(current) {
-			break
+		parent := filepath.Dir(current)
+		if current == parent {
+			return nil
 		}
-		current = filepath.Dir(current)
+		current = parent
+	}
+}
+
+func fileAttributes(path string) (uint32, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	return windows.GetFileAttributes(name)
+}
+
+func advanceDirectoryReparse(root, current string, directory bool, hops *int) (string, error) {
+	// A file symlink can retarget the interpreter. A directory junction is how
+	// the hosted tool cache is mounted; follow it and keep checking the resolved path.
+	if current == root && !directory {
+		return "", errors.New("reparse path rejected")
+	}
+	*hops++
+	if *hops > 8 {
+		return "", errors.New("reparse path rejected")
+	}
+	resolved, err := resolvedDirectory(current)
+	if err != nil || resolved == current {
+		return "", errors.New("reparse path rejected")
+	}
+	return resolved, nil
+}
+
+func requireLeafType(root, current string, attributes uint32, directory bool) error {
+	if current == root && (attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0) != directory {
+		return errors.New("wrong path type")
 	}
 	return nil
 }
