@@ -28,7 +28,8 @@ SOURCE_PATHS = (".github/workflows/ci-tests.yml", "scripts/trace-hook-interrupti
 HOOK_SOURCES = ("scripts/pre_commit_hook_preflight_timeout_test.go", "scripts/pre_commit_hook_test.go",
                 "scripts/hook-config-preflight.sh", "Makefile")
 TRACER_SHA256 = "28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001"
-IMAGE_VERSION = re.compile(r"[0-9]{8}\.[0-9]+\.[0-9]+")
+IMAGE_VERSION = re.compile(r"\d{8}\.\d+\.\d+", re.ASCII)
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 SYSCALLS = ("clone,clone3,fork,vfork,execve,execveat,exit,exit_group,wait4,waitid,"
             "setpgid,getpgid,getpgrp,setsid,getsid,kill,tkill,tgkill,rt_sigaction,"
             "rt_sigprocmask,rt_sigreturn,pipe,pipe2,dup,dup2,dup3,fcntl,close,"
@@ -407,14 +408,14 @@ def event_context(root):
     base = event["pull_request"]["base"]["sha"]
     source = env["TRACE_SOURCE_SHA"]
     for value in (head, base, source):
-        if not re.fullmatch("[0-9a-f]{40}", value):
+        if COMMIT_SHA.fullmatch(value) is None:
             raise ValueError("missing immutable caller context")
     if git(root, "rev-parse", "HEAD").decode().strip() != source or env.get("GITHUB_SHA") != source:
         raise ValueError("checkout/source mismatch")
     if git(root, "show", "-s", "--format=%P", source).decode().split() != [base, head]:
         raise ValueError("checkout not actual base/head merge")
     parents = git(root, "show", "-s", "--format=%P", head).decode().split()
-    if not parents or any(not re.fullmatch("[0-9a-f]{40}", item) for item in parents):
+    if not parents or any(COMMIT_SHA.fullmatch(item) is None for item in parents):
         raise ValueError("candidate parents are missing")
     if git(root, "rev-parse", source + TREE_SUFFIX) != git(root, "rev-parse", head + TREE_SUFFIX):
         raise ValueError("merge contains source outside the exact candidate tree")
@@ -467,7 +468,7 @@ def synchronize_binding(root, event, head):
     if event["action"] != "synchronize":
         return False
     before = event.get("before")
-    if not isinstance(before, str) or not re.fullmatch("[0-9a-f]{40}", before) or before == head or event.get("after") != head:
+    if not isinstance(before, str) or COMMIT_SHA.fullmatch(before) is None or before == head or event.get("after") != head:
         raise ValueError("missing or identical synchronize context")
     return bool(git(root, "diff", "--name-only", before, head, "--", *SOURCE_PATHS).strip())
 
