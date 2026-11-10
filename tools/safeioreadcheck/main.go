@@ -34,7 +34,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if *listOnly {
 		for _, ref := range refs {
-			if err := writeLine(stdout, ref.String()); err != nil {
+			if err := writeLine(stdout, formatReference(ref)); err != nil {
 				return 1
 			}
 		}

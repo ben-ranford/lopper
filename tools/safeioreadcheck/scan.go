@@ -25,12 +25,8 @@ type Reference struct {
 	Index    int
 }
 
-func (r Reference) String() string {
-	return fmt.Sprintf("%s\t%s\t%s\t%d", r.Path, r.Function, r.Callee, r.Index)
-}
-
-func (r Reference) key() string {
-	return r.String()
+func formatReference(ref Reference) string {
+	return fmt.Sprintf("%s\t%s\t%s\t%d", ref.Path, ref.Function, ref.Callee, ref.Index)
 }
 
 type rawReference struct {

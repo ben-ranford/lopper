@@ -180,7 +180,7 @@ func generated(path string) {
 	}
 	got := map[string]int{}
 	for _, ref := range refs {
-		got[ref.String()]++
+		got[formatReference(ref)]++
 	}
 	want := []string{
 		"unbounded.go\tloadManifest\tsafeio.ReadFileUnder\t1",
@@ -449,24 +449,24 @@ func load(path string) {
 		t.Fatalf("unapproved code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 
-	if code := run([]string{"-root", root, "extra"}, ioDiscard{}, &stderr); code != 2 {
+	if code := run([]string{"-root", root, "extra"}, &ioDiscard{}, &stderr); code != 2 {
 		t.Fatalf("unexpected args code=%d", code)
 	}
-	if code := run([]string{"-unknown"}, ioDiscard{}, &stderr); code != 2 {
+	if code := run([]string{"-unknown"}, &ioDiscard{}, &stderr); code != 2 {
 		t.Fatalf("unknown flag code=%d", code)
 	}
-	if code := run([]string{"-root", filepath.Join(root, "missing")}, ioDiscard{}, &stderr); code != 1 {
+	if code := run([]string{"-root", filepath.Join(root, "missing")}, &ioDiscard{}, &stderr); code != 1 {
 		t.Fatalf("scan error code=%d", code)
 	}
 }
 
 type ioDiscard struct{}
 
-func (ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+func (w *ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
 
 type failWriter struct{}
 
-func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func (w *failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
 func TestRunWriteFailures(t *testing.T) {
 	root := t.TempDir()
@@ -484,25 +484,25 @@ func load(path string) {
 	if err := os.WriteFile(allow, []byte("read.go\tload\tsafeio.ReadFile\t1\t"+validWhy+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := run([]string{"-root", root, "extra"}, ioDiscard{}, failWriter{}); code != 1 {
+	if code := run([]string{"-root", root, "extra"}, &ioDiscard{}, &failWriter{}); code != 1 {
 		t.Fatalf("argument write failure code=%d", code)
 	}
-	if code := run([]string{"-root", filepath.Join(root, "missing")}, ioDiscard{}, failWriter{}); code != 1 {
+	if code := run([]string{"-root", filepath.Join(root, "missing")}, &ioDiscard{}, &failWriter{}); code != 1 {
 		t.Fatalf("scan write failure code=%d", code)
 	}
-	if code := run([]string{"-list", "-root", root}, failWriter{}, ioDiscard{}); code != 1 {
+	if code := run([]string{"-list", "-root", root}, &failWriter{}, &ioDiscard{}); code != 1 {
 		t.Fatalf("list write failure code=%d", code)
 	}
-	if code := run([]string{"-root", root, "-allowlist", filepath.Join(root, "missing.txt")}, ioDiscard{}, failWriter{}); code != 1 {
+	if code := run([]string{"-root", root, "-allowlist", filepath.Join(root, "missing.txt")}, &ioDiscard{}, &failWriter{}); code != 1 {
 		t.Fatalf("allowlist write failure code=%d", code)
 	}
-	if code := run([]string{"-root", root, "-allowlist", allow}, failWriter{}, ioDiscard{}); code != 1 {
+	if code := run([]string{"-root", root, "-allowlist", allow}, &failWriter{}, &ioDiscard{}); code != 1 {
 		t.Fatalf("summary write failure code=%d", code)
 	}
 	if err := os.WriteFile(allow, []byte{}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := run([]string{"-root", root, "-allowlist", allow}, ioDiscard{}, failWriter{}); code != 1 {
+	if code := run([]string{"-root", root, "-allowlist", allow}, &ioDiscard{}, &failWriter{}); code != 1 {
 		t.Fatalf("finding write failure code=%d", code)
 	}
 }

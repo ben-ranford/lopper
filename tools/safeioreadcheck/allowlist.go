@@ -28,7 +28,7 @@ func checkAllowlist(path string, refs []Reference) ([]string, error) {
 	var findings []string
 	seenRef := map[string]Reference{}
 	for _, ref := range refs {
-		key := ref.key()
+		key := formatReference(ref)
 		if previous, ok := seenRef[key]; ok {
 			findings = append(findings, fmt.Sprintf("%s duplicates scanned read %s", key, previous.Function))
 			continue
@@ -39,7 +39,7 @@ func checkAllowlist(path string, refs []Reference) ([]string, error) {
 	seenEntry := map[string]allowEntry{}
 	seenRationale := map[string]int{}
 	for _, entry := range entries {
-		key := entry.key()
+		key := formatReference(entry.Reference)
 		if previous, ok := seenEntry[key]; ok {
 			findings = append(findings, fmt.Sprintf("%s:%d: duplicate allowlist entry for %s (first on line %d)", path, entry.line, key, previous.line))
 			continue
@@ -55,10 +55,10 @@ func checkAllowlist(path string, refs []Reference) ([]string, error) {
 		}
 	}
 	for _, ref := range refs {
-		if _, ok := seenEntry[ref.key()]; ok {
+		if _, ok := seenEntry[formatReference(ref)]; ok {
 			continue
 		}
-		findings = append(findings, fmt.Sprintf("unapproved zero-limit read %s", ref.key()))
+		findings = append(findings, fmt.Sprintf("unapproved zero-limit read %s", formatReference(ref)))
 	}
 	return findings, nil
 }
