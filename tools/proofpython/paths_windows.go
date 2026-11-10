@@ -131,6 +131,18 @@ func hostedToolCache(path string) bool {
 	return rest == `\hostedtoolcache` || strings.HasPrefix(rest, `\hostedtoolcache\`)
 }
 
+func finalDirectory(path string) (string, error) {
+	if err := canonicalDirectory(path); err != nil {
+		return "", err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	return openedPath(file)
+}
+
 func openedPath(file *os.File) (string, error) {
 	var buffer [maxPathUnits + 1]uint16
 	n, err := windows.GetFinalPathNameByHandle(windows.Handle(file.Fd()), &buffer[0], uint32(len(buffer)), 0)

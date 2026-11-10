@@ -19,6 +19,14 @@ import (
 const pythonExecutableName = "python.exe"
 
 func captureProvider(ctx context.Context, root, bin string) (receipt, error) {
+	root, err := finalDirectory(root)
+	if err != nil {
+		return receipt{}, err
+	}
+	bin, err = finalDirectory(bin)
+	if err != nil {
+		return receipt{}, err
+	}
 	if err := checkProviderLocation(root, bin); err != nil {
 		return receipt{}, err
 	}
