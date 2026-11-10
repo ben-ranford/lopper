@@ -160,6 +160,7 @@ func normalizeArgs(args []string) ([]string, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
+			flags = append(flags, "--")
 			positionals = append(positionals, args[i+1:]...)
 			break
 		}

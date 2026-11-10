@@ -14,6 +14,11 @@ func TestFormatSARIFValidatesAgainstSchema(t *testing.T) {
 		t.Fatalf("format sarif: %v", err)
 	}
 
+	assertSARIFSchema(t, formatted)
+}
+
+func assertSARIFSchema(t *testing.T, formatted string) {
+	t.Helper()
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "testdata", "report", "sarif-2.1.0.schema.json"))
 	if err != nil {
 		t.Fatalf("resolve schema path: %v", err)

@@ -28,7 +28,10 @@ go run ./cmd/lopper analyse --top 20 --repo . --language all --format csv > repo
 CSV characteristics:
 
 - Header row is fixed and emitted even when there are no dependency rows.
-- Dependency rows are sorted by `language`, then `dependency_name`.
+- Dependency rows are sorted by `language`, then `dependency_name`. Duplicate
+  rows are ordered by normalized identity ecosystem, namespace/name, version,
+  and PURL, with serialized visible fields and identity presence as the final
+  tie-breaker. Input permutations therefore produce identical CSV output.
 - Multi-value cells use `|` as the inner delimiter.
 - Numeric columns use decimal strings; optional nested fields are emitted as empty
   cells when absent.
@@ -108,7 +111,9 @@ CycloneDX characteristics:
   inventory and should complement, not replace, dedicated SBOM generators for
   full package-manager or container inventories.
 - `spdx-json` emits a preview SPDX 2.3 JSON direct-dependency SBOM when
-  `spdx-sbom-export-preview` is enabled.
+  `spdx-sbom-export-preview` is enabled. It shares CSV dependency ordering, so
+  duplicate package IDs, relationships, and the document namespace remain
+  stable when input dependencies are reordered.
 - `cyclonedx-vex-json` emits preview CycloneDX VEX vulnerability analysis
   records when `vulnerability-exceptions-vex-preview` is enabled.
 - Dashboard-wide combined CycloneDX SBOMs are emitted by `lopper dashboard
@@ -142,7 +147,7 @@ CycloneDX characteristics:
   `priorityScore`, `reachable`, optional VEX `decision`, and evidence strings.
 - `dependencies[].riskCues`: heuristic risk signals. Severity is `low`, `medium`, `high`, or `critical`. Reachability confidence ranks critical above high, with case and surrounding whitespace normalized for scoring. Both critical and high use a risk signal score of 40 (medium: 65; low: 85; no recognized cue: 100); critical emits the distinct `risk-critical` rationale. This leaves existing lower-severity scores and the confidence model unchanged.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
-- `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
+- `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews (unified diffs with Git C-style quoted paths for whitespace, control, quote, backslash, and non-ASCII filename bytes), `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
 - `dependencies[].runtimeUsage`: runtime load annotations (when `--runtime-trace` is used), including `modules`, `parentModules`, `entrypoints`, and `topSymbols` when available.
 - `dependencies[].usedImports[].provenance`: optional attribution chain for barrel/re-export resolution in detailed views.
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
