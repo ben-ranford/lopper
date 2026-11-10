@@ -680,6 +680,29 @@ async function mergeVerifiedQueuedPull({
   }
 }
 
+// CI/reuse audit refusals pause this candidate like identity pauses; other errors still fail the run.
+async function pauseRefusedCandidate(github, owner, repo, pullNumber, hasFollower, error) {
+  if (!error?.queuePauseMessage) throw error;
+  await disableAutoMerge(github, owner, repo, pullNumber);
+  const retrySummary = hasFollower ? ' The queue will continue with the next queued pull request.' : '';
+  // Pause text can embed candidate-controlled CI job names; keep it inert inside a code span.
+  await syncStatusComment(github, owner, repo, pullNumber,
+    `## Queue status\n\nQueue paused: the CI or reuse audit refused this pull request.${retrySummary}\n\n\`${safeCommentText(error.queuePauseMessage, 1200)}\``);
+  return hasFollower;
+}
+
+// Advance may merge only the prepared ticket, and only when every queued pull ahead
+// of it is exactly the set prepare already handled; otherwise it merges nothing.
+function boundTicket(queued, ticket) {
+  const { predecessors, ...proofTicket } = ticket;
+  const index = queued.findIndex((pull) => pull.number === proofTicket.snapshot?.pull_number);
+  const current = queued.slice(0, Math.max(index, 0)).map((pull) => pull.number);
+  if (index < 0 || !Array.isArray(predecessors) || JSON.stringify(predecessors) !== JSON.stringify(current)) {
+    return null;
+  }
+  return { number: queued[index].number, ticket: proofTicket };
+}
+
 async function advanceQueuedPull({
   github,
   owner,
@@ -690,6 +713,7 @@ async function advanceQueuedPull({
   queueLabel,
   queueAppSlug,
   hasFollower,
+  predecessors,
   trustedPolicySHA,
   verifyEvidence,
   revalidateEvidence,
@@ -777,9 +801,13 @@ async function advanceQueuedPull({
     return true;
   }
   if (onCandidate) {
-    await onCandidate({ github, owner, repo, pullNumber: candidate.number,
-      headSHA: update.headSHA, baseSHA: defaultBranchSHA, baseRef: defaultBranch,
-      trustedPolicySHA, queueLabel });
+    try {
+      await onCandidate({ github, owner, repo, pullNumber: candidate.number,
+        headSHA: update.headSHA, baseSHA: defaultBranchSHA, baseRef: defaultBranch,
+        trustedPolicySHA, queueLabel }, predecessors);
+    } catch (error) {
+      return pauseRefusedCandidate(github, owner, repo, candidate.number, hasFollower, error);
+    }
     return false;
   }
   await mergeVerifiedQueuedPull({
@@ -874,7 +902,15 @@ async function runController({
     return;
   }
 
+  // Pulls the prepare job paused ahead of the ticket were disarmed above and keep their status comment.
+  const bound = !onCandidate && queueProof?.ticket ? boundTicket(queued, queueProof.ticket) : undefined;
+  if (bound === null) {
+    core.notice('The prepared queue ticket no longer matches the queued pull requests ahead of it; nothing was merged.');
+    return;
+  }
+  if (bound) queueProof = { ...queueProof, ticket: bound.ticket };
   for (const [index, candidate] of queued.entries()) {
+    if (bound && candidate.number !== bound.number) continue;
     const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
@@ -885,6 +921,7 @@ async function runController({
       queueLabel,
       queueAppSlug,
       hasFollower: index + 1 < queued.length,
+      predecessors: queued.slice(0, index).map((pull) => pull.number),
       trustedPolicySHA,
       verifyEvidence,
       revalidateEvidence,
@@ -918,10 +955,10 @@ async function runController({
 
 async function prepareQueue(options) {
   let ticket;
-  await runController({ ...options, onCandidate: async (input) => {
+  await runController({ ...options, onCandidate: async (input, predecessors) => {
     const { prepareCandidate } = require('./queue_me_reuse');
     const prepared = await prepareCandidate(input);
-    ticket = prepared.ticket;
+    ticket = prepared.ticket && { ...prepared.ticket, predecessors };
     if (['WAITING', 'BLOCKED'].includes(prepared.readiness.state)) {
       const message = prepared.readiness.state === 'BLOCKED' ? 'Blocked by current CI.' : 'Waiting for current CI.';
       await syncStatusComment(input.github, input.owner, input.repo, input.pullNumber,
