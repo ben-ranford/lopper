@@ -178,7 +178,7 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 		t.Fatal("trusted bootstrap Go must be fixed independently of candidate go.mod")
 	}
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Checkout trusted Python provider O")
-	if trustedCheckout.With["ref"] != "75bd830fbf0a3908269dd15c92af35e895e196e7" || trustedCheckout.With["persist-credentials"] != "false" {
+	if trustedCheckout.With["ref"] != "39c78c5d0c5dfe9885ba00624e4e4691b57a1077" || trustedCheckout.With["persist-credentials"] != "false" {
 		t.Fatal("provider checkout must bind the reviewed trusted O commit without persisted credentials")
 	}
 	setupPython := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Setup trusted cached Python")
@@ -191,8 +191,12 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 func assertTrustedProviderPreflight(t *testing.T, workflow workflowConfig) {
 	t.Helper()
 	preflight := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache")
-	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "Completed official CPython cache entry is unavailable") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.2 windows/amd64") {
-		t.Fatal("trusted provider commit/tree and completed-cache preflight must precede setup-python")
+	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.2 windows/amd64") {
+		t.Fatal("trusted provider commit/tree authentication must precede setup-python")
+	}
+	provision := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
+	if !strings.Contains(provision.Run, "Completed official CPython cache entry is unavailable") {
+		t.Fatal("completed-cache verification must run after setup-python and before provisioning")
 	}
 	checkout := trustedProviderCheckoutCommand
 	functionStart := strings.Index(preflight.Run, "function Assert-TrustedProviderSource {")
@@ -214,8 +218,8 @@ func assertTrustedProviderPreflight(t *testing.T, workflow workflowConfig) {
 			t.Fatalf("read-only source authentication must retain %q", digestCheck)
 		}
 	}
-	assertTrustedProviderAuthBracket(t, preflight.Run, "Assert-TrustedProviderSource", "& $verifier @cacheArguments", "cache verifier")
-	bootstrap := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
+	assertTrustedProviderAuthBracket(t, provision.Run, "Assert-TrustedProviderSource", "& $verifier @cacheArguments", "cache verifier")
+	bootstrap := provision
 	assertTrustedProviderAuthBracket(t, bootstrap.Run, "Assert-TrustedProviderSource", "$result = & $env:TRUSTED_BOOTSTRAP", "trusted bootstrap")
 }
 
@@ -396,7 +400,7 @@ func TestCIRejectsRemovedTrustedNativeWindowsProviderAuthCalls(t *testing.T) {
 	}{
 		{
 			name:       "cache verifier",
-			step:       workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache"),
+			step:       workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider"),
 			call:       "Assert-TrustedProviderSource",
 			invocation: "& $verifier @cacheArguments",
 		},
