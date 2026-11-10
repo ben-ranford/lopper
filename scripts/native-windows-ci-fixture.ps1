@@ -123,6 +123,20 @@ function Test-ReceiptProtocol {
   }
   'receipt-positive,run-id,attempt,event-sha,schema,job,phase,test-status,owner-exit,cleanup,self-test-status,self-test-incomplete,failure,stream-path,stream-digest'
 }
+function Get-ControlDiagnosticSnippet {
+  $control = Join-Path $TrustedRoot 'control'
+  if (-not (Test-Path -LiteralPath $control -PathType Container)) { return '' }
+  $parts = [Collections.Generic.List[string]]::new()
+  foreach ($file in @(Get-ChildItem -LiteralPath $control -Filter '*.stderr.raw' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    if ($bytes.Length -eq 0) { continue }
+    $take = [Math]::Min($bytes.Length, 800)
+    $text = ($Utf8.GetString($bytes, 0, $take) -replace '[\r\n]+', ' | ')
+    $parts.Add("$($file.Name)=$text")
+  }
+  if ($parts.Count -eq 0) { return '' }
+  return ' child-stderr: ' + ($parts -join '; ')
+}
 function Save-EmptyStreams {
   Write-Durable $script:StdoutPath ([byte[]]@())
   Write-Durable $script:StderrPath ([byte[]]@())
@@ -549,9 +563,11 @@ try {
       if ($null -eq $script:Result) { $script:Result=New-Receipt 'failed' 'failed' $null $_.Exception.Message }
       if ($Mode -eq 'self-test') { $script:Result.self_test=[ordered]@{status='failed';failure=$_.Exception.Message} }
       if ($Mode -eq 'execute' -and $script:Result.test_status -eq 'passed') { $script:Result.test_status='unknown';$script:Result.exit_code=$null;$script:Result.cleanup_status='incomplete' }
-      $script:Result.failure=$_.Exception.Message;Update-StreamBindings $script:Result;Write-Receipt $script:Result
+      $detail = $_.Exception.Message + (Get-ControlDiagnosticSnippet)
+      $script:Result.failure=$detail;Update-StreamBindings $script:Result;Write-Receipt $script:Result
     } catch { [Console]::Error.WriteLine("Could not finalize proof receipt: $($_.Exception.Message)") }
   }
-  [Console]::Error.WriteLine("Native Windows fixture $Mode failed: $($_.Exception.Message)")
+  $detail = $_.Exception.Message + (Get-ControlDiagnosticSnippet)
+  [Console]::Error.WriteLine("Native Windows fixture $Mode failed: $detail")
   exit 1
 }
