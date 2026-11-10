@@ -424,6 +424,21 @@ def assert_test_merge(root, source, base, head, base_ref):
         raise ValueError("checkout not actual base/head merge")
 
 
+def assert_candidate_tree(root, source, head):
+    source_tree = git(root, "rev-parse", source + TREE_SUFFIX).decode().strip()
+    if source_tree == git(root, "rev-parse", head + TREE_SUFFIX).decode().strip():
+        return
+    parents = git(root, "show", "-s", "--format=%P", source).decode().split()
+    if len(parents) != 2 or parents[1] != head:
+        raise ValueError("merge contains source outside the exact candidate tree")
+    try:
+        merged = git(root, "merge-tree", "--write-tree", parents[0], head).decode().strip()
+    except ValueError:
+        raise ValueError("merge contains source outside the exact candidate tree") from None
+    if merged != source_tree:
+        raise ValueError("merge contains source outside the exact candidate tree")
+
+
 def event_context(root):
     env = os.environ
     if env.get("GITHUB_EVENT_NAME") != "pull_request" or env.get("GITHUB_RUN_ATTEMPT") != "1" or env.get("TRACE_BUILD_CHANNEL") != "dev":
@@ -445,8 +460,7 @@ def event_context(root):
     parents = git(root, "show", "-s", "--format=%P", head).decode().split()
     if not parents or any(COMMIT_SHA.fullmatch(item) is None for item in parents):
         raise ValueError("candidate parents are missing")
-    if git(root, "rev-parse", source + TREE_SUFFIX) != git(root, "rev-parse", head + TREE_SUFFIX):
-        raise ValueError("merge contains source outside the exact candidate tree")
+    assert_candidate_tree(root, source, head)
     git(root, "diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD")
     if git(root, "ls-files", "--others", "--", "*.go", "go.mod", "go.sum").strip():
         raise ValueError("untracked compile inputs")
@@ -803,6 +817,7 @@ def assert_moved_base_merge():
         remote.mkdir(parents=True)
         (remote / "main").write_text(tip + "\n")
         assert_test_merge(directory, merge, base, head, "main")
+        assert_candidate_tree(directory, merge, head)
         try:
             assert_test_merge(directory, merge, base, base, "main")
         except ValueError as error:
