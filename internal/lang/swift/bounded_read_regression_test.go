@@ -52,7 +52,7 @@ func TestSwiftSourceReadBoundsStatLie(t *testing.T) {
 		t.Fatalf("read source dir: %v entries=%d", err, len(entries))
 	}
 	scanner := &repoScanner{repoPath: repo}
-	if err := scanner.scanSwiftFile(path, staticSizeEntry{DirEntry: entries[0], size: 1}); err != nil {
+	if err := scanner.scanSwiftFile(path, &staticSizeEntry{DirEntry: entries[0], size: 1}); err != nil {
 		t.Fatalf("scan oversized source: %v", err)
 	}
 	if scanner.skippedLargeFiles != 1 || len(scanner.scan.Files) != 0 {
@@ -95,12 +95,12 @@ type staticSizeEntry struct {
 	size int64
 }
 
-func (s staticSizeEntry) Info() (fs.FileInfo, error) {
+func (s *staticSizeEntry) Info() (fs.FileInfo, error) {
 	info, err := s.DirEntry.Info()
 	if err != nil {
 		return nil, err
 	}
-	return staticSizeInfo{FileInfo: info, size: s.size}, nil
+	return &staticSizeInfo{FileInfo: info, size: s.size}, nil
 }
 
 type staticSizeInfo struct {
@@ -108,4 +108,4 @@ type staticSizeInfo struct {
 	size int64
 }
 
-func (s staticSizeInfo) Size() int64 { return s.size }
+func (s *staticSizeInfo) Size() int64 { return s.size }
