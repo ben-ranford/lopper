@@ -2,13 +2,13 @@ package analysis
 
 import (
 	"context"
-	"encoding/xml"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -1384,12 +1384,11 @@ func TestJSLockfileCollectorsIgnoreInvalidDocuments(t *testing.T) {
 }
 
 func TestMavenPropertyResolutionHelpersResolveNestedValuesAndRejectCycles(t *testing.T) {
-	props := pomProperties{Entries: []pomProperty{
-		{Value: "ignored"},
-		{XMLName: xml.Name{Local: "revision"}, Value: " ${release} "},
-		{XMLName: xml.Name{Local: "release"}, Value: "1.2.3"},
-	}}
-	values := props.values()
+	parsed, err := shared.DecodePOM([]byte(`<project><properties><revision> ${release} </revision><release>1.2.3</release></properties></project>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := parsed.IdentityPolicy().Properties
 	if values["revision"] != "${release}" {
 		t.Fatalf("expected trimmed property value, got %#v", values)
 	}
