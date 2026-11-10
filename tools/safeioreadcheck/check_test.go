@@ -214,6 +214,81 @@ func generated(path string) {
 	}
 }
 
+func TestLocalConstantsCannotBypassZeroLimit(t *testing.T) {
+	root := t.TempDir()
+	writeGoFiles(t, root, map[string]string{
+		"local.go": `package sample
+
+import "github.com/ben-ranford/lopper/internal/safeio"
+
+const packageLimit = 1 << 20
+
+func zero(path string) {
+	const limit = 0
+	_, _ = safeio.ReadFileLimit(path, limit)
+}
+
+func positive(path string) {
+	const limit = 1 << 20
+	_, _ = safeio.ReadFileLimit(path, limit)
+}
+
+func shadowsPackage(path string) {
+	const packageLimit = 0
+	_, _ = safeio.ReadFileLimit(path, packageLimit)
+}
+
+func usesPackage(path string) {
+	_, _ = safeio.ReadFileLimit(path, packageLimit)
+}
+
+func afterBlock(path string) {
+	{
+		const packageLimit = 0
+		_, _ = safeio.ReadFileLimit(path, packageLimit)
+	}
+	_, _ = safeio.ReadFileLimit(path, packageLimit)
+}
+
+func param(path string, packageLimit int64) {
+	_, _ = safeio.ReadFileLimit(path, packageLimit)
+}
+
+func localIota(path string) {
+	const (
+		zero = iota
+		one
+	)
+	_, _ = safeio.ReadFileLimit(path, zero)
+	_, _ = safeio.ReadFileLimit(path, one)
+}
+`,
+	})
+
+	refs, err := listZeroLimitReads(root)
+	if err != nil {
+		t.Fatalf("list reads: %v", err)
+	}
+	got := map[string]int{}
+	for _, ref := range refs {
+		got[formatReference(ref)]++
+	}
+	want := []string{
+		"local.go\tzero\tsafeio.ReadFileLimit\t1",
+		"local.go\tshadowsPackage\tsafeio.ReadFileLimit\t1",
+		"local.go\tafterBlock\tsafeio.ReadFileLimit\t1",
+		"local.go\tlocalIota\tsafeio.ReadFileLimit\t1",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("reads = %#v", got)
+	}
+	for _, key := range want {
+		if got[key] != 1 {
+			t.Fatalf("missing %s in %#v", key, got)
+		}
+	}
+}
+
 func TestListZeroLimitReadsRejectsUnusableTrees(t *testing.T) {
 	if _, err := listZeroLimitReads(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("expected missing root to fail")

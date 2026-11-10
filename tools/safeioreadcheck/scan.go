@@ -226,10 +226,17 @@ func collectFuncReferences(fn *ast.FuncDecl, names safeioNames, consts map[strin
 	if fn.Body == nil {
 		return
 	}
-	collectReferences(fn.Body, functionName(fn), names, consts, record)
+	scope := newNameScope(packageScope(consts))
+	declareFields(scope, fn.Recv)
+	if fn.Type != nil {
+		declareFields(scope, fn.Type.Params)
+		declareFields(scope, fn.Type.Results)
+	}
+	collectReferences(fn.Body, functionName(fn), names, scope, record)
 }
 
 func collectValueReferences(decl *ast.GenDecl, names safeioNames, consts map[string]int64, record referenceRecorder) {
+	scope := packageScope(consts)
 	for _, spec := range decl.Specs {
 		value, ok := spec.(*ast.ValueSpec)
 		if !ok {
@@ -237,7 +244,7 @@ func collectValueReferences(decl *ast.GenDecl, names safeioNames, consts map[str
 		}
 		fnName := packageValueName(decl.Tok, value)
 		for _, expr := range value.Values {
-			collectReferences(expr, fnName, names, consts, record)
+			collectReferences(expr, fnName, names, scope, record)
 		}
 	}
 }
@@ -286,24 +293,115 @@ func packageValueName(tok token.Token, spec *ast.ValueSpec) string {
 
 type referenceRecorder func(function, callee string, pos token.Pos)
 
-func collectReferences(node ast.Node, fn string, names safeioNames, consts map[string]int64, record referenceRecorder) {
+type walkFrame struct {
+	pushed bool
+}
+
+func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
 	var stack []ast.Node
+	var frames []walkFrame
 	ast.Inspect(node, func(current ast.Node) bool {
 		if current == nil {
+			frame := frames[len(frames)-1]
+			frames = frames[:len(frames)-1]
 			stack = stack[:len(stack)-1]
+			if frame.pushed {
+				scope = scope.parent
+			}
 			return false
 		}
 		var parent ast.Node
 		if len(stack) > 0 {
 			parent = stack[len(stack)-1]
 		}
-		noteReference(current, parent, fn, names, consts, record)
+		pushed := false
+		if child, ok := nestedScope(current, scope); ok {
+			scope = child
+			pushed = true
+		}
+		bindNode(current, scope)
+		noteReference(current, parent, fn, names, scope, record)
 		stack = append(stack, current)
+		frames = append(frames, walkFrame{pushed: pushed})
 		return true
 	})
 }
 
-func noteReference(node, parent ast.Node, fn string, names safeioNames, consts map[string]int64, record referenceRecorder) {
+func nestedScope(node ast.Node, parent *nameScope) (*nameScope, bool) {
+	switch typed := node.(type) {
+	case *ast.BlockStmt, *ast.FuncLit:
+		return newNameScope(parent), true
+	case *ast.IfStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.ForStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.SwitchStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.TypeSwitchStmt:
+		return scopeForDefine(typed.Assign, parent)
+	case *ast.RangeStmt:
+		if typed.Tok == token.DEFINE {
+			return newNameScope(parent), true
+		}
+	}
+	return parent, false
+}
+
+func scopeForDefine(stmt ast.Stmt, parent *nameScope) (*nameScope, bool) {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok || assign.Tok != token.DEFINE {
+		return parent, false
+	}
+	return newNameScope(parent), true
+}
+
+func bindNode(node ast.Node, scope *nameScope) {
+	switch typed := node.(type) {
+	case *ast.GenDecl:
+		if typed.Tok == token.CONST || typed.Tok == token.VAR {
+			bindGenDecl(scope, typed)
+		}
+	case *ast.FuncLit:
+		declareFields(scope, typed.Type.Params)
+		declareFields(scope, typed.Type.Results)
+	case *ast.AssignStmt:
+		if typed.Tok == token.DEFINE {
+			declareExprs(scope, typed.Lhs)
+		}
+	case *ast.RangeStmt:
+		if typed.Tok == token.DEFINE {
+			declareExpr(scope, typed.Key)
+			declareExpr(scope, typed.Value)
+		}
+	case *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt:
+		declareDefineInit(scope, defineInit(typed))
+	}
+}
+
+func defineInit(node ast.Node) ast.Stmt {
+	switch typed := node.(type) {
+	case *ast.IfStmt:
+		return typed.Init
+	case *ast.ForStmt:
+		return typed.Init
+	case *ast.SwitchStmt:
+		return typed.Init
+	case *ast.TypeSwitchStmt:
+		return typed.Assign
+	default:
+		return nil
+	}
+}
+
+func declareDefineInit(scope *nameScope, stmt ast.Stmt) {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok || assign.Tok != token.DEFINE {
+		return
+	}
+	declareExprs(scope, assign.Lhs)
+}
+
+func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
 	switch typed := node.(type) {
 	case *ast.SelectorExpr:
 		pkg, ok := typed.X.(*ast.Ident)
@@ -313,7 +411,7 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, consts m
 		if _, known := names.selectors[pkg.Name]; !known {
 			return
 		}
-		if !considerCallee(typed.Sel.Name, parent, typed, consts) {
+		if !considerCallee(typed.Sel.Name, parent, typed, scope) {
 			return
 		}
 		record(fn, typed.Sel.Name, typed.Pos())
@@ -324,14 +422,14 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, consts m
 		if !names.dot && !names.samePkg {
 			return
 		}
-		if !considerCallee(typed.Name, parent, typed, consts) {
+		if !considerCallee(typed.Name, parent, typed, scope) {
 			return
 		}
 		record(fn, typed.Name, typed.Pos())
 	}
 }
 
-func considerCallee(name string, parent, fun ast.Node, consts map[string]int64) bool {
+func considerCallee(name string, parent, fun ast.Node, scope *nameScope) bool {
 	switch name {
 	case "ReadFile", "ReadFileUnder", "ReadFileWithinRoot":
 		return true
@@ -346,12 +444,122 @@ func considerCallee(name string, parent, fun ast.Node, consts map[string]int64) 
 	if len(call.Args) == 0 {
 		return true
 	}
-	value, known := evalInt(call.Args[len(call.Args)-1], consts, 0)
+	value, known := evalInt(call.Args[len(call.Args)-1], scope.visibleInts(), 0)
 	return known && value <= 0
 }
 
 func isLimitedRead(name string) bool {
 	return strings.HasPrefix(name, "Read") && strings.HasSuffix(name, "Limit")
+}
+
+type nameScope struct {
+	parent *nameScope
+	names  map[string]bool
+	ints   map[string]int64
+}
+
+func newNameScope(parent *nameScope) *nameScope {
+	return &nameScope{parent: parent, names: map[string]bool{}, ints: map[string]int64{}}
+}
+
+func packageScope(consts map[string]int64) *nameScope {
+	scope := newNameScope(nil)
+	for name, value := range consts {
+		scope.declare(name, value, true)
+	}
+	return scope
+}
+
+func (s *nameScope) declare(name string, value int64, ok bool) {
+	if s == nil || name == "" || name == "_" {
+		return
+	}
+	s.names[name] = true
+	if ok {
+		s.ints[name] = value
+		return
+	}
+	delete(s.ints, name)
+}
+
+func (s *nameScope) visibleInts() map[string]int64 {
+	out := map[string]int64{}
+	seen := map[string]bool{}
+	for scope := s; scope != nil; scope = scope.parent {
+		for name := range scope.names {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if value, ok := scope.ints[name]; ok {
+				out[name] = value
+			}
+		}
+	}
+	return out
+}
+
+func declareFields(scope *nameScope, fields *ast.FieldList) {
+	if fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		declareExprs(scope, identsToExprs(field.Names))
+	}
+}
+
+func identsToExprs(names []*ast.Ident) []ast.Expr {
+	exprs := make([]ast.Expr, 0, len(names))
+	for _, name := range names {
+		exprs = append(exprs, name)
+	}
+	return exprs
+}
+
+func declareExprs(scope *nameScope, exprs []ast.Expr) {
+	for _, expr := range exprs {
+		declareExpr(scope, expr)
+	}
+}
+
+func declareExpr(scope *nameScope, expr ast.Expr) {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return
+	}
+	scope.declare(ident.Name, 0, false)
+}
+
+func bindGenDecl(scope *nameScope, gen *ast.GenDecl) {
+	iotaValue := int64(0)
+	var previous []ast.Expr
+	for _, spec := range gen.Specs {
+		value, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		exprs := valueExprs(value, previous)
+		if len(value.Values) > 0 {
+			previous = exprs
+		}
+		bindSpec(scope, value, exprs, iotaValue)
+		iotaValue++
+	}
+}
+
+func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue int64) {
+	known := scope.visibleInts()
+	for index, name := range spec.Names {
+		if name == nil {
+			continue
+		}
+		var value int64
+		ok := false
+		if index < len(exprs) {
+			value, ok = evalInt(exprs[index], known, iotaValue)
+		}
+		scope.declare(name.Name, value, ok)
+	}
 }
 
 type constBinding struct {
