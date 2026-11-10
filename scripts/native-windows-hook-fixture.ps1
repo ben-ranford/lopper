@@ -171,8 +171,22 @@ function Assert-Custody([bool]$WithAllocation, [bool]$WithJoin) {
         if (-not [string]::IsNullOrEmpty([string]$script:SelfTestAdapter.verifierReject)) { throw "SELFTEST_EXPECTED:verifier.$($script:SelfTestAdapter.verifierReject)" }
         Invoke-TestFault 'custody.verify'
     } else {
-        & $Verifier @arguments
-        if ($LASTEXITCODE -ne 0) { throw 'Fixed custody/allocation/original-join verifier rejected operation' }
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = $Verifier
+        $start.UseShellExecute = $false
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in $arguments) { $start.ArgumentList.Add([string]$argument) }
+        $verifierProcess = [Diagnostics.Process]::new()
+        $verifierProcess.StartInfo = $start
+        if (-not $verifierProcess.Start()) { throw 'Fixed custody/allocation/original-join verifier rejected operation' }
+        $verifierStdoutTask = $verifierProcess.StandardOutput.ReadToEndAsync()
+        $verifierStderrTask = $verifierProcess.StandardError.ReadToEndAsync()
+        $verifierProcess.WaitForExit()
+        $verifierStderr = $verifierStderrTask.GetAwaiter().GetResult()
+        $verifierStdout = $verifierStdoutTask.GetAwaiter().GetResult()
+        if ($verifierProcess.ExitCode -ne 0) { throw "Fixed custody/allocation/original-join verifier rejected operation: $($verifierStderr.Trim())" }
+        if (-not [string]::IsNullOrEmpty($verifierStdout)) { [Console]::Out.Write($verifierStdout) }
     }
     Assert-Deadline
     if ($script:identityInitialized) { Assert-ControlIdentity }
