@@ -99,12 +99,10 @@ resolve_release_series_tag() {
     exit 1
   fi
 
-  local releases_json
-  releases_json="$(curl_with_token -fsSL "https://api.github.com/repos/ben-ranford/lopper/releases?per_page=100")"
-
   local tag
   if ! tag="$(
-    SERIES="$series" RELEASES_JSON="$releases_json" python3 - <<'PY'
+    curl_with_token -fsSL "https://api.github.com/repos/ben-ranford/lopper/releases?per_page=100" |
+      SERIES="$series" python3 -c '
 import json
 import os
 import re
@@ -112,7 +110,7 @@ import sys
 
 series = os.environ["SERIES"]
 try:
-    releases = json.loads(os.environ.get("RELEASES_JSON", "[]"))
+    releases = json.load(sys.stdin)
 except json.JSONDecodeError:
     sys.exit(2)
 
@@ -139,7 +137,7 @@ for release in releases:
 
 if candidates:
     print(max(candidates, key=version_key))
-PY
+'
   )"; then
     error "Unable to parse GitHub releases while resolving floating ref '${series}'."
     exit 1
