@@ -163,7 +163,7 @@ class Owner:
         self.api = api
         self.output = pathlib.Path(output)
         self.workspace = pathlib.Path(workspace)
-        self.total_deadline = time.monotonic() + 30
+        self.total_deadline = time.monotonic() + 70
         self.deadline = self.total_deadline
         self.pids = {}
         self.tracers = []
@@ -432,7 +432,10 @@ class Owner:
                   self.ambiguity, self.cancellation)
         try:
             for phase in phases:
-                self.deadline = min(self.total_deadline, time.monotonic() + 5)
+                # The 8 MiB cap is 150000 traced writes. strace 6.19 needs more
+                # than the 5s used by the Ubuntu 24.04 tracer; a hang still stops.
+                budget = 40 if phase.__name__ == "cap" else 5
+                self.deadline = min(self.total_deadline, time.monotonic() + budget)
                 started = time.monotonic()
                 phase()
                 self.cleanup()

@@ -39,6 +39,9 @@ SYSCALLS = ("clone,clone3,fork,vfork,execve,execveat,exit,exit_group,wait4,waiti
             "rt_sigprocmask,rt_sigreturn,pipe,pipe2,dup,dup2,dup3,fcntl,close,"
             "close_range,open,openat,openat2,read,readv,write,writev")
 SELECTOR = "^TestHooksInstallInterruptCleansPreflightAndRollsBackState$"
+SHOW_PARENTS = "--format=%P"
+MERGE_PARENTS = "checkout not actual base/head merge"
+CANDIDATE_TREE = "merge contains source outside the exact candidate tree"
 TRACE_NAMES = {
     "exit0": "exit0.trace",
     "exit23": "exit23.trace",
@@ -413,30 +416,30 @@ def is_ancestor(root, ancestor, commit):
 
 def assert_test_merge(root, source, base, head, base_ref):
     """Accept GitHub's test merge when main moved after the event snapshot."""
-    parents = git(root, "show", "-s", "--format=%P", source).decode().split()
+    parents = git(root, "show", "-s", SHOW_PARENTS, source).decode().split()
     if parents == [base, head]:
         return
     if (len(parents) != 2 or parents[1] != head or COMMIT_SHA.fullmatch(parents[0]) is None
             or not isinstance(base_ref, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", base_ref)):
-        raise ValueError("checkout not actual base/head merge")
+        raise ValueError(MERGE_PARENTS)
     tip = git(root, "rev-parse", "--verify", f"refs/remotes/origin/{base_ref}^{{commit}}").decode().strip()
     if not is_ancestor(root, base, parents[0]) or not is_ancestor(root, parents[0], tip):
-        raise ValueError("checkout not actual base/head merge")
+        raise ValueError(MERGE_PARENTS)
 
 
 def assert_candidate_tree(root, source, head):
     source_tree = git(root, "rev-parse", source + TREE_SUFFIX).decode().strip()
     if source_tree == git(root, "rev-parse", head + TREE_SUFFIX).decode().strip():
         return
-    parents = git(root, "show", "-s", "--format=%P", source).decode().split()
+    parents = git(root, "show", "-s", SHOW_PARENTS, source).decode().split()
     if len(parents) != 2 or parents[1] != head:
-        raise ValueError("merge contains source outside the exact candidate tree")
+        raise ValueError(CANDIDATE_TREE)
     try:
         merged = git(root, "merge-tree", "--write-tree", parents[0], head).decode().strip()
     except ValueError:
-        raise ValueError("merge contains source outside the exact candidate tree") from None
+        raise ValueError(CANDIDATE_TREE) from None
     if merged != source_tree:
-        raise ValueError("merge contains source outside the exact candidate tree")
+        raise ValueError(CANDIDATE_TREE)
 
 
 def event_context(root):
@@ -457,7 +460,7 @@ def event_context(root):
     if git(root, "rev-parse", "HEAD").decode().strip() != source or env.get("GITHUB_SHA") != source:
         raise ValueError("checkout/source mismatch")
     assert_test_merge(root, source, base, head, event["pull_request"]["base"]["ref"])
-    parents = git(root, "show", "-s", "--format=%P", head).decode().split()
+    parents = git(root, "show", "-s", SHOW_PARENTS, head).decode().split()
     if not parents or any(COMMIT_SHA.fullmatch(item) is None for item in parents):
         raise ValueError("candidate parents are missing")
     assert_candidate_tree(root, source, head)
@@ -755,12 +758,12 @@ def selftest():
         receipt["received"] = 1
         (directory / "exit0.receipt.json").write_text(json.dumps(receipt))
         assert observe(directory, "exit0", 0)["sink_receipt_state"] == "INVALID"
-        (directory / "exit23.trace").write_bytes(b"12 1.000000 wait4(0xd, 0x1234, 0x0, 0x0) = 0xd <0.01>\n12 1.000001 +++ exited with 23 +++\n")
+        (directory / TRACE_NAMES["exit23"]).write_bytes(b"12 1.000000 wait4(0xd, 0x1234, 0x0, 0x0) = 0xd <0.01>\n12 1.000001 +++ exited with 23 +++\n")
         facts = raw_facts(directory, "exit23", 64)
         assert facts["raw_wait4_facts"] == [{"returned_pid_numeric": 13, "wait_status_pointer_contents": "OPAQUE"}]
         assert facts["terminal_facts"] == [{"pid_numeric": 12, "terminal": "exited with 23"}]
         assert facts["continuity"] == "UNKNOWN"
-        (directory / "exit23.trace").write_bytes(b"12 1.000000 wait4(0x48d6f, 0x7fff65e0e77c, 0, 0 <unfinished ...>\n12 1.000001 <... wait4 resumed>) = 0x48d6f <0.000261>\n")
+        (directory / TRACE_NAMES["exit23"]).write_bytes(b"12 1.000000 wait4(0x48d6f, 0x7fff65e0e77c, 0, 0 <unfinished ...>\n12 1.000001 <... wait4 resumed>) = 0x48d6f <0.000261>\n")
         facts = raw_facts(directory, "exit23", 64)
         assert facts["raw_wait4_facts"] == [{"returned_pid_numeric": 298351, "wait_status_pointer_contents": "OPAQUE"}]
     assert len(SLOTS) == 23 and sum(SLOTS.values()) == MAX_RETAINED
@@ -821,7 +824,7 @@ def assert_moved_base_merge():
         try:
             assert_test_merge(directory, merge, base, base, "main")
         except ValueError as error:
-            if str(error) != "checkout not actual base/head merge":
+            if str(error) != MERGE_PARENTS:
                 raise
         else:
             raise AssertionError("wrong head parent accepted")
