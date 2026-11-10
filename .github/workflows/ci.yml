@@ -1235,7 +1235,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
-          ref: 072f5591bfe52f38e85507c9dcacd7b8a1bb5db4
+          ref: cb98176a60a71a64286e6dc23ea8dbb598196096
           path: .trusted-provider-o
           persist-credentials: false
 
@@ -1261,8 +1261,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
-          $expectedCommit = '072f5591bfe52f38e85507c9dcacd7b8a1bb5db4'
-          $expectedTree = 'b77e9ead797bbdf0e91d883f2705a1df7df698f5'
+          $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
+          $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
           $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
           $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           $bootstrapSha256 = 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391'
@@ -1343,8 +1343,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
-          $expectedCommit = '072f5591bfe52f38e85507c9dcacd7b8a1bb5db4'
-          $expectedTree = 'b77e9ead797bbdf0e91d883f2705a1df7df698f5'
+          $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
+          $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
           $expectedBootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
           $expectedVerify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           function Assert-TrustedProviderSource {
@@ -1429,8 +1429,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $proofArgs = @('test', '-count=1', '-json', '-p=1', '-timeout=20m', '-run', '^TestInstallScriptWindows', './internal/githubaction')
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
-          $expectedCommit = '072f5591bfe52f38e85507c9dcacd7b8a1bb5db4'
-          $expectedTree = 'b77e9ead797bbdf0e91d883f2705a1df7df698f5'
+          $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
+          $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
           $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
           $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           function Assert-TrustedProviderInvocation {
@@ -1509,8 +1509,8 @@ jobs:
           $proofArgs = @('run', './tools/regressionproof', '--repo', '.', '--body-file', $env:PR_ACTION_BODY_FILE, '--title', $env:PR_TITLE, '--base-sha', $env:PR_BASE_SHA, '--regression-exempt-label', $env:PR_REGRESSION_EXEMPT_LABEL, '--target-os', 'windows')
           $ErrorActionPreference = 'Stop'
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
-          $expectedCommit = '072f5591bfe52f38e85507c9dcacd7b8a1bb5db4'
-          $expectedTree = 'b77e9ead797bbdf0e91d883f2705a1df7df698f5'
+          $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
+          $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
           $bootstrap = Join-Path $trusted 'scripts/proof-python/provision.ps1'
           $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           function Assert-TrustedProviderInvocation {
