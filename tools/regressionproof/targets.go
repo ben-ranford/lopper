@@ -55,30 +55,61 @@ func declarationTarget(repoRoot string, declaration prmetadata.RegressionDeclara
 		return "", fmt.Errorf("read regression package %s: %w", declaration.PackagePath, err)
 	}
 	var target string
+	var incompatibleFile string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		path := filepath.Join(packageDir, entry.Name())
-		data, file, err := readRegressionSource(repoRoot, path)
+		fileTarget, found, err := regressionTestFileTargetForDeclaration(repoRoot, packageDir, entry.Name(), declaration)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("route regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 		}
-		if !declaresTest(file, declaration.TestName) {
+		if !found {
+			continue
+		}
+		if fileTarget == "" {
+			incompatibleFile = entry.Name()
 			continue
 		}
 		if target != "" {
 			return "", fmt.Errorf("regression test %s::%s is declared in multiple files", declaration.PackagePath, declaration.TestName)
 		}
-		target, err = testFileTarget(packageDir, entry.Name(), data, declaration.TargetOS)
-		if err != nil {
-			return "", fmt.Errorf("route regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
-		}
+		target = fileTarget
 	}
-	if target == "" {
-		return "", fmt.Errorf("regression test %s::%s has no matching test function", declaration.PackagePath, declaration.TestName)
+	if target != "" {
+		return target, nil
 	}
-	return target, nil
+	if incompatibleFile != "" {
+		return "", fmt.Errorf("route regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, unsupportedRegressionFileTargetError(incompatibleFile, declaration.TargetOS))
+	}
+	return "", fmt.Errorf("regression test %s::%s has no matching test function", declaration.PackagePath, declaration.TestName)
+}
+
+func regressionTestFileTargetForDeclaration(repoRoot, packageDir, filename string, declaration prmetadata.RegressionDeclaration) (string, bool, error) {
+	path := filepath.Join(packageDir, filename)
+	data, file, err := readRegressionSource(repoRoot, path)
+	if err != nil {
+		return "", false, err
+	}
+	if !declaresTest(file, declaration.TestName) {
+		return "", false, nil
+	}
+	if declaration.TargetOS == "" {
+		target, err := testFileTarget(packageDir, filename, data)
+		return target, true, err
+	}
+	matches, err := testFileMatchesTarget(packageDir, filename, data, declaration.TargetOS)
+	if err != nil {
+		return "", true, err
+	}
+	if !matches {
+		return "", true, nil
+	}
+	return declaration.TargetOS, true, nil
+}
+
+func unsupportedRegressionFileTargetError(filename, declaredTarget string) error {
+	return fmt.Errorf("test source %s cannot run on a supported native linux, windows or darwin proof runner (declared target %q)", filename, declaredTarget)
 }
 
 func declaresTest(file *ast.File, testName string) bool {
@@ -98,13 +129,9 @@ func proofTargetArchitecture(targetOS string) string {
 	return "amd64"
 }
 
-func testFileTarget(dir, name string, data []byte, declaredTarget string) (string, error) {
+func testFileTarget(dir, name string, data []byte) (string, error) {
 	// Portable declarations keep Linux priority. All jobs use identical contexts.
-	targets := []string{"linux", "windows", "darwin"}
-	if declaredTarget != "" {
-		targets = []string{declaredTarget}
-	}
-	for _, targetOS := range targets {
+	for _, targetOS := range []string{"linux", "windows", "darwin"} {
 		matches, err := testFileMatchesTarget(dir, name, data, targetOS)
 		if err != nil {
 			return "", err
@@ -113,7 +140,7 @@ func testFileTarget(dir, name string, data []byte, declaredTarget string) (strin
 			return targetOS, nil
 		}
 	}
-	return "", fmt.Errorf("test source %s cannot run on a supported native linux, windows or darwin proof runner (declared target %q)", name, declaredTarget)
+	return "", unsupportedRegressionFileTargetError(name, "")
 }
 
 func testFileMatchesTarget(dir, name string, data []byte, targetOS string) (bool, error) {
