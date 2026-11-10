@@ -130,14 +130,27 @@ function Read-BoundedTail([string]$Path, [int]$Max) {
   $start = [Math]::Max(0, $bytes.Length - $Max)
   return ($Utf8.GetString($bytes, $start, $bytes.Length - $start) -replace '[\r\n]+', ' | ')
 }
+function Get-SubjectFailureLines([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+  $text = [IO.File]::ReadAllText($Path)
+  $hits = [Collections.Generic.List[string]]::new()
+  foreach ($match in [regex]::Matches($text, '"Output":"((?:\\.|[^"\\])*)"')) {
+    $value = [regex]::Unescape($match.Groups[1].Value) -replace '[\r\n]+',' '
+    if ($value -match 'FAIL:|Fatal|panic|missing exact|retained|removed|failed:') { $hits.Add($value.Trim()) }
+  }
+  if ($hits.Count -eq 0) { return '' }
+  $start = [Math]::Max(0, $hits.Count - 12)
+  $selected = for ($index = $start; $index -lt $hits.Count; $index++) { $hits[$index] }
+  return ($selected -join ' || ')
+}
 function Get-ControlDiagnosticSnippet {
   $control = Join-Path $TrustedRoot 'control'
   if (-not (Test-Path -LiteralPath $control -PathType Container)) { return '' }
+  $failures = Get-SubjectFailureLines (Join-Path $control 'subject.stdout.raw')
+  $audit = Read-BoundedTail (Join-Path $control 'audit-10.stderr.raw') 400
   $parts = [Collections.Generic.List[string]]::new()
-  foreach ($name in @('subject.stdout.raw','subject.stderr.raw','audit-10.stderr.raw')) {
-    $text = Read-BoundedTail (Join-Path $control $name) 1800
-    if ($text -ne '') { $parts.Add("${name}=$text") }
-  }
+  if ($failures -ne '') { $parts.Add("failures=$failures") }
+  if ($audit -ne '') { $parts.Add("audit=$audit") }
   if ($parts.Count -eq 0) { return '' }
   return ' child-evidence: ' + ($parts -join '; ')
 }
