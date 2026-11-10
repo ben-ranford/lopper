@@ -68,26 +68,26 @@ def private_workspace(workspace):
 
 
 def privacy_target(channel, slot, workspace):
-    sentinel = sys.argv[-1]
-    if slot not in ("exit0", "exit23", "signal") or re.fullmatch(PRIVACY_PREFIX + slot + r"_[\da-f]{32}", sentinel, re.ASCII) is None:
+    privacy_token = sys.argv[-1]
+    if slot not in ("exit0", "exit23", "signal") or re.fullmatch(PRIVACY_PREFIX + slot + r"_[\da-f]{32}", privacy_token, re.ASCII) is None:
         raise ValueError("private sentinel identity")
     # Real argv/env/path/read/write sentinels, never synthetic trace strings.
-    if sys.argv[-1] != sentinel or os.environ.get("HOOK_TRACE_PRIVATE_SENTINEL") != sentinel:
+    if sys.argv[-1] != privacy_token or os.environ.get("HOOK_TRACE_PRIVATE_SENTINEL") != privacy_token:
         raise ValueError("privacy fixture inputs")
     descriptor = private_workspace(workspace)
     try:
-        fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        fd = os.open(privacy_token, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
         with os.fdopen(fd, "wb", buffering=0) as stream:
-            stream.write(sentinel.encode())
-        fd = os.open(sentinel, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+            stream.write(privacy_token.encode())
+        fd = os.open(privacy_token, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
         with os.fdopen(fd, "rb", buffering=0) as stream:
-            if stream.read(4096) != sentinel.encode():
+            if stream.read(4096) != privacy_token.encode():
                 raise ValueError("privacy fixture IO")
     finally:
         os.close(descriptor)
     read_fd, write_fd = os.pipe()
-    os.write(write_fd, sentinel.encode())
-    if os.read(read_fd, 4096) != sentinel.encode():
+    os.write(write_fd, privacy_token.encode())
+    if os.read(read_fd, 4096) != privacy_token.encode():
         raise ValueError("privacy pipe")
     os.close(read_fd)
     os.close(write_fd)
@@ -217,10 +217,10 @@ class Owner:
                        "target", slot, str(child.fileno()), str(self.workspace)]
         env = dict(os.environ)
         if slot in ("exit0", "exit23", "signal"):
-            sentinel = PRIVACY_PREFIX + slot + "_" + os.urandom(16).hex()
-            self.sentinels[slot] = sentinel
-            target_argv.append(sentinel)
-            env["HOOK_TRACE_PRIVATE_SENTINEL"] = sentinel
+            privacy_token = PRIVACY_PREFIX + slot + "_" + os.urandom(16).hex()
+            self.sentinels[slot] = privacy_token
+            target_argv.append(privacy_token)
+            env["HOOK_TRACE_PRIVATE_SENTINEL"] = privacy_token
         descriptors = [child.fileno()]
         seam = []
         if slot == "abnormal":
