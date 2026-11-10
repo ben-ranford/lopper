@@ -456,6 +456,36 @@ class Owner:
                 self.remaining()
 
 
+def expected_control_build():
+    temp = os.path.realpath(os.environ["RUNNER_TEMP"])
+    identifiers = [os.environ[name] for name in ("GITHUB_RUN_ID", "GITHUB_JOB", "GITHUB_RUN_ATTEMPT")]
+    if any(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value, re.ASCII) is None for value in identifiers):
+        raise ValueError(WORKSPACE_ERROR)
+    return temp, "hook-native-" + "-".join(identifiers) + "-build"
+
+
+def write_control_truth(workspace, data):
+    # The argument only selects the fixed runner directory. The write uses that
+    # directory's name, never the raw command-line path.
+    temp, name = expected_control_build()
+    if os.fspath(workspace) != os.path.join(temp, name):
+        raise ValueError(WORKSPACE_ERROR)
+    parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            descriptor = os.open("control-truth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            try:
+                if os.write(descriptor, data) != len(data):
+                    raise ValueError("private control metadata bound")
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(parent)
+
+
 def controls(output, workspace):
     if sys.platform != "linux" or not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
         raise ValueError("native pidfd witnesses unavailable")
@@ -470,9 +500,7 @@ def controls(output, workspace):
     data = json.dumps({"native_controls_status": status, "truth": owner.truth, "failure": failure}, separators=(",", ":")).encode()
     if len(data) > 16384:
         raise ValueError("private control metadata bound")
-    path = pathlib.Path(workspace) / "control-truth.json"
-    with path.open("xb", buffering=0) as stream:
-        stream.write(data)
+    write_control_truth(workspace, data)
     return status
 
 
@@ -563,8 +591,38 @@ def selftest():
     finally:
         left.close()
         right.close()
+    assert_control_truth_stays_in_runner_temp()
     print("portable fixed-contract checks PASS; six native controls NOT executed")
     return 0
+
+
+def assert_control_truth_stays_in_runner_temp():
+    import tempfile
+    saved = {name: os.environ.get(name) for name in ("RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_JOB", "GITHUB_RUN_ATTEMPT")}
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            temp = pathlib.Path(directory).resolve()
+            os.environ["RUNNER_TEMP"] = os.fspath(temp)
+            os.environ["GITHUB_RUN_ID"] = "1"
+            os.environ["GITHUB_JOB"] = "tests"
+            os.environ["GITHUB_RUN_ATTEMPT"] = "1"
+            build = temp / "hook-native-1-tests-1-build"
+            build.mkdir(mode=0o700)
+            write_control_truth(build, b"{}")
+            assert (build / "control-truth.json").read_bytes() == b"{}"
+            try:
+                write_control_truth(temp / "elsewhere", b"{}")
+            except ValueError as error:
+                if str(error) != WORKSPACE_ERROR:
+                    raise
+            else:
+                raise AssertionError("control truth accepted a foreign directory")
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def main():
