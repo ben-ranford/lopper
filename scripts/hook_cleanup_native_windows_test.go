@@ -207,7 +207,10 @@ func (f nativeCleanupFixture) assertReferencePremise(t *testing.T, scenario, ref
 		t.Fatalf("exact equivalent reference is inaccessible or changed: %q", got)
 	}
 	t.Logf("exact reference spelling: %q", reference)
-	t.Log(f.owner.command(t, f.repo, "bash", "-c", `stat -L -c '%d:%i %n' "$1" "$2"`, "native-reference-identity", reference, f.managed))
+	// Git config keeps the Windows spelling, including UNC backslashes. MSYS stat
+	// reads the cygpath -u form of that same path, so a backslash UNC value is
+	// still proved to be the managed snapshot.
+	t.Log(f.owner.command(t, f.repo, "bash", "-c", `stat -L -c '%d:%i %n' "$(cygpath -u -- "$1")" "$(cygpath -u -- "$2")"`, "native-reference-identity", reference, f.managed))
 }
 
 func assertNativeConfigValue(t *testing.T, output, scope, origin, value string) {
