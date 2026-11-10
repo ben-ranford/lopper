@@ -75,6 +75,13 @@ func (in *staveTerminalInput) close() error {
 	return errors.Join(in.err, in.reader.Close())
 }
 
+// shutdownStaveTerminalInput waits for the cancelled read to stop before
+// restoring the terminal mode, so a pending read never sees cooked input.
+func shutdownStaveTerminalInput(in *staveTerminalInput, restore func() error) error {
+	inputErr := in.close()
+	return errors.Join(inputErr, restore())
+}
+
 type staveTerminalEOF struct{ file term.File }
 
 func (*staveTerminalEOF) Read([]byte) (int, error)      { return 0, io.EOF }

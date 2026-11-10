@@ -27,6 +27,9 @@ var (
 	workflowBareGitHubContextPattern       = regexp.MustCompile(`(?:^|[^a-z0-9_])github(?:$|[^a-z0-9_.\[])`)
 )
 
+// Renovate tracks this independent expectation alongside the npm and workflow pins.
+const expectedMarketplaceVSCEVersion = "4.0.0"
+
 const workflowImplicitGitHubToken = "<implicit github.token>"
 
 type workflowCredentialRole uint8
@@ -1586,6 +1589,13 @@ func TestReleaseWorkflowDownloadsReleaseArtifactsByExactName(t *testing.T) {
 	}
 }
 
+func validateMarketplaceToolingPin(version, integrity, expectedVersion string) error {
+	if version != expectedVersion || !strings.HasPrefix(integrity, "sha512-") || len(integrity) == len("sha512-") {
+		return fmt.Errorf("locked Marketplace tool = version %q, integrity %q; want %s with SHA-512 integrity", version, integrity, expectedVersion)
+	}
+	return nil
+}
+
 func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	t.Parallel()
 
@@ -1600,8 +1610,8 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 	if !ok {
 		t.Fatal("VS Code extension lockfile must contain node_modules/@vscode/vsce")
 	}
-	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(vsce.Version) || !strings.HasPrefix(vsce.Integrity, "sha512-") {
-		t.Fatalf("locked Marketplace tool = version %q, integrity %q", vsce.Version, vsce.Integrity)
+	if err := validateMarketplaceToolingPin(vsce.Version, vsce.Integrity, expectedMarketplaceVSCEVersion); err != nil {
+		t.Fatal(err)
 	}
 
 	workflow := readWorkflowConfig(t, ".github/workflows/release.yml")
@@ -1637,15 +1647,15 @@ func TestReleaseWorkflowPreparesIntegrityBoundMarketplaceTooling(t *testing.T) {
 		`lockfile="extensions/vscode-lopper/package-lock.json"`,
 		`vsce_version="$(jq -er '.packages["node_modules/@vscode/vsce"].version' "${lockfile}")"`,
 		`vsce_integrity="$(jq -er '.packages["node_modules/@vscode/vsce"].integrity' "${lockfile}")"`,
-		fmt.Sprintf(`if [ "${vsce_version}" != %q ]; then`, vsce.Version),
+		fmt.Sprintf(`if [ "${vsce_version}" != %q ]; then`, expectedMarketplaceVSCEVersion),
 		`case "${vsce_integrity}" in`,
 		`sha512-?*)`,
 	})
 
 	validateStep := workflowStepByName(t, workflow.Jobs, "publish-marketplace", "Validate Marketplace publication inputs")
 	assertWorkflowStepRunContainsAll(t, validateStep, "Marketplace publication tool version checks", []string{
-		fmt.Sprintf(`jq -e '.packages["node_modules/@vscode/vsce"] | .version == %q and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json"`, vsce.Version),
-		fmt.Sprintf(`jq -e '.version == %q' "${toolchain_dir}/node_modules/@vscode/vsce/package.json"`, vsce.Version),
+		fmt.Sprintf(`jq -e '.packages["node_modules/@vscode/vsce"] | .version == %q and (.integrity | startswith("sha512-"))' "${toolchain_dir}/package-lock.json"`, expectedMarketplaceVSCEVersion),
+		fmt.Sprintf(`jq -e '.version == %q' "${toolchain_dir}/node_modules/@vscode/vsce/package.json"`, expectedMarketplaceVSCEVersion),
 	})
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-marketplace-toolchain", "Prepare integrity-bound Marketplace toolchain")
@@ -3057,7 +3067,7 @@ func TestRenovateKeepsMarketplaceToolingAligned(t *testing.T) {
 	}
 	matches := 0
 	for _, manager := range config.CustomManagers {
-		if manager.DepNameTemplate != "@vscode/vsce" {
+		if manager.DepNameTemplate != "@vscode/vsce" || !slices.Contains(manager.ManagerFilePatterns, `/^\.github/workflows/release\.yml$/`) {
 			continue
 		}
 		if manager.CustomType != "regex" || manager.DatasourceTemplate != "npm" || manager.VersioningTemplate != "npm" {
@@ -5016,28 +5026,6 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 			}
 		}
 	}
-
-	covPattern := regexp.MustCompile(`(?m)^cov:\n(?:\t.*\n)+`)
-	covTarget := covPattern.FindString(makefile)
-	if covTarget == "" {
-		t.Fatal("Makefile must define the cov target")
-	}
-	for _, want := range []string{
-		`grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'`,
-		`mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")`,
-		`-coverprofile="$(COVERAGE_DEFAULT_FILE)"`,
-		`mkdir -p $$(dirname "$(COVERAGE_FILE)")`,
-		`awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"`,
-		`awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
-		`} > "$(COVERAGE_FILE)"`,
-		`mkdir -p .artifacts`,
-		`-coverprofile="$(COVERAGE_FILE)"`,
-		`-package-min="$(COVERAGE_PACKAGE_MIN)"`,
-	} {
-		if !strings.Contains(covTarget, want) {
-			t.Fatalf("cov target must contain %q", want)
-		}
-	}
 }
 
 func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) {
@@ -5092,6 +5080,44 @@ func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) 
 		assertFileExists(t, totalOutput)
 		assertFileExists(t, packagesOutput)
 		assertFileExists(t, packageFailuresOutput)
+	})
+
+	t.Run("cov-check reuses merged profile", func(t *testing.T) {
+		root := newTempCoverageMakeRepo(t)
+		artifacts := filepath.Join(root, ".artifacts")
+		profile := filepath.Join(artifacts, "coverage.out")
+		if err := os.MkdirAll(artifacts, 0o755); err != nil {
+			t.Fatalf("create coverage artifacts directory: %v", err)
+		}
+		if err := os.WriteFile(profile, []byte("mode: atomic\npkg/file.go:1.1,1.2 1 1\n"), 0o644); err != nil {
+			t.Fatalf("write existing merged profile: %v", err)
+		}
+
+		runMakeTargetInDir(t, root, "cov-check", map[string]string{
+			"GO":                   fakeGo,
+			"GO_TOOLCHAIN":         "local",
+			"COVERAGE_MIN":         "98",
+			"COVERAGE_PACKAGE_MIN": "98",
+		})
+
+		assertFileExists(t, filepath.Join(artifacts, "coverage-total.txt"))
+		assertFileExists(t, filepath.Join(artifacts, "coverage-packages.txt"))
+		assertFileExists(t, filepath.Join(artifacts, "coverage-package-failures.txt"))
+		assertPathAbsent(t, filepath.Join(artifacts, "coverage-default.out"))
+		assertPathAbsent(t, filepath.Join(artifacts, "coverage-lockfiledrift-head.out"))
+	})
+
+	t.Run("cov-check fails when merged profile is missing", func(t *testing.T) {
+		root := newTempCoverageMakeRepo(t)
+		output, exitCode := runMakeTargetInDirExpectExitCode(t, root, "cov-check", map[string]string{
+			"GO":                   fakeGo,
+			"GO_TOOLCHAIN":         "local",
+			"COVERAGE_MIN":         "98",
+			"COVERAGE_PACKAGE_MIN": "98",
+		}, 2)
+		if !strings.Contains(output, "missing coverage profile for coveragegate") {
+			t.Fatalf("cov-check exit code %d did not report the missing profile:\n%s", exitCode, output)
+		}
 	})
 }
 
@@ -7063,6 +7089,12 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	if err != nil {
 		t.Fatalf("resolve go binary: %v", err)
 	}
+	// Resolve the caller's effective cache only for Go fixtures, before replacing
+	// HOME. Other fixtures deliberately put a test-binary launcher on PATH as go.
+	cache, err := callerGoCache()
+	if err != nil {
+		t.Fatalf("resolve benchmark fixture Go cache: %v", err)
+	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	moduleCacheDir := currentGoModuleCache(t, goPath)
 	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
@@ -7078,7 +7110,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"GO_BIN":       goPath,
 		"GO_TOOLCHAIN": "local",
 		"HOME":         homeDir,
-		"GOCACHE":      benchFixtureGoCache,
+		"GOCACHE":      cache,
 		"GOMODCACHE":   moduleCacheDir,
 		"BENCH_COUNT":  "1",
 		"BENCH_TIME":   "1x",

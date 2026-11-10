@@ -10,6 +10,7 @@ func TestBenchGateReusesInitializedImportEdges(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"duplicate alias", "production edge", "reflect import only"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			base, head := comparableImportFiles(kind)
 			fixture.writeBenchmarkPackage("benchpkg", base)

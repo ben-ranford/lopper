@@ -13,6 +13,7 @@ func TestBenchGateRejectsIncompleteManifestStreams(t *testing.T) {
 	t.Parallel()
 	for name, payload := range corruptHarnessStreams() {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 			fixture.commit("base")
@@ -126,6 +127,7 @@ func TestBenchGateRejectsInvalidNormalPackageMetadata(t *testing.T) {
 		"missing production source": normalMetadataCommand(`{"Dir":"%s","ImportPath":"%s","TestGoFiles":["bench_test.go"],"GoFiles":["missing.go"]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 			fixture.commit("base")

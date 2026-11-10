@@ -6,6 +6,7 @@ func TestBenchGateSeparatesInitializationPackages(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"internal to external", "external to internal", "transitive only", "other package", "first production edge", "last production edge"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			base, head := initializationBoundaryFiles(scenario)
 			fixture.writeBenchmarkPackage("benchpkg", base)
@@ -63,6 +64,7 @@ func TestBenchGateRetainsExactImportRoots(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"blank", "dot", "selected helper alias"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			base, head := exactImportRootFiles(kind)
 			fixture.writeBenchmarkPackage("benchpkg", base)
