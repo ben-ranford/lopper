@@ -1290,7 +1290,12 @@ jobs:
             Set-Location -LiteralPath $trusted
             $env:GOROOT = $goRoot; $env:GOENV = 'off'; $env:GOWORK = 'off'; $env:GOFLAGS = ''
             $env:GOTOOLCHAIN = 'local'; $env:GOCACHEPROG = ''; $env:GOAUTH = 'off'
-            $env:GOPROXY = 'off'; $env:GOSUMDB = 'off'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+            $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+            $env:GOPROXY = 'https://proxy.golang.org,direct'; $env:GOSUMDB = 'sum.golang.org'
+            Assert-TrustedProviderSource
+            & $go mod download
+            if ($LASTEXITCODE -ne 0) { throw 'Trusted provider module download failed' }
+            $env:GOPROXY = 'off'; $env:GOSUMDB = 'off'
             Assert-TrustedProviderSource
             if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant() -cne $goHash) { throw 'Pinned bootstrap Go changed before trusted compile' }
             & $go build -trimpath -buildvcs=false -o $verifier ./tools/proofpython
