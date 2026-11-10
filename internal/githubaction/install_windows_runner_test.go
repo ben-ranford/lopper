@@ -75,7 +75,7 @@ func TestActionFixtureIgnoresEnvironmentOutputPath(t *testing.T) {
 }
 
 func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
-	for _, kind := range []string{"missing executable", "duplicate executable", "missing runtime hooks", "corrupt ZIP"} {
+	for _, kind := range []string{"missing executable", "duplicate executable", "missing runtime hooks", "partial loader.mjs", "partial require-hook.cjs", "partial sitecustomize.py", "corrupt ZIP"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture := windowsActionFixture(t)
 			archive := filepath.Join(fixture.dir, "archive")
@@ -86,6 +86,8 @@ func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
 				writeActionZIP(t, archive, []actionZIPEntry{{member, []byte("one")}, {member, []byte("two")}})
 			} else if kind == "missing runtime hooks" {
 				writeActionZIP(t, archive, []actionZIPEntry{{"lopper_v1.8.12_windows_" + runtime.GOARCH + "/lopper.exe", nativeActionFixture(t)}})
+			} else if strings.HasPrefix(kind, "partial ") {
+				writePartialWindowsActionArchive(t, archive, strings.TrimPrefix(kind, "partial "))
 			} else if err := os.WriteFile(archive, []byte("invalid zip"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -320,6 +322,24 @@ func nativeActionFixture(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func writePartialWindowsActionArchive(t *testing.T, path, omitted string) {
+	t.Helper()
+	root := "lopper_v1.8.12_windows_" + runtime.GOARCH
+	entries := []actionZIPEntry{{root + "/lopper.exe", nativeActionFixture(t)}}
+	kept := 0
+	for _, hook := range windowsActionRuntimeHooks {
+		if hook == omitted {
+			continue
+		}
+		kept++
+		entries = append(entries, actionZIPEntry{root + "/share/lopper/scripts/runtime/" + hook, []byte("hook " + hook)})
+	}
+	if kept != len(windowsActionRuntimeHooks)-1 {
+		t.Fatalf("partial archive omitted %q, which is not a required runtime hook", omitted)
+	}
+	writeActionZIP(t, path, entries)
 }
 
 func writeWindowsActionArchive(t *testing.T, path string, binary []byte, name string) {

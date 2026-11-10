@@ -296,9 +296,20 @@ curl_with_token -fsSL "$download_url" -o "$archive_path"
 if [[ "$goos" == "$WINDOWS_OS" ]]; then
   zip_member="${archive_name%.zip}/${binary_name}"
   share_prefix="${archive_name%.zip}/share/lopper/"
+  loader_member="${share_prefix}scripts/runtime/loader.mjs"
+  require_member="${share_prefix}scripts/runtime/require-hook.cjs"
+  site_member="${share_prefix}scripts/runtime/sitecustomize.py"
   share_members=()
+  loader_count=0
+  require_count=0
+  site_count=0
   while IFS= read -r member || [[ -n "$member" ]]; do
     member="${member%$'\r'}"
+    case "$member" in
+      "$loader_member") loader_count=$((loader_count + 1)) ;;
+      "$require_member") require_count=$((require_count + 1)) ;;
+      "$site_member") site_count=$((site_count + 1)) ;;
+    esac
     if [[ "$member" == "$zip_member" ]]; then
       continue
     fi
@@ -306,8 +317,8 @@ if [[ "$goos" == "$WINDOWS_OS" ]]; then
       share_members+=("$member")
     fi
   done < <(unzip -Z1 "$archive_path")
-  if ! member_count="$(unzip -Z1 "$archive_path" | tr -d '\r' | grep -Fxc -- "$zip_member")" || [[ "$member_count" != "1" ]] || [[ "${#share_members[@]}" -eq 0 ]]; then
-    error "Downloaded ZIP must contain exactly one ${zip_member} and its share/lopper runtime hooks."
+  if ! member_count="$(unzip -Z1 "$archive_path" | tr -d '\r' | grep -Fxc -- "$zip_member")" || [[ "$member_count" != 1 || "$loader_count" != 1 || "$require_count" != 1 || "$site_count" != 1 ]]; then
+    error "Downloaded ZIP must contain exactly one ${zip_member} and exactly one of each runtime hook loader.mjs, require-hook.cjs, and sitecustomize.py."
     exit 1
   fi
   # Info-ZIP does not let '*' cross a slash, so nested hook paths are selected
