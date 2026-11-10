@@ -665,6 +665,24 @@ func TestRecordReadersRejectMalformedAndUnboundFiles(t *testing.T) {
 		})
 	}
 }
+func TestEventDecoderAcceptsGo127OutputType(t *testing.T) {
+	event, err := decodeEvent([]byte(`{"Action":"output","Package":"github.com/ben-ranford/lopper/scripts","Test":"TestHooksCleanupNativeWindows","Output":"=== RUN   TestHooksCleanupNativeWindows\n","OutputType":"frame"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.OutputType != "frame" || event.Action != "output" {
+		t.Fatalf("decoded event = %+v", event)
+	}
+	for _, raw := range [][]byte{
+		[]byte(`{"Action":"output","OutputType":"stdout"}`),
+		[]byte(`{"Action":"output","BuildID":"x"}`),
+	} {
+		if _, err := decodeEvent(raw); err == nil {
+			t.Fatalf("event accepted: %s", raw)
+		}
+	}
+}
+
 func TestEventDecoderRejectsMalformedAndNonObjectJSON(t *testing.T) {
 	for name, raw := range map[string][]byte{"malformed": []byte(`{"Action":]`), "non-object": []byte(`[]`), "trailing": []byte(`{} {}`)} {
 		t.Run(name, func(t *testing.T) {

@@ -798,8 +798,12 @@ type testEvent struct {
 	Test        string  `json:"Test"`
 	Elapsed     float64 `json:"Elapsed"`
 	Output      string  `json:"Output"`
+	OutputType  string  `json:"OutputType"`
 	FailedBuild string  `json:"FailedBuild"`
 	ImportPath  string  `json:"ImportPath"`
+	Key         string  `json:"Key"`
+	Value       string  `json:"Value"`
+	Path        string  `json:"Path"`
 }
 
 type resultAudit struct {
@@ -883,9 +887,15 @@ func eventFields(line []byte) error {
 	if err := json.Unmarshal(line, &fields); err != nil {
 		return err
 	}
-	known := []string{"Time", "Action", "Package", "Test", "Elapsed", "Output", "FailedBuild", "ImportPath"}
+	known := []string{"Time", "Action", "Package", "Test", "Elapsed", "Output", "OutputType", "FailedBuild", "ImportPath", "Key", "Value", "Path"}
 	for key, raw := range fields {
 		if !slices.Contains(known, key) || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return errors.New("unknown/case-aliased/null Go event field")
+		}
+	}
+	if raw, ok := fields["OutputType"]; ok {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || (value != "" && value != "frame" && value != "error" && value != "error-continue") {
 			return errors.New("unknown/case-aliased/null Go event field")
 		}
 	}
