@@ -5,6 +5,7 @@ package scripts
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -207,10 +208,10 @@ func (f nativeCleanupFixture) assertReferencePremise(t *testing.T, scenario, ref
 		t.Fatalf("exact equivalent reference is inaccessible or changed: %q", got)
 	}
 	t.Logf("exact reference spelling: %q", reference)
-	// Git config keeps the Windows spelling, including UNC backslashes. MSYS stat
-	// reads the cygpath -u form of that same path, so a backslash UNC value is
-	// still proved to be the managed snapshot.
-	t.Log(f.owner.command(t, f.repo, "bash", "-c", `stat -L -c '%d:%i %n' "$(cygpath -u -- "$1")" "$(cygpath -u -- "$2")"`, "native-reference-identity", reference, f.managed))
+	// Git config keeps the Windows spelling, including UNC backslashes. Passing
+	// that spelling as a MSYS argument rewrites it, so the identity check decodes
+	// the original bytes inside Bash and then uses cygpath -u.
+	t.Log(f.owner.command(t, f.repo, "bash", "-c", `ref=$(printf '%s' "$1" | base64 -d); man=$(printf '%s' "$2" | base64 -d); p1=$(cygpath -u -- "$ref") || { printf 'cygpath reference failed:%s\n' "$ref"; exit 1; }; p2=$(cygpath -u -- "$man") || { printf 'cygpath managed failed:%s\n' "$man"; exit 1; }; stat -L -c '%d:%i %n' "$p1" "$p2" || { printf 'stat failed p1=%s p2=%s\n' "$p1" "$p2"; exit 1; }`, "native-reference-identity", base64.StdEncoding.EncodeToString([]byte(reference)), base64.StdEncoding.EncodeToString([]byte(f.managed))))
 }
 
 func assertNativeConfigValue(t *testing.T, output, scope, origin, value string) {
