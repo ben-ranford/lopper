@@ -295,11 +295,24 @@ archive_path="${work_dir}/${archive_name}"
 curl_with_token -fsSL "$download_url" -o "$archive_path"
 if [[ "$goos" == "$WINDOWS_OS" ]]; then
   zip_member="${archive_name%.zip}/${binary_name}"
-  if ! member_count="$(unzip -Z1 "$archive_path" | grep -Fxc -- "$zip_member")" || [[ "$member_count" != "1" ]]; then
-    error "Downloaded ZIP must contain exactly one ${zip_member}."
+  share_prefix="${archive_name%.zip}/share/lopper/"
+  share_members=()
+  while IFS= read -r member || [[ -n "$member" ]]; do
+    member="${member%$'\r'}"
+    if [[ "$member" == "$zip_member" ]]; then
+      continue
+    fi
+    if [[ "$member" == "$share_prefix"* ]]; then
+      share_members+=("$member")
+    fi
+  done < <(unzip -Z1 "$archive_path")
+  if ! member_count="$(unzip -Z1 "$archive_path" | tr -d '\r' | grep -Fxc -- "$zip_member")" || [[ "$member_count" != "1" ]] || [[ "${#share_members[@]}" -eq 0 ]]; then
+    error "Downloaded ZIP must contain exactly one ${zip_member} and its share/lopper runtime hooks."
     exit 1
   fi
-  if ! unzip -q "$archive_path" "$zip_member" "${archive_name%.zip}/share/lopper/*" -d "$work_dir"; then
+  # Info-ZIP does not let '*' cross a slash, so nested hook paths are selected
+  # from the member list instead of a one-level glob.
+  if ! unzip -q "$archive_path" "$zip_member" "${share_members[@]}" -d "$work_dir"; then
     error "Downloaded ZIP must contain ${zip_member} and its share/lopper runtime hooks."
     exit 1
   fi
