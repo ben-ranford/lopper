@@ -17,6 +17,12 @@ The SARIF output includes:
 - baseline context for compare-mode findings, including per-dependency deltas and overall waste delta
 - source locations for findings when location data exists
 
+Artifact locations encode filename bytes as URI paths, so spaces, percent signs,
+Unicode, `#`, `?`, and colons remain part of the filename. Relative paths are
+normalized within the repository; empty paths and paths that escape through
+`..` are omitted from locations while their findings remain in the report.
+Existing local absolute paths continue to use escaped `file:` URIs.
+
 ## Upload to GitHub code scanning
 
 Use the first-party Lopper action to generate `lopper.sarif`, then upload it with `github/codeql-action/upload-sarif`:
