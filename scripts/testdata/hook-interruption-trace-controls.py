@@ -470,11 +470,20 @@ def write_control_truth(workspace, data):
     temp, name = expected_control_build()
     if os.fspath(workspace) != os.path.join(temp, name):
         raise ValueError(WORKSPACE_ERROR)
-    parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValueError(WORKSPACE_ERROR) from error
+    try:
         try:
-            descriptor = os.open("control-truth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        except OSError as error:
+            raise ValueError(WORKSPACE_ERROR) from error
+        try:
+            try:
+                descriptor = os.open("control-truth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            except OSError as error:
+                raise ValueError(WORKSPACE_ERROR) from error
             try:
                 if os.write(descriptor, data) != len(data):
                     raise ValueError("private control metadata bound")
@@ -617,6 +626,19 @@ def assert_control_truth_stays_in_runner_temp():
                     raise
             else:
                 raise AssertionError("control truth accepted a foreign directory")
+            (build / "control-truth.json").unlink()
+            build.rmdir()
+            outside = temp / "outside"
+            outside.mkdir(mode=0o700)
+            build.symlink_to(outside, target_is_directory=True)
+            try:
+                write_control_truth(build, b"{}")
+            except ValueError as error:
+                if str(error) != WORKSPACE_ERROR:
+                    raise
+            else:
+                raise AssertionError("control truth followed a directory symlink")
+            assert not (outside / "control-truth.json").exists()
     finally:
         for name, value in saved.items():
             if value is None:
