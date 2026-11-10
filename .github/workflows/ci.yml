@@ -1252,8 +1252,9 @@ jobs:
 
       - *ci_proof_node_verify
 
-      # Authenticate and compile only O's bootstrap before setup-python. A cache
-      # miss or alternate cache root fails closed before any subject Go command.
+      # Authenticate and compile only O's bootstrap before setup-python.
+      # The completed CPython cache is checked after setup-python, before any
+      # subject installer command.
       - name: Authenticate trusted provider and preflight Python cache
         id: provider_preflight
         shell: pwsh
@@ -1301,23 +1302,9 @@ jobs:
             & $go build -trimpath -buildvcs=false -o $verifier ./tools/proofpython
             if ($LASTEXITCODE -ne 0) { throw 'Trusted provider verifier build failed' }
             $verifierSha256 = (Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant()
-            # Re-authenticate source and executable immediately before invoking O's verifier.
             Assert-TrustedProviderSource
-            if ((Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifierSha256) { throw 'Trusted preflight verifier changed before invocation' }
-            $cacheArguments = @('cache', $env:RUNNER_TOOL_CACHE, [string]$agentCache)
-            $cacheExit = $null
-            try {
-              # Pre-authenticate literal O and both scripts immediately before use.
-              Assert-TrustedProviderSource
-              & $verifier @cacheArguments
-              $cacheExit = $LASTEXITCODE
-            } finally {
-              # Independent post-authentication after the trusted cache check.
-              Assert-TrustedProviderSource
-              if ((Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifierSha256) { throw 'Trusted preflight verifier changed after invocation' }
-              if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant() -cne $goHash) { throw 'Pinned bootstrap Go changed after trusted compile' }
-            }
-            if ($cacheExit -ne 0) { throw 'Completed official CPython cache entry is unavailable' }
+            if ((Get-FileHash -LiteralPath $verifier -Algorithm SHA256).Hash.ToLowerInvariant() -cne $verifierSha256) { throw 'Trusted preflight verifier changed before setup-python' }
+            if ((Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant() -cne $goHash) { throw 'Pinned bootstrap Go changed after trusted compile' }
           } finally {
             Set-Location -LiteralPath $previous.Path
           }
