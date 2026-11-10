@@ -24,6 +24,8 @@ type resolvedCacheOptions struct {
 }
 
 type analysisCache struct {
+	deferWrites  bool
+	pending      []pendingCacheReport
 	options      resolvedCacheOptions
 	metadata     report.CacheMetadata
 	warnings     []string

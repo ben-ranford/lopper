@@ -317,6 +317,29 @@ dependencyResolutionManagement {
 	assertGradleCatalogWarningsContain(t, warnings, "multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath, "unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName)
 }
 
+func TestParseGradleSettingsCatalogRefsHandlesNestedBlocks(t *testing.T) {
+	settingsContent := `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("tools") { if (true) { version("v", "1") }; from(files("gradle/tools.versions.toml")) }
+    create("other") {
+      // closing brace in comment }
+      version("brace", "}")
+      /* another } */
+      from(files("gradle/other.versions.toml"))
+    }
+  }
+}
+`
+	refs, warnings := parseGradleSettingsCatalogRefs(settingsContent, gradleSettingsFileName)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for nested catalog blocks, got %#v", warnings)
+	}
+	if len(refs) != 2 || refs[0].Name != "tools" || refs[0].Path != gradleToolsCatalogPath || refs[1].Name != "other" || refs[1].Path != "gradle/other.versions.toml" {
+		t.Fatalf("expected nested catalog blocks to keep their sources, got %#v", refs)
+	}
+}
+
 func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo string, settingsPath string) {
 	t.Helper()
 
@@ -535,6 +558,7 @@ dependencyResolutionManagement {
     }
   }
 }
+
 `)
 	writeGradleCatalogTestFile(t, catalogPath, "[libraries]\nokhttp = \"com.squareup.okhttp3:okhttp:4.12.0\"\n")
 	closeErr := errors.New("close Gradle catalog after symlink sentinel")
@@ -559,6 +583,53 @@ dependencyResolutionManagement {
 	if closeCalls != 1 {
 		t.Fatalf("expected failed Gradle catalog to close once, got %d", closeCalls)
 	}
+}
+
+func TestStrictGradleRootedReadPreservesInjectedStatAndCloseFailures(t *testing.T) {
+	t.Run("settings byte limit", func(t *testing.T) {
+		repo := t.TempDir()
+		settingsPath := filepath.Join(repo, gradleSettingsFileName)
+		writeGradleCatalogTestFile(t, settingsPath, "dependencyResolutionManagement {}\n")
+		info, err := os.Stat(settingsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		closeErr := errors.New("strict settings close failed")
+		closeCalls, statCalls := 0, 0
+		root := newSharedRootedReadTestRoot(t, repo, filepath.Base(settingsPath), &sharedWalkTestFile{
+			close: func() error { closeCalls++; return closeErr },
+			stat: func() (fs.FileInfo, error) {
+				statCalls++
+				if statCalls == 1 {
+					return info, nil
+				}
+				return &sharedSizedFileInfo{FileInfo: info, size: GradleManifestByteLimit + 1}, nil
+			},
+		})
+		budget := NewGradleDiscoveryBudget(repo)
+		budget.perFile = GradleManifestByteLimit
+		_, warnings, err := LoadGradleCatalogResolverStrict(context.Background(), repo, root, budget)
+		if !errors.Is(err, safeio.ErrFileTooLarge) || !errors.Is(err, closeErr) || len(warnings) != 0 || closeCalls != 1 {
+			t.Fatalf("strict settings failure err=%v warnings=%#v closes=%d", err, warnings, closeCalls)
+		}
+	})
+
+	t.Run("configured catalog descriptor failure", func(t *testing.T) {
+		repo := t.TempDir()
+		writeGradleCatalogTestFile(t, filepath.Join(repo, gradleSettingsFileName), `dependencyResolutionManagement { versionCatalogs { create("libs") { from(files("custom.versions.toml")) } } }`)
+		catalogPath := filepath.Join(repo, "custom.versions.toml")
+		writeGradleCatalogTestFile(t, catalogPath, "[libraries]\n")
+		closeErr := errors.New("strict catalog close failed")
+		closeCalls := 0
+		root := newSharedRootedReadTestRoot(t, repo, filepath.Base(catalogPath), &sharedWalkTestFile{
+			close: func() error { closeCalls++; return closeErr },
+			stat:  func() (fs.FileInfo, error) { return nil, safeio.ErrTargetPathSymlink },
+		})
+		_, warnings, err := LoadGradleCatalogResolverStrict(context.Background(), repo, root, NewGradleDiscoveryBudget(repo))
+		if !errors.Is(err, safeio.ErrTargetPathSymlink) || !errors.Is(err, closeErr) || len(warnings) != 0 || closeCalls != 1 {
+			t.Fatalf("strict catalog failure err=%v warnings=%#v closes=%d", err, warnings, closeCalls)
+		}
+	})
 }
 
 func TestGradleCatalogRegistryLoadSourceWithinRootPropagatesImpureMissingPath(t *testing.T) {
@@ -915,13 +986,25 @@ func (i *sharedSizedFileInfo) Size() int64 {
 func newSharedRootedReadTestRoot(t *testing.T, repo, targetName string, targetFile safeio.File) safeio.Root {
 	t.Helper()
 	realRoot := openSharedTestRoot(t, repo)
-	return &sharedWalkSwapRoot{
-		Root: realRoot,
-		open: func(name string) (safeio.File, error) {
-			if name == targetName {
-				return targetFile, nil
-			}
-			return realRoot.Open(name)
-		},
+	return &sharedRootedReadTestRoot{Root: realRoot, targetName: targetName, targetFile: targetFile}
+}
+
+type sharedRootedReadTestRoot struct {
+	safeio.Root
+	targetName string
+	targetFile safeio.File
+}
+
+func (r *sharedRootedReadTestRoot) Open(name string) (safeio.File, error) {
+	if name == r.targetName {
+		return r.targetFile, nil
 	}
+	return r.Root.Open(name)
+}
+
+func (r *sharedRootedReadTestRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
+	if name == r.targetName {
+		return r.targetFile, nil
+	}
+	return r.Root.OpenFile(name, flag, perm)
 }

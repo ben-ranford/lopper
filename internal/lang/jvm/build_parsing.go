@@ -60,13 +60,15 @@ func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string)
 }
 
 func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, root safeio.Root, catalogs ...*mavenManifestCatalog) ([]dependencyDescriptor, []string, error) {
-	catalogResolver, warnings, err := shared.LoadGradleCatalogResolverWithinRoot(ctx, repoPath, root)
+	gradleBudget := shared.NewGradleDiscoveryBudget(repoPath)
+	catalogResolver, warnings, err := shared.LoadGradleCatalogResolverStrict(ctx, repoPath, root, gradleBudget)
 	if err != nil {
 		return nil, nil, err
 	}
 	buildParser := buildDescriptorParser(repoPath, &catalogResolver, catalogs...)
 
-	descriptors, parseWarnings, err := parseBuildFilesWithMavenEvidenceWithinRoot(ctx, repoPath, root, buildParser, firstMavenCatalog(catalogs), pomXMLName, buildGradleName, buildGradleKTSName)
+	collector := buildFileWarningCollector{repoPath: repoPath, parser: buildParser, catalog: firstMavenCatalog(catalogs), names: []string{pomXMLName, buildGradleName, buildGradleKTSName}, seen: make(map[string]struct{}), gradle: &jvmGradleDiscovery{budget: gradleBudget, resolver: &catalogResolver}}
+	descriptors, parseWarnings, err := collectBuildFilesWithinRoot(ctx, repoPath, root, &collector)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -621,22 +623,29 @@ func parseBuildFilesWithMavenEvidenceWithinRoot(ctx context.Context, repoPath st
 		names:    names,
 		seen:     make(map[string]struct{}),
 	}
+	return collectBuildFilesWithinRoot(ctx, repoPath, root, &collector)
+}
+
+func collectBuildFilesWithinRoot(ctx context.Context, repoPath string, root safeio.Root, collector *buildFileWarningCollector) ([]dependencyDescriptor, []string, error) {
 	budget := shared.RootedWalkBudget{
 		MaxTraversalEntries: maxJVMBuildTraversalEntries,
 		MaxFiles:            maxJVMBuildFiles,
 		MaxWorkItems:        maxJVMBuildWorkItems,
 		CountCandidate: func(path string, entry fs.DirEntry) bool {
-			return matchesBuildFile(strings.ToLower(entry.Name()), names)
+			return matchesBuildFile(strings.ToLower(entry.Name()), collector.names)
 		},
 	}
 	err := shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
-		visitErr := collector.visitWithinRoot(file.Parent, file.Leaf, file.Path, file.Entry)
-		if catalog != nil && catalog.err != nil {
-			return errors.Join(visitErr, catalog.err)
+		visitErr := collector.visitWithinRootContext(ctx, file.Parent, file.Leaf, file.Path, file.Entry)
+		if collector.catalog != nil && collector.catalog.err != nil {
+			return errors.Join(visitErr, collector.catalog.err)
 		}
 		return visitErr
 	})
 	if err != nil {
+		if collector.gradle != nil {
+			return nil, nil, shared.GradleDiscoveryWalkFailure(repoPath, budget, err)
+		}
 		if warning, limited := shared.RootedWalkBudgetWarning("JVM build file scan", budget, err); limited {
 			collector.warnings = append(collector.warnings, warning)
 		} else {
@@ -674,6 +683,7 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 }
 
 type buildFileWarningCollector struct {
+	gradle      *jvmGradleDiscovery
 	catalog     *mavenManifestCatalog
 	repoPath    string
 	parser      func(path, content string) ([]dependencyDescriptor, []string)
@@ -715,7 +725,22 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 }
 
 func (c *buildFileWarningCollector) visitWithinRoot(parent safeio.Root, leaf, path string, entry fs.DirEntry) error {
+	return c.visitWithinRootContext(context.Background(), parent, leaf, path, entry)
+}
+func (c *buildFileWarningCollector) visitWithinRootContext(ctx context.Context, parent safeio.Root, leaf, path string, entry fs.DirEntry) error {
 	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
+		return nil
+	}
+	if c.gradle != nil && !strings.EqualFold(entry.Name(), pomXMLName) {
+		entryType := entry.Type()
+		if entryType.IsRegular() || entryType&fs.ModeType == 0 {
+			return c.visitGradleWithinRoot(ctx, parent, leaf, path)
+		}
+		readErr := error(fs.ErrInvalid)
+		if entryType&fs.ModeSymlink != 0 {
+			readErr = fmt.Errorf("%w: %s", safeio.ErrTargetPathSymlink, leaf)
+		}
+		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
 		return nil
 	}
 	content, readErr := safeio.ReadFileWithinRootLimit(parent, leaf, maxScannableJVMBuildFile)
