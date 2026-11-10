@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -128,8 +131,11 @@ func parsePackageFiles(root string, paths []string) ([]rawReference, error) {
 	grouped := map[string][]parsedFile{}
 	var order []string
 	for _, path := range paths {
-		src, err := os.ReadFile(path)
+		src, err := safeio.ReadFileLimit(path, maxScanFileBytes)
 		if err != nil {
+			if errors.Is(err, safeio.ErrFileTooLarge) {
+				return nil, fmt.Errorf("%s exceeds the %d byte scan limit", path, maxScanFileBytes)
+			}
 			return nil, err
 		}
 		astFile, err := parser.ParseFile(fset, path, src, 0)

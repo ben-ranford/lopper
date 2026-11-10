@@ -2,13 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const minRationaleRunes = 40
@@ -63,28 +65,17 @@ func checkAllowlist(path string, refs []Reference) ([]string, error) {
 	return findings, nil
 }
 
-func loadAllowlist(path string) (_ []allowEntry, err error) {
-	file, err := os.Open(path)
+func loadAllowlist(path string) ([]allowEntry, error) {
+	data, err := safeio.ReadFileLimit(path, maxScanFileBytes)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return nil, fmt.Errorf("%s exceeds the %d byte allowlist limit", path, maxScanFileBytes)
+		}
 		return nil, err
-	}
-	defer func() {
-		err = errors.Join(err, file.Close())
-	}()
-
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	if info.Size() > maxScanFileBytes {
-		return nil, fmt.Errorf("%s exceeds the %d byte allowlist limit", path, maxScanFileBytes)
 	}
 
 	var entries []allowEntry
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScanFileBytes)
 	lineNo := 0
 	for scanner.Scan() {
