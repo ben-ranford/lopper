@@ -309,6 +309,7 @@ if [[ "$goos" == "$WINDOWS_OS" ]]; then
       "$loader_member") loader_count=$((loader_count + 1)) ;;
       "$require_member") require_count=$((require_count + 1)) ;;
       "$site_member") site_count=$((site_count + 1)) ;;
+      *) ;;
     esac
     if [[ "$member" == "$zip_member" ]]; then
       continue
