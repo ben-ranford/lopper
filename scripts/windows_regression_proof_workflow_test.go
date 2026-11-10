@@ -174,11 +174,11 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 		"Verify restricted regression proof runtime", "Write PR body for native action proof",
 		"Prove native Windows regression tests for fix PRs")
 	bootstrapGo := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Setup Go")
-	if bootstrapGo.With["go-version"] != "1.27.2" || bootstrapGo.With["go-version-file"] != "" || bootstrapGo.With["check-latest"] != "false" {
+	if bootstrapGo.With["go-version"] != "1.27.3" || bootstrapGo.With["go-version-file"] != "" || bootstrapGo.With["check-latest"] != "false" {
 		t.Fatal("trusted bootstrap Go must be fixed independently of candidate go.mod")
 	}
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Checkout trusted Python provider O")
-	if trustedCheckout.With["ref"] != "39c78c5d0c5dfe9885ba00624e4e4691b57a1077" || trustedCheckout.With["persist-credentials"] != "false" {
+	if trustedCheckout.With["ref"] != "2b38497948724f7296d9b1033474131851d8521d" || trustedCheckout.With["persist-credentials"] != "false" {
 		t.Fatal("provider checkout must bind the reviewed trusted O commit without persisted credentials")
 	}
 	setupPython := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Setup trusted cached Python")
@@ -191,7 +191,7 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 func assertTrustedProviderPreflight(t *testing.T, workflow workflowConfig) {
 	t.Helper()
 	preflight := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache")
-	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.2 windows/amd64") {
+	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.3 windows/amd64") {
 		t.Fatal("trusted provider commit/tree authentication must precede setup-python")
 	}
 	provision := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
