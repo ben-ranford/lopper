@@ -14,5 +14,8 @@ func newPreferenceReader(file *os.File) (cancelreader.CancelReader, error) {
 }
 
 func newStaveCancelReader(file *os.File) (cancelreader.CancelReader, error) {
+	if err := validateStaveCancelReaderFile(file); err != nil {
+		return nil, err
+	}
 	return uv.NewCancelReader(file)
 }

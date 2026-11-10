@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
@@ -187,6 +188,66 @@ func newParentCancellationRefreshAnalyzer() *parentCancellationRefreshAnalyzer {
 			Language: "go",
 			Name:     "parent-cancellation-fixture",
 		}}},
+	}
+}
+
+func TestParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
+	synctest.Test(t, testParentCancellationRefreshAnalyzerLifecycle)
+}
+
+func testParentCancellationRefreshAnalyzerLifecycle(t *testing.T) {
+	t.Helper()
+	analyzer := newParentCancellationRefreshAnalyzer()
+	ctx, cancel := context.WithCancelCause(t.Context())
+	t.Cleanup(func() {
+		cancel(nil)
+		releaseParentCancellationRefresh(t, analyzer, false)
+	})
+	initial, err := analyzer.Analyse(ctx, analysis.Request{})
+	if err != nil || len(initial.Dependencies) != 1 || initial.Dependencies[0].Name != "parent-cancellation-fixture" {
+		t.Fatalf("initial analysis = %+v, %v", initial, err)
+	}
+	assertParentCancellationRefreshPending(t, analyzer.started, "startup after initial report")
+	returned := make(chan error, 1)
+	go func() {
+		_, err := analyzer.Analyse(ctx, analysis.Request{})
+		returned <- err
+	}()
+	synctest.Wait()
+	select {
+	case <-analyzer.started:
+	case <-time.After(staveSignalSubprocessBound):
+		t.Fatal("refresh lifecycle startup was not observed within the shared timeout")
+	}
+	assertParentCancellationRefreshPending(t, analyzer.cancelled, "cancellation before parent cancel")
+	assertParentCancellationRefreshPending(t, analyzer.finished, "completion before parent cancel")
+	parentCause := errors.New("lifecycle parent cancellation")
+	cancel(parentCause)
+	synctest.Wait()
+	select {
+	case <-analyzer.cancelled:
+	case <-time.After(staveSignalSubprocessBound):
+		t.Fatal("refresh lifecycle cancellation was not observed within the shared timeout")
+	}
+	assertParentCancellationRefreshPending(t, analyzer.finished, "completion before backend release")
+	releaseParentCancellationRefresh(t, analyzer, true)
+	synctest.Wait()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(ctx), parentCause) {
+			t.Fatalf("refresh cancellation = %v, cause = %v", err, context.Cause(ctx))
+		}
+	case <-time.After(staveSignalSubprocessBound):
+		t.Fatal("refresh lifecycle return was not observed within the shared timeout")
+	}
+}
+
+func assertParentCancellationRefreshPending(t *testing.T, signal <-chan struct{}, phase string) {
+	t.Helper()
+	select {
+	case <-signal:
+		t.Fatalf("refresh acknowledged %s prematurely", phase)
+	default:
 	}
 }
 

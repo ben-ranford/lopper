@@ -9,6 +9,7 @@ const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const PAGE_SIZE = 100;
 const LOCATOR_PREFIX = 'suppression-artifact-';
+const STACK_DEPTH = 16;
 const NONTERMINAL = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 
 class EvidenceError extends Error {}
@@ -18,7 +19,7 @@ class CIDeferred extends Error {
     super(`Reuse suppression: CI verification deferred (${reason})`);
     this.code = 'REUSE_CI_DEFERRED';
     this.deferred = Object.freeze({
-      version: 1, snapshot, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
+      version: 2, snapshot, reason, runId: run?.id ?? null, runAttempt: run?.run_attempt ?? null,
     });
   }
 }
@@ -32,14 +33,14 @@ function positiveID(value) {
 }
 
 function inputs(context, snapshot) {
-  const fields = ['version', 'repository', 'repository_id', 'head_repository_id', 'pull_number', 'base', 'head', 'base_ref'];
+  const fields = ['version', 'repository', 'repository_id', 'head_repository_id', 'pull_number', 'base', 'head', 'base_ref', 'policy_source'];
   requireEvidence(snapshot && Object.keys(snapshot).length === fields.length && fields.every((key) => Object.hasOwn(snapshot, key)), 'invalid snapshot fields');
-  requireEvidence(snapshot.version === 1, 'invalid snapshot version');
+  requireEvidence(snapshot.version === 2, 'invalid snapshot version');
   const repo = context?.repo;
   requireEvidence(['owner', 'repo'].every((key) => typeof repo?.[key] === 'string' && /^[A-Za-z0-9_.-]+$/.test(repo[key])), 'invalid repository');
   requireEvidence(snapshot.repository === `${repo.owner}/${repo.repo}`, 'repository mismatch');
   requireEvidence(['repository_id', 'head_repository_id', 'pull_number'].every((key) => positiveID(snapshot[key])), 'invalid snapshot IDs');
-  requireEvidence(['head', 'base'].every((key) => typeof snapshot[key] === 'string' && /^[a-f0-9]{40}$/.test(snapshot[key])), 'invalid snapshot commits');
+  requireEvidence(['head', 'base', 'policy_source'].every((key) => typeof snapshot[key] === 'string' && /^[a-f0-9]{40}$/.test(snapshot[key])), 'invalid snapshot commits');
   requireEvidence(typeof snapshot.base_ref === 'string' && snapshot.base_ref.length > 0, 'invalid base ref');
   return { repo: { owner: repo.owner, repo: repo.repo }, snapshot: Object.freeze({ ...snapshot }) };
 }
@@ -88,7 +89,7 @@ async function assertLiveSnapshot(github, repo, snapshot) {
   const { data: repository } = await github.rest.repos.get(repo);
   requireEvidence(repository?.id === snapshot.repository_id && typeof repository.full_name === 'string' &&
     repository.full_name.toLowerCase() === snapshot.repository.toLowerCase() &&
-    repository.default_branch === snapshot.base_ref, 'live repository mismatch');
+    typeof repository.default_branch === 'string', 'live repository mismatch');
   const { data: pull } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pull_number });
   requireEvidence(pull?.number === snapshot.pull_number && pull.state === 'open' &&
     pull.base?.sha === snapshot.base && pull.head?.sha === snapshot.head && pull.base?.ref === snapshot.base_ref &&
@@ -97,6 +98,42 @@ async function assertLiveSnapshot(github, repo, snapshot) {
     pull.base.repo.full_name.toLowerCase() === snapshot.repository.toLowerCase(), 'live pull request snapshot mismatch');
   const { data: target } = await github.rest.git.getRef({ ...repo, ref: `heads/${snapshot.base_ref}` });
   requireEvidence(target?.object?.sha === snapshot.base, 'protected target changed');
+  if (repository.default_branch === snapshot.base_ref) {
+    requireEvidence(snapshot.policy_source === snapshot.base, 'protected policy changed');
+  } else {
+    const { data: policy } = await github.rest.git.getRef({ ...repo, ref: `heads/${repository.default_branch}` });
+    requireEvidence(policy?.object?.sha === snapshot.policy_source, 'protected policy changed');
+    await assertStackParent(github, repo, snapshot, repository.default_branch);
+  }
+}
+
+async function assertStackParent(github, repo, snapshot, defaultBranch) {
+  requireEvidence(snapshot.head_repository_id === snapshot.repository_id, 'stack head must belong to the protected repository');
+  const parents = await openParents(github, repo);
+  const seen = new Set([snapshot.pull_number]);
+  let target = { ref: snapshot.base_ref, sha: snapshot.base };
+  for (let depth = 0; depth < STACK_DEPTH; depth += 1) {
+    // Only the direct target is bound to an exact SHA; ancestors prove the chain to the default branch is live.
+    const matches = parents.filter(pull => pull.state === 'open' && !seen.has(pull.number) &&
+      pull.head?.ref === target.ref && (target.sha === null || pull.head?.sha === target.sha) &&
+      pull.head?.repo?.id === snapshot.repository_id && pull.base?.repo?.id === snapshot.repository_id);
+    requireEvidence(matches.length === 1, 'stack requires one unique live open parent');
+    if (matches[0].base?.ref === defaultBranch) return;
+    seen.add(matches[0].number);
+    target = { ref: matches[0].base?.ref, sha: null };
+  }
+  throw new EvidenceError('Reuse suppression: stack exceeds its supported depth');
+}
+
+async function openParents(github, repo) {
+  const result = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const { data } = await github.rest.pulls.list({ ...repo, state: 'open', per_page: 100, page });
+    requireEvidence(Array.isArray(data) && data.length <= 100, 'invalid parent inventory');
+    result.push(...data);
+    if (data.length < 100) return result;
+  }
+  throw new EvidenceError('Reuse suppression: parent inventory exceeded its bound');
 }
 
 function requireCurrentEpoch(run, previous) {
@@ -239,7 +276,7 @@ async function downloadArchive(repo, artifactId, token, request = requestArtifac
 }
 
 function receiptFor(snapshot, run, artifactId) {
-  return { headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt, artifactId, suppressionCount: 0 };
+  return { version: 2, policySHA: snapshot.policy_source, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt, artifactId, suppressionCount: 0 };
 }
 
 function assertReceipt(receipt, expected) {
@@ -256,7 +293,7 @@ function createVerifier(loadVerifier = () => require('./suppression_provenance.j
       const run = await latestProducer(github, repo, snapshot);
       const artifactId = await artifactLocator(github, repo, run);
       const archive = await download(repo, artifactId, token);
-      const expected = { repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt };
+      const expected = { policySHA: snapshot.policy_source, repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number, headSHA: snapshot.head, baseSHA: snapshot.base, runId: run.id, runAttempt: run.run_attempt };
       const adapter = loadVerifier();
       let receipt;
       try {
