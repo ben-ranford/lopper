@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1207,5 +1208,25 @@ func TestReadSourceFileDisplayPathAndConfinement(t *testing.T) {
 	}
 	for _, tc := range cases {
 		assertReadSourceFileFailure(t, repo, tc.path, tc.want)
+	}
+}
+
+func TestPOMDecodeByteBoundary(t *testing.T) {
+	for _, size := range []int{POMByteLimit, POMByteLimit + 1} {
+		data := []byte(strings.Repeat(" ", size-len("<project/>")) + "<project/>")
+		pom, err := DecodePOM(data)
+		if size > POMByteLimit {
+			if !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("oversize: %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := pom.IdentityPolicy()
+		if view.Properties == nil || !reflect.DeepEqual(view.Dependencies, []POMDependency(nil)) || !reflect.DeepEqual(view.ManagedDependencies, []POMDependency(nil)) {
+			t.Fatalf("empty model semantics: %#v", view)
+		}
 	}
 }
