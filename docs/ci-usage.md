@@ -397,6 +397,7 @@ jobs:
 - Go files within `testdata`, `fixtures`, `test-fixtures` and `__fixtures__` directories belong to fixture scope, shared with the source-size report, and do not enter the production function index. Their detector records are still validated and retained when connecting clone groups: two production functions linked through fixture members still form a blocking production pair. Fixture files remain visible in the report's fixture source counts.
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
+- `make safeio-read-check`: fail when a production Go file adds a zero-limit `safeio.ReadFile`, `safeio.ReadFileUnder`, or `safeio.ReadFileWithinRoot` parser read, or passes a non-positive constant to a limited safeio read, unless `.github/safeio-zero-limit-allowlist.txt` lists that callsite with its own rationale. See [Safe I/O read bounds](safeio-read-bounds.md).
 - `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, and `windows-latest`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
@@ -407,7 +408,7 @@ jobs:
 - `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
 - `make cov`: run tests with coverage profile and enforce both minimum total coverage (`COVERAGE_MIN`, default `98`) and minimum per-package coverage (`COVERAGE_PACKAGE_MIN`, default `98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
 - `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
-- `make ci`: `automation-integrity + format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
+- `make ci`: `automation-integrity + format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + safeio-read-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
 - `make toolchain-check`: verify required cross toolchain binaries plus `shellcheck`
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`, `shellcheck`) on macOS/Linux
