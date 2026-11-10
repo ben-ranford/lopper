@@ -296,7 +296,7 @@ func assertTrustedProviderBytesRestored(t *testing.T, path string, want []byte, 
 	if !bytes.Equal(got, want) {
 		t.Fatalf("byte-preserving checkout returned %q, want pinned LF bytes %q", got, want)
 	}
-	if gotDigest := sha256.Sum256(got); gotDigest != wantDigest {
+	if sha256.Sum256(got) != wantDigest {
 		t.Fatal("restored provider bytes do not match the pinned digest")
 	}
 	if err := os.WriteFile(path, append(append([]byte(nil), got...), []byte("# changed\n")...), 0o600); err != nil {
