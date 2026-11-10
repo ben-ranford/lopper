@@ -17,10 +17,10 @@ import (
 )
 
 type preflightStartupCase struct {
-	name, notice       string
-	noGroup, interrupt bool
-	wantStatus         int
-	wantReader         bool
+	name, notice                     string
+	noGroup, interrupt, nativeNotice bool
+	wantStatus                       int
+	wantReader                       bool
 }
 
 func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
@@ -29,12 +29,14 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "verified setpgid diagnostic", notice: "expected", wantStatus: 7, wantReader: true},
 		{name: "unknown diagnostic", notice: "unknown", wantStatus: 1},
 		{name: "additional diagnostic", notice: "multiline", wantStatus: 1},
+		{name: "duplicate diagnostic", notice: "duplicate", wantStatus: 1},
 		{name: "trailing nul diagnostic", notice: "nul", wantStatus: 1},
 		{name: "unterminated diagnostic", notice: "unterminated", wantStatus: 1},
+		{name: "unterminated fixture isolates native launch noise", notice: "unterminated", nativeNotice: true, wantStatus: 1},
 		{name: "other group diagnostic", notice: "other", wantStatus: 1},
 		{name: "other group after launch notice", notice: "other prefixed", wantStatus: 1},
 		{name: "existing verified launch notice", notice: "expected prefixed", wantStatus: 7, wantReader: true},
-		{name: "duplicate verified launch notices", notice: "duplicate", wantStatus: 1},
+		{name: "duplicate verified launch notices", notice: "duplicate prefixed", wantStatus: 1},
 		{name: "missing owned group", noGroup: true, wantStatus: 1},
 		{name: "diagnostic without owned group", noGroup: true, notice: "expected", wantStatus: 1},
 		{name: "interrupted startup", interrupt: true, wantStatus: 124},
@@ -53,7 +55,7 @@ func assertPreflightStartup(t *testing.T, tc preflightStartupCase) {
 		t.Fatal(err)
 	}
 	marker, pidFile := filepath.Join(tmp, "reader-started"), filepath.Join(tmp, "anchor-pid")
-	source := preflightStartupFixture(t, tc.notice, tc.noGroup, tc.interrupt, pidFile)
+	source := preflightStartupFixture(t, tc.notice, tc.noGroup, tc.interrupt, pidFile, tc.nativeNotice)
 	helper := filepath.Join(tmp, "preflight.sh")
 	writeFile(t, helper, source)
 	sentinel := preflightSentinel(t, "startup")
@@ -120,15 +122,16 @@ func assertPreflightStartupDiagnostic(t *testing.T, tc preflightStartupCase, pid
 	}
 }
 
-func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt bool, pidFile string) string {
+func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt bool, pidFile string, nativeNotice bool) string {
 	t.Helper()
 	contents, err := os.ReadFile("hook-config-preflight.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := string(contents)
+	capture := preflightCapturesLaunch(notice, noGroup, interrupt)
 	pidPath := shellQuote(pidFile)
-	if preflightCapturesLaunch(notice, noGroup, interrupt) {
+	if capture {
 		pidPath = preflightStartupPath(pidFile)
 	}
 	// Delay only the launch boundary and inject the kernel diagnostic there.
@@ -136,15 +139,11 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 	injection := `	while [ ! -f "$state_dir/test-anchor-pid" ]; do :; done
 	while ! read -r test_anchor_pid <"$state_dir/test-anchor-pid"; do :; done
 	printf "%s\n" "$test_anchor_pid" >` + pidPath + "\n"
-	capture := preflightCapturesLaunch(notice, noGroup, interrupt)
 	if capture {
-		injection += preflightLaunchBarrier(notice, pidFile)
+		injection += preflightCapturedLaunchInjection(notice, pidFile)
+	} else {
+		injection += preflightIsolatedLaunchInjection(notice, nativeNotice)
 	}
-	diagnostic := preflightStartupInjection(notice)
-	if capture && (notice == "expected" || notice == "expected prefixed") {
-		diagnostic = "\tif [ ! -s " + preflightStartupPath(pidFile+".prefix") + " ]; then\n" + diagnostic + "\tfi\n"
-	}
-	injection += diagnostic
 	exited := notice == "exited" || notice == "exited diagnostic"
 	if exited {
 		injection += "\tprintf \"%s\\n\" \"$test_anchor_pid\" >" + shellQuote(pidFile+".reached") + "\n\texit 1\n"
@@ -157,46 +156,93 @@ func preflightStartupFixture(t *testing.T, notice string, noGroup, interrupt boo
 		t.Fatal("startup diagnostic boundary unavailable")
 	}
 	source = strings.Replace(source, restore, injection+restore, 1)
-	source = replacePreflightStartupBoundary(t, source, ") & reader_group=$!\n", ") & reader_group=$!\nprintf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n")
+	const anchorPID = ") & reader_group=$!\n"
+	anchorRecord := anchorPID + "printf \"%s\\n\" \"$reader_group\" >\"$state_dir/test-anchor-pid\"\n"
 	if capture {
+		source = replacePreflightStartupBoundary(t, source, anchorPID, anchorRecord)
 		source = preflightLaunchObserver(t, source, notice, pidFile)
+	} else {
+		source = strings.Replace(source, anchorPID, anchorRecord, 1)
 	}
 	if exited {
 		source = preflightExitObserver(t, source, pidFile)
+		noGroup = true
 	}
-	if noGroup || exited {
-		// Live no-group fixtures require the real negative-PGID probe to fail.
-		// Exited fixtures instead isolate the earlier dead-child rejection.
+	if noGroup {
+		// Disable job-control group creation in this fixture. The real kernel
+		// negative-PGID probe must fail; no fake kill implementation is involved.
 		source = preflightDisableJobControl(t, source)
 	}
 	return source
 }
 
-func preflightStartupInjection(notice string) string {
+func preflightIsolatedLaunchInjection(notice string, nativeNotice bool) string {
+	diagnostic := `"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted"`
 	injection := ""
+	if nativeNotice {
+		// Force the pre-existing capture content that made injected cases
+		// platform-dependent. The fixture must replace it before publishing ready.
+		injection += "\tprintf \"%s\\n\" " + diagnostic + " >&2\n"
+	}
+	if notice != "" {
+		// Launch has completed at the PID handshake. Give each synthetic case
+		// its exact input, independently of Bash's native launch diagnostics.
+		injection += "\texec 2>\"$state_dir/launch-error\"\n"
+	}
 	switch notice {
-	case "expected", "multiline", "nul", "unterminated", "exited diagnostic", "expected prefixed", "duplicate":
+	case "expected", "multiline", "nul", "unterminated", "exited diagnostic":
 		format := "%s\\n"
 		if notice == "unterminated" {
 			format = "%s"
 		}
-		injection += "\tprintf \"" + format + "\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" >&2\n"
+		injection += "\tprintf \"" + format + "\" " + diagnostic + " >&2\n"
 		if notice == "multiline" {
 			injection += "\tprintf \"additional diagnostic\\n\" >&2\n"
 		}
 		if notice == "nul" {
 			injection += "\tprintf \"\\0\" >&2\n"
 		}
+	case "duplicate":
+		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " " + diagnostic + " >&2\n"
+	case "exited":
+		// The child exits before publishing its readiness permit.
 	case "unknown":
 		injection += "\tprintf \"unknown startup diagnostic\\n\" >&2\n"
-	case "other", "other prefixed":
+	case "other":
 		injection += "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
 	}
 	return injection
 }
 
+func preflightCapturedLaunchInjection(notice, pidFile string) string {
+	diagnostic := preflightStartupInjection(notice)
+	if notice == "expected prefixed" {
+		diagnostic = "\tif [ ! -s " + preflightStartupPath(pidFile+".prefix") + " ]; then\n" + diagnostic + "\tfi\n"
+	}
+	return preflightLaunchBarrier(notice, pidFile) + diagnostic
+}
+
+func preflightStartupInjection(notice string) string {
+	switch notice {
+	case "expected prefixed", "duplicate prefixed":
+		return "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to $test_anchor_pid): Operation not permitted\" >&2\n"
+	case "other prefixed":
+		return "\tprintf \"%s\\n\" \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
+	default:
+		return ""
+	}
+}
+
 func preflightCapturesLaunch(notice string, noGroup, interrupt bool) bool {
-	return notice != "" && !noGroup && !interrupt && notice != "exited" && notice != "exited diagnostic"
+	if noGroup || interrupt {
+		return false
+	}
+	switch notice {
+	case "other prefixed", "expected prefixed", "duplicate prefixed":
+		return true
+	default:
+		return false
+	}
 }
 
 // The generated observer lives inside the production single-quoted Bash body.
@@ -304,7 +350,7 @@ printf "%s\n" "$reader_group" >` + preflightStartupPath(pidFile+".complete") + `
 }
 
 func preflightSeedsLaunch(notice string) bool {
-	return notice == "other prefixed" || notice == "expected prefixed" || notice == "duplicate"
+	return notice == "other prefixed" || notice == "expected prefixed" || notice == "duplicate prefixed"
 }
 
 func preflightSeedLaunchNotice(notice, pidFile string) string {
@@ -383,10 +429,12 @@ func preflightStartupNotice(notice string, pid int) string {
 	number := strconv.Itoa(pid)
 	expected := "--: child setpgid (" + number + " to " + number + "): Operation not permitted"
 	switch notice {
-	case "expected", "exited diagnostic", "expected prefixed", "duplicate":
+	case "expected", "exited diagnostic", "expected prefixed", "duplicate prefixed":
 		return expected + "\n"
 	case "multiline":
 		return expected + "\nadditional diagnostic\n"
+	case "duplicate":
+		return expected + "\n" + expected + "\n"
 	case "nul":
 		return expected + "\n\x00"
 	case "unterminated":
@@ -405,7 +453,7 @@ func preflightStartupNotice(notice string, pid int) string {
 // diagnostics; the established-group cases still exercise real process groups.
 func preflightExitObserver(t *testing.T, source, pidFile string) string {
 	t.Helper()
-	const rejection = "\t\tcat \"$state_dir/launch-error\" >&2\n\t\texit 1\n"
+	const rejection = "\tcat \"$state_dir/launch-error\" >&2\n\t\texit 1\n"
 	if strings.Count(source, rejection) != 1 {
 		t.Fatal("unique early anchor rejection boundary unavailable")
 	}
