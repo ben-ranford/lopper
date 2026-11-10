@@ -4,7 +4,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const SNAPSHOT_KEYS = ['version', 'repository', 'repository_id', 'head_repository_id',
-  'pull_number', 'base', 'head', 'base_ref'];
+  'pull_number', 'base', 'head', 'base_ref', 'policy_source'];
 
 function requireEvidence(condition, message) {
   if (!condition) throw new Error(`Queue reuse paused: ${message}`);
@@ -18,11 +18,11 @@ function exactFields(value, fields) {
 function validateTicket(ticket, input) {
   requireEvidence(exactFields(ticket, ['snapshot', 'intent']), 'missing or malformed prepared snapshot.');
   const s = ticket.snapshot;
-  requireEvidence(exactFields(s, SNAPSHOT_KEYS) && s.version === 1 &&
+  requireEvidence(exactFields(s, SNAPSHOT_KEYS) && s.version === 2 &&
     s.repository === `${input.owner}/${input.repo}` && s.repository === 'ben-ranford/lopper' &&
     s.repository_id === 1155023607 && Number.isSafeInteger(s.head_repository_id) && s.head_repository_id > 0 &&
     s.pull_number === input.pullNumber && s.head === input.headSHA && s.base === input.baseSHA &&
-    s.base_ref === input.baseRef && s.base_ref === 'main' && s.base === input.trustedPolicySHA,
+    s.base_ref === input.baseRef && s.base_ref === 'main' && s.base === input.trustedPolicySHA && s.policy_source === input.trustedPolicySHA,
   'prepared snapshot does not match this candidate and protected policy.');
   requireEvidence(ticket.intent && typeof ticket.intent === 'object' && !Array.isArray(ticket.intent),
     'missing prepared queue intent.');
@@ -36,7 +36,7 @@ async function prepareCandidate(input) {
   const { collectCIIntent } = require('./queue_me_ci_intent');
   const ticket = {
     snapshot: {
-      version: 1, repository: `${input.owner}/${input.repo}`,
+      version: 2, policy_source: input.trustedPolicySHA, repository: `${input.owner}/${input.repo}`,
       repository_id: pull.base?.repo?.id, head_repository_id: pull.head?.repo?.id,
       pull_number: pull.number, base: pull.base?.sha, head: pull.head?.sha, base_ref: pull.base?.ref,
     },
@@ -65,7 +65,7 @@ function validatorResult(result, document) {
   requireEvidence(!result.error && [0, 75].includes(result.status), 'shared protected validation failed.');
   const evidence = JSON.parse(result.stdout);
   if (result.status === 75) {
-    requireEvidence(exactFields(evidence, ['version', 'kind', 'snapshot']) && evidence.version === 1 &&
+    requireEvidence(exactFields(evidence, ['version', 'kind', 'snapshot']) && evidence.version === 2 &&
       evidence.kind === 'ci-deferred' && exactFields(evidence.snapshot, SNAPSHOT_KEYS) &&
       SNAPSHOT_KEYS.every(key => evidence.snapshot[key] === document.snapshot[key]),
     'malformed protected CI deferral.');

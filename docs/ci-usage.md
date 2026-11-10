@@ -57,8 +57,9 @@ Linux PR regression proof, memory approval, demo checks, lopper reports, and the
 second coverage pass remain in `verify-checks`. Both coverage thresholds and report
 publication permissions are unchanged. `verify` and `verify (rolling)` retain their
 check names and aggregate the corresponding checks and tests jobs.
-The primary `verify` check also requires `regression-proof-windows`, running on
-`windows-latest` with the same event SHA and no persisted checkout credentials.
+The primary `verify` check also requires `regression-proof-windows` on
+`windows-latest` and `regression-proof-darwin` on `macos-26`, with the same event
+SHA and no persisted checkout credentials.
 They fail if any required execution job fails, is cancelled, or is skipped.
 The primary aggregate forwards the exact report artifact ID to the existing
 publication job. On hosted pull requests, `verify` also downloads that current-run
@@ -74,13 +75,14 @@ original complete prerequisite order.
 
 `Regression-Test: ./package::TestName` declarations keep the same format. CI locates
 each exact test function and evaluates its Go filename and build constraints with
-the `regressionproof` tag using fixed hosted amd64, baseline `amd64.v1`, gc and cgo
-enabled contexts. This keeps routing identical on both hosts. Tests available on Linux run there; tests available only
-on Windows run in the required Windows proof job. Missing, ambiguous, or unsupported
+the `regressionproof` tag using fixed hosted Linux/Windows amd64 (`amd64.v1`)
+and Darwin arm64 (`arm64.v8.0`), gc and cgo enabled contexts. This keeps routing
+identical on all hosts. Tests available on Linux run there, followed by Windows
+and Darwin for platform-specific declarations. Missing, ambiguous, or unsupported
 declarations fail. Each selected proof must compile on the base, fail there, then
 pass on the head; a missing or skipped test outcome fails. The tool's ordinary local
-invocation still attempts every declaration; `--target-os linux` and
-`--target-os windows` select the corresponding CI partition and require a native
+invocation still attempts every declaration; `--target-os linux`,
+`--target-os windows` and `--target-os darwin` select the corresponding CI partition and require a native
 runner whenever that partition contains tests. Native Windows proof uses the hosted
 Git for Windows installation at `C:\Program Files\Git\cmd\git.exe` with a sanitized
 environment. The Windows job resolves the active Go root after setup; the tool
@@ -141,7 +143,7 @@ CI admission is independent of GitHub's required-context summary: `CLEAN` alone 
 
 | Workflow | Expected jobs |
 | --- | --- |
-| `.github/workflows/ci.yml` | `verify-checks`, `verification checks (rolling)`, `verify-tests / tests`, `verify-rolling-tests / tests`, `regression-proof-windows`, `verify`, `verify (rolling)`, `os-smoke (ubuntu-latest)`, `os-smoke (macos-26)`, `vscode-smoke (ubuntu-latest)`, `vscode-smoke (macos-26)`, `homebrew-tap-verify`, `publish-pr-reports`, one current-attempt `suppression-artifact-<artifact ID>` locator |
+| `.github/workflows/ci.yml` | `verify-checks`, `verification checks (rolling)`, `verify-tests / tests`, `verify-rolling-tests / tests`, `regression-proof-windows`, `regression-proof-darwin`, `verify`, `verify (rolling)`, `os-smoke (ubuntu-latest)`, `os-smoke (macos-26)`, `vscode-smoke (ubuntu-latest)`, `vscode-smoke (macos-26)`, `homebrew-tap-verify`, `publish-pr-reports`, one current-attempt `suppression-artifact-<artifact ID>` locator |
 | `.github/workflows/windows-runtime.yml` | `runtime-cancellation` |
 
 The audit fully enumerates exact-head PR workflow runs and chooses the newest matching run generation and its current attempt, even when that generation failed or is pending. An older successful run cannot replace it. Historical cancellations from superseded generations do not block a newer complete success. Jobs are never combined across run IDs; a partial rerun may retain successful jobs only from the same immutable run. Missing, failed, pending, canceled, skipped, duplicate, or inconsistent selected evidence holds admission. Rerun the affected current PR workflow after resolving a failure; use **Re-run all jobs** when attempt evidence is incomplete or ambiguous. A manual `workflow_dispatch` run cannot replace the PR event proof.
@@ -481,3 +483,27 @@ organization settings.
 
 See Renovate's [recommended preset](https://docs.renovatebot.com/presets-config/#configrecommended)
 and [hosted app version policy](https://docs.renovatebot.com/mend-hosted/hosted-apps-config/#renovate-version).
+
+### Platform-specific regression declarations
+
+`Regression-Test: ./package::TestName [darwin]` explicitly requests the required
+`regression-proof-darwin` job on `macos-26` (native arm64). Optional platform values
+are `linux`, `windows` and `darwin`; unsupported values fail PR metadata validation.
+A package/test identity may appear only once, including declarations with different
+platform suffixes. Without a suffix, routing retains Linux priority, then Windows, then Darwin, based
+on the declared test's filename and build constraints. Linux and Windows proof
+jobs remain native amd64. Explicit metadata must agree with source constraints;
+Darwin amd64 and other unsupported architecture combinations fail routing.
+
+Each matching runner compiles the overlaid base package, requires the named test
+to fail on base, and requires it to pass on head. Missing tests, compile failures
+and skipped tests cannot establish proof. Verified output identifies the native
+runner OS/architecture, declaration, base commit and `base=fail head=pass` outcomes.
+A default local invocation honors explicit platform requirements. The `verify`
+aggregate requires the Darwin job to succeed, including when that job has no
+matching declarations, so another runner cannot silently omit a Darwin proof.
+
+The Darwin job shares the Linux proof job's trusted Node provisioning and
+verification steps. Both native fixture tests and proof execution use the captured
+compiler and Go root with automatic toolchain downloads and ambient Go settings
+disabled. Windows consumers likewise use the captured compiler and root.

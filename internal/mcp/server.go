@@ -209,6 +209,9 @@ func (s *Server) handlePayload(ctx context.Context, payload []byte) *rpcResponse
 	if err := decoder.Decode(&req); err != nil {
 		return newErrorResponse(nil, codeParseError, "parse error", err.Error())
 	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return newErrorResponse(nil, codeParseError, "parse error", "expected exactly one JSON value")
+	}
 	if req.JSONRPC != jsonrpcVersion || req.Method == "" {
 		return newErrorResponse(req.ID, codeInvalidRequest, "invalid JSON-RPC request", nil)
 	}

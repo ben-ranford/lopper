@@ -3,13 +3,13 @@ package analysis
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
