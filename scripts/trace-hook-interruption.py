@@ -27,7 +27,11 @@ SOURCE_PATHS = (".github/workflows/ci-tests.yml", "scripts/trace-hook-interrupti
                 "scripts/testdata/hook-interruption-trace-controls.py")
 HOOK_SOURCES = ("scripts/pre_commit_hook_preflight_timeout_test.go", "scripts/pre_commit_hook_test.go",
                 "scripts/hook-config-preflight.sh", "Makefile")
-TRACER_SHA256 = "28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001"
+# Exact hosted tracers. ubuntu-latest is mid-migration from 24.04 to 26.04.
+REVIEWED_TRACERS = (
+    ("28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001", b"version 6.8", b"6.8-0ubuntu2 amd64"),
+    ("66e7dbc556b949ba29efc6b02948580857b9a9c99adacf949cdc10c57d930fc5", b"version 6.19", b"6.19+ds-0ubuntu5 amd64"),
+)
 IMAGE_VERSION = re.compile(r"\d{8}\.\d+\.\d+", re.ASCII)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 SYSCALLS = ("clone,clone3,fork,vfork,execve,execveat,exit,exit_group,wait4,waitid,"
@@ -492,14 +496,15 @@ def tracer_identity(result):
     image = os.environ.get("ImageVersion", "")
     if not IMAGE_VERSION.fullmatch(image):
         raise ValueError("hosted image identity unavailable")
-    if tracer["sha256"] != TRACER_SHA256:
+    reviewed = next((item for item in REVIEWED_TRACERS if item[0] == tracer["sha256"]), None)
+    if reviewed is None:
         raise ValueError("unreviewed tracer")
     if tracer["uid"] != 0 or tracer["mode"] & 0o022:
         raise ValueError("tracer ownership/mode")
     version = subprocess.check_output([STRACE, "-V"], stderr=subprocess.STDOUT)
     package = subprocess.check_output(["/usr/bin/dpkg-query", "-W", "-f=${Version} ${Architecture}", "strace"])
     result["preflight"].update({"strace_version": version[:4096].decode(errors="replace"), "dpkg": package[:256].decode(errors="replace")})
-    if len(version) > 4096 or b"version 6.8" not in version or package != b"6.8-0ubuntu2 amd64":
+    if len(version) > 4096 or reviewed[1] not in version or package != reviewed[2]:
         raise ValueError("tracer version/package")
     return tracer, version, package
 

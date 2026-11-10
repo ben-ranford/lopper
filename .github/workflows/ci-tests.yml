@@ -71,7 +71,7 @@ jobs:
           TRACE_SOURCE_SHA: ${{ inputs.source_sha }}
           TRACE_BUILD_CHANNEL: ${{ inputs.build_channel }}
           TRACE_ORDINARY_OUTCOME: ${{ steps.ordinary_tests.outcome }}
-          TRACE_DRIVER_SHA256: 5a0320488407b63e68b192509793c4b44b5d9776f9fa8b0a2ff38b6fca13719b
+          TRACE_DRIVER_SHA256: a245f501121fda8bcca54e5e84e59aa8833c45f4eb50304e34694b161d2d6b01
         run: /usr/bin/python3 -I -S "${GITHUB_WORKSPACE}/scripts/trace-hook-interruption.py" run
 
       - name: Upload bounded native hook interruption evidence
