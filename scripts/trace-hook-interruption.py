@@ -349,7 +349,9 @@ def raw_line_facts(line, facts, waits, gaps):
     terminal = re.fullmatch(rb"(?:\[pid\s+)?(\d+)\]?\s+\d+\.\d+\s+\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+(?: \(core dumped\))?) \+\+\+\n", line)
     if terminal and len(facts) < 32:
         facts.append({"pid_numeric": int(terminal[1]), "terminal": terminal[2].decode("ascii")})
-    waited = re.search(rb"wait4\([^\n]*\)\s+=\s+(0x[\da-f]+|\d+)\s", line, re.ASCII)
+    # strace 6.8 prints the return on the call line. strace 6.19 splits it:
+    # "wait4(... <unfinished ...>" then "<... wait4 resumed>) = 0xPID".
+    waited = re.search(rb"(?:wait4\([^\n]*\)|<\.\.\. wait4 resumed>\))\s+=\s+(0x[\da-f]+|\d+)\s", line, re.ASCII)
     if waited and len(waits) < 32:
         waits.append({"returned_pid_numeric": int(waited[1], 16 if waited[1].startswith(b"0x") else 10),
                       "wait_status_pointer_contents": "OPAQUE"})
@@ -722,6 +724,9 @@ def selftest():
         assert facts["raw_wait4_facts"] == [{"returned_pid_numeric": 13, "wait_status_pointer_contents": "OPAQUE"}]
         assert facts["terminal_facts"] == [{"pid_numeric": 12, "terminal": "exited with 23"}]
         assert facts["continuity"] == "UNKNOWN"
+        (directory / "exit23.trace").write_bytes(b"12 1.000000 wait4(0x48d6f, 0x7fff65e0e77c, 0, 0 <unfinished ...>\n12 1.000001 <... wait4 resumed>) = 0x48d6f <0.000261>\n")
+        facts = raw_facts(directory, "exit23", 64)
+        assert facts["raw_wait4_facts"] == [{"returned_pid_numeric": 298351, "wait_status_pointer_contents": "OPAQUE"}]
     assert len(SLOTS) == 23 and sum(SLOTS.values()) == MAX_RETAINED
     assert observe("/nonexistent-native-trace-selftest", "exit0", 23)["tracer_wait_result"] == {"kind": "EXIT", "value": 23}
     assert observe("/nonexistent-native-trace-selftest", "signal", -15)["sink_wait_status"] == "UNOBSERVABLE"
