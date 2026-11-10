@@ -420,6 +420,27 @@ def verify_subject(root):
         require(digest(root / relative) == expected, "subject changed: " + relative)
 
 
+def language_version(root):
+    match = re.search(r"(?m)^go (\d+\.\d+(?:\.\d+)?)$", (root / "go.mod").read_text(encoding="utf-8"))
+    require(match is not None, "go.mod has no language version")
+    return "go" + match.group(1)
+
+
+def locked_git(git, repository, *args):
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ["PINNING_PROOF_ROOT"],
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    return subprocess.check_output([str(git), *args], cwd=repository, env=env, timeout=10)
+
+
+def verify_base_subject(repository, git, base):
+    require(re.fullmatch(r"[0-9a-f]{40}", base), "malformed proof base")
+    for relative in SUBJECTS:
+        data = (repository / relative).read_bytes()
+        require(data == locked_git(git, repository, "show", base + ":" + relative),
+                "subject differs from proof base: " + relative)
+
+
 def inverse(data):
     require(hashlib.sha256(data).hexdigest() == SUBJECT_SHA and data.count(LAUNCH) == 3,
             "repair subject or launch count changed")
@@ -488,7 +509,7 @@ def environment(root, tools):
     return env
 
 
-def qualify(commands, tools, scratch):
+def qualify(commands, tools, scratch, expected_go):
     require(sys.platform == "linux" and platform.machine() == "x86_64", "native Linux/amd64 required")
     require(os.environ.get("RUNNER_OS") == "Linux" and os.environ.get("RUNNER_ARCH") == "X64"
             and os.environ.get("ImageOS") and os.environ.get("ImageVersion"), "missing native runner image identity")
@@ -496,7 +517,7 @@ def qualify(commands, tools, scratch):
     for name, arguments in {"go": ["version"], "git": [VERSION_FLAG], PYTHON_TOOL: [VERSION_FLAG],
                             "ruby": [VERSION_FLAG], "cc": [VERSION_FLAG]}.items():
         versions[name] = commands.success("version-" + name, [tools[name], *arguments], scratch).decode()
-    require(versions["go"].strip() == "go version go1.27.2 linux/amd64", "unexpected Go compiler")
+    require(versions["go"].strip() == "go version " + expected_go + " linux/amd64", "unexpected Go compiler")
     commands.success("ruby-yaml", [tools["ruby"], "-ryaml", "-e", "abort unless YAML.safe_load('a: 1')['a'] == 1"], scratch)
     commands.success("shell", [tools["sh"], "-c", "test -n \"$0\""], scratch)
     probe = scratch / "executable-probe.sh"
@@ -505,7 +526,7 @@ def qualify(commands, tools, scratch):
     require(commands.success("executable-filesystem", [probe], scratch) == b"executable-ok\n",
             "ordinary executable filesystem probe failed")
     env = json.loads(commands.success("go-env", [tools["go"], "env", "-json", "GOVERSION", "GOOS", "GOARCH", "GOROOT", "GOTOOLDIR", CGO_KEY, TOOLCHAIN_KEY, GOENV_KEY, "GOMODCACHE", "GOCACHE", "GOPROXY", "GOSUMDB"], scratch))
-    require(env["GOVERSION"] == "go1.27.2" and env["GOOS"] == "linux" and env["GOARCH"] == "amd64"
+    require(env["GOVERSION"] == expected_go and env["GOOS"] == "linux" and env["GOARCH"] == "amd64"
             and env[CGO_KEY] == "1" and env[TOOLCHAIN_KEY] == "local", "Go build context mismatch")
     require(env["GOPROXY"] == "https://proxy.golang.org,direct" and env["GOSUMDB"] == "sum.golang.org",
             "module authentication policy changed")
@@ -518,14 +539,14 @@ def qualify(commands, tools, scratch):
             "tools": {name: binding(path) for name, path in tools.items()}}
 
 
-def compile_variant(commands, tools, root, output, name, race=False):
+def compile_variant(commands, tools, root, output, name, expected_go, race=False):
     args = [tools["go"], "test", "-mod=readonly", "-p=2"]
     if race:
         args.append("-race")
     args += ["-c", "-o", output, "./scripts"]
     commands.success(name + "-compile", args, root)
     info = commands.success(name + "-buildinfo", [tools["go"], "version", "-m", output], root).decode()
-    require(info.splitlines()[0] == str(output) + ": go1.27.2", "binary compiler identity mismatch")
+    require(info.splitlines()[0] == str(output) + ": " + expected_go, "binary compiler identity mismatch")
     require(("\tbuild\t-race=true\n" in info) == race, "binary race mode mismatch")
     for setting in ("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1", "-compiler=gc"):
         require("\tbuild\t" + setting + "\n" in info, "missing binary setting: " + setting)
@@ -543,7 +564,7 @@ def run_tests(commands, root, binary, name, red):
         require(binding(binary) == before, "test binary changed during execution")
 
 
-def prove(commands, tools, repository, scratch):
+def prove(commands, tools, repository, scratch, expected_go):
     original = scratch / "F"
     candidate = scratch / "C"
     old = archive(commands, tools["git"], repository, ORIGINAL, original, scratch)
@@ -567,11 +588,11 @@ def prove(commands, tools, repository, scratch):
     for name, root, red, race in (("B", baseline, True, False), ("C", candidate, False, False),
                                   ("C-race", candidate, False, True), ("I", mutation, True, False)):
         binary = scratch / (name + ".test")
-        compile_variant(commands, tools, root, binary, name, race)
+        compile_variant(commands, tools, root, binary, name, expected_go, race)
         run_tests(commands, root, binary, name, red)
     (mutation / SUBJECT).write_bytes((candidate / SUBJECT).read_bytes())
     restored = scratch / "restored.test"
-    compile_variant(commands, tools, mutation, restored, "restored")
+    compile_variant(commands, tools, mutation, restored, "restored", expected_go)
     run_tests(commands, mutation, restored, "restored", False)
     require(inventory(candidate) == expected and inventory(mutation) == expected
             and inventory(baseline) == baseline_inventory and inventory(original) == old,
@@ -592,7 +613,7 @@ def main():
         repository = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
         require(repository not in root.parents and root not in repository.parents and root != repository,
                 "proof scratch overlaps checkout")
-        verify_subject(repository)
+        expected_go = language_version(repository)
         scratch = root / "work"
         scratch.mkdir(mode=0o700)
         tools = {name: resolve_tool(name) for name in ("go", "git", PYTHON_TOOL, "ruby", "cc")}
@@ -603,14 +624,15 @@ def main():
         driver = Path(__file__).resolve()
         require(driver == repository / "scripts/check_pinning_fixture_proof.py", "wrong driver location")
         require(digest(driver) == bootstrap["driver_sha256"], "driver differs from admitted W")
+        verify_base_subject(repository, tools["git"], bootstrap.get("base", ""))
         commands = Commands(receipts, environment(scratch, tools))
-        runtime = qualify(commands, tools, scratch)
+        runtime = qualify(commands, tools, scratch, expected_go)
         write_json(receipts, "runtime-before.json", runtime)
-        prove(commands, tools, repository, scratch)
+        prove(commands, tools, repository, scratch, expected_go)
         require({name: binding(path) for name, path in tools.items()} == runtime["tools"],
                 "tool bytes changed after consumption")
         write_json(receipts, "runtime-after.json", {name: binding(path) for name, path in tools.items()})
-        verify_subject(repository)
+        verify_base_subject(repository, tools["git"], bootstrap["base"])
         require(digest(driver) == bootstrap["driver_sha256"]
                 and digest(repository / ".github/workflows/pinning-fixture-proof.yml") == bootstrap["workflow_sha256"],
                 "W source changed after consumption")
