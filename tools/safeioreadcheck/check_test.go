@@ -462,11 +462,11 @@ func load(path string) {
 
 type ioDiscard struct{}
 
-func (w *ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+func (id *ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
 
 type failWriter struct{}
 
-func (w *failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func (fw *failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
 func TestRunWriteFailures(t *testing.T) {
 	root := t.TempDir()
