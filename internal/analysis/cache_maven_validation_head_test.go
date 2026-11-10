@@ -120,9 +120,11 @@ func TestMavenCacheObjectFailureReasons(t *testing.T) {
 			t.Fatalf("object rejection: reason=%q error=%v retained=%v", reason, err, payload.Report.MavenManifestCatalog)
 		}
 	}
-	// The envelope passes preflight, but the ordinary report has the wrong JSON type.
-	cache, entry := mavenCacheWithRaw(t, []byte(`{"maven":{"version":1,"policy":"identity","entries":[]},"report":[]}`))
-	assertMavenCacheMiss(t, cache, entry)
+	// Null would otherwise unmarshal as a zero report and count as a hit. Non-objects are rejected first.
+	for _, reportJSON := range []string{`[]`, `null`} {
+		cache, entry := mavenCacheWithRaw(t, []byte(`{"maven":{"version":1,"policy":"identity","entries":[]},"report":`+reportJSON+`}`))
+		assertMavenCacheMiss(t, cache, entry)
+	}
 }
 
 func TestMavenRestoreRejectsInvalidBorrowedMetadata(t *testing.T) {
