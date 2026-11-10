@@ -24,7 +24,7 @@ make ci
 make demos-check
 ```
 
-`make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
+`make ci` includes automation integrity validation, goroutine leak detection, the curated memory benchmark delta gate against `origin/main`, and the zero-limit `safeio` read guard described in [Safe I/O read bounds](docs/safeio-read-bounds.md).
 
 The scripts package runs isolated subprocess fixtures with 16 parallel test slots,
 independently of `GOMAXPROCS`. An explicit `go test -parallel` setting takes
