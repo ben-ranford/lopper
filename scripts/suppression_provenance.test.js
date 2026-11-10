@@ -16,6 +16,13 @@ const BASE = 'b'.repeat(40);
 const OTHER = 'c'.repeat(40);
 const DETECTOR_PATH = 'scripts/inline_suppression_tracker.js';
 const detectorSource = fs.readFileSync(path.join(__dirname, 'inline_suppression_tracker.js'));
+const detectorOID = '6aa469c7936ee0e16eef545a2c07534f313f2de1';
+test.before(() => {
+  assert.equal(createHash('sha256').update(detectorSource).digest('hex'), '03f9a96a9d3e915182e451adeba397966381b89d6814fbfcaaf261f8d5364b5d');
+});
+const hostileSource = "require('node:fs').writeFileSync(process.env.LOPPER_G038_TEST_PARENT_MARKER, 'executed'); module.exports.testables = {recomputeSuppressionRecords: async () => ({records: new Map()})};";
+const hostileOID = '07f3e86e1e5f9becb0c37dc4946ffb037a0dde25';
+const markerKey = 'LOPPER_G038_TEST_PARENT_MARKER';
 const emptyReport = JSON.stringify({ schema: 'lopper-inline-suppressions-v1', suppressions: [] });
 
 function zip(entries) {
@@ -51,7 +58,7 @@ const validArchive = reportZip();
 function harness(options = {}) {
   const expected = {
     repoId: 11, headRepoId: 22, pullNumber: 1750,
-    headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2,
+    policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2,
   };
   const context = { repo: { owner: 'owner', repo: 'lopper' } };
   const pull = {
@@ -77,7 +84,7 @@ function harness(options = {}) {
   };
   const detector = {
     type: 'file', path: DETECTOR_PATH, encoding: 'base64',
-    content: detectorSource.toString('base64'), size: detectorSource.length, sha: 'd'.repeat(40),
+    content: detectorSource.toString('base64'), size: detectorSource.length, sha: detectorOID,
   };
   const files = options.files ?? [{
     filename: 'clean.go', status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+package clean\n',
@@ -140,7 +147,7 @@ function harness(options = {}) {
 test('accepts late production on the exact completed attempt and recomputes with the real base detector', async () => {
   const fixture = harness();
   assert.deepEqual(await verifySuppressionProvenance(fixture.args), {
-    headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2, artifactId: 55, suppressionCount: 0,
+    version: 2, policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: 33, runAttempt: 2, artifactId: 55, suppressionCount: 0,
   });
   assert.equal(fixture.calls.runs, 2);
   assert.equal(fixture.calls.pulls, 4);
@@ -281,6 +288,40 @@ test('rejects invalid trusted detector source metadata', async (t) => {
   }
 });
 
+test('stack recomputation loads protected tracker while hostile parent remains data', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lopper-stacked-tracker-'));
+  const markerPath = path.join(directory, 'parent-executed');
+  const previousMarker = process.env[markerKey];
+  process.env[markerKey] = markerPath;
+  try {
+    const marker = 'no' + 'lint';
+    const line = `var unsafe = 1 //${marker} rationale=temporary; owner=@owner; remove-when=resolved`;
+    const fixture = harness({ headContent: `package main\n${line}\n`, files: [{
+      filename: 'main.go', status: 'added', additions: 2, deletions: 0,
+      patch: `@@ -0,0 +1,2 @@\n+package main\n+${line}\n`,
+    }] });
+    fixture.expected.policySHA = OTHER;
+    const original = fixture.args.github.rest.repos.getContent;
+    const selected = [];
+    fixture.args.github.rest.repos.getContent = async (input) => {
+      if (input.path !== DETECTOR_PATH) return original(input);
+      selected.push(input.ref);
+      if (input.ref === OTHER) return { data: structuredClone(fixture.detector) };
+      assert.equal(input.ref, BASE);
+      const hostile = Buffer.from(hostileSource);
+      return { data: { ...fixture.detector, content: hostile.toString('base64'), size: hostile.length,
+        sha: hostileOID } };
+    };
+    await assert.rejects(verifySuppressionProvenance(fixture.args), /trusted diff contains inline suppressions/);
+    assert.deepEqual(selected, [OTHER]);
+    assert.equal(fs.existsSync(markerPath), false);
+  } finally {
+    if (previousMarker === undefined) delete process.env[markerKey];
+    else process.env[markerKey] = previousMarker;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('real trusted detector finds an omitted suppression despite clean artifact', async () => {
   const marker = 'no' + 'lint';
   const line = `var unsafe = 1 //${marker} rationale=temporary; owner=@owner; remove-when=resolved`;
@@ -397,7 +438,7 @@ function verifyThroughOuter(fixture, listRuns) {
   }] } });
   const verify = verifyReuseSuppression.testables.createVerifier(() => verifySuppressionProvenance, async () => fixture.args.archive);
   return verify({ github, context: fixture.context, token: 'test', snapshot: {
-    version: 1, repository: 'owner/lopper', repository_id: 11, head_repository_id: 22,
+    version: 2, policy_source: BASE, repository: 'owner/lopper', repository_id: 11, head_repository_id: 22,
     pull_number: 1750, head: HEAD, base: BASE, base_ref: 'main',
   } });
 }
@@ -491,7 +532,88 @@ test('removes private source files and module cache if the trusted detector thro
   const throwingSource = Buffer.from('module.exports = { testables: { recomputeSuppressionRecords: async () => { throw new Error("detector unavailable"); } } };');
   fixture.detector.content = throwingSource.toString('base64');
   fixture.detector.size = throwingSource.length;
+  fixture.detector.sha = '8e16d30008d72aae0996a46c7d9c5f2f78a100c0';
   await assert.rejects(verifySuppressionProvenance(fixture.args), /detector unavailable/);
   assert.deepEqual(temporarySources(), before);
   assert.equal(Object.keys(require.cache).filter((filename) => filename.includes('lopper-suppression-provenance-')).length, 0);
+});
+
+async function withParentMarker(run) {
+  const before = process.env[markerKey];
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lopper-detector-order-'));
+  const markerPath = path.join(directory, 'parent-executed');
+  process.env[markerKey] = markerPath;
+  try { await run(markerPath); } finally {
+    if (before === undefined) delete process.env[markerKey];
+    else process.env[markerKey] = before;
+    fs.rmSync(directory, { recursive: true, force: true });
+    assert.equal(process.env[markerKey], before);
+  }
+}
+
+function replaceDetector(fixture, bytes, oid) {
+  Object.assign(fixture.detector, { content: bytes.toString('base64'), size: bytes.length, sha: oid });
+}
+
+test('real marker positive control validates the negative ordering oracle', async () => {
+  await withParentMarker(async markerPath => {
+    const fixture = harness();
+    replaceDetector(fixture, Buffer.from(hostileSource), hostileOID);
+    await verifySuppressionProvenance(fixture.args);
+    assert.equal(fs.readFileSync(markerPath, 'utf8'), 'executed');
+  });
+});
+
+test('wrong detector identity rejects before private source write or execution', async t => {
+  for (const source of [hostileSource, ` ${hostileSource}`]) {
+    await t.test(source === hostileSource ? 'wrong independent OID' : 'changed canonical bytes', async () => {
+      await withParentMarker(async markerPath => {
+        const fixture = harness();
+        replaceDetector(fixture, Buffer.from(source), source === hostileSource ? detectorOID : hostileOID);
+        const originalWrite = fs.writeFileSync;
+        const write = t.mock.method(fs, 'writeFileSync', (...args) => originalWrite(...args));
+        try {
+          await assert.rejects(verifySuppressionProvenance(fixture.args), /detector source blob mismatch/);
+          assert.equal(fs.existsSync(markerPath), false);
+          assert.equal(write.mock.callCount(), 0);
+        } finally { write.mock.restore(); }
+      });
+    });
+  }
+});
+
+test('marker environment restores exact prior value after an exception', async () => {
+  const previous = process.env[markerKey];
+  await assert.rejects(withParentMarker(async () => { throw new Error('marker fixture failure'); }), /marker fixture failure/);
+  assert.equal(process.env[markerKey], previous);
+});
+
+test('suppression exact decoded limit succeeds and overflow never reaches Git', async t => {
+  const maximum = Buffer.concat([detectorSource, Buffer.alloc(1048576 - detectorSource.length, 0x20)]);
+  const fixture = harness();
+  replaceDetector(fixture, maximum, '8ed687b123f7a2dc5af45392e765246d51efe4bc');
+  await verifySuppressionProvenance(fixture.args);
+  const childProcess = require('node:child_process');
+  const spawn = t.mock.method(childProcess, 'spawnSync', () => assert.fail('oversized detector reached Git'));
+  for (const bytes of [Buffer.alloc(0), Buffer.concat([maximum, Buffer.from(' ')])]) {
+    const rejected = harness();
+    replaceDetector(rejected, bytes, detectorOID);
+    await assert.rejects(verifySuppressionProvenance(rejected.args), /invalid detector source encoding/);
+  }
+  assert.equal(spawn.mock.callCount(), 0);
+});
+
+test('Git process failure preserves detector error category without marker execution', async t => {
+  await withParentMarker(async markerPath => {
+    const fixture = harness();
+    replaceDetector(fixture, Buffer.from(hostileSource), hostileOID);
+    t.mock.method(require('node:child_process'), 'spawnSync', () => ({ status: 1, signal: null,
+      stdout: Buffer.from(`${hostileOID}\n`), stderr: Buffer.from('private backend diagnostic') }));
+    await assert.rejects(verifySuppressionProvenance(fixture.args), error => {
+      assert.match(error.message, /detector source blob mismatch/);
+      assert.doesNotMatch(error.message, /private backend diagnostic/);
+      return true;
+    });
+    assert.equal(fs.existsSync(markerPath), false);
+  });
 });
