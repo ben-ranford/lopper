@@ -401,6 +401,29 @@ def git(root, *arguments):
     return bytes(retained)
 
 
+def is_ancestor(root, ancestor, commit):
+    if ancestor == commit:
+        return True
+    try:
+        git(root, "merge-base", "--is-ancestor", ancestor, commit)
+    except ValueError:
+        return False
+    return True
+
+
+def assert_test_merge(root, source, base, head, base_ref):
+    """Accept GitHub's test merge when main moved after the event snapshot."""
+    parents = git(root, "show", "-s", "--format=%P", source).decode().split()
+    if parents == [base, head]:
+        return
+    if (len(parents) != 2 or parents[1] != head or COMMIT_SHA.fullmatch(parents[0]) is None
+            or not isinstance(base_ref, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", base_ref)):
+        raise ValueError("checkout not actual base/head merge")
+    tip = git(root, "rev-parse", "--verify", f"refs/remotes/origin/{base_ref}^{{commit}}").decode().strip()
+    if not is_ancestor(root, base, parents[0]) or not is_ancestor(root, parents[0], tip):
+        raise ValueError("checkout not actual base/head merge")
+
+
 def event_context(root):
     env = os.environ
     if env.get("GITHUB_EVENT_NAME") != "pull_request" or env.get("GITHUB_RUN_ATTEMPT") != "1" or env.get("TRACE_BUILD_CHANNEL") != "dev":
@@ -418,8 +441,7 @@ def event_context(root):
             raise ValueError("missing immutable caller context")
     if git(root, "rev-parse", "HEAD").decode().strip() != source or env.get("GITHUB_SHA") != source:
         raise ValueError("checkout/source mismatch")
-    if git(root, "show", "-s", "--format=%P", source).decode().split() != [base, head]:
-        raise ValueError("checkout not actual base/head merge")
+    assert_test_merge(root, source, base, head, event["pull_request"]["base"]["ref"])
     parents = git(root, "show", "-s", "--format=%P", head).decode().split()
     if not parents or any(COMMIT_SHA.fullmatch(item) is None for item in parents):
         raise ValueError("candidate parents are missing")
@@ -746,8 +768,48 @@ def selftest():
             os.environ.pop("TRACE_DRIVER_SHA256", None)
         else:
             os.environ["TRACE_DRIVER_SHA256"] = prior_pin
+    assert_moved_base_merge()
     print("portable support checks PASS; native controls NOT executed")
     return 0
+
+
+def assert_moved_base_merge():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+        def g(*args, output=False):
+            result = subprocess.run(["git", "-C", str(directory), *args], check=not output,
+                                    stdout=subprocess.PIPE if output else subprocess.DEVNULL, text=output)
+            return result.stdout.strip() if output else None
+        g("init", "-q", "-b", "main")
+        g("config", "user.email", "trace@example.com")
+        g("config", "user.name", "trace")
+        (directory / "file").write_text("base\n")
+        g("add", "file")
+        g("commit", "-q", "-m", "base")
+        base = g("rev-parse", "HEAD", output=True)
+        (directory / "later").write_text("later\n")
+        g("add", "later")
+        g("commit", "-q", "-m", "later")
+        tip = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", "-b", "topic", base)
+        (directory / "file").write_text("head\n")
+        g("commit", "-q", "-am", "head")
+        head = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", "main")
+        g("merge", "-q", "--no-ff", "-m", "merge", "topic")
+        merge = g("rev-parse", "HEAD", output=True)
+        remote = directory / ".git" / "refs" / "remotes" / "origin"
+        remote.mkdir(parents=True)
+        (remote / "main").write_text(tip + "\n")
+        assert_test_merge(directory, merge, base, head, "main")
+        try:
+            assert_test_merge(directory, merge, base, base, "main")
+        except ValueError as error:
+            if str(error) != "checkout not actual base/head merge":
+                raise
+        else:
+            raise AssertionError("wrong head parent accepted")
 
 
 def main():
