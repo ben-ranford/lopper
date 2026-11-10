@@ -160,7 +160,7 @@ func verifyOpenedPath(file *os.File, path string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(actual, path) {
+	if !sameCanonicalPath(actual, path) {
 		return errors.New("opened file escaped canonical path")
 	}
 	before, err := file.Stat()
@@ -175,6 +175,23 @@ func verifyOpenedPath(file *os.File, path string) error {
 		return errors.New("opened file identity changed")
 	}
 	return nil
+}
+
+func sameCanonicalPath(actual, requested string) bool {
+	if strings.EqualFold(actual, requested) {
+		return true
+	}
+	resolved, err := finalPathName(requested)
+	return err == nil && strings.EqualFold(actual, resolved)
+}
+
+func finalPathName(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	return openedPath(file)
 }
 
 func fileIdentity(file *os.File) (string, error) {
