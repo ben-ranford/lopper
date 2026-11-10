@@ -223,7 +223,7 @@ function Invoke-CheckedNative([string]$Executable,[string[]]$Arguments,[string]$
   if ($exitCode -ne 0) { throw "$Label exited $exitCode" }
   return [string]($output -join "`n")
 }
-function Initialize-ControlDirectory([string]$Path,[string]$SID) {
+function Set-ProtectedCurrentUserDirectory([string]$Path,[string]$SID) {
   [IO.Directory]::CreateDirectory($Path) | Out-Null
   $security=[Security.AccessControl.DirectorySecurity]::new()
   $identity=[Security.Principal.SecurityIdentifier]::new($SID)
@@ -231,6 +231,9 @@ function Initialize-ControlDirectory([string]$Path,[string]$SID) {
   $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
   $rule=[Security.AccessControl.FileSystemAccessRule]::new($identity,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
   $security.AddAccessRule($rule);Set-Acl -LiteralPath $Path -AclObject $security
+}
+function Initialize-ControlDirectory([string]$Path,[string]$SID) {
+  Set-ProtectedCurrentUserDirectory $Path $SID
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -314,7 +317,10 @@ function Get-OwnerToolchain {
   $toolBindings=@((Get-AbsoluteToolBinding $go),(Get-AbsoluteToolBinding $git),(Get-AbsoluteToolBinding $bash),(Get-AbsoluteToolBinding $gcc),(Get-AbsoluteToolBinding $pwsh))
   $goRoot = Resolve-ToolPath (Invoke-CheckedNative $go @('env','GOROOT') 'go env GOROOT').Trim()
   $goVersion = (Invoke-CheckedNative $go @('version') 'go version').Trim().Split(' ')[2]
-  if ($goVersion -cne 'go1.27.2') { throw "Unexpected Go version: $goVersion" }
+  $goModText = Get-Content -LiteralPath (Join-Path (Get-Location).Path 'go.mod') -Raw
+  $requiredGo = [regex]::Match($goModText, '(?m)^go (\d+\.\d+\.\d+)\s*$')
+  if (-not $requiredGo.Success) { throw 'go.mod does not declare an exact toolchain version' }
+  if ($goVersion -cne ('go' + $requiredGo.Groups[1].Value)) { throw "Unexpected Go version: $goVersion" }
   if ([string]::IsNullOrWhiteSpace([string]$env:ImageOS) -or [string]::IsNullOrWhiteSpace([string]$env:ImageVersion)) { throw 'Hosted runner image identity unavailable' }
   [ordered]@{
     go=$go;git=$git;bash=$bash;gcc=$gcc;pwsh=$pwsh;bindings=$toolBindings;goRoot=$goRoot;goVersion=$goVersion
@@ -378,7 +384,10 @@ function Invoke-Owner {
   $owner=Join-Path $binDir 'nativecleanupowner.exe'; $verifier=Join-Path $binDir 'nativecleanupcheck.exe'
   $invocationNonce=[Guid]::NewGuid().ToString('D')
   $cachePath=Join-Path $cacheDir $invocationNonce
-  $goCache=Join-Path $cachePath 'go-build';$goModCache=Join-Path $cachePath 'go-mod';[IO.Directory]::CreateDirectory($goCache)|Out-Null;[IO.Directory]::CreateDirectory($goModCache)|Out-Null
+  $goCache=Join-Path $cachePath 'go-build';$goModCache=Join-Path $cachePath 'go-mod'
+  # The owner accepts these leaves only with a protected current-SID FullControl DACL.
+  Set-ProtectedCurrentUserDirectory $goCache $sid
+  Set-ProtectedCurrentUserDirectory $goModCache $sid
   $env:PATH="$goRoot\bin;$($tools.gitRoot)\cmd;$($tools.gitRoot)\usr\bin;$($tools.gccRoot);$env:SystemRoot\System32"
   $env:TEMP=$cachePath;$env:GOCACHE=$goCache;$env:GOMODCACHE=$goModCache
   $env:GOOS='windows';$env:GOARCH='amd64';$env:CGO_ENABLED='1';$env:GOENV='off';$env:GOWORK='off';$env:GOFLAGS='';$env:GOTOOLCHAIN='local';$env:CC=$gcc

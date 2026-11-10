@@ -13,15 +13,32 @@ import (
 	"testing"
 )
 
-func TestWindowsRuntimeCompatibilityProofRequiresPublishedBaseline(t *testing.T) {
+func TestWindowsRuntimeSearchPathTestsRunNatively(t *testing.T) {
 	t.Parallel()
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	const jobName = "regression-proof-windows"
-	const stepName = "Verify native Windows runtime path compatibility"
+	const stepName = "Test native Windows runtime search paths"
 	step := workflowStepByName(t, workflow.Jobs, jobName, stepName)
-	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
-		t.Fatal("runtime compatibility proof must run natively and fail closed for build titles too")
+	if step.If != "" || step.ContinueOnError || step.Shell != "pwsh" || strings.TrimSpace(step.Run) != "& $env:LOPPER_PROOF_GO test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1" {
+		t.Fatal("Windows runtime search path tests must run natively and fail closed for every event")
+	}
+	assertPinnedNodeConsumerEnvironment(t, step)
+	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Provision restricted regression proof runtime", "Test native Windows proof tools", "Verify restricted regression proof runtime", stepName, "Prove Windows regression tests for fix PRs")
+}
+
+func TestWindowsRuntimeBaselineProofIsScopedToItsPullRequest(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	const jobName = "regression-proof-windows"
+	const stepName = "Prove Windows runtime path fix against its baseline"
+	step := workflowStepByName(t, workflow.Jobs, jobName, stepName)
+	if step.If != "${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}" {
+		t.Fatal("unpublished runtime baseline proof must not run on main or unrelated pull requests")
+	}
+	if step.ContinueOnError || step.Shell != "pwsh" || step.Run != "./scripts/verify-windows-runtime-paths.ps1" {
+		t.Fatal("scoped runtime baseline proof must run natively and fail closed")
 	}
 	assertWorkflowStepOrder(t, workflow.Jobs[jobName], "Provision restricted regression proof runtime", "Test native Windows proof tools", "Verify restricted regression proof runtime", stepName, "Prove Windows regression tests for fix PRs")
 	assertPinnedNodeConsumerEnvironment(t, step)
