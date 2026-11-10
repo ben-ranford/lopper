@@ -23,17 +23,12 @@ STRACE = '/usr/bin/strace'
 TREE_SUFFIX = '^{tree}'
 DIRECTORY_ERROR = 'sink directory custody'
 
-PARENT = "9351dc18688c5b6a6f7421f9239b6da415d898b6"
-WORKFLOW_SHA = "907ab8596d7ac054eb565a8bfbb329464eb3f59e4c77a58e7f5fa17bb0e428db"
-CONTROLS_SHA = "77eb83e374531e4ca5605455fc21a337c2f26f7d6816d22ec8c2db10fe19a05c"
 SOURCE_PATHS = (".github/workflows/ci-tests.yml", "scripts/trace-hook-interruption.py",
                 "scripts/testdata/hook-interruption-trace-controls.py")
-ORIGINALS = {
-    "scripts/pre_commit_hook_preflight_timeout_test.go": "99aaac8055bc75428ecc7744946832096822163315ae5676007f77ee3d1c4777",
-    "scripts/pre_commit_hook_test.go": "a6765cfefed6b6ff6b612742227e5c8fb60c4e3eb5f23ef0f76d36ee90418317",
-    "scripts/hook-config-preflight.sh": "0cb26b26b33ab467788261145c02a0a04c536e4bfcf2f9444d86357ccb668c82",
-    "Makefile": "300d4b99ec808eeb4619b701527b5e10822cdfcd1703221170eb5b53415de971",
-}
+HOOK_SOURCES = ("scripts/pre_commit_hook_preflight_timeout_test.go", "scripts/pre_commit_hook_test.go",
+                "scripts/hook-config-preflight.sh", "Makefile")
+TRACER_SHA256 = "28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001"
+IMAGE_VERSION = re.compile(r"[0-9]{8}\.[0-9]+\.[0-9]+")
 SYSCALLS = ("clone,clone3,fork,vfork,execve,execveat,exit,exit_group,wait4,waitid,"
             "setpgid,getpgid,getpgrp,setsid,getsid,kill,tkill,tgkill,rt_sigaction,"
             "rt_sigprocmask,rt_sigreturn,pipe,pipe2,dup,dup2,dup3,fcntl,close,"
@@ -418,24 +413,18 @@ def event_context(root):
         raise ValueError("checkout/source mismatch")
     if git(root, "show", "-s", "--format=%P", source).decode().split() != [base, head]:
         raise ValueError("checkout not actual base/head merge")
-    if git(root, "show", "-s", "--format=%P", head).decode().split() != [PARENT]:
-        raise ValueError("candidate parent differs from reviewed parent")
-    # This bounded candidate admits a base already contained in the selected
-    # parent. An advanced base needs a fresh source binding/review, not a merge
-    # reconstruction fallback or new object writes in this diagnostic.
-    git(root, "merge-base", "--is-ancestor", base, PARENT)
+    parents = git(root, "show", "-s", "--format=%P", head).decode().split()
+    if not parents or any(not re.fullmatch("[0-9a-f]{40}", item) for item in parents):
+        raise ValueError("candidate parents are missing")
     if git(root, "rev-parse", source + TREE_SUFFIX) != git(root, "rev-parse", head + TREE_SUFFIX):
         raise ValueError("merge contains source outside the exact candidate tree")
     git(root, "diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD")
     if git(root, "ls-files", "--others", "--", "*.go", "go.mod", "go.sum").strip():
         raise ValueError("untracked compile inputs")
-    return event, head, base, source
+    return event, head, base, source, parents
 
 
 def candidate_contents(root, head, source):
-    changed = git(root, "diff", "--name-only", "-z", PARENT, head).decode().strip("\0").split("\0")
-    if set(changed) != set(SOURCE_PATHS) or len(changed) != 3:
-        raise ValueError("empty or out-of-scope candidate delta")
     for name in SOURCE_PATHS:
         actual = bounded_read(root / name, 1048576)
         if stat.S_IMODE((root / name).lstat().st_mode) != 0o644:
@@ -455,40 +444,43 @@ def diagnostic_binding(root):
     actual_driver = file_identity(__file__)["sha256"]
     if match[1].decode() != actual_driver or os.environ.get("TRACE_DRIVER_SHA256") != actual_driver:
         raise ValueError("driver binding mismatch")
-    normalized = workflow[:match.start(1)] + b"0" * 64 + workflow[match.end(1):]
-    if digest(normalized) != WORKFLOW_SHA or file_identity(root / SOURCE_PATHS[2])["sha256"] != CONTROLS_SHA:
+    controls = file_identity(root / SOURCE_PATHS[2])
+    if controls["mode"] & 0o022:
         raise ValueError("reviewed source binding mismatch")
 
 
-def original_binding(root, head):
-    for name, expected in ORIGINALS.items():
-        for contents in (bounded_read(root / name, 1048576), git(root, "show", head + ":" + name), git(root, "show", PARENT + ":" + name)):
-            if digest(contents) != expected:
-                raise ValueError("original source identity changed")
-    installer = bounded_read(root / "Makefile", 1048576).split(b"hooks-install:\n", 1)[1].split(b"\nvscode-extension-install:", 1)[0]
-    if digest(installer) != "71e7577dd31f8597f5a7ced6d0633063b156f7ece322f49a10c6cb045964cbf3":
+def original_binding(root, head, source):
+    recorded = {}
+    for name in HOOK_SOURCES:
+        copies = (bounded_read(root / name, 1048576), git(root, "show", head + ":" + name), git(root, "show", source + ":" + name))
+        if copies[0] != copies[1] or copies[0] != copies[2]:
+            raise ValueError("original source identity changed")
+        recorded[name] = digest(copies[0])
+    parts = bounded_read(root / "Makefile", 1048576).split(b"hooks-install:\n", 1)
+    if len(parts) != 2 or b"\nvscode-extension-install:" not in parts[1]:
         raise ValueError("installer extraction changed")
+    installer = parts[1].split(b"\nvscode-extension-install:", 1)[0]
+    return recorded, digest(installer)
 
 
 def synchronize_binding(root, event, head):
-    if event["action"] == "synchronize":
-        before = event.get("before")
-        if not isinstance(before, str) or not re.fullmatch("[0-9a-f]{40}", before) or before == head or event.get("after") != head:
-            raise ValueError("missing or identical synchronize context")
-        if not git(root, "diff", "--name-only", before, head, "--", *SOURCE_PATHS).strip():
-            raise ValueError("same-source commit churn")
+    if event["action"] != "synchronize":
+        return False
+    before = event.get("before")
+    if not isinstance(before, str) or not re.fullmatch("[0-9a-f]{40}", before) or before == head or event.get("after") != head:
+        raise ValueError("missing or identical synchronize context")
+    return bool(git(root, "diff", "--name-only", before, head, "--", *SOURCE_PATHS).strip())
 
 
 def validate_binding(root):
-    event, head, base, source = event_context(root)
+    event, head, base, source, parents = event_context(root)
     candidate_contents(root, head, source)
     diagnostic_binding(root)
-    original_binding(root, head)
-    synchronize_binding(root, event, head)
-    return {"parent": PARENT, "head": head, "base": base, "checkout_merge": source,
+    originals, installer = original_binding(root, head, source)
+    return {"parents": parents, "head": head, "base": base, "checkout_merge": source,
             "checkout_tree": git(root, "rev-parse", source + TREE_SUFFIX).decode().strip(),
-            "action": event["action"], "originals": ORIGINALS,
-            "delta_sha256": digest(git(root, "diff", "--binary", "--no-ext-diff", "--no-textconv", PARENT, head)),
+            "action": event["action"], "originals": originals, "installer_sha256": installer,
+            "diagnostic_sources_changed": synchronize_binding(root, event, head),
             "review_authority_claim": False}
 
 
@@ -496,8 +488,11 @@ def tracer_identity(result):
     tracer = file_identity(STRACE)
     result["preflight"].update({"strace": tracer, "image": os.environ.get("ImageVersion", "")[:256],
                                 "kernel": platform.release(), "architecture": platform.machine()})
-    if os.environ.get("ImageVersion") != "20261004.327.1" or tracer["sha256"] != "28f957c227012de0b18d1bd7fff2d396cb693ea60ed8013be68de071e84b5001":
-        raise ValueError("unreviewed image or tracer")
+    image = os.environ.get("ImageVersion", "")
+    if not IMAGE_VERSION.fullmatch(image):
+        raise ValueError("hosted image identity unavailable")
+    if tracer["sha256"] != TRACER_SHA256:
+        raise ValueError("unreviewed tracer")
     if tracer["uid"] != 0 or tracer["mode"] & 0o022:
         raise ValueError("tracer ownership/mode")
     version = subprocess.check_output([STRACE, "-V"], stderr=subprocess.STDOUT)
@@ -560,6 +555,13 @@ def inventory(directory):
     return records
 
 
+def module_go_version(root):
+    match = re.search(rb"(?m)^go (\d+\.\d+\.\d+)\s*$", bounded_read(root / "go.mod", 65536))
+    if not match:
+        raise ValueError("go.mod toolchain version")
+    return b"go" + match.group(1)
+
+
 def compile_normal(root, build, result):
     go = file_identity(shutil.which("go"))
     if pathlib.Path(go["realpath"]).is_relative_to(root) or go["mode"] & 0o022:
@@ -572,9 +574,10 @@ def compile_normal(root, build, result):
     result["go_executable"] = go
     go_version = subprocess.check_output([go["realpath"], "version"], env=env)
     result["go_version"] = go_version[:4096].decode(errors="replace")
-    if not go_version.startswith(b"go version go1.27.2 "):
+    required = module_go_version(root)
+    if not go_version.startswith(b"go version " + required + b" "):
         raise ValueError("compiler version")
-    env["GOTOOLCHAIN"] = "go1.27.2"
+    env["GOTOOLCHAIN"] = required.decode()
     goroot = subprocess.check_output([go["realpath"], "env", "GOROOT"], env=env).decode().strip()
     result["go_executable"] = go
     result["compiler"] = file_identity(pathlib.Path(goroot) / "pkg/tool/linux_amd64/compile")

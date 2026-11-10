@@ -50,6 +50,9 @@ jobs:
             apt-get install -y nodejs
           fi
 
+      - name: Record native Git object backend evidence
+        run: go test -v -count=1 ./scripts -run '^TestTrustedGitObjectBackendEvidence$'
+
       - name: Run normal and leak tests
         id: ordinary_tests
         env:
@@ -68,7 +71,7 @@ jobs:
           TRACE_SOURCE_SHA: ${{ inputs.source_sha }}
           TRACE_BUILD_CHANNEL: ${{ inputs.build_channel }}
           TRACE_ORDINARY_OUTCOME: ${{ steps.ordinary_tests.outcome }}
-          TRACE_DRIVER_SHA256: afdcb5d01c4266e70eef05b05485173d59598453ac3ae423bb749d16fe58bc8c
+          TRACE_DRIVER_SHA256: 9d9543bcbc2c1d6d697576a25e454a5a1e47066b625f27a749561c124f8e0d0f
         run: /usr/bin/python3 -I -S "${GITHUB_WORKSPACE}/scripts/trace-hook-interruption.py" run
 
       - name: Upload bounded native hook interruption evidence

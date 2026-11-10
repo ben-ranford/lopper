@@ -28,6 +28,49 @@ func TestExplicitRegressionPlatformMatchesSource(t *testing.T) {
 	}
 }
 
+func TestExplicitPlatformRoutingSelectsCompatibleSiblingFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{
+		"buggy/a_linux_test.go":  "package buggy\nfunc TestBehavior() {}\n",
+		"buggy/z_darwin_test.go": "package buggy\nfunc TestBehavior() {}\n",
+	})
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestBehavior", TargetOS: "darwin"}
+	selected, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, "darwin")
+	if err != nil || len(selected) != 1 {
+		t.Fatalf("Darwin routing selected=%v err=%v", selected, err)
+	}
+	selected, err = selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, "linux")
+	if err != nil || len(selected) != 0 {
+		t.Fatalf("Linux routing selected=%v err=%v", selected, err)
+	}
+}
+
+func TestExplicitPlatformRoutingRejectsCompatibleDuplicates(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{
+		"buggy/a_darwin_test.go": "package buggy\nfunc TestBehavior() {}\n",
+		"buggy/z_darwin_test.go": "package buggy\nfunc TestBehavior() {}\n",
+	})
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestBehavior", TargetOS: "darwin"}
+	_, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, "darwin")
+	if err == nil || !strings.Contains(err.Error(), "declared in multiple files") {
+		t.Fatalf("expected same-target duplicate to fail, got %v", err)
+	}
+}
+
+func TestExplicitPlatformRoutingRejectsMalformedSiblingConstraints(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{
+		"buggy/a_test.go":        "//go:build darwin &&\n\npackage buggy\nfunc TestBehavior() {}\n",
+		"buggy/z_darwin_test.go": "package buggy\nfunc TestBehavior() {}\n",
+	})
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestBehavior", TargetOS: "darwin"}
+	_, err := selectTargetDeclarations(repo, []prmetadata.RegressionDeclaration{declaration}, "darwin")
+	if err == nil || !strings.Contains(err.Error(), "route regression test") {
+		t.Fatalf("expected malformed sibling constraint to fail routing, got %v", err)
+	}
+}
+
 func assertExplicitPlatformRouting(t *testing.T, repo string, declaration prmetadata.RegressionDeclaration, want string) {
 	t.Helper()
 	for _, partition := range []string{"linux", "windows", "darwin"} {
