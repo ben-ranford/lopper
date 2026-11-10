@@ -2,26 +2,21 @@ package swift
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode"
-
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func loadCarthageManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	manifestPath := filepath.Join(repoPath, carthageManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := readCatalogFile(repoPath, carthageManifestName, maxCarthageManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", carthageManifestName, err)
+		return false, nil, err
 	}
 
 	entries := parseCarthageManifestDependencies(content)
@@ -45,13 +40,12 @@ func loadCarthageManifestData(repoPath string, catalog *dependencyCatalog) (bool
 }
 
 func loadCarthageResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	resolvedPath := filepath.Join(repoPath, carthageResolvedName)
-	content, err := safeio.ReadFileUnder(repoPath, resolvedPath)
+	content, err := readCatalogFile(repoPath, carthageResolvedName, maxCarthageResolvedBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", carthageResolvedName, err)
+		return false, nil, err
 	}
 
 	entries := parseCarthageResolvedDependencies(content)

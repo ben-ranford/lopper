@@ -19,13 +19,24 @@ const (
 	maxScanFiles                          = 4096
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
-	maxPodDeclarations                    = 512
+	maxPodDeclarations                    = 4096
 	maxCarthageDeclarations               = 512
+	maxPodLockEntries                     = 8192
+	maxResolvedPins                       = 8192
 	maxWarningSamples                     = 5
 	ambiguousDependencyKey                = "\x00"
 	swiftPackageManager                   = "swiftpm"
 	cocoaPodsManager                      = "cocoapods"
 	carthageManager                       = "carthage"
+)
+
+const (
+	maxSwiftPackageManifestBytes int64 = 2 * 1024 * 1024
+	maxSwiftPackageResolvedBytes int64 = 8 * 1024 * 1024
+	maxPodManifestBytes          int64 = 2 * 1024 * 1024
+	maxPodLockBytes              int64 = 8 * 1024 * 1024
+	maxCarthageManifestBytes     int64 = 1 * 1024 * 1024
+	maxCarthageResolvedBytes     int64 = 2 * 1024 * 1024
 )
 
 const maxNestedCarthageSourceTraversalEntries = 2048

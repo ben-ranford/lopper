@@ -2,6 +2,8 @@ package swift
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -47,8 +49,15 @@ func (s *repoScanner) scanSwiftFile(path string, entry fs.DirEntry) error {
 		s.skippedLargeFiles++
 		return nil
 	}
+	if mode := entry.Type(); !mode.IsRegular() && !mode.IsDir() && mode&fs.ModeSymlink == 0 {
+		return fmt.Errorf("read %s: %w", filepath.Base(path), errInputNotRegular)
+	}
 
-	content, err := safeio.ReadFileUnder(s.repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(s.repoPath, path, maxScannableSwiftFile)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
+		s.skippedLargeFiles++
+		return nil
+	}
 	if err != nil {
 		return err
 	}
