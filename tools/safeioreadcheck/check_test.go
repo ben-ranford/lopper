@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -462,6 +463,49 @@ func load(path string) {
 type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestRunWriteFailures(t *testing.T) {
+	root := t.TempDir()
+	writeGoFiles(t, root, map[string]string{
+		"read.go": `package sample
+
+import "github.com/ben-ranford/lopper/internal/safeio"
+
+func load(path string) {
+	_, _ = safeio.ReadFile(path)
+}
+`,
+	})
+	allow := filepath.Join(root, "allow.txt")
+	if err := os.WriteFile(allow, []byte("read.go\tload\tsafeio.ReadFile\t1\t"+validWhy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-root", root, "extra"}, ioDiscard{}, failWriter{}); code != 1 {
+		t.Fatalf("argument write failure code=%d", code)
+	}
+	if code := run([]string{"-root", filepath.Join(root, "missing")}, ioDiscard{}, failWriter{}); code != 1 {
+		t.Fatalf("scan write failure code=%d", code)
+	}
+	if code := run([]string{"-list", "-root", root}, failWriter{}, ioDiscard{}); code != 1 {
+		t.Fatalf("list write failure code=%d", code)
+	}
+	if code := run([]string{"-root", root, "-allowlist", filepath.Join(root, "missing.txt")}, ioDiscard{}, failWriter{}); code != 1 {
+		t.Fatalf("allowlist write failure code=%d", code)
+	}
+	if code := run([]string{"-root", root, "-allowlist", allow}, failWriter{}, ioDiscard{}); code != 1 {
+		t.Fatalf("summary write failure code=%d", code)
+	}
+	if err := os.WriteFile(allow, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-root", root, "-allowlist", allow}, ioDiscard{}, failWriter{}); code != 1 {
+		t.Fatalf("finding write failure code=%d", code)
+	}
+}
 
 func evalSource(t *testing.T, expr string, known map[string]int64) (int64, bool) {
 	t.Helper()

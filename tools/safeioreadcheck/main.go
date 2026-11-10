@@ -25,33 +25,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintf(stderr, "unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
-		return 2
+		return writeStatus(stderr, 2, "unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
 	}
 
 	refs, err := listZeroLimitReads(*root)
 	if err != nil {
-		fmt.Fprintf(stderr, "scan zero-limit reads: %v\n", err)
-		return 1
+		return writeStatus(stderr, 1, "scan zero-limit reads: %v\n", err)
 	}
 	if *listOnly {
 		for _, ref := range refs {
-			fmt.Fprintln(stdout, ref.String())
+			if err := writeLine(stdout, ref.String()); err != nil {
+				return 1
+			}
 		}
 		return 0
 	}
 
 	findings, err := checkAllowlist(*allowlistPath, refs)
 	if err != nil {
-		fmt.Fprintf(stderr, "check zero-limit allowlist: %v\n", err)
-		return 1
+		return writeStatus(stderr, 1, "check zero-limit allowlist: %v\n", err)
 	}
 	if len(findings) == 0 {
-		fmt.Fprintf(stdout, "zero-limit safeio reads match %s (%d allowlisted)\n", *allowlistPath, len(refs))
-		return 0
+		return writeStatus(stdout, 0, "zero-limit safeio reads match %s (%d allowlisted)\n", *allowlistPath, len(refs))
 	}
 	for _, finding := range findings {
-		fmt.Fprintln(stderr, finding)
+		if err := writeLine(stderr, finding); err != nil {
+			return 1
+		}
 	}
 	return 1
+}
+
+func writeStatus(w io.Writer, code int, format string, args ...any) int {
+	if _, err := fmt.Fprintf(w, format, args...); err != nil {
+		return 1
+	}
+	return code
+}
+
+func writeLine(w io.Writer, line string) error {
+	_, err := fmt.Fprintln(w, line)
+	return err
 }
