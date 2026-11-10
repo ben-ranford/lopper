@@ -178,7 +178,7 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 		t.Fatal("trusted bootstrap Go must be fixed independently of candidate go.mod")
 	}
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Checkout trusted Python provider O")
-	if trustedCheckout.With["ref"] != "3074df41a8ee2be482cb2aa61e1ba3d76f63464d" || trustedCheckout.With["persist-credentials"] != "false" {
+	if trustedCheckout.With["ref"] != "072f5591bfe52f38e85507c9dcacd7b8a1bb5db4" || trustedCheckout.With["persist-credentials"] != "false" {
 		t.Fatal("provider checkout must bind the reviewed trusted O commit without persisted credentials")
 	}
 	setupPython := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Setup trusted cached Python")
