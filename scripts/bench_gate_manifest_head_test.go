@@ -10,8 +10,10 @@ import (
 )
 
 func TestBenchGateRejectsIncompleteManifestStreams(t *testing.T) {
+	t.Parallel()
 	for name, payload := range corruptHarnessStreams() {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 			fixture.commit("base")
@@ -97,6 +99,7 @@ func assertHarnessInfrastructureFailure(t *testing.T, fixture benchGateFixture) 
 
 // An empty later invocation must fail even after the first complete stream succeeded.
 func TestBenchGateRejectsMissingExternalManifest(t *testing.T) {
+	t.Parallel()
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 	fixture.commit("base")
@@ -114,6 +117,7 @@ func payloadProducerCommand(payload string) string {
 }
 
 func TestBenchGateRejectsInvalidNormalPackageMetadata(t *testing.T) {
+	t.Parallel()
 	for name, preparation := range map[string]string{
 		"missing metadata":          `rm "$fingerprint_metadata_tmp";`,
 		"generated main":            normalMetadataCommand(`{"Dir":"%s","ImportPath":"%s.test"}`),
@@ -123,6 +127,7 @@ func TestBenchGateRejectsInvalidNormalPackageMetadata(t *testing.T) {
 		"missing production source": normalMetadataCommand(`{"Dir":"%s","ImportPath":"%s","TestGoFiles":["bench_test.go"],"GoFiles":["missing.go"]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newBenchGateFixture(t, "benchpkg")
 			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
 			fixture.commit("base")
