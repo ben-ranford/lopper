@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,7 +109,7 @@ func (r *runner) run(args []string, getenv func(string) string, stdout io.Writer
 	baseSHA := fs.String("base-sha", strings.TrimSpace(getenv("PR_BASE_SHA")), "pull request base SHA")
 	bodyFile := fs.String("body-file", strings.TrimSpace(getenv("PR_BODY_FILE")), "path to a file containing the pull request body")
 	exemptionLabel := fs.String("regression-exempt-label", exemptionLabelDefault, "whether the pull request has the maintainer-controlled regression-exempt label")
-	targetOS := fs.String("target-os", "", "select declarations for the required linux or windows proof job")
+	targetOS := fs.String("target-os", "", "select declarations for the required linux, windows or darwin proof job")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -236,7 +237,7 @@ func (r *runner) prove(ctx context.Context, repoRoot, baseSHA string, declaratio
 		if err := r.expectPass(ctx, repoRoot, headPackage, declaration); err != nil {
 			return finish(err)
 		}
-		if _, writeErr := fmt.Fprintf(stdout, "Regression proof verified: %s::%s\n", declaration.PackagePath, declaration.TestName); writeErr != nil {
+		if _, writeErr := fmt.Fprintf(stdout, "Regression proof verified: %s::%s runner=%s/%s base=fail head=pass base_commit=%s\n", declaration.PackagePath, declaration.TestName, runtime.GOOS, runtime.GOARCH, mergeBase); writeErr != nil {
 			return finish(writeErr)
 		}
 	}

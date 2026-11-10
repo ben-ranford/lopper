@@ -10,8 +10,8 @@ aggregate reads its producer's result through `needs.verify-checks.result` and
 its exact artifact locator through `needs.verify-checks.outputs.pr_report_artifact_id`.
 A failed or cancelled producer fails the aggregate's first gate without searching
 for another same-head run. The remaining tracking-issue wait shares an 18-minute,
-30-second deadline from initialization, leaving 90 seconds before the aggregate's
-20-minute timeout to report the result.
+30-second deadline from the verify job's first step, leaving 90 seconds before the
+aggregate's 20-minute timeout to report the result.
 
 The protected adapter takes its independently authenticated run ID and attempt
 from its caller. Producer `created_at` and PR `updated_at` do not select that run;

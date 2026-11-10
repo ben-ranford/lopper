@@ -23,6 +23,8 @@ The extension uses the same adapter IDs as the `lopper` CLI.
 - `lopper.language = all` runs every matching adapter in the workspace and merges the results.
 - You can pin any supported adapter directly: `cpp`, `dart`, `dotnet`, `elixir`, `go`, `js-ts`, `jvm`, `kotlin-android`, `php`, `powershell`, `python`, `ruby`, `rust`, or `swift`.
 
+Android editor inference examines at most 32 ancestor modules and ignores Gradle files larger than 256 KiB, symlinks, special files, and files replaced while reading. Reads are asynchronous and bounded; when no safe Android marker is available, Java/Kotlin editors use `jvm`. Pin `lopper.language` to `kotlin-android` for a module outside these inference limits.
+
 ## Binary setup
 
 The extension shells out to `lopper`.
