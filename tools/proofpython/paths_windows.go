@@ -109,10 +109,26 @@ func resolvedDirectory(path string) (string, error) {
 		return "", errors.New("final directory path is not DOS volume form")
 	}
 	resolved = filepath.Clean(strings.TrimPrefix(resolved, `\\?\`))
-	if !filepath.IsAbs(resolved) || len(filepath.VolumeName(resolved)) != 2 || filepath.VolumeName(resolved) != filepath.VolumeName(path) {
+	if !acceptedDirectoryJunction(path, resolved) {
 		return "", errors.New("reparse path rejected")
 	}
 	return resolved, nil
+}
+
+func acceptedDirectoryJunction(path, resolved string) bool {
+	if !filepath.IsAbs(resolved) || resolved != filepath.Clean(resolved) || len(filepath.VolumeName(resolved)) != 2 {
+		return false
+	}
+	if filepath.VolumeName(resolved) == filepath.VolumeName(path) {
+		return true
+	}
+	// actions/setup-go publishes the C: tool cache entry as a junction to D:.
+	return hostedToolCache(path) && hostedToolCache(resolved)
+}
+
+func hostedToolCache(path string) bool {
+	rest := strings.ToLower(strings.TrimPrefix(path, filepath.VolumeName(path)))
+	return rest == `\hostedtoolcache` || strings.HasPrefix(rest, `\hostedtoolcache\`)
 }
 
 func openedPath(file *os.File) (string, error) {
