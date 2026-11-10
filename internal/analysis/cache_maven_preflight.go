@@ -63,7 +63,7 @@ func (s *mavenJSONPreflight) value(shape mavenJSONShape) error {
 			return err
 		}
 		if shape == mavenReportJSON && !mavenJSONObject(raw) {
-			return errors.New("Maven cache report must be a JSON object")
+			return errors.New("maven cache report must be a JSON object")
 		}
 		return nil
 	case mavenStringJSON:
