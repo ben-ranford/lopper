@@ -62,6 +62,29 @@ const checkPrivateEngineContents = (directory) => {
   }
 };
 checkPrivateEngineContents(engine);
+const installationRoot = dirname(engine);
+if (parse(installationRoot).base === 'node_modules') {
+  const uid = process.getuid();
+  const checkInstallationTree = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) {
+        const target = realpathSync(path);
+        const fromInstallation = relative(installationRoot, target);
+        assert.ok(fromInstallation === '' || (!isAbsolute(fromInstallation) && fromInstallation !== '..' && !fromInstallation.startsWith(`..${sep}`)),
+          `Renovate installation symlink escapes its private dependency tree: ${path}`);
+        continue;
+      }
+      assert.ok(info.isFile() || info.isDirectory(), `Renovate installation contains an unsupported filesystem entry: ${path}`);
+      assert.ok(info.uid === uid || info.uid === 0,
+        `Renovate installation dependency must be owned by the current user or root: ${path}`);
+      assert.equal(info.mode & 0o022, 0, `Renovate installation dependency must not be publicly writable: ${path}`);
+      if (info.isDirectory()) checkInstallationTree(path);
+    }
+  };
+  checkInstallationTree(installationRoot);
+}
 const version = JSON.parse(readFileSync(join(engine, 'package.json'), 'utf8')).version;
 assert.ok(['44.134.1', '44.145.1'].includes(version), `unsupported Renovate engine version: ${version}`);
 const load = (p) => import(pathToFileURL(join(engine, 'dist', p)));

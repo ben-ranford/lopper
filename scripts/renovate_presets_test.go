@@ -357,6 +357,85 @@ func assertRenovateEngineSymlinkRejected(t *testing.T, node, fixture string, tc 
 	}
 }
 
+func TestRenovatePolicyFixtureRejectsHoistedDependencyBeforeImport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX ownership and symlink checks are required for the hoisted installation proof")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required for Renovate fixture engine-path checks")
+	}
+	fixture, err := filepath.Abs("testdata/renovate/explicit-policy.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		want string
+		link bool
+	}{
+		{name: "publicly writable sibling", want: "must not be publicly writable"},
+		{name: "sibling symlink outside installation", want: "escapes its private dependency tree", link: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertRenovateHoistedDependencyRejected(t, node, fixture, tc.want, tc.link)
+		})
+	}
+}
+
+func assertRenovateHoistedDependencyRejected(t *testing.T, node, fixture, want string, link bool) {
+	t.Helper()
+	root := t.TempDir()
+	modules := filepath.Join(root, "node_modules")
+	engine := filepath.Join(modules, "renovate")
+	outside := filepath.Join(root, "outside")
+	marker := filepath.Join(root, "trap-executed")
+	sibling := filepath.Join(modules, "hoisted-trap")
+	if err := os.MkdirAll(filepath.Join(engine, "dist", "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	trap := fmt.Sprintf("import { writeFileSync } from 'node:fs'; writeFileSync(%q, 'executed');\n", marker)
+	if err := os.WriteFile(filepath.Join(outside, "index.js"), []byte(trap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(engine, "package.json"), []byte(`{"name":"renovate","version":"44.145.1","type":"module"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaults := "import 'hoisted-trap';\nexport function getConfig() { return {}; }\n"
+	if err := os.WriteFile(filepath.Join(engine, "dist", "config", "defaults.js"), []byte(defaults), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if link {
+		if err := os.Symlink(outside, sibling); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := os.MkdirAll(sibling, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sibling, "package.json"), []byte(`{"name":"hoisted-trap","version":"1.0.0","type":"module"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sibling, "index.js"), []byte(trap), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(sibling, 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command(node, fixture, engine)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), want) {
+		t.Fatalf("fixture error = %q, want %q", output, want)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("hoisted trap executed before rejection (stat error: %v)", statErr)
+	}
+}
+
 func TestRenovateReviewedRules(t *testing.T) {
 	t.Parallel()
 	var config struct {
