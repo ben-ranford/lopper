@@ -89,6 +89,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           LOPPER_RUNTIME_MODE: capture
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
         with: &ci_proof_runtime_bootstrap
           script: |
             const fs = require('node:fs');
@@ -399,11 +402,19 @@ jobs:
           fi
 
       # Expected identities come from the pre-Make action outputs, never disk.
+      # Step env overrides loader variables candidate code may append to GITHUB_ENV.
       - &ci_proof_node_verify
         name: Verify restricted regression proof runtime
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           LOPPER_RUNTIME_MODE: verify
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           LOPPER_PROOF_GO_SHA256: ${{ steps.proof_runtime.outputs.go_sha256 }}
@@ -417,6 +428,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -474,9 +489,9 @@ jobs:
         run: |
           set +e
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+            PATH="$(go env GOPATH)/bin:$PATH" make cov-check COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           else
-            make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+            make cov-check COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
           fi
           status=$?
           mkdir -p .artifacts
@@ -1111,6 +1126,10 @@ jobs:
       - name: Test native Windows proof tools
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1125,9 +1144,15 @@ jobs:
 
       - *ci_proof_node_verify
 
-      - name: Verify native Windows runtime path compatibility
+      # One-off proof for #1835: its fixed baseline is an earlier amend of that PR.
+      - name: Prove Windows runtime path fix against its baseline
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1835 }}
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1138,6 +1163,24 @@ jobs:
           GOAUTH: 'off'
           REGRESSION_PROOF_GO_ROOT: ${{ steps.proof_runtime.outputs.go_root }}
         run: ./scripts/verify-windows-runtime-paths.ps1
+
+      - name: Test native Windows runtime search paths
+        shell: pwsh
+        env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
+          GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
+          GOTOOLCHAIN: local
+          GOENV: off
+          GOWORK: off
+          GOFLAGS: ''
+          GOCACHEPROG: ''
+          GOAUTH: 'off'
+        run: |
+          & $env:LOPPER_PROOF_GO test ./internal/runtime -run '^TestTrustedSearchDirsWindows' -count=1
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -1156,6 +1199,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: pwsh
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1527,6 +1574,13 @@ jobs:
       - name: Test native Darwin proof tools
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -1541,6 +1595,14 @@ jobs:
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
         with:
           script: |
             const fs = require('node:fs');
@@ -1555,6 +1617,13 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         shell: /usr/bin/env -u MAKEFLAGS -u GNUMAKEFLAGS -u MFLAGS -u MAKEFILES -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          LD_PRELOAD: ''
+          LD_AUDIT: ''
+          LD_LIBRARY_PATH: ''
+          NODE_PATH: ''
+          DYLD_INSERT_LIBRARIES: ''
+          DYLD_LIBRARY_PATH: ''
+          DYLD_FRAMEWORK_PATH: ''
           LOPPER_PROOF_GO: ${{ steps.proof_runtime.outputs.go }}
           GOROOT: ${{ steps.proof_runtime.outputs.go_root }}
           GOTOOLCHAIN: local
@@ -2583,11 +2652,15 @@ jobs:
         name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - &ci_smoke_setup_go
-        name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - name: Setup Go
+        uses: &ci_smoke_setup_go_action actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version-file: go.mod
+          go-version-file: &ci_smoke_go_version_file go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
+            scripts/bench_fixture_cache_main_test.go
 
       - name: Run smoke checks
         run: make smoke
@@ -2606,7 +2679,13 @@ jobs:
     steps:
       - *ci_smoke_checkout
 
-      - *ci_smoke_setup_go
+      - name: Setup Go
+        uses: *ci_smoke_setup_go_action
+        with:
+          go-version-file: *ci_smoke_go_version_file
+          cache-dependency-path: |
+            go.sum
+            extensions/vscode-lopper/package-lock.json
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
