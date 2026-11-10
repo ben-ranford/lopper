@@ -21,7 +21,9 @@ func canonicalPath(path string, directory bool) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || len(filepath.VolumeName(path)) != 2 {
 		return errors.New("expected canonical local drive path")
 	}
-	for current := path; ; current = filepath.Dir(current) {
+	current := path
+	reparseHops := 0
+	for {
 		name, err := windows.UTF16PtrFromString(current)
 		if err != nil {
 			return err
@@ -31,7 +33,22 @@ func canonicalPath(path string, directory bool) error {
 			return err
 		}
 		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return errors.New("reparse path rejected")
+			// A file symlink can retarget the interpreter. A directory junction
+			// is how the hosted tool cache is mounted; follow it and keep
+			// checking the resolved local path.
+			if current == path && !directory {
+				return errors.New("reparse path rejected")
+			}
+			reparseHops++
+			if reparseHops > 8 {
+				return errors.New("reparse path rejected")
+			}
+			resolved, err := resolvedDirectory(current)
+			if err != nil || resolved == current {
+				return errors.New("reparse path rejected")
+			}
+			current = resolved
+			continue
 		}
 		if current == path && (attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0) != directory {
 			return errors.New("wrong path type")
@@ -39,8 +56,34 @@ func canonicalPath(path string, directory bool) error {
 		if current == filepath.Dir(current) {
 			break
 		}
+		current = filepath.Dir(current)
 	}
 	return nil
+}
+
+func resolvedDirectory(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	var buffer [maxPathUnits + 1]uint16
+	n, err := windows.GetFinalPathNameByHandle(windows.Handle(file.Fd()), &buffer[0], uint32(len(buffer)), 0)
+	if err != nil {
+		return "", err
+	}
+	if n == 0 || n >= uint32(len(buffer)) {
+		return "", errors.New("truncated final directory path")
+	}
+	resolved := windows.UTF16ToString(buffer[:n])
+	if !strings.HasPrefix(resolved, `\\?\`) {
+		return "", errors.New("final directory path is not DOS volume form")
+	}
+	resolved = filepath.Clean(strings.TrimPrefix(resolved, `\\?\`))
+	if !filepath.IsAbs(resolved) || len(filepath.VolumeName(resolved)) != 2 || filepath.VolumeName(resolved) != filepath.VolumeName(path) {
+		return "", errors.New("reparse path rejected")
+	}
+	return resolved, nil
 }
 
 func openedPath(file *os.File) (string, error) {
