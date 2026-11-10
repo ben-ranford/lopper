@@ -25,11 +25,12 @@ const (
 	mavenStringJSON
 	mavenNumberJSON
 	mavenOpaqueJSON
+	mavenReportJSON
 )
 
 var mavenJSONFields = map[mavenJSONShape]map[string]mavenJSONShape{
 	mavenPointerJSON:     {"inputDigest": mavenStringJSON, "objectDigest": mavenStringJSON},
-	mavenPayloadJSON:     {"maven": mavenEnvelopeJSON, "report": mavenOpaqueJSON, "pythonManifests": mavenOpaqueJSON, "pythonManifestCatalog": mavenOpaqueJSON, "usageIncompleteReport": mavenOpaqueJSON, "usageIncompleteDependencies": mavenOpaqueJSON, "suppressedUnusedImportsByDependency": mavenOpaqueJSON},
+	mavenPayloadJSON:     {"maven": mavenEnvelopeJSON, "report": mavenReportJSON, "pythonManifests": mavenOpaqueJSON, "pythonManifestCatalog": mavenOpaqueJSON, "usageIncompleteReport": mavenOpaqueJSON, "usageIncompleteDependencies": mavenOpaqueJSON, "suppressedUnusedImportsByDependency": mavenOpaqueJSON},
 	mavenEnvelopeJSON:    {"version": mavenNumberJSON, "policy": mavenStringJSON, "entries": mavenEntriesJSON},
 	mavenDocumentJSON:    {"path": mavenStringJSON, "properties": mavenPropertiesJSON, "dependencies": mavenDeclarationsJSON, "managed": mavenDeclarationsJSON, "stage": mavenStringJSON, "kind": mavenStringJSON},
 	mavenDeclarationJSON: {"groupId": mavenStringJSON, "artifactId": mavenStringJSON, "version": mavenStringJSON, "type": mavenStringJSON, "scope": mavenStringJSON},
@@ -56,9 +57,15 @@ func preflightMavenJSON(data []byte, shape mavenJSONShape) error {
 }
 func (s *mavenJSONPreflight) value(shape mavenJSONShape) error {
 	switch shape {
-	case mavenOpaqueJSON:
+	case mavenOpaqueJSON, mavenReportJSON:
 		var raw json.RawMessage
-		return s.decoder.Decode(&raw)
+		if err := s.decoder.Decode(&raw); err != nil {
+			return err
+		}
+		if shape == mavenReportJSON && !mavenJSONObject(raw) {
+			return errors.New("maven cache report must be a JSON object")
+		}
+		return nil
 	case mavenStringJSON:
 		_, err := s.stringValue()
 		return err
@@ -244,6 +251,11 @@ func (s *mavenJSONPreflight) charge(size int) error {
 	s.canonicalBytes += size
 	return nil
 }
+func mavenJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
 func validateMavenJSONKeys(shape mavenJSONShape, seen map[string]bool) error {
 	if shape == mavenPayloadJSON {
 		if !seen["maven"] || !seen["report"] {
