@@ -598,3 +598,112 @@ func assertSingleDependencyUsage(t *testing.T, dependencies []report.DependencyR
 		t.Fatalf("%s, got %#v", failureMessage, dependencies)
 	}
 }
+
+func TestJVMSharedReportBuilderParity(t *testing.T) {
+	first := report.Location{File: "A.java", Line: 2, Column: 1}
+	second := report.Location{File: "B.kt", Line: 3, Column: 1}
+	removal := report.Recommendation{
+		Code: "remove-unused-dependency", Priority: "high",
+		Message:   "No used imports were detected for this dependency; consider removing it.",
+		Rationale: "Unused dependencies increase attack and maintenance surface.",
+	}
+	for _, tc := range []struct {
+		name     string
+		scan     scanResult
+		want     report.DependencyReport
+		warnings []string
+	}{
+		{
+			name: "nil files",
+			want: report.DependencyReport{Name: "dep", Language: "jvm", TopUsedSymbols: []report.SymbolUsage{},
+				UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}, Recommendations: []report.Recommendation{}},
+			warnings: []string{"no imports found for dependency dep"},
+		},
+		{
+			name: "empty files", scan: scanResult{Files: []fileScan{}},
+			want: report.DependencyReport{Name: "dep", Language: "jvm", TopUsedSymbols: []report.SymbolUsage{},
+				UsedImports: []report.ImportUse{}, UnusedImports: []report.ImportUse{}, Recommendations: []report.Recommendation{}},
+			warnings: []string{"no imports found for dependency dep"},
+		},
+		{
+			name: "mixed usage across files",
+			scan: scanResult{Files: []fileScan{
+				{Imports: []importBinding{
+					{Dependency: "DEP", Module: "example", Name: "Beta", Local: "b", Location: first},
+					{Dependency: "dep", Module: "example", Name: "Alpha", Local: "a", Location: first},
+					{Dependency: "dep", Module: "example", Name: "Idle", Local: "i", Location: first},
+					{Dependency: "dep", Module: "example", Name: "Zed", Local: "z", Location: first},
+					{Dependency: "other", Name: "Ignored", Local: "o"},
+				}, Usage: map[string]int{"a": 2, "b": 5, "o": 99}},
+				{Imports: []importBinding{
+					{Dependency: "dep", Module: "example", Name: "Alpha", Local: "alias", Location: second},
+					{Dependency: "dep", Module: "example", Name: "Beta", Local: "unusedAlias", Location: second},
+				}, Usage: map[string]int{"alias": 3}},
+			}},
+			want: report.DependencyReport{Name: "dep", Language: "jvm", UsedExportsCount: 2, TotalExportsCount: 4, UsedPercent: 50,
+				TopUsedSymbols: []report.SymbolUsage{{Name: "Alpha", Count: 5}, {Name: "Beta", Count: 5}},
+				UsedImports: []report.ImportUse{
+					{Name: "Alpha", Module: "example", Locations: []report.Location{first, second}},
+					{Name: "Beta", Module: "example", Locations: []report.Location{first}},
+				},
+				UnusedImports: []report.ImportUse{
+					{Name: "Idle", Module: "example", Locations: []report.Location{first}},
+					{Name: "Zed", Module: "example", Locations: []report.Location{first}},
+				}, Recommendations: []report.Recommendation{}},
+			warnings: []string{},
+		},
+		{
+			name: "unused removal advice",
+			scan: scanResult{Files: []fileScan{{Imports: []importBinding{
+				{Dependency: "dep", Module: "example", Name: "Idle", Local: "i", Location: first},
+			}}}},
+			want: report.DependencyReport{Name: "dep", Language: "jvm", TotalExportsCount: 1,
+				TopUsedSymbols: []report.SymbolUsage{}, UsedImports: []report.ImportUse{},
+				UnusedImports:   []report.ImportUse{{Name: "Idle", Module: "example", Locations: []report.Location{first}}},
+				Recommendations: []report.Recommendation{removal}},
+			warnings: []string{},
+		},
+		{
+			name: "wildcard conservative usage",
+			scan: scanResult{Files: []fileScan{{Imports: []importBinding{
+				{Dependency: "dep", Module: "example", Name: "*", Local: "*", Wildcard: true, Location: first},
+			}}}},
+			want: report.DependencyReport{Name: "dep", Language: "jvm", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100,
+				TopUsedSymbols: []report.SymbolUsage{{Name: "*", Count: 1}},
+				UsedImports:    []report.ImportUse{{Name: "*", Module: "example", Locations: []report.Location{first}}},
+				UnusedImports:  []report.ImportUse{},
+				RiskCues:       []report.RiskCue{{Code: "wildcard-import", Severity: "medium", Message: "found wildcard imports for this dependency"}},
+				Recommendations: []report.Recommendation{{Code: "avoid-wildcard-imports", Priority: "medium",
+					Message: "Wildcard imports were detected; prefer explicit imports.", Rationale: "Explicit imports improve analysis precision and maintainability."}}},
+			warnings: []string{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warnings := buildDependencyReport("dep", tc.scan)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("report mismatch:\ngot  %#v\nwant %#v", got, tc.want)
+			}
+			if !reflect.DeepEqual(warnings, tc.warnings) {
+				t.Fatalf("warnings mismatch: got %#v want %#v", warnings, tc.warnings)
+			}
+		})
+	}
+}
+
+func TestJVMReportRankingPreservesConfidenceInputs(t *testing.T) {
+	scan := scanResult{Files: []fileScan{{Imports: []importBinding{
+		{Dependency: "explicit", Module: "example", Name: "Idle", Local: "idle"},
+		{Dependency: "wildcard", Module: "example", Name: "*", Local: "*", Wildcard: true},
+	}}}}
+	dependencies, warnings := buildTopJVMDependencies(2, scan, report.DefaultRemovalCandidateWeights())
+	if !reflect.DeepEqual(warnings, []string{}) || len(dependencies) != 2 {
+		t.Fatalf("unexpected ranked result: %#v, warnings %#v", dependencies, warnings)
+	}
+	if dependencies[0].Name != "explicit" || dependencies[1].Name != "wildcard" {
+		t.Fatalf("unexpected ranking: %#v", dependencies)
+	}
+	high, low := dependencies[0].RemovalCandidate, dependencies[1].RemovalCandidate
+	if high == nil || low == nil || high.Confidence <= low.Confidence || low.Confidence <= 0 || high.Confidence > 100 {
+		t.Fatalf("expected precise imports to retain higher confidence than wildcard imports: high %#v low %#v", high, low)
+	}
+}
