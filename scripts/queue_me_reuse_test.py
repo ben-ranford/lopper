@@ -12,12 +12,12 @@ import queue_me_reuse as bridge
 
 class QueueReuseTests(unittest.TestCase):
     def setUp(self):
-        self.snapshot = {"version": 1, "repository": "ben-ranford/lopper", "repository_id": 1155023607,
+        self.snapshot = {"version": 2, "policy_source": "a" * 40, "repository": "ben-ranford/lopper", "repository_id": 1155023607,
                          "head_repository_id": 1155023607, "pull_number": 1772,
                          "base": "a" * 40, "head": "b" * 40, "base_ref": "main"}
-        self.analysis = {"version": 1, "snapshot": self.snapshot, "candidate": "c" * 40,
+        self.analysis = {"version": 2, "snapshot": self.snapshot, "candidate": "c" * 40,
                          "detector_exit": 0, "policy_paths": []}
-        self.receipt = {"headSHA": "b" * 40, "baseSHA": "a" * 40, "runId": 5,
+        self.receipt = {"version": 2, "policySHA": "a" * 40, "headSHA": "b" * 40, "baseSHA": "a" * 40, "runId": 5,
                         "runAttempt": 1, "artifactId": 6, "suppressionCount": 0}
         self.value = {"snapshot": self.snapshot, "analysis": self.analysis, "suppression": self.receipt}
         self.pair = patch.object(bridge.shared, "same_live_pair").start()
@@ -113,7 +113,7 @@ class QueueReuseTests(unittest.TestCase):
                 self.pair.reset_mock()
                 status, output = self.invoke_main()
                 self.assertEqual(status, 75)
-                self.assertEqual(json.loads(output), {"version": 1, "kind": "ci-deferred",
+                self.assertEqual(json.loads(output), {"version": 2, "kind": "ci-deferred",
                                                      "snapshot": self.snapshot})
                 self.assertEqual(self.pair.call_count, 2)
                 self.publish.assert_not_called()

@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	filterProbeCommand = "git hash-object --stdin --__LOPPER_LOCKFILE_FILTER_PROBE__"
-	verifyFlag         = "--verify"
-	nameOnlyFlag       = "--name-only"
+	filterProbeCommand  = "git hash-object --stdin --__LOPPER_LOCKFILE_FILTER_PROBE__"
+	verifyFlag          = "--verify"
+	nameOnlyFlag        = "--name-only"
+	othersFlag          = "--others"
+	excludeStandardFlag = "--exclude-standard"
 )
 
 type gitRequest struct {
@@ -244,12 +246,13 @@ func proofDiff(args []string) bool {
 }
 
 func validFiles(args []string) bool {
-	if slices.Equal(args, []string{"--others", "--exclude-standard"}) {
+	if slices.Equal(args, []string{othersFlag, excludeStandardFlag}) ||
+		slices.Equal(args, []string{othersFlag, excludeStandardFlag, "-z", "--"}) {
 		return true
 	}
 	if len(args) != 0 && args[0] == "--cached" {
 		args = args[1:]
 	}
-	paths, ok := takePrefix(args, []string{"--others", "--exclude-standard", "-z", "--"})
+	paths, ok := takePrefix(args, []string{othersFlag, excludeStandardFlag, "-z", "--"})
 	return ok && literalPaths(paths)
 }
