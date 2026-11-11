@@ -122,6 +122,10 @@ func TestNativeWindowsCIWrapperBindsOwnerEvidence(t *testing.T) {
 			t.Fatal("missing native wrapper contract", required)
 		}
 	}
+	matcher := sourceSection(t, source, "function Get-SubjectFailureLines", "function Get-ControlDiagnosticSnippet")
+	if !strings.Contains(matcher, "-cmatch 'FAIL:|panic:|missing exact|retained|removed|failed:'") || strings.Contains(matcher, "Fatal") {
+		t.Fatal("subject failure lines must ignore the expected failed-config git fatal log")
+	}
 	ownerTerminal := strings.Index(source, "Write-OwnerTerminalReceipt $outTask.Result $errTask.Result $exit")
 	initializeCapture := strings.Index(source, "Initialize-BoundedOwnerCapture\n    if (-not $process.Start())")
 	startOwner := strings.Index(source, "if (-not $process.Start())")

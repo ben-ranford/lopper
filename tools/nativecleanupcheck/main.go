@@ -676,12 +676,16 @@ func verifyOriginalControl(o options, c custody) error {
 	}
 	return originalAuthorityDeadline(j, time.Now())
 }
+// originalCleanupReserve matches the owner's cleanupReserve. A join or
+// recovery observation at or after this bound is no longer original authority.
+const originalCleanupReserve = 90 * time.Second
+
 func originalAuthorityDeadline(j joinRecord, now time.Time) error {
 	start, err := time.Parse(time.RFC3339Nano, j.CleanupStarted)
 	if err != nil {
 		return err
 	}
-	if now.Before(start) || !now.Before(start.Add(30*time.Second)) {
+	if now.Before(start) || !now.Before(start.Add(originalCleanupReserve)) {
 		return errors.New("original recovery authority expired or clock inconsistent")
 	}
 	return nil
@@ -778,7 +782,7 @@ func validateJoin(j joinRecord) error {
 	if err != nil {
 		return err
 	}
-	if end.Before(start) || end.Sub(start) >= 30*time.Second {
+	if end.Before(start) || end.Sub(start) >= originalCleanupReserve {
 		return errors.New("join exceeded single reserve")
 	}
 	return nil

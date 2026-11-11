@@ -538,7 +538,7 @@ function Invoke-SelfTestRemovalCase([string]$Name,[string]$Mutation,[string]$Exp
     $AllocationSHA256=$script:AllocationSHA256
     $joined=[ordered]@{schema='native-cleanup-join/v1';cleanup_started=[DateTimeOffset]::UtcNow.ToString('o');owner_pid=0;run_id=$RunID;run_attempt=$RunAttempt}
     [IO.File]::WriteAllText($JoinRecord,($joined|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
-    $JoinRecordSHA256=Get-Digest $JoinRecord;$DeadlineUTC=([DateTimeOffset]::Parse($joined.cleanup_started).AddSeconds(30)).ToString('o')
+    $JoinRecordSHA256=Get-Digest $JoinRecord;$DeadlineUTC=([DateTimeOffset]::Parse($joined.cleanup_started).AddSeconds(90)).ToString('o')
     $allocation=$script:allocation
     $markerPath=Join-Path $allocation.path '.allocation-nonce'
     Reset-SelfTestObservations $Account ([IO.Path]::GetTempPath())
@@ -751,7 +751,7 @@ function Invoke-SelfTestTransitionFlow([Collections.Generic.List[string]]$Passed
     $joined=[ordered]@{schema='native-cleanup-join/v1';cleanup_started=[DateTimeOffset]::UtcNow.ToString('o');owner_pid=0;run_id=$RunID;run_attempt=$RunAttempt}
     [IO.File]::WriteAllText($JoinRecord,($joined|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
     $JoinRecordSHA256=Get-Digest $JoinRecord
-    $DeadlineUTC=([DateTimeOffset]::Parse($joined.cleanup_started).AddSeconds(30)).ToString('o')
+    $DeadlineUTC=([DateTimeOffset]::Parse($joined.cleanup_started).AddSeconds(90)).ToString('o')
     $allocatedPath=$script:allocation.path;$Mode='finally';$script:SelfTestAdapter.childrenOverride=$false;Remove-Allocation
     $teardownPath=Join-Path $control 'teardown-finally.json'
     $teardown=Get-Content -LiteralPath $teardownPath -Raw | ConvertFrom-Json
@@ -937,7 +937,7 @@ function Assert-OriginalJoin {
     # coerce it to a culture-formatted DateTime and drop sub-second precision.
     try { $joinText=Get-Content -LiteralPath $JoinRecord -Raw; $originalJoin=$joinText | ConvertFrom-Json; $cleanupStarted=[Text.Json.JsonDocument]::Parse($joinText).RootElement.GetProperty('cleanup_started').GetString() }
     catch { throw 'Original owner join malformed; RETENTION' }
-    $originalDeadline=([DateTimeOffset]::Parse($cleanupStarted,[Globalization.CultureInfo]::InvariantCulture)).AddSeconds(30)
+    $originalDeadline=([DateTimeOffset]::Parse($cleanupStarted,[Globalization.CultureInfo]::InvariantCulture)).AddSeconds(90)
     if ([DateTimeOffset]::Parse($DeadlineUTC) -ne $originalDeadline) { throw 'Fresh recovery deadline rejected; RETENTION' }
     if ($Mode -eq 'recovery') {
         $live=$null

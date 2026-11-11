@@ -165,7 +165,7 @@ func TestOriginalJoinAndAllocationControls(t *testing.T) {
 		if parseErr != nil {
 			t.Fatal(parseErr)
 		}
-		j.CleanupFinished = start.Add(30 * time.Second).Format(time.RFC3339Nano)
+		j.CleanupFinished = start.Add(originalCleanupReserve).Format(time.RFC3339Nano)
 	}}
 	for name, change := range controls {
 		t.Run(name, func(t *testing.T) {
@@ -300,10 +300,10 @@ func TestOriginalAuthorityExpiresAfterGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := originalAuthorityDeadline(j, start.Add(29*time.Second)); err != nil {
+	if err := originalAuthorityDeadline(j, start.Add(originalCleanupReserve-time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	for _, now := range []time.Time{start.Add(-time.Nanosecond), start.Add(30 * time.Second), start.Add(31 * time.Second)} {
+	for _, now := range []time.Time{start.Add(-time.Nanosecond), start.Add(originalCleanupReserve), start.Add(originalCleanupReserve + time.Second)} {
 		if err := originalAuthorityDeadline(j, now); err == nil {
 			t.Fatal("expired/inconsistent authority accepted", now)
 		}
@@ -651,7 +651,7 @@ func TestRecordReadersRejectMalformedAndUnboundFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			j.CleanupFinished = start.Add(30 * time.Second).Format(time.RFC3339Nano)
+			j.CleanupFinished = start.Add(originalCleanupReserve).Format(time.RFC3339Nano)
 			o.joinSHA = writeRecordFile(t, o.join, mustJSON(t, j), 0600)
 			_, err = readJoin(o, c)
 			return err
