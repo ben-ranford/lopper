@@ -856,87 +856,97 @@ def selftest():
     return 0
 
 
+def portable_git(repo, *args, output=False):
+    result = subprocess.run(["git", "-c", "protocol.file.allow=always", "-c", "user.email=trace@example.com",
+                             "-c", "user.name=trace", "-C", str(repo), *args], check=True,
+                            stdout=subprocess.PIPE if output else subprocess.DEVNULL, text=True)
+    return result.stdout.strip() if output else None
+
+
+def synchronize_event(before_sha, head_sha, base_sha, ref="main"):
+    return {"action": "synchronize", "before": before_sha, "after": head_sha,
+            "pull_request": {"base": {"sha": base_sha, "ref": ref}}}
+
+
+def expect_commit(root, sha, present, reason):
+    if commit_exists(root, sha) is not present:
+        raise AssertionError(reason)
+
+
+def expect_binding(root, event, head, expected, reason):
+    if synchronize_binding(root, event, head) is not expected:
+        raise AssertionError(reason)
+
+
+def expect_binding_error(root, event, head, message, reason):
+    try:
+        synchronize_binding(root, event, head)
+    except ValueError as error:
+        if str(error) != message:
+            raise
+        return
+    raise AssertionError(reason)
+
+
+def prepare_replaced_tip(directory):
+    seed = directory / "seed"
+    origin = directory / "origin.git"
+    work = directory / "work"
+    seed.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    source = seed / SOURCE_PATHS[1]
+    source.parent.mkdir(parents=True)
+    source.write_text("base\n")
+    portable_git(seed, "add", SOURCE_PATHS[1])
+    portable_git(seed, "commit", "-q", "-m", "base")
+    base = portable_git(seed, "rev-parse", "HEAD", output=True)
+    source.write_text("same\n")
+    portable_git(seed, "commit", "-q", "-am", "before")
+    before = portable_git(seed, "rev-parse", "HEAD", output=True)
+    portable_git(seed, "reset", "-q", "--hard", base)
+    source.write_text("same\n")
+    portable_git(seed, "commit", "-q", "-am", "head")
+    head = portable_git(seed, "rev-parse", "HEAD", output=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    portable_git(origin, "config", "uploadpack.allowReachableSHA1InWant", "true")
+    portable_git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+    portable_git(seed, "remote", "add", "origin", str(origin))
+    portable_git(seed, "push", "-q", "origin", "HEAD:main")
+    portable_git(seed, "push", "-q", "origin", before + ":refs/heads/replaced-tip")
+    subprocess.run(["git", "-c", "protocol.file.allow=always", "clone", "-q", "--no-local", "--single-branch",
+                    "--branch", "main", str(origin), str(work)], check=True)
+    portable_git(work, "config", "protocol.file.allow", "always")
+    expect_commit(work, before, False, "single-branch clone contained the replaced tip")
+    return work, before, head, base
+
+
 def assert_synchronize_predecessor():
     import tempfile
     missing = "0123456789abcdef0123456789abcdef01234567"
     absent_base = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
     with tempfile.TemporaryDirectory() as directory:
-        directory = pathlib.Path(directory)
-        seed = directory / "seed"
-        origin = directory / "origin.git"
-        work = directory / "work"
-        seed.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
-        source = seed / SOURCE_PATHS[1]
-        source.parent.mkdir(parents=True)
-        source.write_text("base\n")
-
-        def g(repo, *args, output=False):
-            result = subprocess.run(["git", "-c", "protocol.file.allow=always", "-c", "user.email=trace@example.com",
-                                     "-c", "user.name=trace", "-C", str(repo), *args], check=True,
-                                    stdout=subprocess.PIPE if output else subprocess.DEVNULL, text=True)
-            return result.stdout.strip() if output else None
-
-        g(seed, "add", SOURCE_PATHS[1])
-        g(seed, "commit", "-q", "-m", "base")
-        base = g(seed, "rev-parse", "HEAD", output=True)
-        source.write_text("same\n")
-        g(seed, "commit", "-q", "-am", "before")
-        before = g(seed, "rev-parse", "HEAD", output=True)
-        g(seed, "reset", "-q", "--hard", base)
-        source.write_text("same\n")
-        g(seed, "commit", "-q", "-am", "head")
-        head = g(seed, "rev-parse", "HEAD", output=True)
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
-        g(origin, "config", "uploadpack.allowReachableSHA1InWant", "true")
-        g(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
-        g(seed, "remote", "add", "origin", str(origin))
-        g(seed, "push", "-q", "origin", "HEAD:main")
-        g(seed, "push", "-q", "origin", before + ":refs/heads/replaced-tip")
-        subprocess.run(["git", "-c", "protocol.file.allow=always", "clone", "-q", "--no-local", "--single-branch",
-                        "--branch", "main", str(origin), str(work)], check=True)
-        g(work, "config", "protocol.file.allow", "always")
-        if commit_exists(work, before):
-            raise AssertionError("single-branch clone contained the replaced tip")
-
-        def event(before_sha, head_sha, base_sha, ref="main"):
-            return {"action": "synchronize", "before": before_sha, "after": head_sha,
-                    "pull_request": {"base": {"sha": base_sha, "ref": ref}}}
-
+        work, before, head, base = prepare_replaced_tip(pathlib.Path(directory))
         # The replaced tip matches head, so only a fetched before proves the diff is empty.
-        if synchronize_binding(work, event(before, head, base), head) is not False:
-            raise AssertionError("fetched predecessor did not bound an empty diagnostic diff")
-        if not commit_exists(work, before):
-            raise AssertionError("reachable predecessor was not fetched")
-        if synchronize_binding(work, event(missing, head, base), head) is not True:
-            raise AssertionError("merge-base fallback missed a diagnostic source change")
-        if commit_exists(work, missing):
-            raise AssertionError("missing predecessor appeared without evidence")
-        g(work, "update-ref", "refs/remotes/origin/main", base)
-        if synchronize_binding(work, event(missing, head, absent_base), head) is not True:
-            raise AssertionError("base branch ref did not provide a merge-base")
-        try:
-            synchronize_binding(work, event(missing, head, absent_base, "no-such-base"), head)
-        except ValueError as error:
-            if str(error) != UNREACHABLE_PREDECESSOR:
-                raise
-        else:
-            raise AssertionError("unbounded synchronize predecessor accepted")
+        expect_binding(work, synchronize_event(before, head, base), head, False,
+                       "fetched predecessor did not bound an empty diagnostic diff")
+        expect_commit(work, before, True, "reachable predecessor was not fetched")
+        expect_binding(work, synchronize_event(missing, head, base), head, True,
+                       "merge-base fallback missed a diagnostic source change")
+        expect_commit(work, missing, False, "missing predecessor appeared without evidence")
+        portable_git(work, "update-ref", "refs/remotes/origin/main", base)
+        expect_binding(work, synchronize_event(missing, head, absent_base), head, True,
+                       "base branch ref did not provide a merge-base")
+        expect_binding_error(work, synchronize_event(missing, head, absent_base, "no-such-base"), head,
+                             UNREACHABLE_PREDECESSOR, "unbounded synchronize predecessor accepted")
         (work / "other.txt").write_text("other\n")
-        g(work, "add", "other.txt")
-        g(work, "commit", "-q", "-m", "other")
-        head_same = g(work, "rev-parse", "HEAD", output=True)
-        if synchronize_binding(work, event(head, head_same, base), head_same) is not False:
-            raise AssertionError("local predecessor lost to the base merge-base")
-        if synchronize_binding(work, {"action": "opened"}, head) is not False:
-            raise AssertionError("opened event consulted synchronize state")
-        try:
-            synchronize_binding(work, event(head, head, base), head)
-        except ValueError as error:
-            if str(error) != "missing or identical synchronize context":
-                raise
-        else:
-            raise AssertionError("identical synchronize context accepted")
+        portable_git(work, "add", "other.txt")
+        portable_git(work, "commit", "-q", "-m", "other")
+        head_same = portable_git(work, "rev-parse", "HEAD", output=True)
+        expect_binding(work, synchronize_event(head, head_same, base), head_same, False,
+                       "local predecessor lost to the base merge-base")
+        expect_binding(work, {"action": "opened"}, head, False, "opened event consulted synchronize state")
+        expect_binding_error(work, synchronize_event(head, head, base), head,
+                             "missing or identical synchronize context", "identical synchronize context accepted")
 
 
 def assert_moved_base_merge():
