@@ -80,16 +80,30 @@ func assertCIVerificationOutcomes(t *testing.T, script string) {
 	}
 	for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
-			for _, native := range []string{"success", "failure", "cancelled", "skipped", ""} {
-				for _, action := range actions {
-					output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success", "NATIVE_WINDOWS_CLEANUP_RESULT": native, "WINDOWS_ACTION_PROOF_RESULT": action})
-					passed := checks == "success" && tests == "success" && native == "success" && action == "success"
-					if (err == nil) != passed {
-						t.Fatalf("checks=%q tests=%q native=%q action=%q: %v\n%s", checks, tests, native, action, err, output)
-					}
-				}
-			}
+			assertCIVerificationPair(t, script, checks, tests, actions)
 		}
+	}
+}
+
+func assertCIVerificationPair(t *testing.T, script, checks, tests string, actions []string) {
+	t.Helper()
+	for _, native := range []string{"success", "failure", "cancelled", "skipped", ""} {
+		for _, action := range actions {
+			assertCIOutcome(t, script, checks, tests, native, action)
+		}
+	}
+}
+
+func assertCIOutcome(t *testing.T, script, checks, tests, native, action string) {
+	t.Helper()
+	output, err := runShellCommand(t.TempDir(), script, map[string]string{
+		"CHECKS_RESULT": checks, "TESTS_RESULT": tests,
+		"WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success",
+		"NATIVE_WINDOWS_CLEANUP_RESULT": native, "WINDOWS_ACTION_PROOF_RESULT": action,
+	})
+	passed := checks == "success" && tests == "success" && native == "success" && action == "success"
+	if (err == nil) != passed {
+		t.Fatalf("checks=%q tests=%q native=%q action=%q: %v\n%s", checks, tests, native, action, err, output)
 	}
 }
 
