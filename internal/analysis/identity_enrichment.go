@@ -109,6 +109,7 @@ type identityManifestSnapshot struct {
 }
 
 type identityEvidenceLanguages struct {
+	maven    []report.MavenManifest
 	python   bool
 	dotnet   bool
 	composer bool
@@ -128,6 +129,7 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 		// Python manifest documents are adapter/cache artifacts. Once identity
 		// enrichment has consumed them, don't retain their decoded contents in
 		// the report returned to callers.
+		clearMavenEvidence(reportData)
 		reportData.PythonManifests = nil
 		reportData.PythonManifestCatalog = false
 	}()
@@ -135,6 +137,7 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 		return
 	}
 	languages := identityEvidenceLanguages{
+		maven:    reportData.MavenManifests,
 		python:   hasDependencyLanguage(reportData.Dependencies, "python"),
 		dotnet:   hasDependencyLanguage(reportData.Dependencies, "dotnet"),
 		composer: hasDependencyLanguage(reportData.Dependencies, "php"),
@@ -211,7 +214,7 @@ func collectIdentityEvidenceWithContext(ctx context.Context, repoPath string, la
 	if languages.python {
 		collectPythonIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.pythonFiles, warnings)
 	}
-	collectJVMIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings)
+	collectJVMIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings, languages.maven...)
 	collectSwiftIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.swiftFiles, snapshot.podLockFiles, snapshot.carthageLockFiles, warnings)
 	collectCargoIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings)
 	if languages.dotnet {
@@ -1912,23 +1915,18 @@ func collectJVMIdentityEvidence(repoPath string, index identityIndex) {
 	collectJVMIdentityEvidenceFromSnapshot(context.Background(), repoPath, index, discoverIdentityManifestSnapshot(repoPath, nil), nil)
 }
 
-func collectJVMIdentityEvidenceFromSnapshot(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector) {
-	for _, path := range snapshot.pomFiles {
-		if ctx.Err() != nil {
-			return
-		}
-		collectPomIdentityEvidence(repoPath, path, index, warnings)
-	}
+func collectJVMIdentityEvidenceFromSnapshot(ctx context.Context, repoPath string, index identityIndex, snapshot identityManifestSnapshot, warnings *identityWarningCollector, documents ...report.MavenManifest) {
+	collectMavenCatalogEvidence(ctx, repoPath, index, snapshot.pomFiles, documents, warnings)
 	collectGradleIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.gradleBuildFiles, snapshot.gradleLockFiles, warnings)
 }
 
 func collectPomIdentityEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, shared.POMByteLimit)
+	data, err := readMavenIdentityFile(repoPath, path, shared.POMByteLimit)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
 	}
-	parsed, err := shared.DecodePOM(data)
+	parsed, err := decodeMavenIdentityFile(data)
 	if err != nil {
 		warnings.addFailure("parse", path, identityParseFailed, err)
 		return

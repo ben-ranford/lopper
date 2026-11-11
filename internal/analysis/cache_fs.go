@@ -12,16 +12,16 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func writeFileDigest(w io.Writer, path string) error {
-	digest, err := hashFileDigest(path)
+func writeFileDigest(w io.Writer, path string, observe ...func(string, int64)) error {
+	digest, err := hashFileDigest(path, observe...)
 	if err != nil {
 		return err
 	}
 	return writeHexDigest(w, digest)
 }
 
-func writeFileDigestOrMissing(w io.Writer, path string) error {
-	digest, err := hashFileDigest(path)
+func writeFileDigestOrMissing(w io.Writer, path string, observe ...func(string, int64)) error {
+	digest, err := hashFileDigest(path, observe...)
 	if err == nil {
 		return writeHexDigest(w, digest)
 	}
@@ -32,7 +32,7 @@ func writeFileDigestOrMissing(w io.Writer, path string) error {
 	return err
 }
 
-func hashFileDigest(path string) (digest [sha256.Size]byte, err error) {
+func hashFileDigest(path string, observe ...func(string, int64)) (digest [sha256.Size]byte, err error) {
 	file, err := safeio.OpenFile(path)
 	if err != nil {
 		return digest, err
@@ -45,8 +45,12 @@ func hashFileDigest(path string) (digest [sha256.Size]byte, err error) {
 
 	hasher := sha256.New()
 	var copyBuffer [32 * 1024]byte
-	if _, err := io.CopyBuffer(hasher, file, copyBuffer[:]); err != nil {
-		return digest, err
+	copied, copyErr := io.CopyBuffer(hasher, file, copyBuffer[:])
+	if len(observe) != 0 && observe[0] != nil {
+		observe[0](path, copied)
+	}
+	if copyErr != nil {
+		return digest, copyErr
 	}
 	hasher.Sum(digest[:0])
 	return digest, nil
