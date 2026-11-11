@@ -24,6 +24,7 @@ const CI_JOBS = {
   'verify-tests / tests': 'ubuntu-latest',
   'verify-rolling-tests / tests': 'ubuntu-latest',
   'regression-proof-windows': 'windows-latest',
+  'native-windows-hook-cleanup': 'windows-latest',
   'regression-proof-darwin': 'macos-26',
   'action-windows-provider-proof': 'windows-2025',
   verify: 'ubuntu-latest',

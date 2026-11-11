@@ -323,12 +323,8 @@ jobs:
               candidate_ref="refs/remotes/origin/${requested_ref}"
             elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
               candidate_ref="refs/heads/${requested_ref}"
-            else
-              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
-                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
-                  candidate_ref="refs/remotes/origin/${requested_ref}"
-                fi
-              fi
+            elif git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1 && git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
             fi
             if [ -z "${candidate_ref}" ]; then
               echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
@@ -568,6 +564,8 @@ jobs:
                 coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
                   limit_bytes=64
                   ;;
+                *)
+                  ;;
               esac
               copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"
             fi
@@ -720,6 +718,8 @@ jobs:
                   echo "PR report input exceeds the 64-byte publication limit: ${name}" >&2
                   exit 1
                 fi
+                ;;
+              *)
                 ;;
             esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
@@ -1013,12 +1013,8 @@ jobs:
               candidate_ref="refs/remotes/origin/${requested_ref}"
             elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
               candidate_ref="refs/heads/${requested_ref}"
-            else
-              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
-                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
-                  candidate_ref="refs/remotes/origin/${requested_ref}"
-                fi
-              fi
+            elif git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1 && git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
             fi
             if [ -z "${candidate_ref}" ]; then
               echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
@@ -1217,6 +1213,56 @@ jobs:
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: |
           & $env:LOPPER_PROOF_GO run ./tools/regressionproof --repo . --body-file "$env:PR_BODY_FILE" --title "$env:PR_TITLE" --base-sha "$env:PR_BASE_SHA" --regression-exempt-label "$env:PR_REGRESSION_EXEMPT_LABEL" --target-os windows
+
+  native-windows-hook-cleanup:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Bootstrap native proof receipt
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode bootstrap
+
+      - name: Exercise native fixture helper controls
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode self-test
+
+      - name: Run fixed native cleanup owner
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode execute
+
+      - name: Finalize native fixture evidence
+        if: ${{ always() }}
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode finally
+
+      - name: Validate native proof files
+        if: ${{ always() }}
+        shell: pwsh
+        run: ./scripts/native-windows-ci-fixture.ps1 -Mode validate
+
+      - name: Upload native Windows proof
+        if: ${{ always() && !env.ACT }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-windows-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lopper-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
 
   action-windows-provider-proof:
     runs-on: windows-2025
@@ -1636,7 +1682,7 @@ jobs:
 
   verify:
     if: ${{ always() }}
-    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin, action-windows-provider-proof]
+    needs: [verify-checks, verify-tests, regression-proof-windows, regression-proof-darwin, native-windows-hook-cleanup, action-windows-provider-proof]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1658,9 +1704,10 @@ jobs:
           TESTS_RESULT: ${{ needs.verify-tests.result }}
           WINDOWS_PROOF_RESULT: ${{ needs.regression-proof-windows.result }}
           DARWIN_PROOF_RESULT: ${{ needs.regression-proof-darwin.result }}
+          NATIVE_WINDOWS_CLEANUP_RESULT: ${{ needs.native-windows-hook-cleanup.result }}
           WINDOWS_ACTION_PROOF_RESULT: ${{ needs.action-windows-provider-proof.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success && test "${WINDOWS_ACTION_PROOF_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${WINDOWS_PROOF_RESULT}" = success && test "${DARWIN_PROOF_RESULT}" = success && test "${NATIVE_WINDOWS_CLEANUP_RESULT}" = success && test "${WINDOWS_ACTION_PROOF_RESULT}" = success
 
       - name: Initialize suppression verification
         if: ${{ github.event_name == 'pull_request' && !env.ACT }}
@@ -1745,6 +1792,8 @@ jobs:
                   echo "PR report input exceeds the 64-byte publication limit: ${name}" >&2
                   exit 1
                 fi
+                ;;
+              *)
                 ;;
             esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
@@ -2625,7 +2674,7 @@ jobs:
   verify-rolling:
     name: verify (rolling)
     if: ${{ always() }}
-    needs: [verify-rolling-checks, verify-rolling-tests]
+    needs: [verify-rolling-checks, verify-rolling-tests, native-windows-hook-cleanup]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -2633,8 +2682,9 @@ jobs:
         env:
           CHECKS_RESULT: ${{ needs.verify-rolling-checks.result }}
           TESTS_RESULT: ${{ needs.verify-rolling-tests.result }}
+          NATIVE_WINDOWS_CLEANUP_RESULT: ${{ needs.native-windows-hook-cleanup.result }}
         run: |
-          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success && test "${NATIVE_WINDOWS_CLEANUP_RESULT}" = success
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})
