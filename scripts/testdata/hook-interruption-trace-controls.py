@@ -517,9 +517,26 @@ def controls(output, workspace):
     return status
 
 
-_SYSCALL_PREFIX = re.compile(rb"^(?:\[pid\s+(\d+)\]|(\d+))\s+\d+\.\d+\s+(.*)$")
 _UNFINISHED_FD3 = re.compile(rb"dup2\(0x[0-9a-f]+, 0x3 <unfinished \.\.\.>$")
 _RESUMED_DUP2 = re.compile(rb"<\.\.\. dup2 resumed>\)\s+=\s+(\S+)")
+
+
+def syscall_pid_and_body(line):
+    if line.startswith(b"[pid "):
+        bracket = line.find(b"]", 5)
+        pid = line[5:bracket]
+        if bracket < 0 or not pid.isdigit():
+            return None
+        rest = line[bracket + 1:]
+    else:
+        pid, sep, rest = line.partition(b" ")
+        if sep != b" " or not pid.isdigit():
+            return None
+    timestamp, sep, body = rest.lstrip(b" ").partition(b" ")
+    seconds, dot, fraction = timestamp.partition(b".")
+    if sep != b" " or dot != b"." or not seconds.isdigit() or not fraction.isdigit():
+        return None
+    return pid, body
 
 
 def re_search_fd3(trace):
@@ -555,8 +572,8 @@ def fd3_resume_state(pending, pid, body):
 def fd3_dup2_resumes_across_lines(trace):
     pending = {}
     for line in trace.splitlines():
-        parsed = _SYSCALL_PREFIX.match(line)
-        if parsed is not None and fd3_resume_state(pending, parsed.group(1) or parsed.group(2), parsed.group(3)):
+        parsed = syscall_pid_and_body(line)
+        if parsed is not None and fd3_resume_state(pending, parsed[0], parsed[1]):
             return True
     return False
 
