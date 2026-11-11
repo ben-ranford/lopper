@@ -18,6 +18,7 @@ if len(sys.argv) < 2 or sys.argv[1] not in ("target", "sentinel"):
     import subprocess
 
 WORKSPACE_ERROR = "privacy workspace custody"
+CONTROL_TRUTH = "control-truth.json"
 PRIVACY_PREFIX = "HOOK_TRACE_PRIVACY_SENTINEL_"
 PYTHON = "/usr/bin/python3"
 
@@ -481,7 +482,7 @@ def write_control_truth(workspace, data):
             raise ValueError(WORKSPACE_ERROR) from error
         try:
             try:
-                descriptor = os.open("control-truth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                descriptor = os.open(CONTROL_TRUTH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
             except OSError as error:
                 raise ValueError(WORKSPACE_ERROR) from error
             try:
@@ -618,7 +619,7 @@ def assert_control_truth_stays_in_runner_temp():
             build = temp / "hook-native-1-tests-1-build"
             build.mkdir(mode=0o700)
             write_control_truth(build, b"{}")
-            assert (build / "control-truth.json").read_bytes() == b"{}"
+            assert (build / CONTROL_TRUTH).read_bytes() == b"{}"
             try:
                 write_control_truth(temp / "elsewhere", b"{}")
             except ValueError as error:
@@ -626,7 +627,7 @@ def assert_control_truth_stays_in_runner_temp():
                     raise
             else:
                 raise AssertionError("control truth accepted a foreign directory")
-            (build / "control-truth.json").unlink()
+            (build / CONTROL_TRUTH).unlink()
             build.rmdir()
             outside = temp / "outside"
             outside.mkdir(mode=0o700)
@@ -638,7 +639,7 @@ def assert_control_truth_stays_in_runner_temp():
                     raise
             else:
                 raise AssertionError("control truth followed a directory symlink")
-            assert not (outside / "control-truth.json").exists()
+            assert not (outside / CONTROL_TRUTH).exists()
     finally:
         for name, value in saved.items():
             if value is None:
