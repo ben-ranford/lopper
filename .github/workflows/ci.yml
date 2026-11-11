@@ -1289,7 +1289,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           # Bootstrap Go is fixed independently of candidate go.mod.
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           check-latest: false
 
       - *ci_proof_node_setup
@@ -1326,7 +1326,7 @@ jobs:
           $go = $goCandidates[0].Source
           if (-not [System.IO.Path]::IsPathFullyQualified($go)) { throw 'Pinned bootstrap Go must resolve to an absolute executable' }
           $goVersion = (& $go version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $goVersion -cne 'go version go1.27.3 windows/amd64') { throw "Unexpected bootstrap Go identity: $goVersion" }
+          if ($LASTEXITCODE -ne 0 -or $goVersion -cne 'go version go1.27.4 windows/amd64') { throw "Unexpected bootstrap Go identity: $goVersion" }
           $goRoot = Split-Path -Parent (Split-Path -Parent $go)
           $goHash = (Get-FileHash -LiteralPath $go -Algorithm SHA256).Hash.ToLowerInvariant()
           $agentCache = [Environment]::GetEnvironmentVariable('AGENT_TOOLSDIRECTORY', 'Process')
@@ -1412,7 +1412,7 @@ jobs:
           if ($null -eq $agentCache) { $agentCache = '' }
           Assert-TrustedProviderSource
           $bootstrapGoVersion = (& $env:TRUSTED_GO version).Trim()
-          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $env:TRUSTED_GO -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_GO_SHA256 -or $bootstrapGoVersion -cne 'go version go1.27.3 windows/amd64') { throw 'Pinned bootstrap Go identity mismatch before trusted invocation' }
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $env:TRUSTED_GO -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TRUSTED_GO_SHA256 -or $bootstrapGoVersion -cne 'go version go1.27.4 windows/amd64') { throw 'Pinned bootstrap Go identity mismatch before trusted invocation' }
           $result = $null; $bootstrapExit = $null
           try {
             # Literal O is freshly authenticated immediately before the completed-cache check and bootstrap.
