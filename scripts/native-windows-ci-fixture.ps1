@@ -136,7 +136,9 @@ function Get-SubjectFailureLines([string]$Path) {
   $hits = [Collections.Generic.List[string]]::new()
   foreach ($match in [regex]::Matches($text, '"Output":"((?:\\.|[^"\\])*)"')) {
     $value = [regex]::Unescape($match.Groups[1].Value) -replace '[\r\n]+',' '
-    if ($value -match 'FAIL:|Fatal|panic|missing exact|retained|removed|failed:') { $hits.Add($value.Trim()) }
+    # Case-sensitive: Go failures use FAIL: and panic:. Git's expected
+    # failed-config log is lowercase fatal: and is not subject evidence.
+    if ($value -cmatch 'FAIL:|panic:|missing exact|retained|removed|failed:') { $hits.Add($value.Trim()) }
   }
   if ($hits.Count -eq 0) { return '' }
   $start = [Math]::Max(0, $hits.Count - 12)

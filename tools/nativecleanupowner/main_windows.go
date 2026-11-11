@@ -27,7 +27,15 @@ import (
 )
 
 const commandAllowance = 5 * time.Second
-const cleanupReserve = 30 * time.Second
+
+// cleanupReserve is the single post-subject teardown bound. The finally
+// helper repeats custody checks and two unfiltered SMB open-file scans
+// before it may remove the share. On hosted Windows runners that work
+// sometimes finishes inside the old 30s reserve and sometimes is still
+// running when the about-20s command budget expires, after the subject
+// test has already passed. 90s covers that tail. The helper is still killed
+// at this bound. See https://github.com/ben-ranford/lopper/issues/1905.
+const cleanupReserve = 90 * time.Second
 const ownerBudget = 11 * time.Minute
 const captureLimit = 64 << 20
 

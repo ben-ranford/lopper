@@ -450,7 +450,7 @@ func TestOriginalControlAndAuditRecordFlow(t *testing.T) {
 
 func TestOriginalControlRejectsExpiredJoinedAuthority(t *testing.T) {
 	f := newControlFlowFixture(t)
-	start := time.Now().Add(-31 * time.Second).UTC()
+	start := time.Now().Add(-originalCleanupReserve - time.Second).UTC()
 	join := f.join
 	join.CleanupStarted = start.Format(time.RFC3339Nano)
 	join.CleanupFinished = start.Add(time.Second).Format(time.RFC3339Nano)
@@ -758,7 +758,7 @@ func TestCoverageOriginalAuthorityDeadlineAndCacheBindings(t *testing.T) {
 	if err := originalAuthorityDeadline(join, start.Add(time.Second)); err != nil {
 		t.Fatalf("live original authority rejected: %v", err)
 	}
-	for _, now := range []time.Time{start.Add(-time.Second), start.Add(30 * time.Second)} {
+	for _, now := range []time.Time{start.Add(-time.Second), start.Add(originalCleanupReserve)} {
 		if err := originalAuthorityDeadline(join, now); err == nil {
 			t.Fatalf("inconsistent/expired authority accepted at %s", now)
 		}
