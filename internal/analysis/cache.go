@@ -24,15 +24,18 @@ type resolvedCacheOptions struct {
 }
 
 type analysisCache struct {
-	options          resolvedCacheOptions
-	metadata         report.CacheMetadata
-	warnings         []string
-	cacheable        bool
-	rootIdentity     fs.FileInfo
-	rejectReadHits   bool
-	inputDigestMemo  map[cacheInputDigestMemoKey]string
-	stableRepoPath   string
-	analysisRepoPath string
+	options      resolvedCacheOptions
+	metadata     report.CacheMetadata
+	warnings     []string
+	cacheable    bool
+	rootIdentity fs.FileInfo
+	// A private instance may lower JVM publication admission, never raise it.
+	mavenPublicationLimit int
+	rejectReadHits        bool
+	inputDigestMemo       map[cacheInputDigestMemoKey]string
+	observeInputRead      func(string, int64)
+	stableRepoPath        string
+	analysisRepoPath      string
 }
 
 const analysisCacheQuarantineOwnerFile = ".lopper-owner"
