@@ -174,7 +174,7 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 		"Verify restricted regression proof runtime", "Write PR body for native action proof",
 		"Prove native Windows regression tests for fix PRs")
 	bootstrapGo := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Setup Go")
-	if bootstrapGo.With["go-version"] != "1.27.3" || bootstrapGo.With["go-version-file"] != "" || bootstrapGo.With["check-latest"] != "false" {
+	if bootstrapGo.With["go-version"] != "1.27.4" || bootstrapGo.With["go-version-file"] != "" || bootstrapGo.With["check-latest"] != "false" {
 		t.Fatal("trusted bootstrap Go must be fixed independently of candidate go.mod")
 	}
 	trustedCheckout := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Checkout trusted Python provider O")
@@ -191,7 +191,7 @@ func assertTrustedWindowsProviderJob(t *testing.T, workflow workflowConfig, job 
 func assertTrustedProviderPreflight(t *testing.T, workflow workflowConfig) {
 	t.Helper()
 	preflight := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Authenticate trusted provider and preflight Python cache")
-	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.3 windows/amd64") {
+	if !strings.Contains(preflight.Run, "rev-parse 'HEAD^{tree}'") || !strings.Contains(preflight.Run, "tools/proofpython") || !strings.Contains(preflight.Run, "go version go1.27.4 windows/amd64") {
 		t.Fatal("trusted provider commit/tree authentication must precede setup-python")
 	}
 	provision := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Verify completed Python cache and provision provider")
