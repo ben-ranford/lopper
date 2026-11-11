@@ -518,11 +518,52 @@ def controls(output, workspace):
 
 
 def re_search_fd3(trace):
-    import re
-    return re.search(rb"dup2\(0x[0-9a-f]+, 0x3\)\s+=\s+0x3", trace) is not None
+    import runpy
+    matcher = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fd3_dup2.py")
+    return runpy.run_path(matcher, run_name="fd3_dup2_support")["re_search_fd3"](trace)
+
+
+def assert_fd3_dup2_contract():
+    single = b"12 1.0 dup2(0x5, 0x3) = 0x3 <0.01>\n"
+    split = (
+        b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317919 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n"
+    )
+    interleaved = (
+        b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1794362079.615590 close(0x4) = 0\n"
+        b"[pid 317919] 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n"
+    )
+    if not re_search_fd3(single) or not re_search_fd3(b"dup2(0xa, 0x3) = 0x3"):
+        raise AssertionError("single-line dup2 onto FD3 rejected")
+    if not re_search_fd3(split) or not re_search_fd3(interleaved):
+        raise AssertionError("split-line dup2 onto FD3 rejected")
+    rejected = (
+        b"dup2(0x5, 0x3) = -1 EBADF (Bad file descriptor)\n",
+        b"dup2(0x5, 0x4) = 0x4\n",
+        b"dup2(0x5, 0x4 <unfinished ...>\n<... dup2 resumed>) = 0x4\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... dup2 resumed>) = -1 EINVAL (Invalid argument)\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... dup2 resumed>) = 0x5\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... wait4 resumed>) = 0x3\n",
+        b"<... dup2 resumed>) = 0x3 <0.000024>\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n",
+        b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317920 1.2 <... dup2 resumed>) = 0x3 <0.000024>\n",
+        b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317919 1.2 <... dup2 resumed>) = 0x5\n",
+        b"317919 1.0 dup2(0x5, 0x4 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317919 1.2 <... dup2 resumed>) = 0x4\n",
+    )
+    for trace in rejected:
+        if re_search_fd3(trace):
+            raise AssertionError("non-FD3 dup2 accepted: " + trace.decode())
 
 
 def selftest():
+    assert_fd3_dup2_contract()
     api = runpy.run_path(str(DRIVER), run_name="portable_trace_support")
     assert len(api["STREAMS"]) == 10
     assert sum(api["SLOTS"].values()) == 17473536
