@@ -23,6 +23,8 @@ type PythonManifestDocument struct {
 }
 
 type Report struct {
+	MavenManifests        []MavenManifest          `json:"-"`
+	MavenManifestCatalog  bool                     `json:"-"`
 	PythonManifests       []PythonManifestDocument `json:"-"`
 	PythonManifestCatalog bool                     `json:"-"`
 

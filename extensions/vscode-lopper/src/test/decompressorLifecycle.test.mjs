@@ -20,10 +20,13 @@ async function waitForFile(filePath) {
   const until = Date.now() + 5000;
   while (Date.now() < until) {
     try {
-      return await readFile(filePath, "utf8");
+      const value = (await readFile(filePath, "utf8")).trim();
+      // writeFileSync can be observed before its bytes are visible.
+      if (/^[1-9]\d*$/.test(value)) return value;
     } catch {
-      await delay(5);
+      // The ready file has not been created yet.
     }
+    await delay(5);
   }
   throw new Error(`Timed out waiting for ${filePath}`);
 }
