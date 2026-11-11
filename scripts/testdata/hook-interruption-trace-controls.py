@@ -518,11 +518,44 @@ def controls(output, workspace):
 
 
 def re_search_fd3(trace):
-    import re
-    return re.search(rb"dup2\(0x[0-9a-f]+, 0x3\)\s+=\s+0x3", trace) is not None
+    # strace 6.8 prints the return on the call line. strace 6.19 splits it:
+    # "dup2(0x5, 0x3 <unfinished ...>" then "<... dup2 resumed>) = 0x3".
+    if re.search(rb"dup2\(0x[0-9a-f]+, 0x3\)\s+=\s+0x3", trace) is not None:
+        return True
+    return re.search(
+        rb"dup2\(0x[0-9a-f]+, 0x3 <unfinished \.\.\.>\n"
+        rb"[^\n]*<\.\.\. dup2 resumed>\)\s+=\s+0x3",
+        trace,
+    ) is not None
+
+
+def assert_fd3_dup2_contract():
+    single = b"12 1.0 dup2(0x5, 0x3) = 0x3 <0.01>\n"
+    split = (
+        b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317919 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n"
+    )
+    if not re_search_fd3(single) or not re_search_fd3(b"dup2(0xa, 0x3) = 0x3"):
+        raise AssertionError("single-line dup2 onto FD3 rejected")
+    if not re_search_fd3(split):
+        raise AssertionError("split-line dup2 onto FD3 rejected")
+    rejected = (
+        b"dup2(0x5, 0x3) = -1 EBADF (Bad file descriptor)\n",
+        b"dup2(0x5, 0x4) = 0x4\n",
+        b"dup2(0x5, 0x4 <unfinished ...>\n<... dup2 resumed>) = 0x4\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... dup2 resumed>) = -1 EINVAL (Invalid argument)\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... dup2 resumed>) = 0x5\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n<... wait4 resumed>) = 0x3\n",
+        b"<... dup2 resumed>) = 0x3 <0.000024>\n",
+        b"dup2(0x5, 0x3 <unfinished ...>\n",
+    )
+    for trace in rejected:
+        if re_search_fd3(trace):
+            raise AssertionError("non-FD3 dup2 accepted: " + trace.decode())
 
 
 def selftest():
+    assert_fd3_dup2_contract()
     api = runpy.run_path(str(DRIVER), run_name="portable_trace_support")
     assert len(api["STREAMS"]) == 10
     assert sum(api["SLOTS"].values()) == 17473536
