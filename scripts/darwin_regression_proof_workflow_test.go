@@ -28,9 +28,15 @@ func TestCIRequiresNativeDarwinRegressionProof(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, darwin, "Darwin partition", []string{`"${LOPPER_PROOF_GO}" run ./tools/regressionproof`, "--target-os darwin", `--body-file "$PR_BODY_FILE"`, `--base-sha "$PR_BASE_SHA"`})
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Require every verification job")
 	for _, result := range []string{"success", "failure", "cancelled", "skipped", ""} {
-		output, err := runShellCommand(t.TempDir(), gate.Run, map[string]string{"CHECKS_RESULT": "success", "TESTS_RESULT": "success", "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": result})
+		output, err := runShellCommand(t.TempDir(), gate.Run, map[string]string{"CHECKS_RESULT": "success", "TESTS_RESULT": "success", "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": result, "WINDOWS_ACTION_PROOF_RESULT": "success"})
 		if (err == nil) != (result == "success") {
 			t.Fatalf("Darwin result %q: %v\n%s", result, err, output)
+		}
+	}
+	for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+		output, err := runShellCommand(t.TempDir(), gate.Run, map[string]string{"CHECKS_RESULT": "success", "TESTS_RESULT": "success", "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success", "WINDOWS_ACTION_PROOF_RESULT": result})
+		if err == nil {
+			t.Fatalf("Windows action provider result %q unexpectedly passed aggregate verification\n%s", result, output)
 		}
 	}
 }
