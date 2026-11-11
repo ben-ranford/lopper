@@ -676,6 +676,7 @@ func verifyOriginalControl(o options, c custody) error {
 	}
 	return originalAuthorityDeadline(j, time.Now())
 }
+
 // originalCleanupReserve matches the owner's cleanupReserve. A join or
 // recovery observation at or after this bound is no longer original authority.
 const originalCleanupReserve = 90 * time.Second

@@ -27,6 +27,7 @@ import (
 )
 
 const commandAllowance = 5 * time.Second
+
 // cleanupReserve is the single post-subject teardown bound. The finally
 // helper repeats custody checks and two unfiltered SMB open-file scans
 // before it may remove the share. On hosted Windows runners that work
