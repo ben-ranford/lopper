@@ -2,6 +2,54 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.10](https://github.com/ben-ranford/lopper/compare/v1.8.9...v1.8.10) (2026-11-11)
+
+* Source builds require Go `1.27.4` or newer (previously `1.27.1`).
+
+
+### Bug Fixes
+
+* **action:** stream floating release responses ([#1854](https://github.com/ben-ranford/lopper/issues/1854)) ([5ec93c6](https://github.com/ben-ranford/lopper/commit/5ec93c68411f38067594c0be3ba2fb89ab2fe223))
+* **action:** support Windows runners in the first-party GitHub Action ([#1880](https://github.com/ben-ranford/lopper/issues/1880)) ([c43feb1](https://github.com/ben-ranford/lopper/commit/c43feb1f88bbe600995338674619874338260ebf))
+* **advisory:** bound cumulative snapshot metadata retention ([#1828](https://github.com/ben-ranford/lopper/issues/1828)) ([796eb3f](https://github.com/ben-ranford/lopper/commit/796eb3fab765356e434a21ecab197d2187710f00))
+* **analysis:** reuse captured Maven manifest evidence ([#1864](https://github.com/ben-ranford/lopper/issues/1864)) ([110df86](https://github.com/ben-ranford/lopper/commit/110df8610ccf4ff6d2e4150727245cefc71e8b02))
+* **ci:** accept strace 6.19 split dup2 lines ([#1910](https://github.com/ben-ranford/lopper/issues/1910)) ([0a0e12f](https://github.com/ben-ranford/lopper/commit/0a0e12f5d13825d401a5340e38f95419e7a13202))
+* **ci:** bound a force-pushed synchronize predecessor ([#1911](https://github.com/ben-ranford/lopper/issues/1911)) ([c01c781](https://github.com/ben-ranford/lopper/commit/c01c7815132a0343237899d625f794556b1edf33))
+* **ci:** compare benchmark initialization edges accurately ([#1837](https://github.com/ben-ranford/lopper/issues/1837)) ([9e59ac3](https://github.com/ben-ranford/lopper/commit/9e59ac375f5f38f72184bdcc0d130e6ed5c4c1d5))
+* **ci:** give native Windows teardown time to finish its scans ([#1907](https://github.com/ben-ranford/lopper/issues/1907)) ([2ac39e7](https://github.com/ben-ranford/lopper/commit/2ac39e7e5a4a3b8f1e8f1ceeee17a3b02a56fc02))
+* **ci:** pause instead of failing on queue CI audit refusals ([#1886](https://github.com/ben-ranford/lopper/issues/1886)) ([0de553b](https://github.com/ben-ranford/lopper/commit/0de553b1b022e76e744640fc39e0dbed15ea3e7c))
+* **ci:** prove regression tests on matching platforms ([#1851](https://github.com/ben-ranford/lopper/issues/1851)) ([fae1832](https://github.com/ben-ranford/lopper/commit/fae1832c103181595e2f5163bae1f3f6a5516ffb))
+* **ci:** reap failed downloads and parallelise isolated fixtures ([#1893](https://github.com/ben-ranford/lopper/issues/1893)) ([b9f409a](https://github.com/ben-ranford/lopper/commit/b9f409ac9dd52ff2e4ea6572e78ed638ead01ab8))
+* **ci:** separate stacked gate subjects from trusted policy ([#1840](https://github.com/ben-ranford/lopper/issues/1840)) ([8cc2635](https://github.com/ben-ranford/lopper/commit/8cc2635a65e5ea12d343f7ea3e544b0c8694d2ff))
+* **cli:** preserve explicit flag terminators ([#1829](https://github.com/ben-ranford/lopper/issues/1829)) ([055ceb5](https://github.com/ben-ranford/lopper/commit/055ceb55555fd3a340bd3bbb668accd0d9d5e612))
+* **codemod:** quote patch paths to prevent header injection ([#1827](https://github.com/ben-ranford/lopper/issues/1827)) ([ac3ab58](https://github.com/ben-ranford/lopper/commit/ac3ab58ac67a924f4022a440c0299f3a1b148aae))
+* **deps:** keep VSCE test expectations aligned with Renovate ([#1846](https://github.com/ben-ranford/lopper/issues/1846)) ([a7e3a3c](https://github.com/ben-ranford/lopper/commit/a7e3a3c85ee4eb105812848e9bf14b4814ecc2cf))
+* **deps:** update Go toolchain to 1.27.4 for GO-2026-6859 ([#1906](https://github.com/ben-ranford/lopper/issues/1906)) ([8a3a014](https://github.com/ben-ranford/lopper/commit/8a3a014408a5b8ad1c8587924447a23e5125d730))
+* **dotnet:** parse F# open type targets correctly ([#1843](https://github.com/ben-ranford/lopper/issues/1843)) ([5c8d0c5](https://github.com/ben-ranford/lopper/commit/5c8d0c536db845ed89bc8a9fc45227441a15cfdf))
+* **featureflags:** validate duplicate catalog fallback entries ([#1849](https://github.com/ben-ranford/lopper/issues/1849)) ([8ef5c3b](https://github.com/ben-ranford/lopper/commit/8ef5c3bdddbb33014043f04a3649f852068da6ca))
+* **mcp:** reject trailing data in JSON-RPC frames ([#1826](https://github.com/ben-ranford/lopper/issues/1826)) ([e3e67e4](https://github.com/ben-ranford/lopper/commit/e3e67e4116103384587324a3a8ef270f8d286270))
+* **renovate:** restore explicit reviewed preset policy ([#1874](https://github.com/ben-ranford/lopper/issues/1874)) ([19f4992](https://github.com/ben-ranford/lopper/commit/19f49922da1891648bd0079f51273c2217e045c3))
+* **report:** preserve filename semantics in SARIF locations ([#1836](https://github.com/ben-ranford/lopper/issues/1836)) ([35ae16d](https://github.com/ben-ranford/lopper/commit/35ae16d8c9d326c42950df43c572f927b157e2a9))
+* **report:** stabilize duplicate dependency ordering in CSV and SPDX ([#1842](https://github.com/ben-ranford/lopper/issues/1842)) ([27eee41](https://github.com/ben-ranford/lopper/commit/27eee41dd7f4102829ea5d7b5c2de03b5fe628de))
+* **scripts:** diagnose empty action-pinning fixture output ([#1853](https://github.com/ben-ranford/lopper/issues/1853)) ([dea91af](https://github.com/ben-ranford/lopper/commit/dea91af8349b233647e109e9015f87e297b4aa09))
+* **ui:** preserve command feedback during summary refresh ([#1856](https://github.com/ben-ranford/lopper/issues/1856)) ([f5e79db](https://github.com/ben-ranford/lopper/commit/f5e79db7a33d053a868ba1fe211268c125d6f132))
+* **ui:** prevent dependency option injection in codemod hints ([#1841](https://github.com/ben-ranford/lopper/issues/1841)) ([a4e0821](https://github.com/ben-ranford/lopper/commit/a4e08216b11aaf660079f49ea762d56efcf5d6db))
+* **ui:** prevent overflow in summary pagination ([#1848](https://github.com/ben-ranford/lopper/issues/1848)) ([c07e78e](https://github.com/ben-ranford/lopper/commit/c07e78e1172f4437b9c5fc16f732025dd7c921fd))
+* **ui:** reject uncancellable terminal input before raw mode ([#1877](https://github.com/ben-ranford/lopper/issues/1877)) ([a0713fc](https://github.com/ben-ranford/lopper/commit/a0713fcb5685497151a7d1b22f19afde17255c9c))
+* **vscode:** bound Gradle reads during Android inference ([#1839](https://github.com/ben-ranford/lopper/issues/1839)) ([9d5628e](https://github.com/ben-ranford/lopper/commit/9d5628e0a5e13fc0a6a3cc93681434c416aa9545))
+
+
+### Performance Improvements
+
+* **ci:** parallelise isolated fixtures and wait for lint lock ([#1845](https://github.com/ben-ranford/lopper/issues/1845)) ([a2fc9d3](https://github.com/ben-ranford/lopper/commit/a2fc9d3ed8536c3fd91389f6ecfe1c810b5c598f))
+* **ci:** reuse coverage and parallelise benchmark fixtures ([#1892](https://github.com/ben-ranford/lopper/issues/1892)) ([7cea7ab](https://github.com/ben-ranford/lopper/commit/7cea7ab565d63950ef0660d7e1b112882bc83471))
+
+
+### Code Refactoring
+
+* **app:** centralise Git changed-file collection and NUL parsing ([#1862](https://github.com/ben-ranford/lopper/issues/1862)) ([6172d80](https://github.com/ben-ranford/lopper/commit/6172d8080e486944e20835de19d32c4672c6887d))
+* **jvm:** share bounded Maven POM parsing ([#1850](https://github.com/ben-ranford/lopper/issues/1850)) ([cbc13c2](https://github.com/ben-ranford/lopper/commit/cbc13c2409750c691df9fb0ee902b3634ce01a8e))
+
 ## [1.8.9](https://github.com/ben-ranford/lopper/compare/v1.8.8...v1.8.9) (2026-10-05)
 
 
