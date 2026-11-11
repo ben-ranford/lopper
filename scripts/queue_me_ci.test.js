@@ -7,10 +7,10 @@ const { verifyCI, checkReadiness, isWaiting, assertUnchangedCI } = require('./qu
 const { HEAD, BASE, MERGE, API, WEB, CREATED, CI_ID, WINDOWS_ID, ARTIFACT_ID, PATHS, JOBS, run, jobsFor, harness } = require('./testdata/queue_waiting/ci_fixture.cjs');
 require('./testdata/queue_waiting/rerun_locator.cjs');
 
-test('binds all 14 CI jobs, one artifact locator and Windows runtime to exact source and PR pair', async () => {
+test('binds all 15 CI jobs, one artifact locator and Windows runtime to exact source and PR pair', async () => {
   const fixture = harness();
   const evidence = await verifyCI(fixture.input);
-  assert.equal(evidence.workflows[0].jobs.length, 15);
+  assert.equal(evidence.workflows[0].jobs.length, 16);
   assert.equal(evidence.workflows[0].artifactId, ARTIFACT_ID);
   assert.equal(Object.hasOwn(evidence.workflows[1], 'artifactId'), false);
   assert.equal(evidence.workflows[1].jobs[0].name, 'runtime-cancellation');
@@ -162,7 +162,7 @@ test('historical locators cannot supply current artifact IDs or conceal malforme
   }], { runs: [{ ...run(CI_ID), run_attempt: 2 }, run(WINDOWS_ID)] });
   const evidence = await verifyCI(fixtureFor('suppression-artifact-123').input);
   assert.equal(evidence.workflows[0].artifactId, ARTIFACT_ID);
-  assert.equal(evidence.workflows[0].jobs.length, 15);
+  assert.equal(evidence.workflows[0].jobs.length, 16);
   assert.equal(evidence.workflows[0].jobs.some((job) => job.id === 99000), false);
   await assert.rejects(verifyCI(fixtureFor('suppression-artifact-01').input), /malformed suppression artifact locator/);
 });

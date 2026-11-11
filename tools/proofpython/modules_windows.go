@@ -58,7 +58,7 @@ func (p *heldProcess) bind(executable string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(name, executable) {
+	if !sameCanonicalPath(trimDevicePrefix(name), executable) {
 		return errors.New("owned probe image mismatch")
 	}
 	return p.alive()
@@ -80,6 +80,11 @@ func (p *heldProcess) alive() error {
 		return errors.New("owned probe creation identity changed")
 	}
 	return nil
+}
+
+func trimDevicePrefix(path string) string {
+	path = strings.TrimPrefix(path, `\\?\`)
+	return strings.TrimPrefix(path, `\??\`)
 }
 
 func modulePath(process, module windows.Handle) (string, error) {

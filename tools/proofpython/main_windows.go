@@ -151,7 +151,15 @@ func joinedProof(ctx context.Context, args []string) error {
 		return err
 	}
 	goPath := args[2]
-	if !filepath.IsAbs(goPath) || filepath.Base(goPath) != "go.exe" || filepath.Dir(goPath) != filepath.Dir(expected.Root) {
+	goDir, err := finalDirectory(filepath.Dir(goPath))
+	if err != nil {
+		return err
+	}
+	rootDir, err := finalDirectory(filepath.Dir(expected.Root))
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(goPath) || filepath.Base(goPath) != "go.exe" || !strings.EqualFold(goDir, rootDir) {
 		return errors.New("captured Go does not match provider bin")
 	}
 	if err := authenticateFileContext(ctx, goPath, args[3]); err != nil {

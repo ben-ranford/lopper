@@ -145,8 +145,7 @@ func runShellcheckInstallStep(script string, mocks shellcheckInstallMocks, failS
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command(bashPath, "-e", "-c", script)
-	cmd.Env = []string{
+	cmdEnv := []string{
 		"PATH=" + mocks.binPath,
 		"SHELLCHECK_INSTALL_LOG=" + mocks.logPath,
 		"SHELLCHECK_MOCK_BIN=" + mocks.binPath,
@@ -155,13 +154,22 @@ func runShellcheckInstallStep(script string, mocks shellcheckInstallMocks, failS
 		"SHELLCHECK_CHMOD=" + chmodPath,
 	}
 	if failSudo {
-		cmd.Env = append(cmd.Env, "SHELLCHECK_SUDO_FAIL=1")
+		cmdEnv = append(cmdEnv, "SHELLCHECK_SUDO_FAIL=1")
 	}
 	if failUpdate {
-		cmd.Env = append(cmd.Env, "SHELLCHECK_FAIL_UPDATE=1")
+		cmdEnv = append(cmdEnv, "SHELLCHECK_FAIL_UPDATE=1")
 	}
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	var output []byte
+	var runErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		cmd := exec.Command(bashPath, "-e", "-c", script)
+		cmd.Env = append([]string{}, cmdEnv...)
+		output, runErr = cmd.CombinedOutput()
+		if runErr == nil || !strings.Contains(string(output), "Text file busy") {
+			break
+		}
+	}
+	return string(output), runErr
 }
 
 func readShellcheckInstallLog(t *testing.T, path string) string {

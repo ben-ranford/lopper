@@ -207,6 +207,10 @@ Lopper ships the `Scan with Lopper` composite GitHub Action at the repository ro
 
 Pin both the action ref and the `version` input for fully reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; when the workflow references a floating action tag such as `v1` or `v1.7`, it resolves the newest stable Lopper release in that series; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
 
+The action supports Linux, macOS and Windows runners on amd64 and arm64. On Windows it uses Git for Windows Bash, downloads the published ZIP, and installs `lopper.exe`; the analysis step invokes that exact installed binary. Self-hosted Windows runners need the standard Git for Windows utilities, including `unzip` and `cygpath`. Floating versions also require Python 3 (`python3`, or `python` on Windows). Paths containing spaces are supported.
+
+The required hosted `windows-2025` proof job verifies the floating and fixed Windows installer paths against published releases. Before setup-python or subject Go commands, it authenticates the pinned trusted Python provider and requires the runner's completed CPython 3.13.16 x64 cache entry. The provider then builds and joins each permitted proof process to its owner, checks provider custody before and after, and runs the Windows installer tests plus the PR regression proof. This is a hosted native Windows check; local cross-compilation does not replace it.
+
 The standard release workflow publishes the semver action ref and updates the floating action refs with every stable release.
 
 Preview action modes are explicitly gated:
@@ -397,7 +401,7 @@ jobs:
 - Go files within `testdata`, `fixtures`, `test-fixtures` and `__fixtures__` directories belong to fixture scope, shared with the source-size report, and do not enter the production function index. Their detector records are still validated and retained when connecting clone groups: two production functions linked through fixture members still form a blocking production pair. Fixture files remain visible in the report's fixture source counts.
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
-- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, and `windows-latest`.
+- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, `windows-latest`, and `windows-2025`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
