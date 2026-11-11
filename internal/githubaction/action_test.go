@@ -106,6 +106,7 @@ func TestActionMetadataDefinesCompositeWrapper(t *testing.T) {
 	requireOutput(t, metadata, "resolved-version", "${{ steps.install.outputs.resolved-version }}")
 	requireScriptStep(t, metadata, "install", "install-lopper.sh")
 	requireScriptStep(t, metadata, "analyse", "run-lopper.sh")
+	requireStepEnv(t, metadata, "analyse", "LOPPER_BINARY", "${{ steps.install.outputs.binary-path }}")
 	requireStepEnv(t, metadata, "analyse", "INPUT_SCOPE_MODE", "${{ inputs.scope-mode }}")
 }
 

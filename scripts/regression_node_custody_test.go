@@ -166,10 +166,10 @@ func TestRegressionNodeConsumersClearInheritedLoaderEnvironment(t *testing.T) {
 			assertInheritedLoaderEnvironmentCleared(t, jobName, step)
 		}
 	}
-	// verify-checks: one verifier and one proof; regression-proof-windows: two verifiers and four consumers;
-	// regression-proof-darwin: one verifier and two consumers.
-	if consumers != 11 {
-		t.Fatalf("expected 11 authenticated runtime consumers, got %d", consumers)
+	// Linux, Windows, and Darwin regression proof consumers account for 11.
+	// action-windows-provider-proof adds its restricted runtime provision and verifier.
+	if consumers != 13 {
+		t.Fatalf("expected 13 authenticated runtime consumers, got %d", consumers)
 	}
 }
 
