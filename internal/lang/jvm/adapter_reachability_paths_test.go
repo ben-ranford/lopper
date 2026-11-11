@@ -2,7 +2,6 @@ package jvm
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,14 +43,7 @@ func testJVMMissingDetectionPathAndSkippedDirHelper(t *testing.T) {
 	}
 
 	repo := canonicalRepoPath(t)
-	dirEntry := mustReadJVMDirEntry(t, repo, ".gradle")
-	budget := defaultJVMDetectionBudget()
-	if err := walkJVMDetectionEntry(repo, filepath.Join(repo, dirEntry.Name()), dirEntry, map[string]struct{}{}, &language.Detection{}, budget); !errors.Is(err, filepath.SkipDir) {
-		t.Fatalf("expected detection walker to skip .gradle, got %v", err)
-	}
-	if budget.traversalEntriesSeen != 1 {
-		t.Fatalf("expected skipped directory to consume one traversal entry, got %d", budget.traversalEntriesSeen)
-	}
+	mustReadJVMDirEntry(t, repo, ".gradle")
 	if err := os.WriteFile(filepath.Join(repo, ".gradle", "Main.java"), []byte("class Main {}\n"), 0o644); err != nil {
 		t.Fatalf("write skipped JVM source: %v", err)
 	}

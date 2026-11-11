@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestJVMDetectionCancellationAfterRootSignals(t *testing.T) {
@@ -31,13 +32,13 @@ func TestJVMDetectionCancellationDuringDirectoryRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	detection := language.Detection{}
-	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &detection, defaultJVMDetectionBudget())
-	walker.openDirectory = func(root jvmDetectionRoot, path string) (jvmDetectionDirectory, error) {
-		directory, err := openJVMDetectionDirectory(root, path)
+	walker := newJVMDetectionTestWalker(repo, map[string]struct{}{}, &detection, defaultJVMDetectionBudget())
+	walker.openDirectory = func(root safeio.Root, path string) (safeio.ReadDirFile, error) {
+		directory, err := safeio.OpenPinnedDirectory(root, path)
 		if err != nil {
 			return nil, err
 		}
-		return &cancelingDetectionDirectory{jvmDetectionDirectory: directory, cancel: cancel}, nil
+		return &cancelingDetectionDirectory{ReadDirFile: directory, cancel: cancel}, nil
 	}
 	if err := walker.walk(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
@@ -48,12 +49,12 @@ func TestJVMDetectionCancellationDuringDirectoryRead(t *testing.T) {
 }
 
 type cancelingDetectionDirectory struct {
-	jvmDetectionDirectory
+	safeio.ReadDirFile
 	cancel context.CancelFunc
 }
 
 func (d *cancelingDetectionDirectory) ReadDir(count int) ([]fs.DirEntry, error) {
-	entries, err := d.jvmDetectionDirectory.ReadDir(count)
+	entries, err := d.ReadDirFile.ReadDir(count)
 	d.cancel()
 	return entries, err
 }
