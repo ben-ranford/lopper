@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '17 4 * * 3'
 
+# Jobs declare their own token permissions. Keep this default empty so a
+# new job cannot inherit a broader repository token.
+permissions: {}
+
 jobs:
   discover:
     runs-on: ubuntu-latest

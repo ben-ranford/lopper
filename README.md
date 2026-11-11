@@ -2,6 +2,7 @@
 
 [![Release](https://github.com/ben-ranford/lopper/actions/workflows/release.yml/badge.svg)](https://github.com/ben-ranford/lopper/actions/workflows/release.yml)
 [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ben-ranford_lopper&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ben-ranford_lopper)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ben-ranford/lopper/badge)](https://scorecard.dev/viewer/?uri=github.com/ben-ranford/lopper)
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
 Lopper shows where a repository declares dependencies it barely uses.
@@ -101,4 +102,6 @@ Use `lopper --help` for the current adapter IDs and options. `--language auto` s
 - [SARIF code scanning](docs/sarif-code-scanning.md)
 - [Report schema](docs/report-schema.md)
 - [Language adapter architecture](docs/extensibility.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 - [Contributing](CONTRIBUTING.md)
