@@ -19,6 +19,9 @@ if len(sys.argv) < 2 or sys.argv[1] not in ("target", "sentinel"):
 
 WORKSPACE_ERROR = "privacy workspace custody"
 CONTROL_TRUTH = "control-truth.json"
+DIRECTORY_OPEN = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+if hasattr(os, "O_CLOEXEC"):
+    DIRECTORY_OPEN |= os.O_CLOEXEC
 PRIVACY_PREFIX = "HOOK_TRACE_PRIVACY_SENTINEL_"
 PYTHON = "/usr/bin/python3"
 
@@ -472,12 +475,12 @@ def write_control_truth(workspace, data):
     if os.fspath(workspace) != os.path.join(temp, name):
         raise ValueError(WORKSPACE_ERROR)
     try:
-        parent = os.open(temp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        parent = os.open(temp, DIRECTORY_OPEN)
     except OSError as error:
         raise ValueError(WORKSPACE_ERROR) from error
     try:
         try:
-            directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            directory = os.open(name, DIRECTORY_OPEN, dir_fd=parent)
         except OSError as error:
             raise ValueError(WORKSPACE_ERROR) from error
         try:
