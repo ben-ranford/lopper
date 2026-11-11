@@ -517,16 +517,48 @@ def controls(output, workspace):
     return status
 
 
+_SYSCALL_PREFIX = re.compile(rb"^(?:\[pid\s+(\d+)\]|(\d+))\s+\d+\.\d+\s+(.*)$")
+_UNFINISHED_FD3 = re.compile(rb"dup2\(0x[0-9a-f]+, 0x3 <unfinished \.\.\.>$")
+_RESUMED_DUP2 = re.compile(rb"<\.\.\. dup2 resumed>\)\s+=\s+(\S+)")
+
+
 def re_search_fd3(trace):
     # strace 6.8 prints the return on the call line. strace 6.19 splits it:
     # "dup2(0x5, 0x3 <unfinished ...>" then "<... dup2 resumed>) = 0x3".
+    # Another task can emit a line between that pair; pair those by PID.
     if re.search(rb"dup2\(0x[0-9a-f]+, 0x3\)\s+=\s+0x3", trace) is not None:
         return True
-    return re.search(
+    if re.search(
         rb"dup2\(0x[0-9a-f]+, 0x3 <unfinished \.\.\.>\n"
         rb"[^\n]*<\.\.\. dup2 resumed>\)\s+=\s+0x3",
         trace,
-    ) is not None
+    ) is not None:
+        return True
+    return fd3_dup2_resumes_across_lines(trace)
+
+
+def fd3_resume_state(pending, pid, body):
+    if _UNFINISHED_FD3.fullmatch(body):
+        pending[pid] = True
+        return False
+    if body.startswith(b"dup2(") and b"<unfinished ...>" in body:
+        pending[pid] = False
+        return False
+    resumed = _RESUMED_DUP2.match(body)
+    if resumed is None:
+        return False
+    matched = pending.get(pid) is True and resumed.group(1) == b"0x3"
+    pending.pop(pid, None)
+    return matched
+
+
+def fd3_dup2_resumes_across_lines(trace):
+    pending = {}
+    for line in trace.splitlines():
+        parsed = _SYSCALL_PREFIX.match(line)
+        if parsed is not None and fd3_resume_state(pending, parsed.group(1) or parsed.group(2), parsed.group(3)):
+            return True
+    return False
 
 
 def assert_fd3_dup2_contract():
@@ -535,9 +567,14 @@ def assert_fd3_dup2_contract():
         b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
         b"317919 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n"
     )
+    interleaved = (
+        b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1794362079.615590 close(0x4) = 0\n"
+        b"[pid 317919] 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n"
+    )
     if not re_search_fd3(single) or not re_search_fd3(b"dup2(0xa, 0x3) = 0x3"):
         raise AssertionError("single-line dup2 onto FD3 rejected")
-    if not re_search_fd3(split):
+    if not re_search_fd3(split) or not re_search_fd3(interleaved):
         raise AssertionError("split-line dup2 onto FD3 rejected")
     rejected = (
         b"dup2(0x5, 0x3) = -1 EBADF (Bad file descriptor)\n",
@@ -548,6 +585,15 @@ def assert_fd3_dup2_contract():
         b"dup2(0x5, 0x3 <unfinished ...>\n<... wait4 resumed>) = 0x3\n",
         b"<... dup2 resumed>) = 0x3 <0.000024>\n",
         b"dup2(0x5, 0x3 <unfinished ...>\n",
+        b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317920 1.2 <... dup2 resumed>) = 0x3 <0.000024>\n",
+        b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317919 1.2 <... dup2 resumed>) = 0x5\n",
+        b"317919 1.0 dup2(0x5, 0x4 <unfinished ...>\n"
+        b"317920 1.1 close(0x4) = 0\n"
+        b"317919 1.2 <... dup2 resumed>) = 0x4\n",
     )
     for trace in rejected:
         if re_search_fd3(trace):

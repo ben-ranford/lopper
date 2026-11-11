@@ -39,6 +39,9 @@ accepted = (
     b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
     b"317919 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n",
     b"dup2(0x5, 0x3 <unfinished ...>\n<... dup2 resumed>) = 0x3 <0.000024>\n",
+    b"317919 1794362079.615578 dup2(0x5, 0x3 <unfinished ...>\n"
+    b"317920 1794362079.615590 close(0x4) = 0\n"
+    b"[pid 317919] 1794362079.615610 <... dup2 resumed>) = 0x3 <0.000024>\n",
 )
 rejected = (
     b"dup2(0x5, 0x3) = -1 EBADF (Bad file descriptor)\n",
@@ -49,6 +52,15 @@ rejected = (
     b"dup2(0x5, 0x3 <unfinished ...>\n<... wait4 resumed>) = 0x3\n",
     b"<... dup2 resumed>) = 0x3 <0.000024>\n",
     b"dup2(0x5, 0x3 <unfinished ...>\n",
+    b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+    b"317920 1.1 close(0x4) = 0\n"
+    b"317920 1.2 <... dup2 resumed>) = 0x3 <0.000024>\n",
+    b"317919 1.0 dup2(0x5, 0x3 <unfinished ...>\n"
+    b"317920 1.1 close(0x4) = 0\n"
+    b"317919 1.2 <... dup2 resumed>) = 0x5\n",
+    b"317919 1.0 dup2(0x5, 0x4 <unfinished ...>\n"
+    b"317920 1.1 close(0x4) = 0\n"
+    b"317919 1.2 <... dup2 resumed>) = 0x4\n",
 )
 failures = []
 for trace in accepted:
