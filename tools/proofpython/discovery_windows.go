@@ -21,6 +21,11 @@ done
 // The literal program is a location diagnostic, not an accepted user command.
 // It uses the existing restricted native proof PATH and no shell startup state.
 func verifyDiscovery(ctx context.Context, bin string) error {
+	resolved, err := finalDirectory(bin)
+	if err != nil {
+		return err
+	}
+	bin = resolved
 	for _, tool := range []string{proofBash, proofCygpath} {
 		if err := requireAMD64File(tool); err != nil {
 			return err

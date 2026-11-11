@@ -1,6 +1,9 @@
 package scripts
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCIWorkflowCancelsSupersededRuns(t *testing.T) {
 	t.Parallel()
@@ -40,7 +43,7 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 	job := workflowJobByName(t, jobs, aggregate)
 	needs := workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"}
 	if aggregate == "verify" {
-		needs = append(needs, "regression-proof-windows", "regression-proof-darwin", "native-windows-hook-cleanup")
+		needs = append(needs, "regression-proof-windows", "regression-proof-darwin", "native-windows-hook-cleanup", "action-windows-provider-proof")
 	} else {
 		needs = append(needs, "native-windows-hook-cleanup")
 	}
@@ -62,6 +65,7 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 	if aggregate == "verify" {
 		env["WINDOWS_PROOF_RESULT"] = "${{ needs.regression-proof-windows.result }}"
 		env["DARWIN_PROOF_RESULT"] = "${{ needs.regression-proof-darwin.result }}"
+		env["WINDOWS_ACTION_PROOF_RESULT"] = "${{ needs.action-windows-provider-proof.result }}"
 	}
 	env["NATIVE_WINDOWS_CLEANUP_RESULT"] = "${{ needs.native-windows-hook-cleanup.result }}"
 	assertWorkflowStepEnv(t, gate, aggregate, env)
@@ -70,12 +74,19 @@ func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConf
 
 func assertCIVerificationOutcomes(t *testing.T, script string) {
 	t.Helper()
+	actions := []string{"success"}
+	if strings.Contains(script, "WINDOWS_ACTION_PROOF_RESULT") {
+		actions = []string{"success", "failure", "cancelled", "skipped", ""}
+	}
 	for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
 		for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
 			for _, native := range []string{"success", "failure", "cancelled", "skipped", ""} {
-				output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success", "NATIVE_WINDOWS_CLEANUP_RESULT": native})
-				if (err == nil) != (checks == "success" && tests == "success" && native == "success") {
-					t.Fatalf("checks=%q tests=%q native=%q: %v\n%s", checks, tests, native, err, output)
+				for _, action := range actions {
+					output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests, "WINDOWS_PROOF_RESULT": "success", "DARWIN_PROOF_RESULT": "success", "NATIVE_WINDOWS_CLEANUP_RESULT": native, "WINDOWS_ACTION_PROOF_RESULT": action})
+					passed := checks == "success" && tests == "success" && native == "success" && action == "success"
+					if (err == nil) != passed {
+						t.Fatalf("checks=%q tests=%q native=%q action=%q: %v\n%s", checks, tests, native, action, err, output)
+					}
 				}
 			}
 		}

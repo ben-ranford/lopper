@@ -7,7 +7,7 @@ def load_workflow(path)
 	YAML.safe_load(File.read(path), aliases: true, filename: path)
 end
 
-allowed_runners = (ENV["APPROVED_GITHUB_RUNNERS"] || "ubuntu-latest,ubuntu-24.04-arm,macos-26,macos-26-intel,windows-latest")
+allowed_runners = (ENV["APPROVED_GITHUB_RUNNERS"] || "ubuntu-latest,ubuntu-24.04-arm,macos-26,macos-26-intel,windows-latest,windows-2025")
 	.split(",")
 	.map(&:strip)
 	.reject(&:empty?)
