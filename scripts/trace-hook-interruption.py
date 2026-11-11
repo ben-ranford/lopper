@@ -42,6 +42,7 @@ SELECTOR = "^TestHooksInstallInterruptCleansPreflightAndRollsBackState$"
 SHOW_PARENTS = "--format=%P"
 MERGE_PARENTS = "checkout not actual base/head merge"
 CANDIDATE_TREE = "merge contains source outside the exact candidate tree"
+UNREACHABLE_PREDECESSOR = "unreachable synchronize predecessor"
 TRACE_NAMES = {
     "exit0": "exit0.trace",
     "exit23": "exit23.trace",
@@ -377,15 +378,22 @@ def raw_facts(directory, slot, width):
             "signed_group_targets": "UNKNOWN_WITHOUT_WITNESSED_ABI_AND_GENERATION"}
 
 
-def git(root, *arguments):
+def git_command_env():
     env = dict(os.environ)
     for key in tuple(env):
         if key.startswith("GIT_"):
             del env[key]
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def git(root, *arguments, quiet=False):
     process = subprocess.Popen(["git", "--no-pager", "-c", "core.fsmonitor=false",
-                                "-c", "core.hooksPath=/dev/null", "-C", str(root), *arguments], env=env, stdout=subprocess.PIPE)
+                                "-c", "core.hooksPath=/dev/null", "-C", str(root), *arguments],
+                               env=git_command_env(), stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL if quiet else None)
     retained = bytearray()
     overflow = False
     try:
@@ -509,13 +517,70 @@ def original_binding(root, head, source):
     return recorded, digest(installer)
 
 
+def commit_exists(root, sha):
+    if not isinstance(sha, str) or COMMIT_SHA.fullmatch(sha) is None:
+        return False
+    try:
+        git(root, "cat-file", "-e", sha + "^{commit}", quiet=True)
+    except ValueError:
+        return False
+    return True
+
+
+def fetch_commit(root, sha):
+    command = ["git", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+               "-C", str(root), "fetch", "--no-tags", "--no-recurse-submodules", "origin", sha]
+    try:
+        completed = subprocess.run(command, env=git_command_env(), stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0 and commit_exists(root, sha)
+
+
+def base_merge_anchor(root, event, head):
+    pull = event.get("pull_request")
+    base = pull.get("base") if isinstance(pull, dict) else None
+    if not isinstance(base, dict):
+        raise ValueError(UNREACHABLE_PREDECESSOR)
+    tip = base.get("sha")
+    if not commit_exists(root, tip):
+        ref = base.get("ref")
+        if not isinstance(ref, str) or re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", ref) is None or ".." in ref.split("/"):
+            raise ValueError(UNREACHABLE_PREDECESSOR)
+        try:
+            tip = git(root, "rev-parse", "--verify", f"refs/remotes/origin/{ref}^{{commit}}", quiet=True).decode().strip()
+        except ValueError:
+            raise ValueError(UNREACHABLE_PREDECESSOR) from None
+    if not commit_exists(root, tip) or not commit_exists(root, head):
+        raise ValueError(UNREACHABLE_PREDECESSOR)
+    try:
+        anchor = git(root, "merge-base", tip, head, quiet=True).decode().strip()
+    except ValueError:
+        raise ValueError(UNREACHABLE_PREDECESSOR) from None
+    if not commit_exists(root, anchor):
+        raise ValueError(UNREACHABLE_PREDECESSOR)
+    return anchor
+
+
+def synchronize_anchor(root, before, head, event):
+    if commit_exists(root, before) or fetch_commit(root, before):
+        return before
+    return base_merge_anchor(root, event, head)
+
+
 def synchronize_binding(root, event, head):
     if event["action"] != "synchronize":
         return False
     before = event.get("before")
     if not isinstance(before, str) or COMMIT_SHA.fullmatch(before) is None or before == head or event.get("after") != head:
         raise ValueError("missing or identical synchronize context")
-    return bool(git(root, "diff", "--name-only", before, head, "--", *SOURCE_PATHS).strip())
+    anchor = synchronize_anchor(root, before, head, event)
+    try:
+        changed = git(root, "diff", "--name-only", anchor, head, "--", *SOURCE_PATHS, quiet=True)
+    except ValueError:
+        raise ValueError(UNREACHABLE_PREDECESSOR) from None
+    return bool(changed.strip())
 
 
 def validate_binding(root):
@@ -786,8 +851,92 @@ def selftest():
         else:
             os.environ["TRACE_DRIVER_SHA256"] = prior_pin
     assert_moved_base_merge()
+    assert_synchronize_predecessor()
     print("portable support checks PASS; native controls NOT executed")
     return 0
+
+
+def assert_synchronize_predecessor():
+    import tempfile
+    missing = "0123456789abcdef0123456789abcdef01234567"
+    absent_base = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+        seed = directory / "seed"
+        origin = directory / "origin.git"
+        work = directory / "work"
+        seed.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+        source = seed / SOURCE_PATHS[1]
+        source.parent.mkdir(parents=True)
+        source.write_text("base\n")
+
+        def g(repo, *args, output=False):
+            result = subprocess.run(["git", "-c", "protocol.file.allow=always", "-c", "user.email=trace@example.com",
+                                     "-c", "user.name=trace", "-C", str(repo), *args], check=True,
+                                    stdout=subprocess.PIPE if output else subprocess.DEVNULL, text=True)
+            return result.stdout.strip() if output else None
+
+        g(seed, "add", SOURCE_PATHS[1])
+        g(seed, "commit", "-q", "-m", "base")
+        base = g(seed, "rev-parse", "HEAD", output=True)
+        source.write_text("same\n")
+        g(seed, "commit", "-q", "-am", "before")
+        before = g(seed, "rev-parse", "HEAD", output=True)
+        g(seed, "reset", "-q", "--hard", base)
+        source.write_text("same\n")
+        g(seed, "commit", "-q", "-am", "head")
+        head = g(seed, "rev-parse", "HEAD", output=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+        g(origin, "config", "uploadpack.allowReachableSHA1InWant", "true")
+        g(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+        g(seed, "remote", "add", "origin", str(origin))
+        g(seed, "push", "-q", "origin", "HEAD:main")
+        g(seed, "push", "-q", "origin", before + ":refs/heads/replaced-tip")
+        subprocess.run(["git", "-c", "protocol.file.allow=always", "clone", "-q", "--no-local", "--single-branch",
+                        "--branch", "main", str(origin), str(work)], check=True)
+        g(work, "config", "protocol.file.allow", "always")
+        if commit_exists(work, before):
+            raise AssertionError("single-branch clone contained the replaced tip")
+
+        def event(before_sha, head_sha, base_sha, ref="main"):
+            return {"action": "synchronize", "before": before_sha, "after": head_sha,
+                    "pull_request": {"base": {"sha": base_sha, "ref": ref}}}
+
+        # The replaced tip matches head, so only a fetched before proves the diff is empty.
+        if synchronize_binding(work, event(before, head, base), head) is not False:
+            raise AssertionError("fetched predecessor did not bound an empty diagnostic diff")
+        if not commit_exists(work, before):
+            raise AssertionError("reachable predecessor was not fetched")
+        if synchronize_binding(work, event(missing, head, base), head) is not True:
+            raise AssertionError("merge-base fallback missed a diagnostic source change")
+        if commit_exists(work, missing):
+            raise AssertionError("missing predecessor appeared without evidence")
+        g(work, "update-ref", "refs/remotes/origin/main", base)
+        if synchronize_binding(work, event(missing, head, absent_base), head) is not True:
+            raise AssertionError("base branch ref did not provide a merge-base")
+        try:
+            synchronize_binding(work, event(missing, head, absent_base, "no-such-base"), head)
+        except ValueError as error:
+            if str(error) != UNREACHABLE_PREDECESSOR:
+                raise
+        else:
+            raise AssertionError("unbounded synchronize predecessor accepted")
+        (work / "other.txt").write_text("other\n")
+        g(work, "add", "other.txt")
+        g(work, "commit", "-q", "-m", "other")
+        head_same = g(work, "rev-parse", "HEAD", output=True)
+        if synchronize_binding(work, event(head, head_same, base), head_same) is not False:
+            raise AssertionError("local predecessor lost to the base merge-base")
+        if synchronize_binding(work, {"action": "opened"}, head) is not False:
+            raise AssertionError("opened event consulted synchronize state")
+        try:
+            synchronize_binding(work, event(head, head, base), head)
+        except ValueError as error:
+            if str(error) != "missing or identical synchronize context":
+                raise
+        else:
+            raise AssertionError("identical synchronize context accepted")
 
 
 def assert_moved_base_merge():
