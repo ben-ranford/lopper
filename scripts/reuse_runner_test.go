@@ -18,11 +18,8 @@ func TestReuseRunnerTrustBoundaries(t *testing.T) {
 }
 
 func TestReuseSuppressionNodeSuite(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test reuse suppression evidence")
-	}
-	command := exec.Command(node, "--test", "reuse_suppression.test.js")
+	node := queueLifecycleNode(t)
+	command := exec.Command(node, "--test", "reuse_suppression.test.js", "testdata/reuse_suppression/partial_rerun.cjs")
 	command.Dir = repoPath(t, "scripts")
 	command.Env = gitexec.SanitizedEnv()
 	if output, err := command.CombinedOutput(); err != nil {

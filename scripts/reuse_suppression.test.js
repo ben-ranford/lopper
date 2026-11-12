@@ -23,8 +23,16 @@ function makeRun(id = 100) {
 }
 
 function makeJob(artifact = 200, run = makeRun()) {
-  return { name: `suppression-artifact-${artifact}`, run_id: run.id, run_attempt: run.run_attempt, head_sha: HEAD, status: 'completed', conclusion: 'success' };
+  return { name: `suppression-artifact-${artifact}`, run_id: run.id, run_attempt: run.run_attempt, head_sha: HEAD, status: 'completed', conclusion: 'success',
+    completed_at: '2026-09-30T12:40:00Z' };
 }
+
+function makeProducer(run = makeRun()) {
+  return { name: 'verify-checks', run_id: run.id, run_attempt: run.run_attempt, head_sha: HEAD, status: 'completed', conclusion: 'success',
+    started_at: '2026-09-30T12:00:00Z' };
+}
+
+const WINDOW = { windowStart: '2026-09-30T12:00:00Z', windowEnd: '2026-09-30T12:40:00Z' };
 
 function receipt(run = makeRun(), artifact = 200) {
   return { version: 2, policySHA: BASE, headSHA: HEAD, baseSHA: BASE, runId: run.id, runAttempt: run.run_attempt, artifactId: artifact, suppressionCount: 0 };
@@ -32,7 +40,7 @@ function receipt(run = makeRun(), artifact = 200) {
 
 function harness() {
   const state = {
-    run: makeRun(), jobs: [makeJob()], workflow: { ...WORKFLOW }, runs: undefined, calls: [], adapterCalls: [],
+    run: makeRun(), jobs: [makeJob(), makeProducer()], workflow: { ...WORKFLOW }, runs: undefined, calls: [], adapterCalls: [],
     repository: { id: 12, full_name: 'owner/repo', default_branch: 'main' },
     pull: { number: 56, state: 'open', head: { sha: HEAD, repo: { id: 34 } }, base: { sha: BASE, ref: 'main', repo: { id: 12, full_name: 'owner/repo' } } },
     target: { object: { sha: BASE } },
@@ -83,7 +91,7 @@ test('binds the adapter to the exact run attempt and locator, then rechecks both
   const fixture = harness();
   assert.deepEqual(await fixture.verify(), receipt());
   const input = fixture.adapterCalls[0];
-  assert.deepEqual(input.expected, { policySHA: BASE, repoId: 12, headRepoId: 34, pullNumber: 56, headSHA: HEAD, baseSHA: BASE, runId: 100, runAttempt: 2 });
+  assert.deepEqual(input.expected, { policySHA: BASE, repoId: 12, headRepoId: 34, pullNumber: 56, headSHA: HEAD, baseSHA: BASE, runId: 100, runAttempt: 2, ...WINDOW });
   assert.equal(input.artifactId, 200);
   assert.equal(input.archive.toString(), 'archive');
   assert.deepEqual(fixture.calls.filter((call) => call.method === 'jobs').map((call) => call.attempt_number), [2, 2]);
@@ -343,7 +351,7 @@ test('fully paginates producer and job lists', async () => {
   const fixture = harness();
   fixture.run = makeRun(150);
   fixture.runs = Array.from({ length: 150 }, (_, index) => makeRun(index + 1));
-  fixture.jobs = [...Array.from({ length: 100 }, () => ({ name: 'other-job' })), makeJob(200, fixture.run)];
+  fixture.jobs = [...Array.from({ length: 100 }, () => ({ name: 'other-job' })), makeJob(200, fixture.run), makeProducer(fixture.run)];
   fixture.adapter = async () => receipt(fixture.run);
   assert.deepEqual(await fixture.verify(), receipt(fixture.run));
   assert.equal(fixture.calls.filter((call) => call.method === 'jobs' && call.page === 2).length, 2);
@@ -446,7 +454,8 @@ test('rejects regressing, failed or unauthenticated producers and changed locato
     (state) => { state.workflow.id += 1; state.run.workflow_id += 1; },
     (state) => { state.pull.head.sha = BASE; },
     (state) => { state.target.object.sha = HEAD; },
-    (state) => { state.jobs = [makeJob(201)]; },
+    (state) => { state.jobs = [makeJob(201), makeProducer()]; },
+    (state) => { state.jobs[1].started_at = '2026-09-30T12:01:00Z'; },
   ]) {
     const fixture = harness();
     fixture.adapter = async () => {
@@ -484,6 +493,39 @@ test('an adapter or download failure remains a failure even if a newer CI run is
   }
   assert.equal(verifyReuseSuppression.isDeferred({ code: 'REUSE_CI_DEFERRED' }), false);
   assert.equal(verifyReuseSuppression.isDeferred(new Error('Reuse suppression: CI verification deferred (pending)')), false);
+});
+
+test('binds the artifact window to exactly one successful listed producer job', async () => {
+  for (const change of [
+    (state) => { state.jobs = [makeJob()]; },
+    (state) => { state.jobs.push(makeProducer()); },
+    (state) => { state.jobs[1].conclusion = 'failure'; },
+    (state) => { state.jobs[1].status = 'in_progress'; },
+    (state) => { state.jobs[1].run_attempt += 1; },
+    (state) => { state.jobs[1].run_id += 1; },
+    (state) => { state.jobs[1].head_sha = BASE; },
+    (state) => { delete state.jobs[1].started_at; },
+    (state) => { state.jobs[1].started_at = 'not a time'; },
+    (state) => { delete state.jobs[0].completed_at; },
+    (state) => { state.jobs[0].completed_at = '2026-09-30T11:59:59Z'; },
+  ]) {
+    const fixture = harness();
+    change(fixture);
+    await assert.rejects(fixture.verify(), assertHardFailure);
+    assert.equal(fixture.adapterCalls.length, 0);
+  }
+});
+
+test('surfaces only fixed provenance failure text from the adapter', async () => {
+  const fixed = 'Suppression provenance: artifact is outside the selected producer attempt';
+  for (const [message, expected] of [[fixed, fixed],
+    ['Suppression provenance: leaked\nsecret', 'Reuse suppression: evidence could not be verified'],
+    ['Suppression provenance: `markdown`', 'Reuse suppression: evidence could not be verified'],
+    ['Other: artifact is outside the selected producer attempt', 'Reuse suppression: evidence could not be verified']]) {
+    const fixture = harness();
+    fixture.adapter = async () => { throw new Error(message); };
+    await assert.rejects(fixture.verify(), { message: expected });
+  }
 });
 
 test('rejects mismatched or extended adapter receipts', async () => {

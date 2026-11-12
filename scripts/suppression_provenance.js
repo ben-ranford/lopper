@@ -100,13 +100,16 @@ function positiveID(value) {
 function trustedInputs(context, expected, artifactId, archive) {
   requireCondition(expected && typeof expected === 'object', 'expected snapshot is required');
   const ids = ['repoId', 'headRepoId', 'pullNumber', 'runId', 'runAttempt'];
-  const fields = [...ids, 'headSHA', 'baseSHA', 'policySHA'];
+  const fields = [...ids, 'headSHA', 'baseSHA', 'policySHA', 'windowStart', 'windowEnd'];
   requireCondition(Object.keys(expected).length === fields.length, 'unexpected snapshot fields');
   for (const field of ids) {
     requireCondition(positiveID(expected[field]), `invalid ${field}`);
   }
   for (const field of ['headSHA', 'baseSHA', 'policySHA']) {
     requireCondition(typeof expected[field] === 'string' && /^[a-f0-9]{40}$/.test(expected[field]), `invalid ${field}`);
+  }
+  for (const field of ['windowStart', 'windowEnd']) {
+    requireCondition(typeof expected[field] === 'string' && Number.isFinite(Date.parse(expected[field])), `invalid ${field}`);
   }
   for (const field of ['owner', 'repo']) {
     requireCondition(typeof context?.repo?.[field] === 'string' && /^[A-Za-z0-9_.-]+$/.test(context.repo[field]), `invalid repository ${field}`);
@@ -154,12 +157,13 @@ function assertArtifact(artifact, expected, artifactId, archive) {
   requireCondition(artifact.digest === digest, 'archive digest mismatch');
 }
 
-function assertArtifactAttempt(artifact, producer) {
-  // Artifacts lack run_attempt. Reject retained artifacts from older retries;
-  // the caller must select evidence created during this exact producer attempt.
-  const started = Date.parse(producer.run_started_at);
+function assertArtifactAttempt(artifact, expected) {
+  // Artifacts lack run_attempt. Reject retained artifacts from older retries:
+  // evidence must be created within the producer and locator jobs that the
+  // selected attempt lists, which a partial rerun carries over unchanged.
+  const started = Date.parse(expected.windowStart);
   const created = Date.parse(artifact.created_at);
-  const completed = Date.parse(producer.updated_at);
+  const completed = Date.parse(expected.windowEnd);
   requireCondition(Number.isFinite(started) && Number.isFinite(created) && Number.isFinite(completed) &&
     created >= started && created <= completed, 'artifact is outside the selected producer attempt');
 }
@@ -239,7 +243,7 @@ async function verifySuppressionProvenance({ github, context, expected: supplied
   // Its identity, bytes and report must still be valid before a typed deferral;
   // an archive failure must never be hidden by concurrent CI progress.
   assertArtifact(artifact.data, expected, artifactId, archive);
-  if (!deferred) assertArtifactAttempt(artifact.data, run.data);
+  if (!deferred) assertArtifactAttempt(artifact.data, expected);
   readReport(archive);
   if (deferred) throw deferred;
   await recomputeFromTrustedSource(github, repo, pull.data, expected);
