@@ -322,6 +322,22 @@ func assertTrustedProviderBytesRestored(t *testing.T, path string, want []byte, 
 	}
 }
 
+func TestWindowsPublishedReleaseProofUsesReadOnlyToken(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	job := workflowJobByName(t, workflow.Jobs, "action-windows-provider-proof")
+	assertWorkflowJobPermissions(t, job, "Windows action provider proof", map[string]string{"contents": "read"})
+	installer := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Run fixed and floating native Windows installer proofs")
+	if installer.Env["LOPPER_GITHUB_TOKEN"] != "${{ github.token }}" || !strings.Contains(installer.Run, "lopper-release-lookup-token") {
+		t.Fatal("floating release lookup must use the job's read-only GITHUB_TOKEN")
+	}
+	formal := workflowStepByName(t, workflow.Jobs, "action-windows-provider-proof", "Prove native Windows regression tests for fix PRs")
+	if formal.Env["LOPPER_GITHUB_TOKEN"] != "" {
+		t.Fatal("regression proof must not receive the release lookup token")
+	}
+}
+
 func assertTrustedWindowsProviderExecution(t *testing.T, jobs map[string]workflowJobConfig) {
 	t.Helper()
 	installer := workflowStepByName(t, jobs, "action-windows-provider-proof", "Run fixed and floating native Windows installer proofs")
