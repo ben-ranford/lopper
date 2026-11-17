@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -697,18 +698,14 @@ func writeStubLopper(t *testing.T, argsFile string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "lopper-stub")
 	content := "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\0' \"$@\" > \"$LOPPER_ARGS_FILE\"\n"
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("write stub lopper: %v", err)
-	}
+	testutil.MustInstallFile(t, path, content, 0o755)
 	t.Setenv("LOPPER_ARGS_FILE", argsFile)
 	return path
 }
 
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("write executable %s: %v", path, err)
-	}
+	testutil.MustInstallFile(t, path, content, 0o755)
 }
 
 func runLopperScript(t *testing.T, env []string) []string {

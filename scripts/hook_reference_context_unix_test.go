@@ -81,9 +81,7 @@ func TestHooksUninstallKeepsAlternateCommonDirectoryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), hook, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFileMode(t, filepath.Join(managed, "pre-commit"), string(hook), 0o755)
 	linked := filepath.Join(t.TempDir(), "alternate linked")
 	if output, err := hookCommandWithEnv(repo, env, "git", "worktree", "add", "-b", "alternate", linked); err != nil {
 		t.Fatalf("create linked worktree in alternate common directory: %v\n%s", err, output)
@@ -114,9 +112,7 @@ func TestHooksUninstallInspectsAlternateBareRepository(t *testing.T) {
 	if err := os.Mkdir(managed, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(managed, "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFileMode(t, filepath.Join(managed, "pre-commit"), "#!/bin/sh\n", 0o755)
 	custom := filepath.Join(t.TempDir(), "custom-hooks")
 	if err := os.Mkdir(custom, 0o755); err != nil {
 		t.Fatal(err)

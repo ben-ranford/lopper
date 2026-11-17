@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestBuildRuntimeCommandAllowlist(t *testing.T) {
@@ -364,9 +366,7 @@ func TestResolveRuntimeExecutablePathSkipsNonExecutableCandidate(t *testing.T) {
 		t.Fatalf("write non-executable tool: %v", err)
 	}
 	secondPath := filepath.Join(secondDir, "npm")
-	if err := os.WriteFile(secondPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write executable tool: %v", err)
-	}
+	testutil.MustInstallFile(t, secondPath, "#!/bin/sh\nexit 0\n", 0o700)
 
 	got, err := resolveRuntimeExecutablePath("npm", []string{firstDir, secondDir})
 	if err != nil {
@@ -385,16 +385,12 @@ func TestResolveRuntimeExecutablePathSkipsWritableCandidate(t *testing.T) {
 	firstDir := t.TempDir()
 	secondDir := t.TempDir()
 	firstPath := filepath.Join(firstDir, "python3")
-	if err := os.WriteFile(firstPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write writable tool: %v", err)
-	}
+	testutil.MustInstallFile(t, firstPath, "#!/bin/sh\nexit 0\n", 0o700)
 	if err := os.Chmod(firstPath, 0o777); err != nil {
 		t.Fatalf("make tool writable: %v", err)
 	}
 	secondPath := filepath.Join(secondDir, "python3")
-	if err := os.WriteFile(secondPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write trusted tool: %v", err)
-	}
+	testutil.MustInstallFile(t, secondPath, "#!/bin/sh\nexit 0\n", 0o700)
 
 	got, err := resolveRuntimeExecutablePath("python3", []string{firstDir, secondDir})
 	if err != nil {
@@ -428,9 +424,7 @@ func TestBuildRuntimeCommandUsesPATHSelectedPython(t *testing.T) {
 
 	selectedDir := t.TempDir()
 	selectedPython := filepath.Join(selectedDir, "python3")
-	if err := os.WriteFile(selectedPython, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write PATH-selected python: %v", err)
-	}
+	testutil.MustInstallFile(t, selectedPython, "#!/bin/sh\nexit 0\n", 0o700)
 	t.Setenv(runtimeBinDirsEnvKey, "")
 	t.Setenv("PATH", selectedDir+string(os.PathListSeparator)+"/usr/bin:/bin")
 

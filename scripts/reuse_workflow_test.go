@@ -441,9 +441,7 @@ func assertReuseDriverArguments(t *testing.T, step workflowStepConfig, mode stri
 	directory := t.TempDir()
 	capture := filepath.Join(directory, "arguments")
 	interpreter := filepath.Join(directory, "python3")
-	if err := os.WriteFile(interpreter, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$REUSE_CAPTURE\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeFileMode(t, interpreter, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$REUSE_CAPTURE\"\n", 0o700)
 	temporary := filepath.Join(directory, "runner temp")
 	eventName := "push"
 	if mode == "invalidate-stack" {

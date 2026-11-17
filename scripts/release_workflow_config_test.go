@@ -2523,9 +2523,7 @@ func TestReleaseWorkflowSkipsPrereleaseFeatureHistoryBeforeStamping(t *testing.T
 		"printf 'featureflag invoked for %s\\n' \"$*\" >&2\n" +
 		"printf '%s\\n' \"$*\" > \"$FEATUREFLAG_INVOCATION\"\n" +
 		"exit 99\n"
-	if err := os.WriteFile(filepath.Join(runnerTemp, "featureflag"), []byte(featureFlagStub), 0o755); err != nil {
-		t.Fatalf("write featureflag stub: %v", err)
-	}
+	writeFileMode(t, filepath.Join(runnerTemp, "featureflag"), featureFlagStub, 0o755)
 
 	githubOutput := filepath.Join(runnerTemp, "github-output")
 	cmd := exec.Command("bash", "-c", stampStep.Run)
@@ -7073,9 +7071,7 @@ func newTempCoverageMakeRepo(t *testing.T) string {
 		t.Fatalf("create temp scripts directory: %v", err)
 	}
 	benchGateScript := readConfig(t, "scripts/bench-gate.sh")
-	if err := os.WriteFile(filepath.Join(root, "scripts", "bench-gate.sh"), []byte(benchGateScript), 0o755); err != nil {
-		t.Fatalf("write temp bench-gate script: %v", err)
-	}
+	writeFileMode(t, filepath.Join(root, "scripts", "bench-gate.sh"), benchGateScript, 0o755)
 	return root
 }
 
@@ -7218,10 +7214,7 @@ func currentGoSumEntries(t *testing.T, modulePath string) string {
 
 func writeExecutableFile(t *testing.T, path string, contents string) {
 	t.Helper()
-
-	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-		t.Fatalf("write executable %s: %v", path, err)
-	}
+	writeFileMode(t, path, contents, 0o755)
 }
 
 func assertPinnedGoBinInvocations(t *testing.T, logPath string, resolvedGoBin string) {
@@ -7269,10 +7262,7 @@ func newCoverageFakeGo(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "fake-go.sh")
-	script := readConfig(t, "scripts/testdata/fake-go-coverage.sh")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake go: %v", err)
-	}
+	writeFileMode(t, path, readConfig(t, "scripts/testdata/fake-go-coverage.sh"), 0o755)
 	return path
 }
 

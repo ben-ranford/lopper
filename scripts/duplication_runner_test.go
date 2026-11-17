@@ -103,9 +103,7 @@ func TestDuplicationCIIgnoresMakeFlagsAndPathWrapper(t *testing.T) {
 			script := filepath.Join(directory, "step.sh")
 			files := map[string]string{"step.sh": runCI.Run, "Makefile": "ci-checks:\n\t@touch gate-ran\n", "make": "#!/bin/sh\nexit 0\n"}
 			for name, content := range files {
-				if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o700); err != nil {
-					t.Fatal(err)
-				}
+				writeFileMode(t, filepath.Join(directory, name), content, 0o700)
 			}
 			env := map[string]string{"GH_EVENT_NAME": "workflow_dispatch", "ACT": "", "LOPPER_CI_MAKE": trustedMake}
 			if attack == "flags" {

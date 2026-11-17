@@ -161,9 +161,7 @@ func TestProofDisablesWorktreeHooks(t *testing.T) {
 	marker := filepath.Join(hooks, "ran")
 	// The quoted fixture path is allocated by the test, never a PR operand.
 	script := "#!/bin/sh\nprintf ran > '" + strings.ReplaceAll(marker, "'", "'\\''") + "'\n"
-	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustInstallFile(t, filepath.Join(hooks, "post-checkout"), script, 0o700)
 	testutil.RunGit(t, repo.path, "config", "core.hooksPath", hooks)
 	r := &runner{execCommand: (&execRunner{}).Run}
 	_, cleanup, err := r.createBaseWorktree(context.Background(), repo.path, repo.baseSHA)

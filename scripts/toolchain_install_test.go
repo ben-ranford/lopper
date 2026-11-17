@@ -125,9 +125,5 @@ func runToolchainInstallLinuxFixture(t *testing.T, packageManager string, nodeEx
 func writeToolchainInstallStub(t *testing.T, binDir, name, body string) {
 	t.Helper()
 
-	path := filepath.Join(binDir, name)
-	script := "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$TOOLCHAIN_INSTALL_LOG\"\n" + body
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write %s stub: %v", name, err)
-	}
+	writeFileMode(t, filepath.Join(binDir, name), "#!/bin/sh\nprintf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$TOOLCHAIN_INSTALL_LOG\"\n"+body, 0o755)
 }

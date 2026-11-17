@@ -722,13 +722,7 @@ func writeFixtureFile(t *testing.T, repoDir string, path string, content string)
 func writeFixtureFileMode(t *testing.T, repoDir string, path string, content string, mode os.FileMode) {
 	t.Helper()
 
-	fullPath := filepath.Join(repoDir, path)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(fullPath), err)
-	}
-	if err := os.WriteFile(fullPath, []byte(content), mode); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	writeFileMode(t, filepath.Join(repoDir, path), content, mode)
 }
 
 func assertOutputContainsAll(t *testing.T, output string, wants []string) {

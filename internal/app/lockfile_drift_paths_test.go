@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const lockfileRunGitErr = "run git"
@@ -1032,9 +1033,7 @@ if printf '%s' "$args" | grep -q 'diff --no-ext-diff --no-textconv'; then
 fi
 exit 0
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake git script: %v", err)
-	}
+	testutil.MustInstallFile(t, path, script, 0o755)
 	return path
 }
 

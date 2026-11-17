@@ -35,9 +35,7 @@ func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
 	toolDir := t.TempDir()
 	pytestPath := filepath.Join(toolDir, "pytest")
 	pytestScript := "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import requests'\n"
-	if err := os.WriteFile(pytestPath, []byte(pytestScript), 0o700); err != nil {
-		t.Fatalf("write fake pytest runtime tool: %v", err)
-	}
+	testutil.MustInstallFile(t, pytestPath, pytestScript, 0o700)
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
 	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", toolDir)
 	t.Setenv("PYTHONPATH", sitePackages)
@@ -253,9 +251,7 @@ func setupFakeAnalysisRuntimeTool(t *testing.T) string {
 	toolDir := t.TempDir()
 	npmPath := filepath.Join(toolDir, "npm")
 	script := "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
-	if err := os.WriteFile(npmPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake npm runtime tool: %v", err)
-	}
+	testutil.MustInstallFile(t, npmPath, script, 0o700)
 	return toolDir
 }
 
