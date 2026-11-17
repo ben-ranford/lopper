@@ -25,3 +25,7 @@ func TestDependencyUnionContract(t *testing.T) {
 		t.Fatal("mutated input sets")
 	}
 }
+
+func dependencyReportCollectionsEqual(got, want any) bool {
+	return reflect.DeepEqual(got, want)
+}

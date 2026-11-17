@@ -2,7 +2,7 @@ package jvm
 
 import (
 	"context"
-	"encoding/xml"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -20,39 +20,7 @@ type dependencyDescriptor struct {
 	Artifact string
 }
 
-type pomProjectModel struct {
-	GroupID              string               `xml:"groupId"`
-	ArtifactID           string               `xml:"artifactId"`
-	Version              string               `xml:"version"`
-	Parent               pomParentModel       `xml:"parent"`
-	Properties           pomPropertiesModel   `xml:"properties"`
-	Dependencies         []pomDependencyModel `xml:"dependencies>dependency"`
-	DependencyManagement struct {
-		Dependencies []pomDependencyModel `xml:"dependencies>dependency"`
-	} `xml:"dependencyManagement"`
-}
-
-type pomParentModel struct {
-	GroupID string `xml:"groupId"`
-	Version string `xml:"version"`
-}
-
-type pomPropertiesModel struct {
-	Properties []pomPropertyModel `xml:",any"`
-}
-
-type pomPropertyModel struct {
-	XMLName xml.Name
-	Value   string `xml:",chardata"`
-}
-
-type pomDependencyModel struct {
-	GroupID    string `xml:"groupId"`
-	ArtifactID string `xml:"artifactId"`
-	Version    string `xml:"version"`
-	Type       string `xml:"type"`
-	Scope      string `xml:"scope"`
-}
+type pomDependencyModel = shared.POMDependency
 
 type pomDependencyKind int
 
@@ -72,8 +40,8 @@ func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[s
 	return descriptors, prefixes, aliases, warnings
 }
 
-func collectDeclaredDependenciesWithinRoot(ctx context.Context, repoPath string, root safeio.Root) ([]dependencyDescriptor, map[string]string, map[string]string, []string, error) {
-	descriptors, warnings, err := collectBuildDescriptorsWithinRoot(ctx, repoPath, root)
+func collectDeclaredDependenciesWithinRoot(ctx context.Context, repoPath string, root safeio.Root, catalogs ...*mavenManifestCatalog) ([]dependencyDescriptor, map[string]string, map[string]string, []string, error) {
+	descriptors, warnings, err := collectBuildDescriptorsWithinRoot(ctx, repoPath, root, catalogs...)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -91,14 +59,14 @@ func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string)
 	return descriptors, shared.DedupeWarnings(warnings)
 }
 
-func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, root safeio.Root) ([]dependencyDescriptor, []string, error) {
+func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, root safeio.Root, catalogs ...*mavenManifestCatalog) ([]dependencyDescriptor, []string, error) {
 	catalogResolver, warnings, err := shared.LoadGradleCatalogResolverWithinRoot(ctx, repoPath, root)
 	if err != nil {
 		return nil, nil, err
 	}
-	buildParser := buildDescriptorParser(repoPath, &catalogResolver)
+	buildParser := buildDescriptorParser(repoPath, &catalogResolver, catalogs...)
 
-	descriptors, parseWarnings, err := parseBuildFilesWithWarningsWithinRoot(ctx, repoPath, root, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
+	descriptors, parseWarnings, err := parseBuildFilesWithMavenEvidenceWithinRoot(ctx, repoPath, root, buildParser, firstMavenCatalog(catalogs), pomXMLName, buildGradleName, buildGradleKTSName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -106,11 +74,11 @@ func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, roo
 	return descriptors, shared.DedupeWarnings(warnings), nil
 }
 
-func buildDescriptorParser(repoPath string, catalogResolver *shared.GradleCatalogResolver) func(string, string) ([]dependencyDescriptor, []string) {
+func buildDescriptorParser(repoPath string, catalogResolver *shared.GradleCatalogResolver, catalogs ...*mavenManifestCatalog) func(string, string) ([]dependencyDescriptor, []string) {
 	return func(path, content string) ([]dependencyDescriptor, []string) {
 		switch strings.ToLower(filepath.Base(path)) {
 		case pomXMLName:
-			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
+			return parsePomDependencyContentWithEvidence(relativeBuildFilePath(repoPath, path), content, firstMavenCatalog(catalogs))
 		case buildGradleName, buildGradleKTSName:
 			descriptors := parseGradleDependencyContent(path, content)
 			catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
@@ -224,15 +192,28 @@ func parsePomDependenciesWithWarnings(repoPath string) ([]dependencyDescriptor, 
 }
 
 func parsePomDependencyContent(relativePath, content string) ([]dependencyDescriptor, []string) {
-	var project pomProjectModel
-	if err := xml.Unmarshal([]byte(content), &project); err != nil {
+	return parsePomDependencyContentWithEvidence(relativePath, content, nil)
+}
+func parsePomDependencyContentWithEvidence(relativePath, content string, catalog *mavenManifestCatalog) ([]dependencyDescriptor, []string) {
+	decode := shared.DecodePOM
+	if catalog != nil {
+		decode = catalog.decode
+	}
+	pom, err := decode([]byte(content))
+	stage := ""
+	if err != nil {
+		stage = "parse"
+	}
+	catalog.retain(relativePath, pom, stage, err)
+	if err != nil {
 		return nil, []string{fmt.Sprintf("unable to parse Maven POM %s: %v", relativePath, err)}
 	}
 
-	propertyMap := buildPomPropertyMap(project)
+	view := pom.InventoryPolicy()
+	propertyMap := view.Properties
 	budget := newPomExpansionBudget()
-	directDescriptors, directWarnings := parsePomDependencyList(project.Dependencies, propertyMap, pomDependencyDirect, relativePath, budget)
-	managedDescriptors, managedWarnings := parsePomDependencyList(project.DependencyManagement.Dependencies, propertyMap, pomDependencyManaged, relativePath, budget)
+	directDescriptors, directWarnings := parsePomDependencyList(view.Dependencies, propertyMap, pomDependencyDirect, relativePath, budget)
+	managedDescriptors, managedWarnings := parsePomDependencyList(view.ManagedDependencies, propertyMap, pomDependencyManaged, relativePath, budget)
 
 	descriptors := make([]dependencyDescriptor, 0, len(directDescriptors)+len(managedDescriptors))
 	descriptors = append(descriptors, directDescriptors...)
@@ -304,53 +285,6 @@ func parsePomDependencyWithBudget(dependency pomDependencyModel, propertyMap map
 func isPomImportedBOM(dependency pomDependencyModel) bool {
 	return strings.EqualFold(strings.TrimSpace(dependency.Type), "pom") &&
 		strings.EqualFold(strings.TrimSpace(dependency.Scope), "import")
-}
-
-func buildPomPropertyMap(project pomProjectModel) map[string]string {
-	properties := make(map[string]string)
-	for _, property := range project.Properties.Properties {
-		key := strings.TrimSpace(property.XMLName.Local)
-		value := strings.TrimSpace(property.Value)
-		if key == "" || value == "" {
-			continue
-		}
-		properties[key] = value
-	}
-
-	groupID := strings.TrimSpace(project.GroupID)
-	if groupID == "" {
-		groupID = strings.TrimSpace(project.Parent.GroupID)
-	}
-	version := strings.TrimSpace(project.Version)
-	if version == "" {
-		version = strings.TrimSpace(project.Parent.Version)
-	}
-	artifactID := strings.TrimSpace(project.ArtifactID)
-
-	setPomPropertyValue(properties, "project.groupId", groupID)
-	setPomPropertyValue(properties, "pom.groupId", groupID)
-	setPomPropertyValue(properties, "groupId", groupID)
-
-	setPomPropertyValue(properties, "project.version", version)
-	setPomPropertyValue(properties, "pom.version", version)
-	setPomPropertyValue(properties, "version", version)
-
-	setPomPropertyValue(properties, "project.artifactId", artifactID)
-	setPomPropertyValue(properties, "pom.artifactId", artifactID)
-	setPomPropertyValue(properties, "artifactId", artifactID)
-
-	setPomPropertyValue(properties, "project.parent.groupId", strings.TrimSpace(project.Parent.GroupID))
-	setPomPropertyValue(properties, "project.parent.version", strings.TrimSpace(project.Parent.Version))
-	return properties
-}
-
-func setPomPropertyValue(properties map[string]string, key, value string) {
-	key = strings.TrimSpace(key)
-	value = strings.TrimSpace(value)
-	if key == "" || value == "" {
-		return
-	}
-	properties[key] = value
 }
 
 const (
@@ -677,8 +611,12 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(path, content stri
 }
 
 func parseBuildFilesWithWarningsWithinRoot(ctx context.Context, repoPath string, root safeio.Root, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string, error) {
+	return parseBuildFilesWithMavenEvidenceWithinRoot(ctx, repoPath, root, parser, nil, names...)
+}
+func parseBuildFilesWithMavenEvidenceWithinRoot(ctx context.Context, repoPath string, root safeio.Root, parser func(path, content string) ([]dependencyDescriptor, []string), catalog *mavenManifestCatalog, names ...string) ([]dependencyDescriptor, []string, error) {
 	collector := buildFileWarningCollector{
 		repoPath: repoPath,
+		catalog:  catalog,
 		parser:   parser,
 		names:    names,
 		seen:     make(map[string]struct{}),
@@ -692,7 +630,11 @@ func parseBuildFilesWithWarningsWithinRoot(ctx context.Context, repoPath string,
 		},
 	}
 	err := shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
-		return collector.visitWithinRoot(file.Parent, file.Leaf, file.Path, file.Entry)
+		visitErr := collector.visitWithinRoot(file.Parent, file.Leaf, file.Path, file.Entry)
+		if catalog != nil && catalog.err != nil {
+			return errors.Join(visitErr, catalog.err)
+		}
+		return visitErr
 	})
 	if err != nil {
 		if warning, limited := shared.RootedWalkBudgetWarning("JVM build file scan", budget, err); limited {
@@ -732,6 +674,7 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 }
 
 type buildFileWarningCollector struct {
+	catalog     *mavenManifestCatalog
 	repoPath    string
 	parser      func(path, content string) ([]dependencyDescriptor, []string)
 	names       []string
@@ -777,6 +720,7 @@ func (c *buildFileWarningCollector) visitWithinRoot(parent safeio.Root, leaf, pa
 	}
 	content, readErr := safeio.ReadFileWithinRootLimit(parent, leaf, maxScannableJVMBuildFile)
 	if readErr != nil {
+		c.catalog.readFailure(c.repoPath, path, readErr)
 		if !isPureJVMBuildFileReadWarning(readErr) {
 			return readErr
 		}
