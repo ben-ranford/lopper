@@ -861,7 +861,11 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 
 	publication := workflowJobByName(t, workflow.Jobs, "publish")
-	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{"contents": "write"})
+	assertWorkflowJobPermissions(t, publication, "fresh release publication", map[string]string{
+		"attestations": "write",
+		"contents":     "write",
+		"id-token":     "write",
+	})
 	assertWorkflowJobEnvEmpty(t, publication, "fresh release publication")
 	validateStep := workflowStepByName(t, workflow.Jobs, "publish", "Validate release publication inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -906,8 +910,53 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		`publication-inputs/dist/lopper_${tag}_darwin_amd64.tar.gz`,
 		`publication-inputs/dist/lopper_${tag}_darwin_arm64.tar.gz`,
 		`publication-inputs/dist/lopper-vscode-${tag#v}.vsix`,
+		`publication-inputs/dist/SHA256SUMS`,
+		`publication-inputs/dist/SHA256SUMS.bundle`,
 	})
 	assertWorkflowStepRunOmitsAll(t, uploadAssets, "explicit GitHub release asset upload", []string{"find publication-inputs/dist", "*.tar.gz", "*.zip", "*.vsix"})
+	assertWorkflowStepOrder(t, publication,
+		"Validate release publication inputs",
+		"Write release asset checksums",
+		"Attest release assets",
+		"Install Cosign",
+		"Sign release checksum manifest",
+		"Update GitHub Release notes",
+		"Upload GitHub Release assets",
+	)
+	checksums := workflowStepByName(t, workflow.Jobs, "publish", "Write release asset checksums")
+	assertWorkflowStepEnv(t, checksums, "published release checksums", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"RELEASE_TAG": "${{ needs.prepare-release.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, checksums, "published release checksums", []string{
+		`sha256sum "${sorted_assets[@]}" > SHA256SUMS`,
+		`sha256sum --check --strict SHA256SUMS`,
+		`"lopper-vscode-${version}.vsix"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, checksums, "published release checksums", []string{"*.tar.gz", "*.zip", "*.vsix"})
+	attestAssets := workflowStepByName(t, workflow.Jobs, "publish", "Attest release assets")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "release asset attestation action",
+		got:   attestAssets.Uses,
+		want:  "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+	}})
+	if strings.Contains(attestAssets.With["subject-path"], "*") {
+		t.Fatal("release asset attestation must list subjects explicitly")
+	}
+	assertTextContainsAll(t, attestAssets.With["subject-path"], "release asset attestation subjects", []string{
+		"publication-inputs/dist/SHA256SUMS",
+		"publication-inputs/dist/lopper_${{ needs.prepare-release.outputs.tag }}_linux_amd64.tar.gz",
+	})
+	cosignInstall := workflowStepByName(t, workflow.Jobs, "publish", "Install Cosign")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release cosign installer", got: cosignInstall.Uses, want: "sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532"},
+		{label: "release cosign version", got: cosignInstall.With["cosign-release"], want: "v3.1.4"},
+	})
+	signChecksums := workflowStepByName(t, workflow.Jobs, "publish", "Sign release checksum manifest")
+	assertWorkflowStepRunContainsAll(t, signChecksums, "release checksum signature", []string{
+		`cosign sign-blob --yes --bundle "${bundle}" "${checksums}"`,
+		`publication-inputs/dist/SHA256SUMS.bundle`,
+	})
 	assertReleasePublicationCredentialScope(t, publication)
 	assertReleasePublicationOmitsCheckoutAndCommands(t, publication)
 }
@@ -1183,7 +1232,11 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 
 	publication := workflowJobByName(t, workflow.Jobs, "publish-rolling")
 	assertWorkflowJobNeeds(t, publication, "rolling publication", workflowJobNeeds{"prepare-rolling", "prepare-rolling-publication"})
-	assertWorkflowJobPermissions(t, publication, "rolling publication", map[string]string{"contents": "write"})
+	assertWorkflowJobPermissions(t, publication, "rolling publication", map[string]string{
+		"attestations": "write",
+		"contents":     "write",
+		"id-token":     "write",
+	})
 	assertWorkflowJobEnvEmpty(t, publication, "rolling publication")
 	assertWorkflowStringValues(t, []workflowStringValue{{
 		label: "rolling publication tag output",
@@ -1192,7 +1245,15 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	}})
 	assertWorkflowJobOmitsCheckout(t, publication, "publish-rolling")
 	assertWorkflowJobStepRunsOmitAllFold(t, publication, "rolling publication", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "git "})
-	assertWorkflowStepOrder(t, publication, "Download rolling publication inputs", "Validate rolling publication inputs", "Publish rolling prerelease")
+	assertWorkflowStepOrder(t, publication,
+		"Download rolling publication inputs",
+		"Validate rolling publication inputs",
+		"Write rolling asset checksums",
+		"Attest rolling assets",
+		"Install Cosign",
+		"Sign rolling checksum manifest",
+		"Publish rolling prerelease",
+	)
 	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-rolling", "Download rolling publication inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "privileged rolling publication download name", got: downloadInputs.With["name"], want: "rolling-publication-inputs"},
@@ -1248,6 +1309,8 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_darwin_arm64.tar.gz",
 		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz",
 		"rolling-publication-inputs/dist/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz.sha256",
+		"rolling-publication-inputs/dist/SHA256SUMS",
+		"rolling-publication-inputs/dist/SHA256SUMS.bundle",
 	}
 	if got := strings.Split(strings.TrimSpace(publishStep.With["files"]), "\n"); !slices.Equal(got, wantPublishedAssets) {
 		t.Fatalf("rolling published assets = %#v", got)
@@ -1316,7 +1379,9 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"jobs.publish-marketplace.steps.Download Marketplace toolchain#1.uses",
 		"jobs.publish-marketplace.steps.Download release publication inputs#1.uses",
 		"jobs.publish-marketplace.steps.Setup Node for Marketplace tooling#1.uses",
+		"jobs.publish.steps.Attest release assets#1.uses",
 		"jobs.publish.steps.Download release publication inputs#1.uses",
+		"jobs.publish.steps.Install Cosign#1.uses",
 		"jobs.push-feature-release-history.steps.Download prepared trusted feature history worktree#1.uses",
 		"jobs.validate-homebrew-tap.steps.Set up Homebrew#1.uses",
 	}
@@ -5546,7 +5611,11 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "build-linux-windows", "build-darwin", "prepare-ghcr"})
-	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
+	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{
+		"attestations": "write",
+		"id-token":     "write",
+		"packages":     "write",
+	})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
 	assertWorkflowStepRunContainsAll(t, validation, "publish-ghcr-images validation", []string{
@@ -5624,7 +5693,11 @@ func assertTrustedGHCRManifestPublisher(t *testing.T, workflow workflowConfig) {
 
 	publishManifest := workflowJobByName(t, workflow.Jobs, "publish-ghcr-manifest")
 	assertWorkflowJobNeeds(t, publishManifest, "publish-ghcr-manifest", workflowJobNeeds{"verify-publication-source", "validate-publication-identifiers", "publish-ghcr-images", "prepare-ghcr-manifest"})
-	assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{"packages": "write"})
+	assertWorkflowJobPermissions(t, publishManifest, "publish-ghcr-manifest", map[string]string{
+		"attestations": "write",
+		"id-token":     "write",
+		"packages":     "write",
+	})
 	assertFreshGHCRPublisher(t, publishManifest, "Log in to GHCR")
 	manifestValidation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-manifest", "Validate manifest publication payload")
 	assertWorkflowStepRunContainsAll(t, manifestValidation, "manifest validation", []string{
@@ -5686,8 +5759,8 @@ func TestReleaseOrchestrationRequiresIntegrityBoundManifestPayload(t *testing.T)
 		`unexpected image reference`,
 	})
 
-	if len(publishManifest.Permissions) != 1 || publishManifest.Permissions["packages"] != "write" {
-		t.Fatalf("publish-ghcr-manifest permissions = %#v, want packages: write", publishManifest.Permissions)
+	if len(publishManifest.Permissions) != 3 || publishManifest.Permissions["packages"] != "write" || publishManifest.Permissions["id-token"] != "write" || publishManifest.Permissions["attestations"] != "write" {
+		t.Fatalf("publish-ghcr-manifest permissions = %#v, want packages, id-token, and attestations write", publishManifest.Permissions)
 	}
 }
 
@@ -5828,9 +5901,53 @@ func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) 
 			t.Fatalf("trusted architecture tags must use deterministic byte equality, not %q", insufficientValidation)
 		}
 	}
-	if len(publishImages.Permissions) != 1 || publishImages.Permissions["packages"] != "write" {
-		t.Fatalf("publish-ghcr-images permissions = %#v, want packages: write", publishImages.Permissions)
+	if len(publishImages.Permissions) != 3 || publishImages.Permissions["packages"] != "write" || publishImages.Permissions["id-token"] != "write" || publishImages.Permissions["attestations"] != "write" {
+		t.Fatalf("publish-ghcr-images permissions = %#v, want packages, id-token, and attestations write", publishImages.Permissions)
 	}
+}
+
+func TestReleaseAttestationsStayOnPublishingJobs(t *testing.T) {
+	t.Parallel()
+
+	const attestAction = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
+	callerPermissions := map[string]string{
+		"attestations": "write",
+		"contents":     "read",
+		"id-token":     "write",
+		"packages":     "write",
+	}
+
+	release := readWorkflowConfig(t, ".github/workflows/release.yml")
+	rolling := readWorkflowConfig(t, ".github/workflows/rolling.yml")
+	assertWorkflowJobPermissions(t, workflowJobByName(t, release.Jobs, "orchestrate-release"), "orchestrate-release", callerPermissions)
+	assertWorkflowJobPermissions(t, workflowJobByName(t, rolling.Jobs, "orchestrate-rolling"), "orchestrate-rolling", callerPermissions)
+
+	orchestration := readWorkflowConfig(t, ".github/workflows/release-orchestration.yml")
+	for _, jobName := range []string{"build-linux-windows", "build-darwin", "prepare-ghcr", "prepare-ghcr-manifest", "validate-publication-identifiers"} {
+		job := workflowJobByName(t, orchestration.Jobs, jobName)
+		if _, ok := job.Permissions["id-token"]; ok {
+			t.Fatalf("%s must not request id-token", jobName)
+		}
+		if _, ok := job.Permissions["attestations"]; ok {
+			t.Fatalf("%s must not request attestations", jobName)
+		}
+	}
+	for _, stepName := range []string{"Attest amd64 release image", "Attest arm64 release image"} {
+		step := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-images", stepName)
+		if step.Uses != attestAction || step.With["push-to-registry"] != "true" || step.With["subject-name"] != "${{ steps.ghcr_image.outputs.name }}" {
+			t.Fatalf("%s = %#v", stepName, step)
+		}
+	}
+	manifestAttest := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-manifest", "Attest multi-arch release image")
+	if manifestAttest.Uses != attestAction || manifestAttest.With["push-to-registry"] != "true" || manifestAttest.With["subject-digest"] != "${{ steps.manifest_digest.outputs.digest }}" {
+		t.Fatalf("multi-arch attestation = %#v", manifestAttest)
+	}
+	digestStep := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-manifest", "Resolve published manifest digest")
+	assertWorkflowStepRunContainsAll(t, digestStep, "published manifest digest", []string{
+		`docker buildx imagetools inspect --format '{{printf "%s" .Manifest.Digest}}'`,
+		`[[ ! "${ref_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]`,
+		`Published manifest tags do not share one digest`,
+	})
 }
 
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {

@@ -474,18 +474,32 @@ func TestInstallScriptWritesMultilineGitHubOutputSafely(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
 output=""
+url=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     -o)
       shift
       output="${1:-}"
       ;;
+    http://*|https://*)
+      url="$1"
+      ;;
   esac
   shift || true
 done
-if [[ -n "$output" ]]; then
-  printf 'archive' > "$output"
+if [[ -z "$output" ]]; then
+  exit 0
 fi
+if [[ "$url" == */SHA256SUMS ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(printf 'archive' | sha256sum | awk 'NR == 1 { print $1 }')"
+  else
+    digest="$(printf 'archive' | shasum -a 256 | awk 'NR == 1 { print $1 }')"
+  fi
+  printf '%s  lopper_v1.6.1_linux_amd64.tar.gz\n' "$digest" > "$output"
+  exit 0
+fi
+printf 'archive' > "$output"
 `)
 	writeExecutable(t, filepath.Join(binDir, "tar"), `#!/usr/bin/env bash
 set -euo pipefail

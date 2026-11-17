@@ -410,6 +410,8 @@ jobs:
       arm64_digest: ${{ steps.publish_arm64.outputs.digest }}
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
+      id-token: write
       packages: write
     steps:
       - name: Download amd64 OCI publication payload
@@ -723,6 +725,28 @@ jobs:
           provenance: false
           sbom: true
 
+      - name: Resolve GHCR image name
+        id: ghcr_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          printf 'name=ghcr.io/%s/lopper\n' "${owner}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest amd64 release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.ghcr_image.outputs.name }}
+          subject-digest: ${{ steps.publish_amd64.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest arm64 release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.ghcr_image.outputs.name }}
+          subject-digest: ${{ steps.publish_arm64.outputs.digest }}
+          push-to-registry: true
+
   prepare-ghcr-manifest:
     runs-on: ubuntu-latest
     permissions:
@@ -808,6 +832,8 @@ jobs:
       - prepare-ghcr-manifest
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
+      id-token: write
       packages: write
     steps:
       - name: Download manifest publication payload
@@ -1014,3 +1040,42 @@ jobs:
               "${expected_image_name}@${arm64_digest}"
             docker buildx imagetools inspect "${image_ref}"
           done < "${IMAGE_TAGS_FILE}"
+
+      - name: Resolve published manifest digest
+        id: manifest_digest
+        shell: bash
+        env:
+          IMAGE_TAGS_FILE: ${{ runner.temp }}/ghcr-manifest-publication/image-tags.txt
+        run: |
+          set -euo pipefail
+          mapfile -t image_refs < "${IMAGE_TAGS_FILE}"
+          if [ "${#image_refs[@]}" -lt 1 ]; then
+            echo "::error::Manifest publication did not record an image reference." >&2
+            exit 1
+          fi
+          digest=""
+          for image_ref in "${image_refs[@]}"; do
+            ref_digest="$(docker buildx imagetools inspect --format '{{printf "%s" .Manifest.Digest}}' "${image_ref}")"
+            if [[ ! "${ref_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Published manifest digest is invalid." >&2
+              exit 1
+            fi
+            if [ -z "${digest}" ]; then
+              digest="${ref_digest}"
+            elif [ "${ref_digest}" != "${digest}" ]; then
+              echo "::error::Published manifest tags do not share one digest." >&2
+              exit 1
+            fi
+          done
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          {
+            printf 'digest=%s\n' "${digest}"
+            printf 'name=ghcr.io/%s/lopper\n' "${owner}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest multi-arch release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.manifest_digest.outputs.name }}
+          subject-digest: ${{ steps.manifest_digest.outputs.digest }}
+          push-to-registry: true

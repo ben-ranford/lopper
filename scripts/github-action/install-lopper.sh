@@ -61,6 +61,78 @@ curl_with_token() {
   curl "$@"
 }
 
+sha256_file() {
+  local file="$1"
+  local digest=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$file" | awk 'NR == 1 { print $1 }')"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 "$file" | awk 'NR == 1 { print $1 }')"
+  else
+    error "sha256sum or shasum is required to verify the Lopper release archive."
+    exit 1
+  fi
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    error "Unable to compute a SHA-256 digest for the Lopper release archive."
+    exit 1
+  fi
+  printf '%s' "$digest"
+}
+
+verify_release_archive() {
+  local checksums_path="$1"
+  local archive_name="$2"
+  local archive_path="$3"
+  local checksum_bytes=""
+  local line=""
+  local matches=0
+  local expected=""
+  local actual=""
+  local entry_pattern='^([0-9a-f]{64})  ([^/[:space:]]+)$'
+
+  if [[ ! -f "$checksums_path" || -L "$checksums_path" ]]; then
+    error "Release checksum file is missing or not a regular file."
+    exit 1
+  fi
+  if [[ ! -f "$archive_path" || -L "$archive_path" ]]; then
+    error "Release archive is missing or not a regular file."
+    exit 1
+  fi
+
+  checksum_bytes="$(wc -c < "$checksums_path" | tr -d '[:space:]')"
+  if [[ ! "$checksum_bytes" =~ ^[0-9]+$ || "$checksum_bytes" -eq 0 || "$checksum_bytes" -gt 65536 ]]; then
+    error "Release checksum file is empty or exceeds 64 KiB."
+    exit 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    if [[ -z "$line" ]]; then
+      error "Release checksum file contains a blank line."
+      exit 1
+    fi
+    if [[ ! "$line" =~ $entry_pattern ]]; then
+      error "Release checksum file contains an invalid line."
+      exit 1
+    fi
+    if [[ "${BASH_REMATCH[2]}" == "$archive_name" ]]; then
+      matches=$((matches + 1))
+      expected="${BASH_REMATCH[1]}"
+    fi
+  done < "$checksums_path"
+
+  if [[ "$matches" -ne 1 ]]; then
+    error "Release checksum file does not contain exactly one entry for ${archive_name}."
+    exit 1
+  fi
+
+  actual="$(sha256_file "$archive_path")"
+  if [[ "$actual" != "$expected" ]]; then
+    error "Release archive checksum does not match SHA256SUMS."
+    exit 1
+  fi
+}
+
 resolve_latest_tag() {
   local effective_url
   effective_url="$(curl_with_token -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/ben-ranford/lopper/releases/latest")"
@@ -284,15 +356,23 @@ fi
 mkdir -p "$install_dir"
 
 work_dir="$(mktemp -d "${runner_temp}/lopper-action.XXXXXX")"
+checksums_path=""
 cleanup() {
   local status=$?
   rm -rf "$work_dir"
+  if [[ -n "${checksums_path}" ]]; then
+    rm -f "$checksums_path"
+  fi
   return "$status"
 }
 trap cleanup EXIT INT TERM
 
 archive_path="${work_dir}/${archive_name}"
+checksums_path="$(mktemp "${runner_temp}/lopper-checksums.XXXXXX")"
+checksums_url="https://github.com/ben-ranford/lopper/releases/download/${tag}/SHA256SUMS"
+curl_with_token -fsSL --max-filesize 65536 "$checksums_url" -o "$checksums_path"
 curl_with_token -fsSL "$download_url" -o "$archive_path"
+verify_release_archive "$checksums_path" "$archive_name" "$archive_path"
 if [[ "$goos" == "$WINDOWS_OS" ]]; then
   zip_member="${archive_name%.zip}/${binary_name}"
   share_prefix="${archive_name%.zip}/share/lopper/"

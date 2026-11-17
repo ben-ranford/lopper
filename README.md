@@ -40,6 +40,25 @@ To run Lopper without installing it:
 docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 ```
 
+## Verifying releases
+
+GitHub releases include `SHA256SUMS` for the archives and a keyless Cosign bundle, `SHA256SUMS.bundle`. The release workflow also publishes SLSA build provenance for those files and for the GHCR image. Replace `<tag>` with the release you downloaded, such as `v1.8.11`.
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify "lopper_<tag>_linux_amd64.tar.gz" --repo ben-ranford/lopper
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity "https://github.com/ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  SHA256SUMS
+gh attestation verify "oci://ghcr.io/ben-ranford/lopper:<tag>" --repo ben-ranford/lopper
+```
+
+Rolling releases use the same checksum files. Their Cosign certificate identity is `https://github.com/ben-ranford/lopper/.github/workflows/rolling.yml@refs/heads/main`.
+
+The GitHub Action downloads `SHA256SUMS` and stops if that file is missing, malformed, or does not match the archive. Releases published before this checksum asset exist cannot be installed by the updated action.
+
 ## Start here
 
 Rank the 20 dependencies with the most unused surface:
