@@ -1585,7 +1585,42 @@ func readFile(t *testing.T, path string) string {
 
 func writeFileMode(t *testing.T, path string, content string, mode os.FileMode) {
 	t.Helper()
-	testutil.MustInstallFile(t, path, content, mode)
+	// Keep this in the scripts tests. The regression proof copies those tests
+	// onto the base commit, which does not have testutil.MustInstallFile.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		t.Fatalf("create temp file for %s: %v", path, err)
+	}
+	tempPath := temp.Name()
+	defer func() {
+		if removeErr := os.Remove(tempPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			t.Errorf("remove temp file %s: %v", tempPath, removeErr)
+		}
+	}()
+	written, err := temp.WriteString(content)
+	if err != nil || written != len(content) {
+		closeErr := temp.Close()
+		t.Fatalf("write %s: wrote %d of %d bytes: %v (close: %v)", tempPath, written, len(content), err, closeErr)
+	}
+	if err := temp.Chmod(mode); err != nil {
+		closeErr := temp.Close()
+		t.Fatalf("chmod %s: %v (close: %v)", tempPath, err, closeErr)
+	}
+	if err := temp.Close(); err != nil {
+		t.Fatalf("close %s: %v", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			t.Fatalf("replace %s: rename: %v; remove: %v", path, err, removeErr)
+		}
+		if renameErr := os.Rename(tempPath, path); renameErr != nil {
+			t.Fatalf("rename %s to %s: %v", tempPath, path, renameErr)
+		}
+	}
 }
 
 func newMockGH(t *testing.T) (string, string) {
