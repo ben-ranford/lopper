@@ -317,6 +317,24 @@ dependencyResolutionManagement {
 	assertGradleCatalogWarningsContain(t, warnings, "multiple Gradle version catalog files declared for tools in "+gradleSettingsFileName+"; using "+gradleToolsCatalogPath, "unsupported Gradle version catalog source for dynamic in "+gradleSettingsFileName)
 }
 
+func TestParseGradleSettingsCatalogRefsCoversLiteralAndUnclosedCommentEdges(t *testing.T) {
+	content := "versionCatalogs {\n" +
+		"  create(\"escaped\") { from(files(\"gradle\\\\tools.versions.toml\")) }\n" +
+		"  create(\"open\") { /* never closed\n"
+	refs, warnings := parseGradleSettingsCatalogRefs(content, gradleSettingsFileName)
+	if len(refs) != 1 || refs[0].Name != "escaped" || !strings.Contains(refs[0].Path, "tools.versions.toml") {
+		t.Fatalf("escaped catalog path = %#v warnings %#v", refs, warnings)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	unterminated := "versionCatalogs { create(\"tail\") { from(files(\"unterminated) } }"
+	refs, _ = parseGradleSettingsCatalogRefs(unterminated, gradleSettingsFileName)
+	if len(refs) != 0 {
+		t.Fatalf("unterminated catalog quote produced refs %#v", refs)
+	}
+}
+
 func TestParseGradleSettingsCatalogRefsHandlesNestedBlocks(t *testing.T) {
 	settingsContent := `
 dependencyResolutionManagement {
