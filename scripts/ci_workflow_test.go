@@ -79,6 +79,46 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	}
 }
 
+func TestNativeWindowsCleanupProofIsRequiredAndRetained(t *testing.T) {
+	t.Parallel()
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	job := workflowJobByName(t, workflow.Jobs, "native-windows-hook-cleanup")
+	if job.RunsOn != "windows-latest" {
+		t.Fatalf("native cleanup proof runner = %q", job.RunsOn)
+	}
+	assertWorkflowJobPermissions(t, job, "native cleanup proof", map[string]string{"contents": "read"})
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, job, "native cleanup proof")
+	assertWorkflowStepOrder(t, job, "Checkout exact source", "Setup Go", "Bootstrap native proof receipt", "Exercise native fixture helper controls", "Run fixed native cleanup owner", "Finalize native fixture evidence", "Validate native proof files", "Upload native Windows proof")
+	for _, expectation := range []struct{ name, command, condition string }{
+		{"Bootstrap native proof receipt", "./scripts/native-windows-ci-fixture.ps1 -Mode bootstrap", ""},
+		{"Exercise native fixture helper controls", "./scripts/native-windows-ci-fixture.ps1 -Mode self-test", ""},
+		{"Run fixed native cleanup owner", "./scripts/native-windows-ci-fixture.ps1 -Mode execute", ""},
+		{"Finalize native fixture evidence", "./scripts/native-windows-ci-fixture.ps1 -Mode finally", "${{ always() }}"},
+		{"Validate native proof files", "./scripts/native-windows-ci-fixture.ps1 -Mode validate", "${{ always() }}"},
+	} {
+		step := workflowStepByName(t, workflow.Jobs, "native-windows-hook-cleanup", expectation.name)
+		if step.Run != expectation.command || step.If != expectation.condition {
+			t.Fatalf("native step %q has run=%q if=%q", expectation.name, step.Run, step.If)
+		}
+	}
+	upload := workflowStepByName(t, workflow.Jobs, "native-windows-hook-cleanup", "Upload native Windows proof")
+	assertCIArtifactAction(t, upload, "native cleanup evidence upload", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", map[string]string{
+		"name":              "native-windows-proof-${{ github.run_id }}-${{ github.run_attempt }}",
+		"path":              "${{ runner.temp }}/lopper-native-proof-${{ github.run_id }}-${{ github.run_attempt }}",
+		"if-no-files-found": "error",
+		"retention-days":    "14",
+	})
+	if upload.If != "${{ always() && !env.ACT }}" {
+		t.Fatalf("native evidence upload condition = %q", upload.If)
+	}
+	for _, aggregate := range []string{"verify", "verify-rolling"} {
+		if !slices.Contains(workflow.Jobs[aggregate].Needs, "native-windows-hook-cleanup") {
+			t.Fatalf("%s must require native Windows cleanup", aggregate)
+		}
+	}
+}
+
 func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	t.Parallel()
 
