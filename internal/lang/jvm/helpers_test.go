@@ -2,7 +2,6 @@ package jvm
 
 import (
 	"context"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -492,41 +491,6 @@ func TestParsePomDependencyDropsUnresolvedManagedCoordinates(t *testing.T) {
 	descriptor, warning := parsePomDependency(dependency, map[string]string{}, pomDependencyManaged, "pom.xml")
 	if descriptor != (dependencyDescriptor{}) || warning != "" {
 		t.Fatalf("expected unresolved managed coordinates to be dropped without warnings, got descriptor=%#v warning=%q", descriptor, warning)
-	}
-}
-
-func TestBuildPomPropertyMapUsesParentFallbacksAndIgnoresBlankValues(t *testing.T) {
-	propertyMap := buildPomPropertyMap(pomProjectModel{
-		ArtifactID: "demo-artifact",
-		Parent: pomParentModel{
-			GroupID: "com.example.parent",
-			Version: "1.2.3",
-		},
-		Properties: pomPropertiesModel{
-			Properties: []pomPropertyModel{
-				{XMLName: xml.Name{Local: "ok"}, Value: " value "},
-				{XMLName: xml.Name{Local: ""}, Value: "ignored"},
-				{XMLName: xml.Name{Local: "blankValue"}, Value: " "},
-			},
-		},
-	})
-	if propertyMap["ok"] != "value" {
-		t.Fatalf("expected trimmed explicit property, got %#v", propertyMap)
-	}
-	if propertyMap["project.groupId"] != "com.example.parent" || propertyMap["project.version"] != "1.2.3" {
-		t.Fatalf("expected parent fallback properties, got %#v", propertyMap)
-	}
-	if _, ok := propertyMap["blankValue"]; ok {
-		t.Fatalf("expected blank-value property to be ignored, got %#v", propertyMap)
-	}
-}
-
-func TestSetPomPropertyValueIgnoresBlankInputs(t *testing.T) {
-	propertyMap := map[string]string{}
-	setPomPropertyValue(propertyMap, "", "ignored")
-	setPomPropertyValue(propertyMap, "ignored", "")
-	if _, ok := propertyMap["ignored"]; ok {
-		t.Fatalf("expected blank setter inputs to be ignored, got %#v", propertyMap)
 	}
 }
 

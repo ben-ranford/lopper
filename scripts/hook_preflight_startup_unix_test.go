@@ -34,6 +34,7 @@ func TestHookPreflightRequiresOwnedGroupBeforeReader(t *testing.T) {
 		{name: "unterminated diagnostic", notice: "unterminated", wantStatus: 1},
 		{name: "unterminated fixture isolates native launch noise", notice: "unterminated", nativeNotice: true, wantStatus: 1},
 		{name: "other group diagnostic", notice: "other", wantStatus: 1},
+		{name: "recognised plus wrong group diagnostic", notice: "combined", wantStatus: 1},
 		{name: "other group after launch notice", notice: "other prefixed", wantStatus: 1},
 		{name: "existing verified launch notice", notice: "expected prefixed", wantStatus: 7, wantReader: true},
 		{name: "duplicate verified launch notices", notice: "duplicate prefixed", wantStatus: 1},
@@ -204,6 +205,8 @@ func preflightIsolatedLaunchInjection(notice string, nativeNotice bool) string {
 		}
 	case "duplicate":
 		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " " + diagnostic + " >&2\n"
+	case "combined":
+		injection += "\tprintf \"%s\\n%s\\n\" " + diagnostic + " \"--: child setpgid ($test_anchor_pid to 1): Operation not permitted\" >&2\n"
 	case "exited":
 		// The child exits before publishing its readiness permit.
 	case "unknown":
@@ -435,6 +438,8 @@ func preflightStartupNotice(notice string, pid int) string {
 		return expected + "\nadditional diagnostic\n"
 	case "duplicate":
 		return expected + "\n" + expected + "\n"
+	case "combined":
+		return expected + "\n" + preflightStartupNotice("other", pid)
 	case "nul":
 		return expected + "\n\x00"
 	case "unterminated":

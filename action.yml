@@ -1,5 +1,5 @@
 name: Scan with Lopper
-description: Run Lopper dependency-surface analysis in GitHub Actions.
+description: Run Lopper dependency-surface analysis on Linux, macOS and Windows in GitHub Actions.
 author: ben-ranford
 
 inputs:
@@ -220,6 +220,7 @@ runs:
       id: analyse
       shell: bash
       env:
+        LOPPER_BINARY: ${{ steps.install.outputs.binary-path }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_DASHBOARD_CONFIG: ${{ inputs.dashboard-config }}
