@@ -3,12 +3,16 @@ name: pinning-fixture-proof
 on:
   pull_request:
     types: [opened, synchronize]
+    paths:
+      - .github/workflows/pinning-fixture-proof.yml
+      - scripts/check_pinning_fixture_proof.py
 
 permissions:
   contents: read
 
 jobs:
   native-proof:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
