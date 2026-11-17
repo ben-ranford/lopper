@@ -18,6 +18,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Jobs declare their own token permissions. Keep this default empty so a
+# new job cannot inherit a broader repository token.
+permissions: {}
+
 jobs:
   verify-checks:
     runs-on: ubuntu-latest
