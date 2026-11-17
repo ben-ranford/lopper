@@ -3,6 +3,7 @@ package scripts
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -917,6 +918,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowStepOrder(t, publication,
 		"Validate release publication inputs",
 		"Write release asset checksums",
+		"Write release provenance predicate",
 		"Attest release assets",
 		"Install Cosign",
 		"Sign release checksum manifest",
@@ -935,11 +937,11 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 	assertWorkflowStepRunOmitsAll(t, checksums, "published release checksums", []string{"*.tar.gz", "*.zip", "*.vsix"})
 	attestAssets := workflowStepByName(t, workflow.Jobs, "publish", "Attest release assets")
-	assertWorkflowStringValues(t, []workflowStringValue{{
-		label: "release asset attestation action",
-		got:   attestAssets.Uses,
-		want:  "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
-	}})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release asset attestation action", got: attestAssets.Uses, want: "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"},
+		{label: "release asset attestation predicate", got: attestAssets.With["predicate-type"], want: "https://slsa.dev/provenance/v1"},
+		{label: "release asset attestation predicate path", got: attestAssets.With["predicate-path"], want: "${{ runner.temp }}/lopper-release-provenance.json"},
+	})
 	if strings.Contains(attestAssets.With["subject-path"], "*") {
 		t.Fatal("release asset attestation must list subjects explicitly")
 	}
@@ -1249,6 +1251,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		"Download rolling publication inputs",
 		"Validate rolling publication inputs",
 		"Write rolling asset checksums",
+		"Write release provenance predicate",
 		"Attest rolling assets",
 		"Install Cosign",
 		"Sign rolling checksum manifest",
@@ -5934,12 +5937,12 @@ func TestReleaseAttestationsStayOnPublishingJobs(t *testing.T) {
 	}
 	for _, stepName := range []string{"Attest amd64 release image", "Attest arm64 release image"} {
 		step := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-images", stepName)
-		if step.Uses != attestAction || step.With["push-to-registry"] != "true" || step.With["subject-name"] != "${{ steps.ghcr_image.outputs.name }}" {
+		if step.Uses != attestAction || step.With["push-to-registry"] != "true" || step.With["subject-name"] != "${{ steps.ghcr_image.outputs.name }}" || step.With["predicate-type"] != "https://slsa.dev/provenance/v1" || step.With["predicate-path"] != "${{ runner.temp }}/lopper-release-provenance.json" {
 			t.Fatalf("%s = %#v", stepName, step)
 		}
 	}
 	manifestAttest := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-manifest", "Attest multi-arch release image")
-	if manifestAttest.Uses != attestAction || manifestAttest.With["push-to-registry"] != "true" || manifestAttest.With["subject-digest"] != "${{ steps.manifest_digest.outputs.digest }}" {
+	if manifestAttest.Uses != attestAction || manifestAttest.With["push-to-registry"] != "true" || manifestAttest.With["subject-digest"] != "${{ steps.manifest_digest.outputs.digest }}" || manifestAttest.With["predicate-type"] != "https://slsa.dev/provenance/v1" {
 		t.Fatalf("multi-arch attestation = %#v", manifestAttest)
 	}
 	digestStep := workflowStepByName(t, orchestration.Jobs, "publish-ghcr-manifest", "Resolve published manifest digest")
@@ -5948,6 +5951,105 @@ func TestReleaseAttestationsStayOnPublishingJobs(t *testing.T) {
 		`[[ ! "${ref_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]`,
 		`Published manifest tags do not share one digest`,
 	})
+}
+
+func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T) {
+	t.Parallel()
+
+	type source struct {
+		path, job, sha string
+	}
+	sources := []source{
+		{path: ".github/workflows/release.yml", job: "publish", sha: "${{ needs.prepare-release.outputs.sha }}"},
+		{path: ".github/workflows/rolling.yml", job: "publish-rolling", sha: "${{ needs.prepare-rolling.outputs.source_sha }}"},
+		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-images", sha: "${{ inputs.source_sha || github.sha }}"},
+		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-manifest", sha: "${{ inputs.source_sha || github.sha }}"},
+		{path: ".github/workflows/docker-ghcr.yml", job: "build-and-push", sha: "${{ github.sha }}"},
+	}
+	var run string
+	for _, source := range sources {
+		workflow := readWorkflowConfig(t, source.path)
+		step := workflowStepByName(t, workflow.Jobs, source.job, "Write release provenance predicate")
+		if step.Env["RELEASE_SOURCE_SHA"] != source.sha {
+			t.Fatalf("%s %s source SHA = %q", source.path, source.job, step.Env["RELEASE_SOURCE_SHA"])
+		}
+		if run == "" {
+			run = step.Run
+		} else if step.Run != run {
+			t.Fatalf("%s %s provenance predicate script drifted", source.path, source.job)
+		}
+	}
+	if strings.Contains(run, `echo "${oidc_token}"`) || strings.Contains(run, "printf '%s' \"${oidc_token}\"") {
+		t.Fatal("provenance predicate script must not print the OIDC token")
+	}
+
+	workflowSHA := strings.Repeat("a", 40)
+	sourceSHA := strings.Repeat("b", 40)
+	claims := map[string]any{
+		"sha": workflowSHA, "ref": "refs/heads/main", "repository": "ben-ranford/lopper",
+		"event_name":       "workflow_dispatch",
+		"job_workflow_ref": "ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main",
+		"workflow_ref":     "ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main",
+		"repository_id":    "123", "repository_owner_id": 84072202, "runner_environment": "github-hosted",
+		"run_id": "99", "run_attempt": "1",
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "aaa." + base64.RawURLEncoding.EncodeToString(payload) + ".bbb"
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/bin/sh\nprintf '%s' \"$FIXTURE_JWT\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runPredicate := func(t *testing.T, releaseSHA, githubSHA string) ([]byte, error) {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", run)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FIXTURE_JWT="+token,
+			"RELEASE_SOURCE_SHA="+releaseSHA,
+			"RUNNER_TEMP="+dir,
+			"ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/token",
+			"ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token",
+			"GITHUB_SHA="+githubSHA,
+			"GITHUB_REPOSITORY=ben-ranford/lopper",
+			"GITHUB_REF=refs/heads/main",
+			"GITHUB_SERVER_URL=https://github.com",
+		)
+		output, err := cmd.CombinedOutput()
+		predicate, readErr := os.ReadFile(filepath.Join(dir, "lopper-release-provenance.json"))
+		if err != nil {
+			return output, err
+		}
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return predicate, nil
+	}
+	predicate, err := runPredicate(t, sourceSHA, workflowSHA)
+	if err != nil {
+		t.Fatalf("predicate writer failed: %v\n%s", err, predicate)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(predicate, &got); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, _ := got["buildDefinition"].(map[string]any)["resolvedDependencies"].([]any)
+	if len(dependencies) != 2 {
+		t.Fatalf("resolved dependencies = %#v", got)
+	}
+	assertTextContainsAll(t, string(predicate), "release provenance predicate", []string{
+		`"gitCommit":"` + workflowSHA + `"`,
+		`"gitCommit":"` + sourceSHA + `"`,
+		`"id":"https://github.com/ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main"`,
+	})
+	if _, err := runPredicate(t, sourceSHA, strings.Repeat("c", 40)); err == nil {
+		t.Fatal("predicate writer accepted an OIDC SHA that differs from GITHUB_SHA")
+	}
+	if _, err := runPredicate(t, "not-a-sha", workflowSHA); err == nil {
+		t.Fatal("predicate writer accepted a malformed release source SHA")
+	}
 }
 
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
