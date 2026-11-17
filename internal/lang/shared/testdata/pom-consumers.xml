@@ -1,0 +1,16 @@
+<project><artifactId>root</artifactId><parent><groupId>parent.group</groupId><version>9</version></parent>
+<properties><g>org.example</g><a>lib</a><v>1</v><blank> </blank><missing>${absent}</missing><cycle>${cycle}</cycle><project.groupId>override</project.groupId></properties>
+<dependencies>
+<dependency><groupId>${project.groupId}</groupId><artifactId>alias</artifactId><version>${project.parent.version}</version></dependency>
+<dependency><groupId>${g}</groupId><artifactId>pre-${a}-${a}</artifactId><version>v${v}</version></dependency>
+<dependency><groupId>${g}</groupId><artifactId>managed</artifactId></dependency>
+<dependency><groupId>${g}</groupId><artifactId>explicit</artifactId><version>3</version></dependency>
+<dependency><groupId>${missing}</groupId><artifactId>missing</artifactId></dependency>
+<dependency><groupId>${cycle}</groupId><artifactId>cycle</artifactId></dependency>
+</dependencies><dependencyManagement><dependencies>
+<dependency><groupId>${g}</groupId><artifactId>managed</artifactId><version>1</version></dependency>
+<dependency><groupId>${g}</groupId><artifactId>managed</artifactId><version>2</version></dependency>
+<dependency><groupId>${g}</groupId><artifactId>explicit</artifactId><version>4</version></dependency>
+<dependency><groupId>${g}</groupId><artifactId>bom</artifactId><version>${blank}</version><type>pom</type><scope>import</scope></dependency>
+<dependency><groupId>${g}</groupId><artifactId>only</artifactId><version>${missing}</version></dependency>
+</dependencies></dependencyManagement></project>
