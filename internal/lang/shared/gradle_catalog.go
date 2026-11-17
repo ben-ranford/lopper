@@ -842,7 +842,7 @@ func parseGradleSettingsCatalogRefs(content, relativePath string) ([]gradleCatal
 	warnings := make([]string, 0)
 	for offset := 0; offset < len(content); {
 		match := gradleCatalogCreateBlockPattern.FindStringSubmatchIndex(content[offset:])
-		if match == nil {
+		if len(match) == 0 {
 			break
 		}
 		bodyStart := offset + match[1]
