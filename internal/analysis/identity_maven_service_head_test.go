@@ -3,9 +3,11 @@ package analysis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -256,19 +258,23 @@ func TestMavenIdentityDiscoversPOMBeyondActualAdapterCandidateCap(t *testing.T) 
 		t.Fatal(err)
 	}
 	reads, decodes := observeMavenIdentityIO(t)
-	result, err := (&Service{Registry: registry}).Analyse(context.Background(), Request{RepoPath: repo, Language: "jvm", ScopeMode: ScopeModeRepo, Dependency: "widgets", Features: mustResolveDependencyIdentityPreviewFeatureSet(t), Cache: &CacheOptions{Enabled: false}})
-	if err != nil {
-		t.Fatal(err)
+	cachePath := filepath.Join(t.TempDir(), "cache")
+	request := newCacheRequest(t, repo, cachePath, false)
+	request.Language = "jvm"
+	request.ScopeMode = ScopeModeRepo
+	request.Dependency = "widgets"
+	request.Features = mustResolveDependencyIdentityPreviewFeatureSet(t)
+	result, err := (&Service{Registry: registry}).Analyse(context.Background(), request)
+	var failure *shared.GradleDiscoveryError
+	if !errors.As(err, &failure) || !errors.Is(err, shared.ErrGradleDiscoveryLimit) || !reflect.DeepEqual(result, report.Report{}) {
+		t.Fatalf("incomplete mixed discovery accepted: %+v %v", result, err)
 	}
-	if adapter.captured != 2048 || adapter.lateCaptured || *reads != 1 || *decodes != 1 {
-		t.Fatalf("cap recovery: captured=%d late=%v fallback reads/decode=%d/%d", adapter.captured, adapter.lateCaptured, *reads, *decodes)
+	if failure.Resource != "traversal entries" || failure.Limit != 4096 || failure.ObservedAtLeast != 4097 {
+		t.Fatalf("catalog boundary: %+v", failure)
 	}
-	if !strings.Contains(strings.Join(adapter.warnings, "\n"), "candidate files") {
-		t.Fatalf("missing real adapter cap warning: %v", adapter.warnings)
+	if adapter.captured != 0 || adapter.lateCaptured || *reads != 0 || *decodes != 0 {
+		t.Fatalf("partial capture/identity escaped: captured=%d late=%v reads/decodes=%d/%d", adapter.captured, adapter.lateCaptured, *reads, *decodes)
 	}
-	assertMavenServiceIdentity(t, result, "7.9.1", "pom.xml")
-	evidence := findIdentityDependency(t, result, "jvm", "widgets").Identity.Evidence
-	if len(evidence) != 2 || evidence[0] != "pom.xml" || evidence[1] != "zzz/pom.xml" {
-		t.Fatalf("captured plus recovered evidence: %v", evidence)
-	}
+	assertGradleCacheUnpublished(t, cachePath)
+
 }

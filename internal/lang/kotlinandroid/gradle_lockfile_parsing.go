@@ -1,6 +1,8 @@
 package kotlinandroid
 
 import (
+	"context"
+
 	"fmt"
 	"regexp"
 	"strings"
@@ -23,9 +25,20 @@ func parseGradleLockfiles(repoPath string) ([]dependencyDescriptor, bool, []stri
 }
 
 func parseGradleLockfileContent(content string) []dependencyDescriptor {
+	descriptors, err := parseGradleLockfileContentContext(context.Background(), content)
+	if err != nil {
+		return nil
+	}
+	return descriptors
+}
+
+func parseGradleLockfileContentContext(ctx context.Context, content string) ([]dependencyDescriptor, error) {
 	lines := strings.Split(content, "\n")
 	descriptors := make([]dependencyDescriptor, 0, len(lines))
 	for _, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -47,7 +60,7 @@ func parseGradleLockfileContent(content string) []dependencyDescriptor {
 			Version:  version,
 		})
 	}
-	return descriptors
+	return descriptors, ctx.Err()
 }
 
 func parseGradleLockfileFiles(files []discoveredGradleFile) []dependencyDescriptor {

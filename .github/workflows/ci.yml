@@ -1475,9 +1475,14 @@ jobs:
           GOFLAGS: ''
           GOCACHEPROG: ''
           GOAUTH: 'off'
+          # contents: read on this job. The pinned verifier only forwards absolute
+          # path variables, including TEMP, so the lookup token is a file there.
+          LOPPER_GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $proofArgs = @('test', '-count=1', '-json', '-p=1', '-timeout=20m', '-run', '^TestInstallScriptWindows', './internal/githubaction')
+          $releaseToken = Join-Path $env:TEMP 'lopper-release-lookup-token'
+          [System.IO.File]::WriteAllText($releaseToken, $env:LOPPER_GITHUB_TOKEN)
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
           $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
           $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
@@ -1510,6 +1515,7 @@ jobs:
             & $env:TRUSTED_VERIFY -Verifier $env:TRUSTED_VERIFIER -VerifierSha256 $env:TRUSTED_VERIFIER_SHA256 -Bootstrap $env:TRUSTED_BOOTSTRAP -BootstrapSha256 $env:TRUSTED_BOOTSTRAP_SHA256 -Receipt $env:TRUSTED_RECEIPT -ReceiptSha256 $env:TRUSTED_RECEIPT_SHA256 -Go $env:TRUSTED_GO -GoSha256 $env:TRUSTED_GO_SHA256 -CanonicalRoot $env:TRUSTED_ROOT -PythonSha256 $env:TRUSTED_PYTHON_SHA256 -Python3Sha256 $env:TRUSTED_PYTHON3_SHA256 -Repository $env:GITHUB_WORKSPACE -ProofArguments $proofArgs
             $proofExit = $LASTEXITCODE
           } finally {
+            Remove-Item -LiteralPath $releaseToken -Force -ErrorAction SilentlyContinue
             # Independent host-side post-authentication after joined subject completion/failure.
             Assert-TrustedProviderInvocation
           }
