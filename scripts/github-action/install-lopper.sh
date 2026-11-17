@@ -370,7 +370,10 @@ trap cleanup EXIT INT TERM
 archive_path="${work_dir}/${archive_name}"
 checksums_path="$(mktemp "${runner_temp}/lopper-checksums.XXXXXX")"
 checksums_url="https://github.com/ben-ranford/lopper/releases/download/${tag}/SHA256SUMS"
-curl_with_token -fsSL --max-filesize 65536 "$checksums_url" -o "$checksums_path"
+if ! curl_with_token -fsSL --max-filesize 65536 "$checksums_url" -o "$checksums_path"; then
+  error "Release checksum file could not be downloaded. Refusing to install ${archive_name}."
+  exit 1
+fi
 curl_with_token -fsSL "$download_url" -o "$archive_path"
 verify_release_archive "$checksums_path" "$archive_name" "$archive_path"
 if [[ "$goos" == "$WINDOWS_OS" ]]; then

@@ -119,7 +119,7 @@ func TestInstallScriptRejectsUnverifiedChecksums(t *testing.T) {
 		{"missing entry", "missing", "", "exactly one entry"},
 		{"malformed", "malformed", "", "invalid line"},
 		{"oversize", "oversize", "", "exceeds 64 KiB"},
-		{"checksum transport", "ok", "22", ""},
+		{"checksum transport", "ok", "22", "Refusing to install"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newReleaseResponseFixture(t, []byte(`[{"tag_name":"v1.8.12"}]`))
