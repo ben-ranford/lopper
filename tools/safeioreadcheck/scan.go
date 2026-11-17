@@ -207,29 +207,46 @@ func scanFile(file parsedFile, names safeioNames, consts map[string]int64) []raw
 			Callee:   "safeio." + callee,
 		}})
 	}
-
 	for _, decl := range file.astFile.Decls {
-		switch node := decl.(type) {
-		case *ast.FuncDecl:
-			fnName := functionName(node)
-			if node.Body == nil {
-				continue
-			}
-			collectReferences(node.Body, fnName, names, consts, record)
-		case *ast.GenDecl:
-			for _, spec := range node.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				fnName := packageValueName(node.Tok, value)
-				for _, expr := range value.Values {
-					collectReferences(expr, fnName, names, consts, record)
-				}
-			}
-		}
+		collectDeclReferences(decl, names, consts, record)
 	}
 	return refs
+}
+
+func collectDeclReferences(decl ast.Decl, names safeioNames, consts map[string]int64, record referenceRecorder) {
+	switch node := decl.(type) {
+	case *ast.FuncDecl:
+		collectFuncReferences(node, names, consts, record)
+	case *ast.GenDecl:
+		collectValueReferences(node, names, consts, record)
+	}
+}
+
+func collectFuncReferences(fn *ast.FuncDecl, names safeioNames, consts map[string]int64, record referenceRecorder) {
+	if fn.Body == nil {
+		return
+	}
+	scope := newNameScope(packageScope(consts))
+	declareFields(scope, fn.Recv)
+	if fn.Type != nil {
+		declareFields(scope, fn.Type.Params)
+		declareFields(scope, fn.Type.Results)
+	}
+	collectReferences(fn.Body, functionName(fn), names, scope, record)
+}
+
+func collectValueReferences(decl *ast.GenDecl, names safeioNames, consts map[string]int64, record referenceRecorder) {
+	scope := packageScope(consts)
+	for _, spec := range decl.Specs {
+		value, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		fnName := packageValueName(decl.Tok, value)
+		for _, expr := range value.Values {
+			collectReferences(expr, fnName, names, scope, record)
+		}
+	}
 }
 
 func functionName(fn *ast.FuncDecl) string {
@@ -276,24 +293,115 @@ func packageValueName(tok token.Token, spec *ast.ValueSpec) string {
 
 type referenceRecorder func(function, callee string, pos token.Pos)
 
-func collectReferences(node ast.Node, fn string, names safeioNames, consts map[string]int64, record referenceRecorder) {
+type walkFrame struct {
+	pushed bool
+}
+
+func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
 	var stack []ast.Node
+	var frames []walkFrame
 	ast.Inspect(node, func(current ast.Node) bool {
 		if current == nil {
+			frame := frames[len(frames)-1]
+			frames = frames[:len(frames)-1]
 			stack = stack[:len(stack)-1]
+			if frame.pushed {
+				scope = scope.parent
+			}
 			return false
 		}
 		var parent ast.Node
 		if len(stack) > 0 {
 			parent = stack[len(stack)-1]
 		}
-		noteReference(current, parent, fn, names, consts, record)
+		pushed := false
+		if child, ok := nestedScope(current, scope); ok {
+			scope = child
+			pushed = true
+		}
+		bindNode(current, scope)
+		noteReference(current, parent, fn, names, scope, record)
 		stack = append(stack, current)
+		frames = append(frames, walkFrame{pushed: pushed})
 		return true
 	})
 }
 
-func noteReference(node, parent ast.Node, fn string, names safeioNames, consts map[string]int64, record referenceRecorder) {
+func nestedScope(node ast.Node, parent *nameScope) (*nameScope, bool) {
+	switch typed := node.(type) {
+	case *ast.BlockStmt, *ast.FuncLit:
+		return newNameScope(parent), true
+	case *ast.IfStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.ForStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.SwitchStmt:
+		return scopeForDefine(typed.Init, parent)
+	case *ast.TypeSwitchStmt:
+		return scopeForDefine(typed.Assign, parent)
+	case *ast.RangeStmt:
+		if typed.Tok == token.DEFINE {
+			return newNameScope(parent), true
+		}
+	}
+	return parent, false
+}
+
+func scopeForDefine(stmt ast.Stmt, parent *nameScope) (*nameScope, bool) {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok || assign.Tok != token.DEFINE {
+		return parent, false
+	}
+	return newNameScope(parent), true
+}
+
+func bindNode(node ast.Node, scope *nameScope) {
+	switch typed := node.(type) {
+	case *ast.GenDecl:
+		if typed.Tok == token.CONST || typed.Tok == token.VAR {
+			bindGenDecl(scope, typed)
+		}
+	case *ast.FuncLit:
+		declareFields(scope, typed.Type.Params)
+		declareFields(scope, typed.Type.Results)
+	case *ast.AssignStmt:
+		if typed.Tok == token.DEFINE {
+			declareExprs(scope, typed.Lhs)
+		}
+	case *ast.RangeStmt:
+		if typed.Tok == token.DEFINE {
+			declareExpr(scope, typed.Key)
+			declareExpr(scope, typed.Value)
+		}
+	case *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt:
+		declareDefineInit(scope, defineInit(typed))
+	}
+}
+
+func defineInit(node ast.Node) ast.Stmt {
+	switch typed := node.(type) {
+	case *ast.IfStmt:
+		return typed.Init
+	case *ast.ForStmt:
+		return typed.Init
+	case *ast.SwitchStmt:
+		return typed.Init
+	case *ast.TypeSwitchStmt:
+		return typed.Assign
+	default:
+		return nil
+	}
+}
+
+func declareDefineInit(scope *nameScope, stmt ast.Stmt) {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok || assign.Tok != token.DEFINE {
+		return
+	}
+	declareExprs(scope, assign.Lhs)
+}
+
+func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
 	switch typed := node.(type) {
 	case *ast.SelectorExpr:
 		pkg, ok := typed.X.(*ast.Ident)
@@ -303,7 +411,7 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, consts m
 		if _, known := names.selectors[pkg.Name]; !known {
 			return
 		}
-		if !considerCallee(typed.Sel.Name, parent, typed, consts) {
+		if !considerCallee(typed.Sel.Name, parent, typed, scope) {
 			return
 		}
 		record(fn, typed.Sel.Name, typed.Pos())
@@ -314,14 +422,14 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, consts m
 		if !names.dot && !names.samePkg {
 			return
 		}
-		if !considerCallee(typed.Name, parent, typed, consts) {
+		if !considerCallee(typed.Name, parent, typed, scope) {
 			return
 		}
 		record(fn, typed.Name, typed.Pos())
 	}
 }
 
-func considerCallee(name string, parent, fun ast.Node, consts map[string]int64) bool {
+func considerCallee(name string, parent, fun ast.Node, scope *nameScope) bool {
 	switch name {
 	case "ReadFile", "ReadFileUnder", "ReadFileWithinRoot":
 		return true
@@ -336,7 +444,7 @@ func considerCallee(name string, parent, fun ast.Node, consts map[string]int64) 
 	if len(call.Args) == 0 {
 		return true
 	}
-	value, known := evalInt(call.Args[len(call.Args)-1], consts, 0)
+	value, known := evalInt(call.Args[len(call.Args)-1], scope.visibleInts(), 0)
 	return known && value <= 0
 }
 
@@ -344,132 +452,310 @@ func isLimitedRead(name string) bool {
 	return strings.HasPrefix(name, "Read") && strings.HasSuffix(name, "Limit")
 }
 
-func collectConstValues(files []*ast.File) map[string]int64 {
-	type binding struct {
-		name string
-		expr ast.Expr
-		iota int64
+type nameScope struct {
+	parent *nameScope
+	names  map[string]bool
+	ints   map[string]int64
+}
+
+func newNameScope(parent *nameScope) *nameScope {
+	return &nameScope{parent: parent, names: map[string]bool{}, ints: map[string]int64{}}
+}
+
+func packageScope(consts map[string]int64) *nameScope {
+	scope := newNameScope(nil)
+	for name, value := range consts {
+		scope.declare(name, value, true)
 	}
-	var bindings []binding
-	for _, file := range files {
-		if file == nil {
+	return scope
+}
+
+func (s *nameScope) declare(name string, value int64, ok bool) {
+	if s == nil || name == "" || name == "_" {
+		return
+	}
+	s.names[name] = true
+	if ok {
+		s.ints[name] = value
+		return
+	}
+	delete(s.ints, name)
+}
+
+func (s *nameScope) visibleInts() map[string]int64 {
+	out := map[string]int64{}
+	seen := map[string]bool{}
+	for scope := s; scope != nil; scope = scope.parent {
+		for name := range scope.names {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if value, ok := scope.ints[name]; ok {
+				out[name] = value
+			}
+		}
+	}
+	return out
+}
+
+func declareFields(scope *nameScope, fields *ast.FieldList) {
+	if fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		declareExprs(scope, identsToExprs(field.Names))
+	}
+}
+
+func identsToExprs(names []*ast.Ident) []ast.Expr {
+	exprs := make([]ast.Expr, 0, len(names))
+	for _, name := range names {
+		exprs = append(exprs, name)
+	}
+	return exprs
+}
+
+func declareExprs(scope *nameScope, exprs []ast.Expr) {
+	for _, expr := range exprs {
+		declareExpr(scope, expr)
+	}
+}
+
+func declareExpr(scope *nameScope, expr ast.Expr) {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return
+	}
+	scope.declare(ident.Name, 0, false)
+}
+
+func bindGenDecl(scope *nameScope, gen *ast.GenDecl) {
+	iotaValue := int64(0)
+	var previous []ast.Expr
+	for _, spec := range gen.Specs {
+		value, ok := spec.(*ast.ValueSpec)
+		if !ok {
 			continue
 		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
-				continue
-			}
-			iotaValue := int64(0)
-			var previous []ast.Expr
-			for _, spec := range gen.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				exprs := value.Values
-				if len(exprs) == 0 {
-					exprs = previous
-				} else {
-					previous = exprs
-				}
-				for i, name := range value.Names {
-					if name == nil || i >= len(exprs) {
-						continue
-					}
-					bindings = append(bindings, binding{name: name.Name, expr: exprs[i], iota: iotaValue})
-				}
-				iotaValue++
-			}
+		exprs := valueExprs(value, previous)
+		if len(value.Values) > 0 {
+			previous = exprs
 		}
+		bindSpec(scope, value, exprs, iotaValue)
+		iotaValue++
 	}
+}
 
-	values := map[string]int64{}
-	progress := true
-	for progress {
-		progress = false
-		for _, binding := range bindings {
-			if _, done := values[binding.name]; done {
-				continue
-			}
-			value, ok := evalInt(binding.expr, values, binding.iota)
-			if !ok {
-				continue
-			}
-			values[binding.name] = value
-			progress = true
+func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue int64) {
+	known := scope.visibleInts()
+	for index, name := range spec.Names {
+		if name == nil {
+			continue
 		}
+		var value int64
+		ok := false
+		if index < len(exprs) {
+			value, ok = evalInt(exprs[index], known, iotaValue)
+		}
+		scope.declare(name.Name, value, ok)
+	}
+}
+
+type constBinding struct {
+	name string
+	expr ast.Expr
+	iota int64
+}
+
+func collectConstValues(files []*ast.File) map[string]int64 {
+	return resolveConstBindings(constBindings(files))
+}
+
+func constBindings(files []*ast.File) []constBinding {
+	var bindings []constBinding
+	for _, file := range files {
+		bindings = append(bindings, bindingsInFile(file)...)
+	}
+	return bindings
+}
+
+func bindingsInFile(file *ast.File) []constBinding {
+	if file == nil {
+		return nil
+	}
+	var bindings []constBinding
+	for _, decl := range file.Decls {
+		bindings = append(bindings, bindingsInDecl(decl)...)
+	}
+	return bindings
+}
+
+func bindingsInDecl(decl ast.Decl) []constBinding {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
+		return nil
+	}
+	return bindingsInGenDecl(gen)
+}
+
+func bindingsInGenDecl(gen *ast.GenDecl) []constBinding {
+	var bindings []constBinding
+	iotaValue := int64(0)
+	var previous []ast.Expr
+	for _, spec := range gen.Specs {
+		value, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		exprs := valueExprs(value, previous)
+		if len(value.Values) > 0 {
+			previous = exprs
+		}
+		bindings = append(bindings, namedBindings(value.Names, exprs, iotaValue)...)
+		iotaValue++
+	}
+	return bindings
+}
+
+func valueExprs(value *ast.ValueSpec, previous []ast.Expr) []ast.Expr {
+	if len(value.Values) == 0 {
+		return previous
+	}
+	return value.Values
+}
+
+func namedBindings(names []*ast.Ident, exprs []ast.Expr, iotaValue int64) []constBinding {
+	var bindings []constBinding
+	for i, name := range names {
+		if name == nil || i >= len(exprs) {
+			continue
+		}
+		bindings = append(bindings, constBinding{name: name.Name, expr: exprs[i], iota: iotaValue})
+	}
+	return bindings
+}
+
+func resolveConstBindings(bindings []constBinding) map[string]int64 {
+	values := map[string]int64{}
+	for resolvePending(bindings, values) {
 	}
 	return values
+}
+
+func resolvePending(bindings []constBinding, values map[string]int64) bool {
+	progress := false
+	for _, binding := range bindings {
+		if _, done := values[binding.name]; done {
+			continue
+		}
+		value, ok := evalInt(binding.expr, values, binding.iota)
+		if !ok {
+			continue
+		}
+		values[binding.name] = value
+		progress = true
+	}
+	return progress
 }
 
 func evalInt(expr ast.Expr, known map[string]int64, iotaValue int64) (int64, bool) {
 	switch typed := expr.(type) {
 	case *ast.BasicLit:
-		if typed.Kind != token.INT {
-			return 0, false
-		}
-		value, err := strconv.ParseInt(typed.Value, 0, 64)
-		if err != nil {
-			return 0, false
-		}
-		return value, true
+		return evalBasicInt(typed)
 	case *ast.ParenExpr:
 		return evalInt(typed.X, known, iotaValue)
 	case *ast.UnaryExpr:
-		if typed.Op != token.SUB {
-			return 0, false
-		}
-		value, ok := evalInt(typed.X, known, iotaValue)
-		if !ok {
-			return 0, false
-		}
-		return -value, true
+		return evalUnaryInt(typed, known, iotaValue)
 	case *ast.Ident:
-		if typed.Name == "iota" {
-			return iotaValue, true
-		}
-		value, ok := known[typed.Name]
-		return value, ok
+		return evalIdentInt(typed, known, iotaValue)
 	case *ast.BinaryExpr:
-		left, lok := evalInt(typed.X, known, iotaValue)
-		right, rok := evalInt(typed.Y, known, iotaValue)
-		if !lok || !rok {
-			return 0, false
-		}
-		switch typed.Op {
-		case token.ADD:
-			return left + right, true
-		case token.SUB:
-			return left - right, true
-		case token.MUL:
-			return left * right, true
-		case token.QUO:
-			if right == 0 {
-				return 0, false
-			}
-			return left / right, true
-		case token.SHL:
-			if right < 0 || right >= 63 {
-				return 0, false
-			}
-			return left << right, true
-		case token.SHR:
-			if right < 0 || right >= 63 {
-				return 0, false
-			}
-			return left >> right, true
-		default:
-			return 0, false
-		}
+		return evalBinaryInt(typed, known, iotaValue)
 	case *ast.CallExpr:
-		if len(typed.Args) != 1 || !isIntConversion(typed.Fun) {
-			return 0, false
-		}
-		return evalInt(typed.Args[0], known, iotaValue)
+		return evalCallInt(typed, known, iotaValue)
 	default:
 		return 0, false
 	}
+}
+
+func evalBasicInt(lit *ast.BasicLit) (int64, bool) {
+	if lit.Kind != token.INT {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(lit.Value, 0, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func evalUnaryInt(expr *ast.UnaryExpr, known map[string]int64, iotaValue int64) (int64, bool) {
+	if expr.Op != token.SUB {
+		return 0, false
+	}
+	value, ok := evalInt(expr.X, known, iotaValue)
+	if !ok {
+		return 0, false
+	}
+	return -value, true
+}
+
+func evalIdentInt(ident *ast.Ident, known map[string]int64, iotaValue int64) (int64, bool) {
+	if ident.Name == "iota" {
+		return iotaValue, true
+	}
+	value, ok := known[ident.Name]
+	return value, ok
+}
+
+func evalBinaryInt(expr *ast.BinaryExpr, known map[string]int64, iotaValue int64) (int64, bool) {
+	left, lok := evalInt(expr.X, known, iotaValue)
+	right, rok := evalInt(expr.Y, known, iotaValue)
+	if !lok || !rok {
+		return 0, false
+	}
+	return applyBinaryInt(expr.Op, left, right)
+}
+
+func applyBinaryInt(op token.Token, left, right int64) (int64, bool) {
+	switch op {
+	case token.ADD:
+		return left + right, true
+	case token.SUB:
+		return left - right, true
+	case token.MUL:
+		return left * right, true
+	case token.QUO:
+		return applyQuotient(left, right)
+	case token.SHL, token.SHR:
+		return applyShift(op, left, right)
+	default:
+		return 0, false
+	}
+}
+
+func applyQuotient(left, right int64) (int64, bool) {
+	if right == 0 {
+		return 0, false
+	}
+	return left / right, true
+}
+
+func applyShift(op token.Token, left, right int64) (int64, bool) {
+	if right < 0 || right >= 63 {
+		return 0, false
+	}
+	if op == token.SHL {
+		return left << right, true
+	}
+	return left >> right, true
+}
+
+func evalCallInt(expr *ast.CallExpr, known map[string]int64, iotaValue int64) (int64, bool) {
+	if len(expr.Args) != 1 || !isIntConversion(expr.Fun) {
+		return 0, false
+	}
+	return evalInt(expr.Args[0], known, iotaValue)
 }
 
 func isIntConversion(expr ast.Expr) bool {

@@ -58,8 +58,21 @@ second coverage pass remain in `verify-checks`. Both coverage thresholds and rep
 publication permissions are unchanged. `verify` and `verify (rolling)` retain their
 check names and aggregate the corresponding checks and tests jobs.
 The primary `verify` check also requires `regression-proof-windows` on
-`windows-latest` and `regression-proof-darwin` on `macos-26`, with the same event
-SHA and no persisted checkout credentials.
+`windows-latest`, `regression-proof-darwin` on `macos-26`, and
+`native-windows-hook-cleanup` on `windows-latest`, each with the same event SHA
+and no persisted checkout credentials. The native job runs the fixed 16-case
+drive/UNC cleanup integration suite and uploads a run/attempt-bound receipt with
+its raw test streams, even when setup or cleanup fails. Both aggregates block
+when the native job fails, is cancelled, or is skipped.
+Before setup, its self-test exercises the allocator's fixed predicates with
+simulated SMB observations and isolated local scratch; it does not provision a
+share. Cleanup retains the allocation unless repeated share, current-user,
+open-file, client-connection, ACL, and marker-only inventory observations all
+pass. These observations are snapshots: the run/attempt-unique share and
+current-SID-only access premise still excludes other same-SID actors during
+teardown. The helper removes only its authenticated marker and uses a
+nonrecursive directory removal; it never force-closes SMB users or recursively
+deletes an unexpected child.
 They fail if any required execution job fails, is cancelled, or is skipped.
 The primary aggregate forwards the exact report artifact ID to the existing
 publication job. On hosted pull requests, `verify` also downloads that current-run
@@ -143,7 +156,7 @@ CI admission is independent of GitHub's required-context summary: `CLEAN` alone 
 
 | Workflow | Expected jobs |
 | --- | --- |
-| `.github/workflows/ci.yml` | `verify-checks`, `verification checks (rolling)`, `verify-tests / tests`, `verify-rolling-tests / tests`, `regression-proof-windows`, `regression-proof-darwin`, `verify`, `verify (rolling)`, `os-smoke (ubuntu-latest)`, `os-smoke (macos-26)`, `vscode-smoke (ubuntu-latest)`, `vscode-smoke (macos-26)`, `homebrew-tap-verify`, `publish-pr-reports`, one current-attempt `suppression-artifact-<artifact ID>` locator |
+| `.github/workflows/ci.yml` | `verify-checks`, `verification checks (rolling)`, `verify-tests / tests`, `verify-rolling-tests / tests`, `regression-proof-windows`, `native-windows-hook-cleanup`, `regression-proof-darwin`, `verify`, `verify (rolling)`, `os-smoke (ubuntu-latest)`, `os-smoke (macos-26)`, `vscode-smoke (ubuntu-latest)`, `vscode-smoke (macos-26)`, `homebrew-tap-verify`, `publish-pr-reports`, one current-attempt `suppression-artifact-<artifact ID>` locator |
 | `.github/workflows/windows-runtime.yml` | `runtime-cancellation` |
 
 The audit fully enumerates exact-head PR workflow runs and chooses the newest matching run generation and its current attempt, even when that generation failed or is pending. An older successful run cannot replace it. Historical cancellations from superseded generations do not block a newer complete success. Jobs are never combined across run IDs; a partial rerun may retain successful jobs only from the same immutable run. Missing, failed, pending, canceled, skipped, duplicate, or inconsistent selected evidence holds admission. Rerun the affected current PR workflow after resolving a failure; use **Re-run all jobs** when attempt evidence is incomplete or ambiguous. A manual `workflow_dispatch` run cannot replace the PR event proof.
@@ -206,6 +219,10 @@ When running locally with `act`, target the Linux-backed jobs explicitly (for ex
 Lopper ships the `Scan with Lopper` composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds Lopper arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, SARIF, preview dashboard mode, and preview base/head PR review mode.
 
 Pin both the action ref and the `version` input for fully reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; when the workflow references a floating action tag such as `v1` or `v1.7`, it resolves the newest stable Lopper release in that series; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
+
+The action supports Linux, macOS and Windows runners on amd64 and arm64. On Windows it uses Git for Windows Bash, downloads the published ZIP, and installs `lopper.exe`; the analysis step invokes that exact installed binary. Self-hosted Windows runners need the standard Git for Windows utilities, including `unzip` and `cygpath`. Floating versions also require Python 3 (`python3`, or `python` on Windows). Paths containing spaces are supported.
+
+The required hosted `windows-2025` proof job verifies the floating and fixed Windows installer paths against published releases. Before setup-python or subject Go commands, it authenticates the pinned trusted Python provider and requires the runner's completed CPython 3.13.16 x64 cache entry. The provider then builds and joins each permitted proof process to its owner, checks provider custody before and after, and runs the Windows installer tests plus the PR regression proof. This is a hosted native Windows check; local cross-compilation does not replace it.
 
 The standard release workflow publishes the semver action ref and updates the floating action refs with every stable release.
 
@@ -398,7 +415,7 @@ jobs:
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
 - `make safeio-read-check`: fail when a production Go file adds a zero-limit `safeio.ReadFile`, `safeio.ReadFileUnder`, or `safeio.ReadFileWithinRoot` parser read, or passes a non-positive constant to a limited safeio read, unless `.github/safeio-zero-limit-allowlist.txt` lists that callsite with its own rationale. See [Safe I/O read bounds](safeio-read-bounds.md).
-- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, and `windows-latest`.
+- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, `macos-26-intel`, `windows-latest`, and `windows-2025`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
