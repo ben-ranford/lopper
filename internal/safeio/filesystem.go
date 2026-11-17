@@ -291,27 +291,36 @@ func openRootPathComponents(root Root, currentPath string, parts []string, openR
 		if part == "" || part == "." {
 			continue
 		}
-		requestedPath := filepath.Join(currentPath, part)
-		if policy == allowMissingRootSuffix {
-			exists, err := rootChildExists(root, part)
-			if err != nil {
-				return nil, "", nil, closeRootWithError(root, err)
-			}
-			if !exists {
-				return root, currentPath, parts[idx:], nil
-			}
-		}
-		next, nextPath, err := openRootChildFn(root, part, requestedPath)
+		nextRoot, nextPath, missingSuffix, done, err := openRootPathComponent(root, currentPath, parts, idx, part, openRootChildFn, policy)
 		if err != nil {
-			return nil, "", nil, closeRootWithError(root, err)
+			return nil, "", nil, err
 		}
-		if err := root.Close(); err != nil {
-			return nil, "", nil, closeRootWithError(next, err)
+		root, currentPath = nextRoot, nextPath
+		if done {
+			return root, currentPath, missingSuffix, nil
 		}
-		root = next
-		currentPath = nextPath
 	}
 	return root, currentPath, nil, nil
+}
+
+func openRootPathComponent(root Root, currentPath string, parts []string, idx int, part string, openRootChildFn func(Root, string, string) (Root, string, error), policy rootPathPolicy) (Root, string, []string, bool, error) {
+	if policy == allowMissingRootSuffix {
+		exists, err := rootChildExists(root, part)
+		if err != nil {
+			return nil, "", nil, false, closeRootWithError(root, err)
+		}
+		if !exists {
+			return root, currentPath, parts[idx:], true, nil
+		}
+	}
+	next, nextPath, err := openRootChildFn(root, part, filepath.Join(currentPath, part))
+	if err != nil {
+		return nil, "", nil, false, closeRootWithError(root, err)
+	}
+	if err := root.Close(); err != nil {
+		return nil, "", nil, false, closeRootWithError(next, err)
+	}
+	return next, nextPath, nil, false, nil
 }
 
 func rootChildExists(root Root, name string) (bool, error) {
@@ -384,6 +393,26 @@ func OpenPinnedFile(root Root, name string) (_ File, err error) {
 	}
 	if len(roots) == 0 {
 		return file, nil
+	}
+	return &pinnedFile{File: file, roots: roots}, nil
+}
+
+// OpenPinnedRegularFile opens a rooted leaf without waiting on FIFO-like
+// objects and returns it only when the descriptor is the same regular file
+// observed before the open. It is intended for strict readers that must not
+// let a replaced special file block before descriptor validation.
+func OpenPinnedRegularFile(root Root, name string) (_ File, err error) {
+	cleanName, parts := splitPinnedPath(name)
+	if len(parts) <= 1 {
+		return openPinnedRegularChildAtPath(root, cleanName, cleanName)
+	}
+	roots, leafRoot, leafName, leafPath, err := openPinnedAncestors(root, parts)
+	if err != nil {
+		return nil, err
+	}
+	file, err := openPinnedRegularChildAtPath(leafRoot, leafName, leafPath)
+	if err != nil {
+		return nil, closeRootsWithError(roots, err)
 	}
 	return &pinnedFile{File: file, roots: roots}, nil
 }
@@ -511,6 +540,43 @@ func openPinnedChildAtPath(root Root, name, path string, kind pinnedChildKind) (
 		return nil, closeFileWithError(file, fs.ErrInvalid)
 	}
 	if kind == pinnedChildExpectDirectory && !openedInfo.IsDir() {
+		return nil, closeFileWithError(file, fs.ErrInvalid)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, closeFileWithError(file, fmt.Errorf("path changed while opening: %s", path))
+	}
+	return file, nil
+}
+
+func openPinnedRegularChildAtPath(root Root, name, path string) (_ File, err error) {
+	return openPinnedRegularChildAtPathWithFlags(root, name, path, regularReadOpenFlags)
+}
+
+func openPinnedRegularChildAtPathWithFlags(root Root, name, path string, openFlags func() (int, error)) (_ File, err error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, &targetPathSymlinkError{path: path}
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fs.ErrInvalid
+	}
+
+	flags, err := openFlags()
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.OpenFile(name, flags, 0)
+	if err != nil {
+		return nil, normalizePathEscapesRootError(path, err)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, closeFileWithError(file, err)
+	}
+	if !openedInfo.Mode().IsRegular() {
 		return nil, closeFileWithError(file, fs.ErrInvalid)
 	}
 	if !os.SameFile(info, openedInfo) {
@@ -807,27 +873,16 @@ func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message 
 }
 
 func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, message string, expected fs.FileInfo, linkErr error) (restored, retained bool, returnErr error) {
-	source, err := OpenPinnedFile(root, stagedRel)
+	source, err := openQuarantinedCopySource(root, stagedRel, originalRel, message, expected, linkErr)
 	if err != nil {
-		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+		return false, false, err
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, source.Close())
 	}()
-	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
-		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
-	}
-
-	target, err := root.OpenFile(originalRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, chmodSupportedMode(expected.Mode()))
+	target, createdInfo, err := createQuarantinedCopyTarget(root, originalRel, message, expected, linkErr)
 	if err != nil {
-		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
-	}
-	createdInfo, err := target.Stat()
-	if err != nil {
-		// No identity is available for the exclusively created path. A concurrent
-		// replacement between the failed Stat and any path lookup must never be
-		// removed as if it were our candidate.
-		return false, false, closeCreatedFileWithoutIdentity(target, err)
+		return false, false, err
 	}
 	cleanupCreated := true
 	defer func() {
@@ -835,13 +890,56 @@ func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, me
 			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
 		}
 	}()
+	createdInfo, cleanupCreated, err = copyIntoQuarantinedTarget(target, source, root, originalRel, message, expected, createdInfo)
+	if err != nil {
+		return false, false, err
+	}
+	if err := validateQuarantinedCopyPublication(root, source, stagedRel, originalRel, message, expected, createdInfo); err != nil {
+		return false, false, err
+	}
+	// Without a hard link, a path-only check of originalRel cannot bind the
+	// staged source to that copy. Retain staging so a writer that replaces the
+	// copy immediately after this check cannot cause us to delete the source.
+	return true, true, nil
+}
+
+func openQuarantinedCopySource(root Root, stagedRel, originalRel, message string, expected fs.FileInfo, linkErr error) (result File, returnErr error) {
+	source, err := OpenPinnedFile(root, stagedRel)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, source.Close())
+		}
+	}()
+	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
+		return nil, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	return source, nil
+}
+
+func createQuarantinedCopyTarget(root Root, originalRel, message string, expected fs.FileInfo, linkErr error) (File, fs.FileInfo, error) {
+	target, err := root.OpenFile(originalRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, chmodSupportedMode(expected.Mode()))
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	createdInfo, err := target.Stat()
+	if err != nil {
+		// Without an identity, a concurrent replacement must never be removed as our candidate.
+		return nil, nil, closeCreatedFileWithoutIdentity(target, err)
+	}
+	return target, createdInfo, nil
+}
+
+func copyIntoQuarantinedTarget(target, source File, root Root, originalRel, message string, expected fs.FileInfo, createdInfo fs.FileInfo) (fs.FileInfo, bool, error) {
 	if _, err := io.Copy(target, source); err != nil {
 		if info, statErr := target.Stat(); statErr == nil {
 			createdInfo = info
 		} else {
 			err = errors.Join(err, statErr)
 		}
-		return false, false, closeFilePreservingPrimary(target, err)
+		return createdInfo, true, closeFilePreservingPrimary(target, err)
 	}
 	if err := target.Chmod(chmodSupportedMode(expected.Mode())); err != nil {
 		if info, statErr := target.Stat(); statErr == nil {
@@ -849,31 +947,31 @@ func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, me
 		} else {
 			err = errors.Join(err, statErr)
 		}
-		return false, false, closeFilePreservingPrimary(target, err)
+		return createdInfo, true, closeFilePreservingPrimary(target, err)
 	}
 	refreshedInfo, err := target.Stat()
 	if err != nil {
-		cleanupCreated = false
-		return false, false, errors.Join(err, target.Close(), cleanupCreatedFileIfSameFile(root, originalRel, createdInfo, message))
+		return createdInfo, false, errors.Join(err, target.Close(), cleanupCreatedFileIfSameFile(root, originalRel, createdInfo, message))
 	}
 	createdInfo = refreshedInfo
 	if err := target.Close(); err != nil {
-		return false, false, err
+		return createdInfo, true, err
 	}
+	return createdInfo, true, nil
+}
+
+func validateQuarantinedCopyPublication(root Root, source File, stagedRel, originalRel, message string, expected, createdInfo fs.FileInfo) error {
 	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
-		return false, false, err
+		return err
 	}
 	restoredInfo, err := publishedRegularFileInfo(root, originalRel, message)
 	if err != nil {
-		return false, false, err
+		return err
 	}
 	if !sameRegularFile(createdInfo, restoredInfo) {
-		return false, false, fmt.Errorf("%s: %s", message, originalRel)
+		return fmt.Errorf("%s: %s", message, originalRel)
 	}
-	// Without a hard link, a path-only check of originalRel cannot bind the
-	// staged source to that copy. Retain staging so a writer that replaces the
-	// copy immediately after this check cannot cause us to delete the source.
-	return true, true, nil
+	return nil
 }
 
 func finishRestoredQuarantinedPath(root Root, stagedRel, message string, expected fs.FileInfo) (bool, error) {
