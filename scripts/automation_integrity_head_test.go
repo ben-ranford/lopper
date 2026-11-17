@@ -92,7 +92,7 @@ jobs:
         uses: actions/checkout@v7
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := pinningCheckCommand(repoDir)
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -126,7 +126,7 @@ runs:
       uses: actions/cache@v4
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := pinningCheckCommand(repoDir)
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,7 +156,7 @@ jobs:
     steps: *trusted_steps
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd := pinningCheckCommand(repoDir)
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -594,6 +594,13 @@ func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, er
 func automationExamplesFixtureCommand(scriptPath string) *exec.Cmd {
 	// Execute the interpreter so a writable script handle cannot cause ETXTBSY.
 	return exec.Command("sh", scriptPath)
+}
+
+func pinningCheckCommand(repoDir string) *exec.Cmd {
+	// Same ETXTBSY avoidance as the automation-examples fixture: the script is
+	// mode 0755 and was just written, so executing it directly can fail with
+	// "text file busy" before it produces the pinning diagnostic.
+	return exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 }
 
 func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, newCommand func(string) *exec.Cmd) (string, error) {
