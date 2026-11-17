@@ -359,8 +359,11 @@ func TestStaveSignalDeadlineReportsAStuckSubprocess(t *testing.T) {
 		t.Fatalf("start stuck helper: %v", err)
 	}
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+		if cmd.Process == nil {
+			return
+		}
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill stuck helper: %v", err)
 		}
 	})
 	done := make(chan error, 1)
