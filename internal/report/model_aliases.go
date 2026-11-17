@@ -4,6 +4,9 @@ import "github.com/ben-ranford/lopper/internal/report/model"
 
 const SchemaVersion = model.SchemaVersion
 
+type MavenManifest = model.MavenManifest
+type MavenDeclaration = model.MavenDeclaration
+
 type PythonManifestDocument = model.PythonManifestDocument
 
 type Report = model.Report

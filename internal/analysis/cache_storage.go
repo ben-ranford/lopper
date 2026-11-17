@@ -19,6 +19,7 @@ type cachePointer struct {
 }
 
 type cachedPayload struct {
+	Maven                               *mavenCacheEnvelope             `json:"maven,omitempty"`
 	PythonManifests                     []report.PythonManifestDocument `json:"pythonManifests,omitempty"`
 	PythonManifestCatalog               bool                            `json:"pythonManifestCatalog,omitempty"`
 	Report                              report.Report                   `json:"report"`
@@ -39,27 +40,32 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	if rejected {
 		return report.Report{}, false, nil
 	}
-	pointerData, err := safeio.ReadFileUnder(c.options.Path, pointerPath)
+	pointer, reason, err := c.readCachePointer(entry, pointerPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			c.metadata.Misses++
-			return report.Report{}, false, nil
-		}
 		return report.Report{}, false, err
 	}
-	var pointer cachePointer
-	if err = json.Unmarshal(pointerData, &pointer); err != nil {
+	if reason != "" {
 		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "pointer-corrupt"})
+		if reason != "missing" {
+			c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: reason})
+		}
 		return report.Report{}, false, nil
 	}
+
 	if pointer.InputDigest != entry.InputDigest {
 		c.metadata.Misses++
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "input-changed"})
 		return report.Report{}, false, nil
 	}
 
-	payload, invalidationReason, err := readCachedPayload(c.options.Path, pointer.ObjectDigest)
+	if entry.AdapterID == "jvm" {
+		afterMavenCacheInputValidated(entry.RootPath)
+	}
+	reader := readCachedPayload
+	if entry.AdapterID == "jvm" {
+		reader = readMavenCachedPayload
+	}
+	payload, invalidationReason, err := reader(c.options.Path, pointer.ObjectDigest)
 	if err != nil {
 		return report.Report{}, false, err
 	}
@@ -67,6 +73,9 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		c.metadata.Misses++
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: invalidationReason})
 		return report.Report{}, false, nil
+	}
+	if entry.AdapterID == "jvm" {
+		payload.Report.RepoPath = entry.RootPath
 	}
 	payload.Report.PythonManifests = payload.PythonManifests
 	payload.Report.PythonManifestCatalog = payload.PythonManifestCatalog
@@ -133,8 +142,13 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	if c == nil || !c.options.Enabled || !c.cacheable || c.options.ReadOnly {
 		return nil
 	}
+	if entry.AdapterID == "jvm" {
+		if err := mavenCacheableReport(data); err != nil {
+			return err
+		}
+	}
 	payload := newCachedPayload(data)
-	serializedPayload, err := json.Marshal(payload)
+	serializedPayload, err := c.serializeCachedPayload(entry, payload)
 	if err != nil {
 		return err
 	}
@@ -184,6 +198,7 @@ func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel s
 func newCachedPayload(data report.Report) cachedPayload {
 	payload := cachedPayload{
 		Report:                data,
+		Maven:                 newMavenCacheEnvelope(data),
 		PythonManifests:       data.PythonManifests,
 		PythonManifestCatalog: data.PythonManifestCatalog,
 		UsageIncompleteReport: data.UsageIncomplete,

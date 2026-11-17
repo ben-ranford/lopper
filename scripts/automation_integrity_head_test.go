@@ -92,7 +92,8 @@ jobs:
         uses: actions/checkout@v7
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -126,7 +127,8 @@ runs:
       uses: actions/cache@v4
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,7 +158,8 @@ jobs:
     steps: *trusted_steps
 `)
 
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -217,6 +220,35 @@ jobs:
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("expected anchored .yaml workflow to pass, got %v:\n%s", err, output)
+	}
+	assertOutputContainsAll(t, string(output), []string{"GitHub Actions runner allowlist check passed."})
+}
+
+func TestGitHubActionsRunnerCheckApprovesNativeWindows2025ByDefault(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-github-actions-runners.rb")
+	writeFixtureFile(t, repoDir, ".github/workflows/windows.yaml", `name: windows
+on: [pull_request]
+jobs:
+  native-proof:
+    runs-on: windows-2025
+    steps:
+      - run: go test ./internal/githubaction
+`)
+
+	cmd := exec.Command("ruby", filepath.Join(repoDir, "scripts", "check-github-actions-runners.rb"))
+	cmd.Dir = repoDir
+	cmd.Env = make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "APPROVED_GITHUB_RUNNERS=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected the default allowlist to approve windows-2025, got %v:\n%s", err, output)
 	}
 	assertOutputContainsAll(t, string(output), []string{"GitHub Actions runner allowlist check passed."})
 }
@@ -659,6 +691,20 @@ func readRepoFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func holdPinningFixtureWriter(t *testing.T, repoDir string) {
+	t.Helper()
+
+	writer, err := os.OpenFile(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("hold pinning fixture writer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close pinning fixture writer: %v", err)
+		}
+	})
 }
 
 func writeRepoScriptFixture(t *testing.T, repoDir string, path string) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/report/model"
 )
 
 // ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
@@ -19,10 +20,11 @@ func (s *Service) runCandidates(ctx context.Context, req Request, repoPath strin
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
+	maven := newMavenEvidenceAccumulator(repoPath)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache, trueRepoPathOverride...)
+		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRootsWithMaven(ctx, req, repoPath, candidate, cache, maven, trueRepoPathOverride...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -44,6 +46,9 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 }
 
 func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
+	return s.runCandidateOnRootsWithMaven(ctx, req, repoPath, candidate, cache, newMavenEvidenceAccumulator(repoPath), trueRepoPathOverride...)
+}
+func (s *Service) runCandidateOnRootsWithMaven(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache, maven *mavenEvidenceAccumulator, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
@@ -62,54 +67,77 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), normalizedRoot, isolationRoots, trueRepoPathOverride...)
-		if hit {
-			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
-			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
-			adjustRelativeCoverageGaps(repoPath, normalizedRoot, cachedReport.CoverageGaps)
-			if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, cachedReport); err != nil {
-				return nil, nil, nil, err
-			}
-			reports = append(reports, cachedReport)
-			continue
-		}
-
-		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
-		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
-			RepoPath:                          normalizedRoot,
-			ScopeMode:                         req.ScopeMode,
-			IsolatedProjectRoots:              isolationRoots,
-			ExcludedPaths:                     exclusions.directories,
-			ExcludedFiles:                     exclusions.files,
-			Dependency:                        req.Dependency,
-			TopN:                              req.TopN,
-			SuggestOnly:                       req.SuggestOnly,
-			RuntimeProfile:                    req.RuntimeProfile,
-			Features:                          req.Features,
-			MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
-			RemovalCandidateWeights:           req.RemovalCandidateWeights,
-			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
-		})
+		current, adapterFailure, err := s.runCandidateRoot(ctx, req, candidateRootScope{repoPath: repoPath, root: normalizedRoot, isolationRoots: isolationRoots}, candidate, cache, maven, trueRepoPathOverride...)
 		if err != nil {
-			if shouldFailAdapterError(req) {
+			if !adapterFailure || fatalCandidateError(req, err) {
 				return nil, nil, nil, err
 			}
-			if isMultiLanguage(req.Language) {
-				warnings = append(warnings, err.Error())
-				continue
-			}
-			return nil, nil, nil, err
-		}
-		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
-		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
-		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
-		adjustRelativeCoverageGaps(repoPath, normalizedRoot, current.CoverageGaps)
-		if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, current); err != nil {
-			return nil, nil, nil, err
+			warnings = append(warnings, err.Error())
+			continue
 		}
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
+}
+
+func fatalCandidateError(req Request, err error) bool {
+	return errors.Is(err, model.ErrMavenEvidenceLimit) || shouldFailAdapterError(req) || !isMultiLanguage(req.Language)
+}
+
+// candidateRootScope keeps the candidate's root and isolation boundary tied to
+// the repository used to normalise its reported locations.
+type candidateRootScope struct {
+	repoPath       string
+	root           string
+	isolationRoots []string
+}
+
+func (s *Service) runCandidateRoot(ctx context.Context, req Request, scope candidateRootScope, candidate language.Candidate, cache *analysisCache, maven *mavenEvidenceAccumulator, trueRepoPathOverride ...string) (report.Report, bool, error) {
+	cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), scope.root, scope.isolationRoots, trueRepoPathOverride...)
+	if hit {
+		if err := maven.accept(cachedReport); err != nil {
+			return report.Report{}, false, err
+		}
+		current, err := prepareCandidateReport(req, scope.repoPath, scope.root, candidate.Adapter.ID(), cachedReport)
+		return current, false, err
+	}
+	exclusions := cache.cacheAnalysisExclusions(scope.root, req, trueRepoPathOverride...)
+	current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
+		RepoPath:                          scope.root,
+		ScopeMode:                         req.ScopeMode,
+		IsolatedProjectRoots:              scope.isolationRoots,
+		ExcludedPaths:                     exclusions.directories,
+		ExcludedFiles:                     exclusions.files,
+		Dependency:                        req.Dependency,
+		TopN:                              req.TopN,
+		SuggestOnly:                       req.SuggestOnly,
+		RuntimeProfile:                    req.RuntimeProfile,
+		Features:                          req.Features,
+		MinUsagePercentForRecommendations: req.MinUsagePercentForRecommendations,
+		RemovalCandidateWeights:           req.RemovalCandidateWeights,
+		IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
+	})
+	if err != nil {
+		return report.Report{}, true, err
+	}
+	if candidate.Adapter.ID() == "jvm" {
+		current.RepoPath = scope.root
+	}
+	if err := maven.accept(current); err != nil {
+		return report.Report{}, false, err
+	}
+	storeCachedReport(cache, candidate.Adapter.ID(), scope.root, cacheEntry, current)
+	current, err = prepareCandidateReport(req, scope.repoPath, scope.root, candidate.Adapter.ID(), current)
+	return current, false, err
+}
+func prepareCandidateReport(req Request, repoPath, root, adapter string, current report.Report) (report.Report, error) {
+	applyLanguageID(current.Dependencies, adapter)
+	adjustRelativeLocations(repoPath, root, current.Dependencies)
+	adjustRelativeCoverageGaps(repoPath, root, current.CoverageGaps)
+	if err := incompleteCoverageReportError(req, adapter, root, current); err != nil {
+		return report.Report{}, err
+	}
+	return current, nil
 }
 
 func shouldFailAdapterError(req Request) bool {

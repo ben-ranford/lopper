@@ -68,10 +68,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (result rep
 		RepoPath:    repoPath,
 	}
 
-	declaredDependencies, depPrefixes, depAliases, declarationWarnings, err := collectDeclaredDependenciesWithinRoot(ctx, repoPath, root)
+	catalog := newMavenManifestCatalog()
+	declaredDependencies, depPrefixes, depAliases, declarationWarnings, err := collectDeclaredDependenciesWithinRoot(ctx, repoPath, root, catalog)
 	if err != nil {
 		return report.Report{}, err
 	}
+	result.MavenManifests = catalog.entries
+	result.MavenManifestCatalog = true
 	result.Warnings = append(result.Warnings, declarationWarnings...)
 	scanResult, err := scanRepoWithinRoot(ctx, repoPath, root, depPrefixes, depAliases)
 	if err != nil {
