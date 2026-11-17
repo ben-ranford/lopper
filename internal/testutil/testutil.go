@@ -50,7 +50,7 @@ func MustInstallFile(t *testing.T, path string, content string, perm os.FileMode
 func MustInstallBytes(t *testing.T, path string, content []byte, perm os.FileMode) {
 	t.Helper()
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
 	}
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
