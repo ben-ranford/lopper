@@ -3858,7 +3858,8 @@ func TestMakefileBenchGateUsesDefaultEnforcementOnlyWhenUnset(t *testing.T) {
 func TestGoToolchainPinsAvoidKnownVulnerableRelease(t *testing.T) {
 	t.Parallel()
 
-	const minimumGoPatch = 6
+	// GO-2026-6859 is fixed in Go 1.27.4. Go 1.27.3 and the older 1.26 floor are below it.
+	securityFloor := [3]int{1, 27, 4}
 	type toolchainPin struct {
 		name    string
 		content string
@@ -3885,8 +3886,8 @@ func TestGoToolchainPinsAvoidKnownVulnerableRelease(t *testing.T) {
 			}
 			version[component] = value
 		}
-		if version[0] < 1 || version[0] == 1 && (version[1] < 26 || version[1] == 26 && version[2] < minimumGoPatch) {
-			t.Fatalf("%s Go version %d.%d.%d is below the 1.26.6 security baseline", pin.name, version[0], version[1], version[2])
+		if goVersionBefore(version, securityFloor) {
+			t.Fatalf("%s Go version %d.%d.%d is below the %d.%d.%d security baseline", pin.name, version[0], version[1], version[2], securityFloor[0], securityFloor[1], securityFloor[2])
 		}
 		if index == 0 {
 			expected = version
@@ -3896,6 +3897,16 @@ func TestGoToolchainPinsAvoidKnownVulnerableRelease(t *testing.T) {
 			t.Fatalf("%s Go version %d.%d.%d does not match go.mod version %d.%d.%d", pin.name, version[0], version[1], version[2], expected[0], expected[1], expected[2])
 		}
 	}
+}
+
+func goVersionBefore(version, floor [3]int) bool {
+	if version[0] != floor[0] {
+		return version[0] < floor[0]
+	}
+	if version[1] != floor[1] {
+		return version[1] < floor[1]
+	}
+	return version[2] < floor[2]
 }
 
 func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *testing.T) {
