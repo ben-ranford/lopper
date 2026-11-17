@@ -47,8 +47,9 @@ jobs:
           W = "cdb866d736130804ecb013c699f39674cdeac5fa"
           F = "f0da6e1200f4e9f190932a2cb241d8c4ae6f21d8"
           PATHS = [".github/workflows/pinning-fixture-proof.yml", "scripts/check_pinning_fixture_proof.py"]
+          PARENT_DELTA = "scripts/automation_integrity_head_test.go"
           SUBJECTS = [
-              "scripts/automation_integrity_head_test.go",
+              PARENT_DELTA,
               "scripts/check-github-actions-pinning.sh",
               "go.mod",
               "go.sum",
@@ -84,7 +85,8 @@ jobs:
               for side in ("head", "base"):
                   require(pr[side]["repo"]["full_name"] == "ben-ranford/lopper", "foreign repository")
               base_sha = pr["base"]["sha"]
-              require(pr["base"]["ref"] == "codex/v1.8.10-pinning-fixture-interpreter"
+              base_ref = pr["base"]["ref"]
+              require(base_ref in ("main", "codex/v1.8.10-pinning-fixture-interpreter")
                       and re.fullmatch(r"[0-9a-f]{40}", base_sha), "wrong proof base")
               H = pr["head"]["sha"]
               M = os.environ["GITHUB_SHA"]
@@ -93,7 +95,10 @@ jobs:
               require(git("rev-parse", "HEAD").decode().strip() == M, "wrong checkout")
               require(git("show", "-s", "--format=%P", M).decode().split() == [base_sha, H], "wrong ordered merge parents")
               require(git("rev-parse", M + "^{tree}") == git("rev-parse", H + "^{tree}"), "merge tree differs from head")
-              ancestor(O, base_sha, "repair commit is not in the proof base")
+              if base_ref == "main":
+                  ancestor(O, H, "repair commit is not in the head")
+              else:
+                  ancestor(O, base_sha, "repair commit is not in the proof base")
               ancestor(W, H, "reviewed proof commit is not in the head")
               require(git("show", "-s", "--format=%P", H0).decode().split() == [O], "wrong original proof parent")
               require(git("rev-parse", H1 + "^{commit}").decode().strip() == H1, "wrong pinned H1 identity")
@@ -104,7 +109,14 @@ jobs:
               second_correction = git("diff", "--name-only", H1, W).decode().splitlines()
               require(second_correction and set(second_correction).issubset(PATHS), "wrong H1-to-W corrective scope")
               require(git("diff", "--name-only", O, W).decode().splitlines() == PATHS, "reviewed proof scope changed")
-              require(git("diff", "--name-only", base_sha, H).decode().splitlines() == PATHS, "head changes files outside the proof")
+              changed = set(git("diff", "--name-only", base_sha, H).decode().splitlines())
+              allowed = set(PATHS)
+              parent_delta = []
+              if base_ref == "main":
+                  allowed.add(PARENT_DELTA)
+                  if PARENT_DELTA in changed:
+                      parent_delta.append(PARENT_DELTA)
+              require(set(PATHS) <= changed <= allowed, "head changes files outside the proof")
               require(git("show", "-s", "--format=%P", O).decode().split() == [F], "wrong O parent")
               require(git("diff", "--name-only", F, O).decode().splitlines() == ["scripts/automation_integrity_head_test.go"], "wrong O scope")
               require(not git("status", "--porcelain", "--untracked-files=all"), "checkout is not pristine")
@@ -114,14 +126,17 @@ jobs:
               subject_hashes = {}
               for path in SUBJECTS:
                   data = Path(path).read_bytes()
-                  require(data == git("show", base_sha + ":" + path) == git("show", H + ":" + path) == git("show", M + ":" + path),
-                          "subject differs from the proof base")
+                  require(data == git("show", H + ":" + path) == git("show", M + ":" + path),
+                          "subject differs between head and merge")
+                  if path not in parent_delta:
+                      require(data == git("show", base_sha + ":" + path), "subject differs from the proof base")
                   subject_hashes[path] = hashlib.sha256(data).hexdigest()
               require(re.fullmatch(r"[0-9a-f]{40}", os.environ["GITHUB_WORKFLOW_SHA"]), "malformed workflow revision")
               require(os.environ["GITHUB_WORKFLOW_REF"] == "ben-ranford/lopper/.github/workflows/pinning-fixture-proof.yml@" + os.environ["GITHUB_REF"], "wrong workflow ref")
               require(all(re.fullmatch(r"[1-9]\d*", os.environ[key], flags=re.ASCII) for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
                       and os.environ["GITHUB_JOB"] == "native-proof", "wrong run identity")
               record.update(status="ADMITTED", H=H, M=M, base=base_sha, W=W, number=number,
+                            parent_delta=parent_delta,
                             workflow_ref=os.environ["GITHUB_WORKFLOW_REF"], workflow_sha=os.environ["GITHUB_WORKFLOW_SHA"],
                             run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"], job=os.environ["GITHUB_JOB"],
                             external_review_binding="REQUIRED", subject_hashes=subject_hashes,

@@ -433,10 +433,14 @@ def locked_git(git, repository, *args):
     return subprocess.check_output([str(git), *args], cwd=repository, env=env, timeout=10)
 
 
-def verify_base_subject(repository, git, base):
+def verify_base_subject(repository, git, base, parent_delta):
     require(re.fullmatch(r"[0-9a-f]{40}", base), "malformed proof base")
+    if not isinstance(parent_delta, list) or any(path not in SUBJECTS for path in parent_delta):
+        raise RuntimeError("malformed parent delta")
     for relative in SUBJECTS:
         data = (repository / relative).read_bytes()
+        if relative in parent_delta:
+            continue
         require(data == locked_git(git, repository, "show", base + ":" + relative),
                 "subject differs from proof base: " + relative)
 
@@ -624,7 +628,8 @@ def main():
         driver = Path(__file__).resolve()
         require(driver == repository / "scripts/check_pinning_fixture_proof.py", "wrong driver location")
         require(digest(driver) == bootstrap["driver_sha256"], "driver differs from admitted W")
-        verify_base_subject(repository, tools["git"], bootstrap.get("base", ""))
+        verify_base_subject(repository, tools["git"], bootstrap.get("base", ""),
+                            bootstrap.get("parent_delta", []))
         commands = Commands(receipts, environment(scratch, tools))
         runtime = qualify(commands, tools, scratch, expected_go)
         write_json(receipts, "runtime-before.json", runtime)
@@ -632,7 +637,7 @@ def main():
         require({name: binding(path) for name, path in tools.items()} == runtime["tools"],
                 "tool bytes changed after consumption")
         write_json(receipts, "runtime-after.json", {name: binding(path) for name, path in tools.items()})
-        verify_base_subject(repository, tools["git"], bootstrap["base"])
+        verify_base_subject(repository, tools["git"], bootstrap["base"], bootstrap["parent_delta"])
         require(digest(driver) == bootstrap["driver_sha256"]
                 and digest(repository / ".github/workflows/pinning-fixture-proof.yml") == bootstrap["workflow_sha256"],
                 "W source changed after consumption")
