@@ -177,6 +177,11 @@ If your change impacts CLI behavior, flags, workflows, or documented examples, r
 
 Use the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 
+## Security and conduct
+
+Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
+Community participation follows the [Contributor Covenant 2.1](CODE_OF_CONDUCT.md).
+
 ## Reporting bugs and requesting features
 
 Use issue templates:
