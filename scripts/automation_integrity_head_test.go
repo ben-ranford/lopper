@@ -221,6 +221,35 @@ jobs:
 	assertOutputContainsAll(t, string(output), []string{"GitHub Actions runner allowlist check passed."})
 }
 
+func TestGitHubActionsRunnerCheckApprovesNativeWindows2025ByDefault(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-github-actions-runners.rb")
+	writeFixtureFile(t, repoDir, ".github/workflows/windows.yaml", `name: windows
+on: [pull_request]
+jobs:
+  native-proof:
+    runs-on: windows-2025
+    steps:
+      - run: go test ./internal/githubaction
+`)
+
+	cmd := exec.Command("ruby", filepath.Join(repoDir, "scripts", "check-github-actions-runners.rb"))
+	cmd.Dir = repoDir
+	cmd.Env = make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "APPROVED_GITHUB_RUNNERS=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected the default allowlist to approve windows-2025, got %v:\n%s", err, output)
+	}
+	assertOutputContainsAll(t, string(output), []string{"GitHub Actions runner allowlist check passed."})
+}
+
 func TestAutomationExamplesRejectsFakeCommandSubstrings(t *testing.T) {
 	t.Parallel()
 
