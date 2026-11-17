@@ -14,6 +14,7 @@ no traversal policy or Kotlin Android nested source-layout behavior.
 | Cancellation before signals and during enumeration | `TestJVMDetectionCancellationAfterRootSignals`, `TestJVMDetectionCancellationDuringDirectoryRead`, existing canceled-context adapter tests |
 | Normal skip policy, confidence and deterministic roots | JVM detection branch tests, `TestWalkRepoFilesWithinRootSortsEntriesAndSkipsDirs` |
 | Linear pinned operations and callback-relative reads beyond a directory batch | Existing shared/JVM deep-wide operation tests and `TestPinnedWalkWideBatchOperationBounds` |
+| Symlinks cannot redirect detection; rejected symlinks do not consume the candidate budget | `TestOpenJVMDetectionChildRootRejectsUnsafeAndFailedChildren`, `TestScanRepoWithinRootIgnoresSourceSymlinkDecoyFloodForCandidateBudget`, `TestCollectDeclaredDependenciesWithinRootIgnoresBuildSymlinkDecoyFloodForCandidateBudget` |
 
 For a complete tree containing D directories and F files, traversal opens D−1
 child roots and D directory handles, and performs 3D−1 rooted identity checks.

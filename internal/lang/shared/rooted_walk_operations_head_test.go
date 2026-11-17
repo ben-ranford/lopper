@@ -17,7 +17,7 @@ func TestPinnedWalkWideBatchOperationBounds(t *testing.T) {
 	}{
 		{"one-batch-boundary", 1, 128},
 		{"multiple-batches", 1, 257},
-		{"deep-and-wide", 7, 2},
+		{"deep-binary", 7, 2},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			assertPinnedWalkOperationBounds(t, shape.depth, shape.width)
@@ -40,11 +40,14 @@ func assertPinnedWalkOperationBounds(t *testing.T, depth, width int) {
 		}
 		body, readErr := io.ReadAll(input)
 		closeErr := input.Close()
+		if opErr := errors.Join(readErr, closeErr); opErr != nil {
+			return opErr
+		}
 		if string(body) != "x" {
 			return fmt.Errorf("unexpected pinned callback contents at %s: %q", file.Path, body)
 		}
 		visited++
-		return errors.Join(readErr, closeErr)
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
