@@ -146,6 +146,25 @@ func verifyPublishedWindowsRelease(t *testing.T, requested string) {
 	}
 }
 
+func publishedReleaseLookupToken() string {
+	if token := strings.TrimSpace(os.Getenv("LOPPER_GITHUB_TOKEN")); token != "" && !strings.ContainsAny(token, "\r\n") {
+		return token
+	}
+	temp := os.Getenv("TEMP")
+	if temp == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(temp, "lopper-release-lookup-token"))
+	if err != nil {
+		return ""
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return ""
+	}
+	return token
+}
+
 func runPublishedWindowsInstaller(t *testing.T, requested string) (string, string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "release proof with spaces")
@@ -158,14 +177,18 @@ func runPublishedWindowsInstaller(t *testing.T, requested string) (string, strin
 	githubPath := filepath.Join(root, "github path")
 	script := filepath.Join(repoRoot(t), "scripts", "github-action", "install-lopper.sh")
 	command := exec.Command("bash", script)
-	command.Env = replaceEnvironment(os.Environ(), map[string]string{
+	replacements := map[string]string{
 		"GITHUB_OUTPUT":      outputPath,
 		"GITHUB_PATH":        githubPath,
 		"LOPPER_INSTALL_DIR": installDir,
 		"LOPPER_VERSION":     requested,
 		"RUNNER_TEMP":        runnerTemp,
 		"TMPDIR":             runnerTemp,
-	})
+	}
+	if token := publishedReleaseLookupToken(); token != "" {
+		replacements["LOPPER_GITHUB_TOKEN"] = token
+	}
+	command.Env = replaceEnvironment(os.Environ(), replacements)
 	result, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("install published Windows release %s: %v\n%s", requested, err, result)
