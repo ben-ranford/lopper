@@ -589,6 +589,17 @@ func TestHooksInstallInterruptCleansPreflightAndRollsBackState(t *testing.T) {
 	waitForPreflightInstallRollback(t, fixture, tmpDir, output.String())
 }
 
+func TestPreflightBlockedReaderObservesWatchdogExpiry(t *testing.T) {
+	data, err := os.ReadFile("hook-config-preflight.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const waitLoop = `while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ] && [ ! -f "$state_dir/expired" ]; do`
+	if !strings.Contains(string(data), waitLoop) {
+		t.Fatal("blocked preflight reader must leave its wait when the watchdog writes expired")
+	}
+}
+
 func TestHooksInstallInterruptAttemptsBlockedRollbackOnce(t *testing.T) {
 	t.Parallel()
 	for _, previousPath := range []string{"", ".githooks"} {
