@@ -92,7 +92,8 @@ jobs:
         uses: actions/checkout@v7
 `)
 
-	cmd := pinningCheckCommand(repoDir)
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -126,7 +127,8 @@ runs:
       uses: actions/cache@v4
 `)
 
-	cmd := pinningCheckCommand(repoDir)
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,7 +158,8 @@ jobs:
     steps: *trusted_steps
 `)
 
-	cmd := pinningCheckCommand(repoDir)
+	holdPinningFixtureWriter(t, repoDir)
+	cmd := exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -596,13 +599,6 @@ func automationExamplesFixtureCommand(scriptPath string) *exec.Cmd {
 	return exec.Command("sh", scriptPath)
 }
 
-func pinningCheckCommand(repoDir string) *exec.Cmd {
-	// Same ETXTBSY avoidance as the automation-examples fixture: the script is
-	// mode 0755 and was just written, so executing it directly can fail with
-	// "text file busy" before it produces the pinning diagnostic.
-	return exec.Command("sh", filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
-}
-
 func runAutomationExamplesFixtureWithCommand(t *testing.T, lefthookYAML string, newCommand func(string) *exec.Cmd) (string, error) {
 	t.Helper()
 
@@ -695,6 +691,20 @@ func readRepoFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func holdPinningFixtureWriter(t *testing.T, repoDir string) {
+	t.Helper()
+
+	writer, err := os.OpenFile(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("hold pinning fixture writer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close pinning fixture writer: %v", err)
+		}
+	})
 }
 
 func writeRepoScriptFixture(t *testing.T, repoDir string, path string) {
