@@ -423,7 +423,13 @@ def is_ancestor(root, ancestor, commit):
 
 
 def assert_test_merge(root, source, base, head, base_ref):
-    """Accept GitHub's test merge when main moved after the event snapshot."""
+    """Accept GitHub's test merge when main moved after the event snapshot.
+
+    A stacked pull request is merged into the parent pull request's merge
+    with main. That first parent is not on the immediate base ref, so accept
+    it only when it is exactly a two-parent merge of a main ancestor and the
+    recorded base.
+    """
     parents = git(root, "show", "-s", SHOW_PARENTS, source).decode().split()
     if parents == [base, head]:
         return
@@ -431,8 +437,25 @@ def assert_test_merge(root, source, base, head, base_ref):
             or not isinstance(base_ref, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", base_ref)):
         raise ValueError(MERGE_PARENTS)
     tip = git(root, "rev-parse", "--verify", f"refs/remotes/origin/{base_ref}^{{commit}}").decode().strip()
-    if not is_ancestor(root, base, parents[0]) or not is_ancestor(root, parents[0], tip):
-        raise ValueError(MERGE_PARENTS)
+    if is_ancestor(root, base, parents[0]) and is_ancestor(root, parents[0], tip):
+        return
+    if stacked_test_merge(root, parents[0], base, tip):
+        return
+    raise ValueError(MERGE_PARENTS)
+
+
+def stacked_test_merge(root, parent, base, base_tip):
+    stack_parents = git(root, "show", "-s", SHOW_PARENTS, parent).decode().split()
+    if len(stack_parents) != 2 or any(COMMIT_SHA.fullmatch(item) is None for item in stack_parents):
+        return False
+    trunk, merged_base = stack_parents
+    if not is_ancestor(root, base, merged_base) or not is_ancestor(root, merged_base, base_tip):
+        return False
+    try:
+        main = git(root, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}").decode().strip()
+    except ValueError:
+        return False
+    return is_ancestor(root, trunk, main)
 
 
 def assert_candidate_tree(root, source, head):
@@ -850,7 +873,8 @@ def selftest():
             os.environ.pop("TRACE_DRIVER_SHA256", None)
         else:
             os.environ["TRACE_DRIVER_SHA256"] = prior_pin
-    assert_moved_base_merge()
+        assert_moved_base_merge()
+        assert_stacked_base_merge()
     assert_synchronize_predecessor()
     print("portable support checks PASS; native controls NOT executed")
     return 0
@@ -987,6 +1011,69 @@ def assert_moved_base_merge():
                 raise
         else:
             raise AssertionError("wrong head parent accepted")
+
+
+def assert_stacked_base_merge():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+
+        def g(*args, output=False):
+            result = subprocess.run(["git", "-C", str(directory), *args], check=not output,
+                                    stdout=subprocess.PIPE if output else subprocess.DEVNULL, text=output)
+            return result.stdout.strip() if output else None
+
+        g("init", "-q", "-b", "main")
+        g("config", "user.email", "trace@example.com")
+        g("config", "user.name", "trace")
+        (directory / "file").write_text("main\n")
+        g("add", "file")
+        g("commit", "-q", "-m", "main")
+        trunk = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", "-b", "parent", trunk)
+        (directory / "file").write_text("parent\n")
+        g("commit", "-q", "-am", "parent")
+        base = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", "main")
+        g("merge", "-q", "--no-ff", "-m", "stack", "parent")
+        stack = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", "-b", "topic", base)
+        (directory / "file").write_text("head\n")
+        g("commit", "-q", "-am", "head")
+        head = g("rev-parse", "HEAD", output=True)
+        g("checkout", "-q", stack)
+        g("merge", "-q", "--no-ff", "-m", "test merge", "topic")
+        merge = g("rev-parse", "HEAD", output=True)
+        remote = directory / ".git" / "refs" / "remotes" / "origin"
+        remote.mkdir(parents=True)
+        (remote / "main").write_text(trunk + "\n")
+        (remote / "parent").write_text(base + "\n")
+        assert_test_merge(directory, merge, base, head, "parent")
+        assert_candidate_tree(directory, merge, head)
+        g("checkout", "-q", "-b", "side", trunk)
+        (directory / "file").write_text("side\n")
+        g("commit", "-q", "-am", "side")
+        side = g("rev-parse", "HEAD", output=True)
+        try:
+            assert_test_merge(directory, merge, side, head, "parent")
+        except ValueError as error:
+            if str(error) != MERGE_PARENTS:
+                raise
+        else:
+            raise AssertionError("stack merge with the wrong base accepted")
+        g("checkout", "-q", "--orphan", "unrelated")
+        (directory / "other").write_text("unrelated\n")
+        g("add", "other")
+        g("commit", "-q", "-m", "unrelated")
+        unrelated = g("rev-parse", "HEAD", output=True)
+        (remote / "main").write_text(unrelated + "\n")
+        try:
+            assert_test_merge(directory, merge, base, head, "parent")
+        except ValueError as error:
+            if str(error) != MERGE_PARENTS:
+                raise
+        else:
+            raise AssertionError("stack merge from a trunk outside main accepted")
 
 
 def main():
