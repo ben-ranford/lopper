@@ -89,14 +89,22 @@ start_preflight_watchdog() {
 		sleeper_pid=
 		if rmdir "$preflight_state_dir/active" 2>/dev/null || [ -f "$preflight_state_dir/cancelled" ]; then
 			printf x >"$preflight_state_dir/expired"
-			if [ -f "$preflight_state_dir/runner-pid" ]; then
-				read -r runner_pid <"$preflight_state_dir/runner-pid" || exit 1
-				case "$runner_pid" in
-					''|*[!0-9]*|0) exit 1 ;;
-					*) : ;;
-				esac
-				kill -TERM "$runner_pid" 2>/dev/null || :
-			fi
+			# The runner can still be starting when the deadline expires. Keep
+			# looking briefly so a reader published just after expiry is signalled.
+			deadline_ticks=0
+			while [ "$deadline_ticks" -lt 100 ]; do
+				if [ -f "$preflight_state_dir/runner-pid" ]; then
+					read -r runner_pid <"$preflight_state_dir/runner-pid" || exit 1
+					case "$runner_pid" in
+						''|*[!0-9]*|0) exit 1 ;;
+						*) : ;;
+					esac
+					kill -TERM "$runner_pid" 2>/dev/null || :
+					break
+				fi
+				deadline_ticks=$((deadline_ticks + 1))
+				sleep 0.01
+			done
 		fi
 	) </dev/null >/dev/null 2>&1 & preflight_watchdog_pid=$!
 	# A signal before the watchdog installs its traps cannot strand a runner:
@@ -253,10 +261,15 @@ if [ -z "$interrupted" ] && [ -z "$startup_failed" ] && [ ! -f "$state_dir/expir
 fi
 # Polling closes the signal-before-wait race and bounds interrupted waits.
 # Signal only the still-running anchored job owned by this supervisor.
-while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ]; do
+while [ ! -f "$state_dir/result" ] && [ -z "$interrupted" ] && [ -z "$startup_failed" ] && [ ! -f "$state_dir/expired" ]; do
 	reader_group_is_running_or_interrupted || exit 1
 	sleep 0.01
 done
+# Expiry can land after the reader is already blocked. TERM is not required:
+# the supervisor owns the process group and must stop it when the file appears.
+if [ -f "$state_dir/expired" ]; then
+	interrupted=1
+fi
 # Keep recording cancellation through the final ownership probes. If TERM
 # interrupts cmp, the cleanup path retries ownership verification before it
 # signals the reader group.
