@@ -104,9 +104,7 @@ func TestInstallScriptWindowsArchiveFailures(t *testing.T) {
 // TestInstallScriptWindowsPublishedReleaseProof runs only when the trusted
 // Python provider is present in the captured Go root. Ordinary Windows tests
 // therefore remain offline while the provider-owned proof lane exercises real
-// fixed and floating releases. A release without SHA256SUMS must be refused
-// with no installed binary. A release that publishes a matching checksum must
-// still install.
+// fixed and floating releases.
 func TestInstallScriptWindowsPublishedReleaseProof(t *testing.T) {
 	assertWindowsProofGoRootAvailable(t)
 	for _, requested := range []string{"v1.8.9", "v1.8"} {
@@ -132,19 +130,7 @@ func assertWindowsProofGoRootAvailable(t *testing.T) {
 
 func verifyPublishedWindowsRelease(t *testing.T, requested string) {
 	t.Helper()
-	installDir, githubPath, outputPath, result, err := runPublishedWindowsInstaller(t, requested)
-	if err != nil {
-		if !strings.Contains(string(result), "Refusing to install") {
-			t.Fatalf("published Windows release %s failed without a closed checksum refusal: %v\n%s", requested, err, result)
-		}
-		if _, statErr := os.Stat(filepath.Join(installDir, "lopper.exe")); !os.IsNotExist(statErr) {
-			t.Fatalf("checksum refusal left an installed binary: %v", statErr)
-		}
-		if pathBytes, readErr := os.ReadFile(githubPath); readErr == nil && strings.TrimSpace(string(pathBytes)) != "" {
-			t.Fatalf("checksum refusal wrote PATH: %s", pathBytes)
-		}
-		return
-	}
+	installDir, githubPath, outputPath := runPublishedWindowsInstaller(t, requested)
 	outputs, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +146,7 @@ func verifyPublishedWindowsRelease(t *testing.T, requested string) {
 	}
 }
 
-func runPublishedWindowsInstaller(t *testing.T, requested string) (string, string, string, []byte, error) {
+func runPublishedWindowsInstaller(t *testing.T, requested string) (string, string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "release proof with spaces")
 	runnerTemp := filepath.Join(root, "runner temp")
@@ -181,7 +167,10 @@ func runPublishedWindowsInstaller(t *testing.T, requested string) (string, strin
 		"TMPDIR":             runnerTemp,
 	})
 	result, err := command.CombinedOutput()
-	return installDir, githubPath, outputPath, result, err
+	if err != nil {
+		t.Fatalf("install published Windows release %s: %v\n%s", requested, err, result)
+	}
+	return installDir, githubPath, outputPath
 }
 
 func assertPublishedWindowsOutputs(t *testing.T, outputs []byte, requested, installDir string) (string, string, string) {

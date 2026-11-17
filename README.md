@@ -57,7 +57,7 @@ gh attestation verify "oci://ghcr.io/ben-ranford/lopper:<tag>" --repo ben-ranfor
 
 Rolling releases use the same checksum files. Their Cosign certificate identity is `https://github.com/ben-ranford/lopper/.github/workflows/rolling.yml@refs/heads/main`.
 
-The signed provenance keeps the workflow identity from GitHub's OIDC token and also records the release source commit that was built. The GitHub Action downloads `SHA256SUMS` and stops if that file is missing, malformed, or does not match the archive. Releases published before this checksum asset exist cannot be installed by the updated action.
+The signed provenance keeps the workflow identity from GitHub's OIDC token and also records the release source commit that was built. When a release publishes `SHA256SUMS`, the GitHub Action verifies the archive and stops if that entry is missing or does not match. Releases published before this asset install with a warning. Set `checksum-strict: true` to make a missing checksum file fatal.
 
 ## Start here
 

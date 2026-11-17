@@ -6,6 +6,10 @@ error() {
   echo "::error::$*" >&2
 }
 
+warn() {
+  echo "::warning::$*" >&2
+}
+
 trim() {
   local value="${1:-}"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -131,6 +135,47 @@ verify_release_archive() {
     error "Release archive checksum does not match SHA256SUMS."
     exit 1
   fi
+}
+
+strict_release_checksum() {
+  case "$(lower "$(trim "${LOPPER_CHECKSUM_STRICT:-false}")")" in
+    1|true|yes) printf '1' ;;
+    0|false|no) printf '0' ;;
+    *)
+      error "checksum-strict must be true or false."
+      exit 2
+      ;;
+  esac
+}
+
+download_release_checksum() {
+  local url="$1"
+  local dest="$2"
+  local http_code=""
+  local strict=""
+  strict="$(strict_release_checksum)"
+  if ! http_code="$(curl_with_token -sS -L --max-filesize 65536 -o "$dest" -w '%{http_code}' "$url")"; then
+    error "Release checksum file could not be downloaded. Refusing to install ${archive_name}."
+    exit 1
+  fi
+  http_code="${http_code//$'\r'/}"
+  http_code="${http_code//$'\n'/}"
+  case "$http_code" in
+    200) printf 'present' ;;
+    404)
+      rm -f "$dest"
+      if [[ "$strict" == 1 ]]; then
+        error "Release ${tag} does not publish SHA256SUMS. Refusing to install ${archive_name}."
+        exit 1
+      fi
+      warn "Release ${tag} does not publish SHA256SUMS. Installing ${archive_name} without checksum verification."
+      printf 'absent'
+      ;;
+    *)
+      error "Release checksum request returned HTTP ${http_code}. Refusing to install ${archive_name}."
+      exit 1
+      ;;
+  esac
 }
 
 resolve_latest_tag() {
@@ -370,12 +415,11 @@ trap cleanup EXIT INT TERM
 archive_path="${work_dir}/${archive_name}"
 checksums_path="$(mktemp "${runner_temp}/lopper-checksums.XXXXXX")"
 checksums_url="https://github.com/ben-ranford/lopper/releases/download/${tag}/SHA256SUMS"
-if ! curl_with_token -fsSL --max-filesize 65536 "$checksums_url" -o "$checksums_path"; then
-  error "Release checksum file could not be downloaded. Refusing to install ${archive_name}."
-  exit 1
-fi
+checksum_state="$(download_release_checksum "$checksums_url" "$checksums_path")"
 curl_with_token -fsSL "$download_url" -o "$archive_path"
-verify_release_archive "$checksums_path" "$archive_name" "$archive_path"
+if [[ "$checksum_state" == present ]]; then
+  verify_release_archive "$checksums_path" "$archive_name" "$archive_path"
+fi
 if [[ "$goos" == "$WINDOWS_OS" ]]; then
   zip_member="${archive_name%.zip}/${binary_name}"
   share_prefix="${archive_name%.zip}/share/lopper/"

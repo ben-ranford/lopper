@@ -497,6 +497,7 @@ if [[ "$url" == */SHA256SUMS ]]; then
     digest="$(printf 'archive' | shasum -a 256 | awk 'NR == 1 { print $1 }')"
   fi
   printf '%s  lopper_v1.6.1_linux_amd64.tar.gz\n' "$digest" > "$output"
+  printf '200'
   exit 0
 fi
 printf 'archive' > "$output"
