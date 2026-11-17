@@ -25,31 +25,32 @@ import (
 )
 
 const (
-	identityStatusDeclared    = "declared"
-	identityStatusResolved    = "resolved"
-	identityStatusUnknown     = "unknown"
-	identityStatusConflicting = "conflicting"
-	identityPURLUnavailable   = "unavailable"
-	identityDiscoveryFailed   = "discovery failed"
-	identityReadFailed        = "read failed"
-	identityParseFailed       = "parse failed"
-	identityInvalidXML        = "invalid XML"
-	goModFileName             = "go.mod"
-	goWorkFileName            = "go.work"
-	nodePackageManifestFile   = "package.json"
-	npmAliasPrefix            = "npm:"
-	packageLockFileName       = "package-lock.json"
-	pnpmLockFileName          = "pnpm-lock.yaml"
-	poetryLockFileName        = "poetry.lock"
-	pythonPipfileName         = "Pipfile"
-	pythonProjectFileName     = "pyproject.toml"
-	cargoManifestFileName     = "Cargo.toml"
-	cargoLockFileName         = "Cargo.lock"
-	kotlinAndroidLanguageName = "kotlin-android"
-	uvLockFileName            = "uv.lock"
-	dotnetCentralFileName     = "Directory.Packages.props"
-	dotnetLockFileName        = "packages.lock.json"
-	carthageResolvedFileName  = "Cartfile.resolved"
+	identityStatusDeclared      = "declared"
+	identityStatusResolved      = "resolved"
+	identityStatusUnknown       = "unknown"
+	identityStatusConflicting   = "conflicting"
+	identityPURLUnavailable     = "unavailable"
+	identityDiscoveryFailed     = "discovery failed"
+	identityReadFailed          = "read failed"
+	identityParseFailed         = "parse failed"
+	identityInvalidXML          = "invalid XML"
+	identityAnnotationOperation = "identity annotation"
+	goModFileName               = "go.mod"
+	goWorkFileName              = "go.work"
+	nodePackageManifestFile     = "package.json"
+	npmAliasPrefix              = "npm:"
+	packageLockFileName         = "package-lock.json"
+	pnpmLockFileName            = "pnpm-lock.yaml"
+	poetryLockFileName          = "poetry.lock"
+	pythonPipfileName           = "Pipfile"
+	pythonProjectFileName       = "pyproject.toml"
+	cargoManifestFileName       = "Cargo.toml"
+	cargoLockFileName           = "Cargo.lock"
+	kotlinAndroidLanguageName   = "kotlin-android"
+	uvLockFileName              = "uv.lock"
+	dotnetCentralFileName       = "Directory.Packages.props"
+	dotnetLockFileName          = "packages.lock.json"
+	carthageResolvedFileName    = "Cartfile.resolved"
 )
 
 type identityEvidence struct {
@@ -87,25 +88,27 @@ type dependencyIdentityState struct {
 }
 
 type identityManifestSnapshot struct {
-	goModFiles         []string
-	goWorkFiles        []string
-	jsLockfiles        []string
-	pythonFiles        []string
-	pomFiles           []string
-	gradleBuildFiles   []string
-	gradleLockFiles    []string
-	swiftFiles         []string
-	podLockFiles       []string
-	carthageLockFiles  []string
-	cargoManifestFiles []string
-	cargoLockFiles     []string
-	dotnetProjectFiles []string
-	dotnetCentralFiles []string
-	dotnetLockFiles    []string
-	composerFiles      []string
-	pubFiles           []string
-	rubyFiles          []string
-	elixirFiles        []string
+	goModFiles                []string
+	goWorkFiles               []string
+	jsLockfiles               []string
+	pythonFiles               []string
+	pomFiles                  []string
+	gradleBuildFiles          []string
+	gradleLockFiles           []string
+	gradleNonRegular          map[string]fs.FileMode
+	gradleRegularCatalogFiles []string
+	swiftFiles                []string
+	podLockFiles              []string
+	carthageLockFiles         []string
+	cargoManifestFiles        []string
+	cargoLockFiles            []string
+	dotnetProjectFiles        []string
+	dotnetCentralFiles        []string
+	dotnetLockFiles           []string
+	composerFiles             []string
+	pubFiles                  []string
+	rubyFiles                 []string
+	elixirFiles               []string
 }
 
 type identityEvidenceLanguages struct {
@@ -122,8 +125,13 @@ func annotateDependencyIdentities(repoPath string, reportData *report.Report) {
 	annotateDependencyIdentitiesWithContext(context.Background(), repoPath, reportData)
 }
 func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath string, reportData *report.Report) {
-	if reportData == nil {
+	if err := annotateDependencyIdentitiesChecked(ctx, repoPath, reportData, identityDiscoveryPolicy{}); err != nil {
 		return
+	}
+}
+func annotateDependencyIdentitiesChecked(ctx context.Context, repoPath string, reportData *report.Report, policy identityDiscoveryPolicy) error {
+	if reportData == nil {
+		return nil
 	}
 	defer func() {
 		// Python manifest documents are adapter/cache artifacts. Once identity
@@ -133,8 +141,8 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 		reportData.PythonManifests = nil
 		reportData.PythonManifestCatalog = false
 	}()
-	if len(reportData.Dependencies) == 0 {
-		return
+	if len(reportData.Dependencies) == 0 && policy.limit == 0 {
+		return nil
 	}
 	languages := identityEvidenceLanguages{
 		maven:    reportData.MavenManifests,
@@ -148,27 +156,40 @@ func annotateDependencyIdentitiesWithContext(ctx context.Context, repoPath strin
 	if reportData.PythonManifestCatalog {
 		languages.python = false
 	}
-	index, warnings := collectIdentityEvidenceWithContext(ctx, repoPath, languages)
+	index, warnings, err := collectIdentityEvidenceChecked(ctx, repoPath, languages, policy)
+	if err != nil {
+		return err
+	}
 	if reportData.PythonManifestCatalog {
 		collector := newIdentityWarningCollector(repoPath)
 		collectPythonCatalogEvidence(ctx, repoPath, index, reportData.PythonManifests, collector)
 		warnings = append(warnings, collector.list()...)
 	}
+	identities := make([]*report.DependencyIdentity, len(reportData.Dependencies))
 	for i := range reportData.Dependencies {
 		if ctx.Err() != nil {
-			return
+			return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, ctx.Err())
 		}
 		dep := &reportData.Dependencies[i]
 		evidence := identityEvidenceForDependencyWithContext(ctx, index, *dep)
 		identity := buildDependencyIdentityWithContext(ctx, *dep, evidence)
 		if ctx.Err() != nil {
-			return
+			return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, ctx.Err())
 		}
-		dep.Identity = identity
+		identities[i] = identity
+		if policy.limit == 0 {
+			dep.Identity = identity
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return shared.GradleDiscoveryFailure(repoPath, identityAnnotationOperation, err)
+	}
+	for i := range reportData.Dependencies {
+		reportData.Dependencies[i].Identity = identities[i]
 	}
 	reportData.Warnings = uniqueSorted(append(reportData.Warnings, warnings...))
+	return nil
 }
-
 func hasDependencyLanguage(dependencies []report.DependencyReport, language string) bool {
 	for _, dependency := range dependencies {
 		if strings.EqualFold(strings.TrimSpace(dependency.Language), language) {
@@ -182,39 +203,31 @@ func collectIdentityEvidence(repoPath string, languages identityEvidenceLanguage
 	return collectIdentityEvidenceWithContext(context.Background(), repoPath, languages)
 }
 func collectIdentityEvidenceWithContext(ctx context.Context, repoPath string, languages identityEvidenceLanguages) (identityIndex, []string) {
+	index, warnings, err := collectIdentityEvidenceChecked(ctx, repoPath, languages, identityDiscoveryPolicy{})
+	if err != nil && ctx.Err() == nil {
+		warnings = append(warnings, err.Error())
+	}
+	return index, warnings
+}
+func collectIdentityEvidenceChecked(ctx context.Context, repoPath string, languages identityEvidenceLanguages, policy identityDiscoveryPolicy) (identityIndex, []string, error) {
 	index := identityIndex{}
 	warnings := newIdentityWarningCollector(repoPath)
-	snapshot := discoverIdentityManifestSnapshotWithContext(ctx, repoPath, warnings)
-	if languages.python {
-		discoverPythonIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
+	snapshot, err := identitySnapshotForPolicy(ctx, repoPath, warnings, policy)
+	if err != nil {
+		return nil, nil, err
 	}
-	if languages.dotnet {
-		discoverDotNetIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
-	}
-	if languages.composer {
-		discoverComposerIdentityManifests(repoPath, &snapshot, warnings)
-	}
-	if languages.pub {
-		discoverPubIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
-	}
-	if languages.ruby {
-		discoverRubyIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
-	}
-	if languages.elixir {
-		discoverElixirIdentityManifestsWithContext(ctx, repoPath, &snapshot, warnings)
-	}
-	if languages.hasDedicatedDiscovery() {
-		sortIdentityManifestSnapshot(&snapshot)
-	}
+	discoverDedicatedIdentitySnapshot(ctx, repoPath, languages, &snapshot, warnings)
 	collectGoIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings)
 	collectJSIdentityEvidenceFromSnapshotWithContext(ctx, repoPath, index, snapshot, warnings)
 	if ctx.Err() != nil {
-		return index, warnings.list()
+		return identityEvidenceResult(ctx, repoPath, index, warnings, policy)
 	}
 	if languages.python {
 		collectPythonIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.pythonFiles, warnings)
 	}
-	collectJVMIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings, languages.maven...)
+	if err := collectJVMIdentityForPolicy(ctx, repoPath, index, snapshot, warnings, languages.maven, policy.limit > 0); err != nil {
+		return nil, nil, err
+	}
 	collectSwiftIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.swiftFiles, snapshot.podLockFiles, snapshot.carthageLockFiles, warnings)
 	collectCargoIdentityEvidenceFromSnapshot(ctx, repoPath, index, snapshot, warnings)
 	if languages.dotnet {
@@ -232,7 +245,38 @@ func collectIdentityEvidenceWithContext(ctx context.Context, repoPath string, la
 	if languages.elixir {
 		collectElixirIdentityEvidenceFromPaths(ctx, repoPath, index, snapshot.elixirFiles, warnings)
 	}
-	return index, warnings.list()
+	return identityEvidenceResult(ctx, repoPath, index, warnings, policy)
+}
+
+func identityEvidenceResult(ctx context.Context, repoPath string, index identityIndex, warnings *identityWarningCollector, policy identityDiscoveryPolicy) (identityIndex, []string, error) {
+	if err := ctx.Err(); err != nil && policy.limit > 0 {
+		return nil, nil, shared.GradleDiscoveryFailure(repoPath, "identity", err)
+	}
+	return index, warnings.list(), ctx.Err()
+}
+
+func discoverDedicatedIdentitySnapshot(ctx context.Context, repoPath string, languages identityEvidenceLanguages, snapshot *identityManifestSnapshot, warnings *identityWarningCollector) {
+	if languages.python {
+		discoverPythonIdentityManifestsWithContext(ctx, repoPath, snapshot, warnings)
+	}
+	if languages.dotnet {
+		discoverDotNetIdentityManifestsWithContext(ctx, repoPath, snapshot, warnings)
+	}
+	if languages.composer {
+		discoverComposerIdentityManifests(repoPath, snapshot, warnings)
+	}
+	if languages.pub {
+		discoverPubIdentityManifestsWithContext(ctx, repoPath, snapshot, warnings)
+	}
+	if languages.ruby {
+		discoverRubyIdentityManifestsWithContext(ctx, repoPath, snapshot, warnings)
+	}
+	if languages.elixir {
+		discoverElixirIdentityManifestsWithContext(ctx, repoPath, snapshot, warnings)
+	}
+	if languages.hasDedicatedDiscovery() {
+		sortIdentityManifestSnapshot(snapshot)
+	}
 }
 
 func (l *identityEvidenceLanguages) hasDedicatedDiscovery() bool {
