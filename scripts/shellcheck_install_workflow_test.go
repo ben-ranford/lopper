@@ -162,6 +162,11 @@ func runShellcheckInstallStep(script string, mocks shellcheckInstallMocks, failS
 	var output []byte
 	var runErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		// A busy executable can fail after the mock has already logged. The next
+		// attempt must not keep that partial command list.
+		if err := os.WriteFile(mocks.logPath, nil, 0o600); err != nil {
+			return "", err
+		}
 		cmd := exec.Command(bashPath, "-e", "-c", script)
 		cmd.Env = append([]string{}, cmdEnv...)
 		output, runErr = cmd.CombinedOutput()
