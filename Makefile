@@ -21,7 +21,7 @@ LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
 GO_BIN ?=
-GO_TOOLCHAIN ?= go1.27.3
+GO_TOOLCHAIN ?= go1.27.4
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
 MANPAGE_DATE ?= 1970-01-01
@@ -85,7 +85,7 @@ format-check:
 	fi
 
 gostyle:
-	GOFLAGS=-buildvcs=false $(GO_CMD) run github.com/k1LoW/gostyle@$(GOSTYLE_VERSION) run -c .gostyle.yml ./...
+	GOFLAGS=-buildvcs=false python3 scripts/check_gostyle_regression.py --go "$(GO)" --toolchain "$(GO_TOOLCHAIN)" --version "$(GOSTYLE_VERSION)" --config .gostyle.yml --root .
 
 lint:
 	$(GO_CMD) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --allow-serial-runners ./...

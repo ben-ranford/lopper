@@ -9,7 +9,7 @@ if [ "${GO+x}" != x ]; then
 fi
 : "${GO_BIN:=}"
 if [ "${GO_TOOLCHAIN+x}" != x ]; then
-	GO_TOOLCHAIN="go1.27.3"
+	GO_TOOLCHAIN="go1.27.4"
 fi
 if [ "${BENCH_COUNT+x}" != x ]; then
 	BENCH_COUNT="3"
