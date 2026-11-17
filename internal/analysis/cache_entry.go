@@ -65,6 +65,9 @@ func (c *analysisCache) prepareEntryWithSchemaVersionAndIsolationRoots(req Reque
 		"runtimeProfile": req.RuntimeProfile,
 		"configPath":     strings.TrimSpace(req.ConfigPath),
 	}
+	if adapterID == "jvm" || adapterID == kotlinAndroidLanguageName {
+		baseKey["gradleDiscoveryPolicy"] = "strict-v1-file32MiB-total256MiB"
+	}
 	if command := strings.TrimSpace(req.RuntimeTestCommand); command != "" {
 		baseKey["runtimeTestCommand"] = command
 		baseKey["runtimeTracePathExplicit"] = req.RuntimeTracePathExplicit
