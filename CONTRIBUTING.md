@@ -2,29 +2,43 @@
 
 Thanks for contributing to Lopper.
 
-## Development setup
+## Start here
 
-Requirements:
+1. Install the toolchain with `make setup` on Linux or macOS, then run `make test` for package tests or `make ci` for the full local gate. Details are under [Local setup](#local-setup) and [Running tests](#running-tests).
+2. Open a pull request against `main`. The title must be a Conventional Commit, and the body must keep every heading in `.github/PULL_REQUEST_TEMPLATE.md`. `pr-metadata` fails a pull request that has no label.
+3. Merge intent is the `queue-me` label. The controller in `.github/workflows/queue-me.yml` squash-merges in ascending pull-request number only after the checks below are fresh. It does not bypass repository rules. See [Pull requests and the queue](#pull-requests-and-the-queue).
 
-- Go `1.27.4` or newer (required by `go.mod`; upgrade older installations or allow Go to download the required toolchain)
-- `zig` (required for cross-CGO release builds)
-- `shellcheck` (required for `make ci`)
-- Ruby (required for automation integrity YAML/JSON checks in `make ci`)
-- Node.js 22.12 or newer (required for automation integrity and VS Code extension tests)
-- `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
-- `gostyle` (optional for faster local runs; `make lint` auto-runs a pinned version)
-- `actionlint` (optional for faster local runs; `make actionlint` auto-runs a pinned version)
-- `govulncheck` (optional for faster local runs; `make vuln-check` auto-runs a pinned version)
+Issue and pull-request templates are already in the repository:
 
-Install dependencies and run checks:
+- Bug report: `.github/ISSUE_TEMPLATE/bug_report.yml`
+- Feature request: `.github/ISSUE_TEMPLATE/feature_request.yml`
+- Pull request: `.github/PULL_REQUEST_TEMPLATE.md`
+
+## Local setup
+
+`make setup` is `toolchain-install` plus `go mod download` plus `toolchain-check`. `toolchain-install` supports Linux (apt, dnf, or pacman) and macOS (Homebrew). On anything else it exits with `Unsupported OS`.
+
+`toolchain-check` requires these commands:
+
+- Go on `PATH`. The check accepts Go 1.26 or newer. `go.mod` and `GO_TOOLCHAIN` in the Makefile are `go1.27.4`, and Make prefixes Go commands with `GOTOOLCHAIN=go1.27.4`, so Go downloads that toolchain when the local compiler is older but new enough to do so.
+- `zig`, used by `toolchain-check` and by cross-compiled CGO release builds. `make test` does not call `zig`.
+- `shellcheck`, required by `make shellcheck` and therefore by `make ci`.
+- Ruby, required by the automation-integrity YAML and JSON checks inside `make ci`.
+- Node.js 22.12 or newer, required by automation integrity and by the VS Code extension tests.
+- Python 3, required by the Python CI checks.
+
+`make lint`, `make actionlint`, and `make vuln-check` run pinned module versions themselves. Installing `golangci-lint`, `gostyle`, `actionlint`, or `govulncheck` on `PATH` is optional. `make tools-install` installs those pinned binaries into `GOBIN` when you want them locally.
+
+Windows contributors do not use `make setup`. Use a Go toolchain that satisfies `go.mod`. The native Windows hook-cleanup suite is the hosted `native-windows-hook-cleanup` job described later in this file, not a local `make` target.
 
 ```bash
 make setup
+make test
 make ci
 make demos-check
 ```
 
-`make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
+`make ci` is the serial local equivalent of the CI partitions. Its prerequisites are `fuzz-corpus-check`, `benchdelta-cov`, `automation-integrity`, `format-check`, `mod-check`, `feature-flag-check`, `lint`, `actionlint`, `shellcheck`, `dup-check`, `suppression-check`, `security`, `vuln-check`, `stave-ui-check`, `test`, `test-leaks`, `test-tui`, `test-race`, `bench-gate`, `build`, `cov`, and `runtime-pycache-check`. That includes goroutine leak detection and the memory benchmark delta gate against `origin/main`. Fetch `origin/main` before `make ci` when a gate compares against it. Do not drop a prerequisite or lower a threshold to make a run pass.
 
 The scripts package runs isolated subprocess fixtures with 16 parallel test slots,
 independently of `GOMAXPROCS`. An explicit `go test -parallel` setting takes
@@ -42,6 +56,8 @@ affected source; review and retire it when upgrading to a fixed upstream version
 global lock when another runner is active. It keeps the common temporary-directory
 namespace and all lint checks; lock waiting has no fixed deadline, while the
 configured analysis timeout still applies after acquisition.
+## Pre-commit hook
+
 To enable pre-commit validation, run `make hooks-install`. It installs or refreshes the managed hook in the repository's shared Git metadata, including upgrading an older installation. Every commit checks staged whitespace and Go formatting, then runs the full `make ci` target in a temporary worktree containing the exact staged snapshot; any failure blocks the commit. Install the CI prerequisites above before using the hook. This executes the staged Makefile and scripts, so install and commit only in a checkout you trust. Unstaged edits are excluded, HEAD-based gates see the staged snapshot as a new commit, and the temporary worktree is removed afterward. Your branch and index are not changed. The installed hook snapshot stays fixed between explicit installations. Installation is the trust decision for that snapshot. At runtime, the Bash hook inventories main and linked checkouts using system Git, rejects selected Git/gofmt/make paths (including every symlink hop) inside any checkout, and carries a PATH without checkout directories into staged CI. External Homebrew and version-manager installations remain supported. Inventory errors fail closed; stale foreign worktree registrations are excluded without pruning them. Hook-owned Git commands disable pagers, filesystem monitors, and repository hooks. These guarantees cover hook-selected tools, not sandboxing the staged Makefile or scripts. `make hooks-uninstall` removes only Lopper's managed `core.hooksPath` setting. It deletes the managed snapshot after confirming no live worktree references it; if inspection is ambiguous or fails, it retains the snapshot. Cleanup also retains the snapshot when `HOME` differs from the account home, that home cannot be determined, or `XDG_CONFIG_HOME` selects a custom root, since those environments can hide durable global hook references.
 Cleanup audits every durable `core.hooksPath` value, including values hidden by higher-precedence overrides. It conservatively retains snapshots when system or global configuration contains relative hook paths or conditional includes, since other repositories may resolve those settings to the snapshot. Local and worktree conditional includes are evaluated in each owning worktree's context.
 Staged whitespace validation requires Git 2.41 or newer, using native `--attr-source` with the tree produced by `git write-tree`. Unsupported Git fails closed rather than falling back to checkout attributes. Repository `.gitattributes` files, including nested overrides, come only from that staged tree; HEAD and unstaged working-tree attributes do not override it. Git's usual precedence remains: `info/attributes` overrides repository attributes, which override global and system attributes; `core.whitespace` supplies the default when no whitespace attribute overrides it. Local configuration and non-repository attributes remain trusted policy. The hook freezes a private index from the staged tree and reuses it for whitespace, formatting, and CI, preserving alternate-index and linked-worktree inputs without changing the caller's index or working files. Do not concurrently modify the committing index or policy configuration: the hook validates one captured tree, and cannot lock external changes through Git's eventual commit operation.
@@ -86,12 +102,42 @@ Capture watched-package memory profiles:
 make mem-profiles
 ```
 
-## Workflow
+## Running tests
 
-1. Create a branch for your change.
+| Target | What it runs |
+| --- | --- |
+| `make test` | `go test` for every package except the default `internal/app` build, then the `lockfiledrift_head` build of `./internal/app`, then `python3 -m unittest` for `scripts/vscode_release_notes_test.py` and `scripts/release_build_notes_test.py`, then `vscode-release-notes-check` |
+| `make test-leaks` | `GOLEAK=1 go test` for every package except the default `internal/app` build, then the `lockfiledrift_head` build of `./internal/app` |
+| `make test-race` | `go test -race` with that same package split. The main set uses `-timeout=15m` |
+| `make test-tui` | depends on `build`, then `go test ./internal/ui ./internal/cli`, `scripts/test_tui_test.py`, and `scripts/test_tui.py` against `bin/lopper` |
+| `make ci-tests` | the CI test partition: `stave-ui-check`, `test`, `test-leaks`, `test-tui`, then `runtime-pycache-check` |
+| `make ci-checks` | the CI check partition: `fuzz-corpus-check`, `benchdelta-cov`, `automation-integrity`, `format-check`, `mod-check`, `feature-flag-check`, `lint`, `actionlint`, `shellcheck`, `dup-check`, `suppression-check`, `security`, `vuln-check`, `test-race`, `bench-gate`, `build`, `cov`, and `runtime-pycache-check` |
+| `make ci` | the prerequisite list under [Local setup](#local-setup). It is one local run, not the hosted job split |
+| `make demos-check` | checks that committed demo assets match `make demos` |
+
+Hosted CI does not run `make ci` as one recipe. `.github/workflows/ci.yml` runs `make ci-tests` as `verify-tests / tests` and `verify-rolling-tests / tests`, and `make ci-checks` as `verify-checks` and `verification checks (rolling)`. The aggregate checks are `verify` and `verify (rolling)`. `verify` requires success from the Linux checks and tests, `regression-proof-windows`, `regression-proof-darwin`, `native-windows-hook-cleanup`, and `action-windows-provider-proof`. `.github/workflows/windows-runtime.yml` runs `runtime-cancellation`. The same `ci` workflow also runs OS smoke, VS Code smoke, and Homebrew tap verification. The queue's expected job table is in [CI and release workflow](docs/ci-usage.md#pull-request-verification-queue).
+
+A focused package test is the usual inner loop:
+
+```bash
+go test ./internal/cli -count=1
+```
+
+`make test` still has to pass. Coverage inside `make ci` uses the thresholds in the Makefile (`COVERAGE_MIN`, currently 98).
+
+## Pull requests and the queue
+
+1. Branch from current `main`.
 2. Add or update tests, docs, and demo assets when behavior, flags, or workflows change.
-3. Keep commits focused and descriptive.
-4. Open a pull request with clear context, scope, and validation steps.
+3. Keep commits focused. Each commit's author and committer must be the same canonical user. The queue rejects other bot commits. The Renovate exception is described in [CI and release workflow](docs/ci-usage.md#pull-request-verification-queue) and does not apply to human commits.
+4. Open a pull request whose title is a Conventional Commit, such as `fix(scope): summary` or `docs(scope): summary`. The squash merge uses that title. Fill every template heading and risk field, and check every checklist item after considering it. `docs` titles do not carry `Regression-Test` lines. `fix` titles do, unless a maintainer has applied `regression-exempt` and the body has a `Regression-Test-Exemption` reason.
+5. Add at least one label. `.github/workflows/pr-metadata.yml` fails pull requests with none. Use an existing label such as `bug`, `enhancement`, or `documentation`.
+6. Wait for `ci` and `windows runtime`. A force-push is a new queue intent: the controller will not reuse a green run created before that push. Same-repository branches that are behind `main` are updated by the queue's own branch update, which merges current `main` and must pass the identity audit again. Fork branches stay with the author. Do not weaken a check, skip a job, or lower a threshold to get the pull request through.
+7. When the pull request is ready, `queue-me` is the merge-intent label. The controller considers open, non-draft pull requests targeting `main` in ascending number. It squash-merges only after fresh CI, Sonar, review threads, and suppression evidence match the rules in that document. Removing the label cancels that intent. Required reviews stay on the repository ruleset. The controller does not request reviews and does not publish `reuse-check`.
+
+`memory-approved` and `regression-exempt` are maintainer labels. Asking for one in the pull request is not the same as applying it.
+
+Commit types, feature flags, and release notes are below. Stable releases are cut from Conventional Commits on `main` by release-please.
 
 ## Feature flagging
 
