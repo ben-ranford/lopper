@@ -200,7 +200,7 @@ func safeioNamesFor(file *ast.File) safeioNames {
 
 func scanFile(file parsedFile, names safeioNames, consts map[string]int64) []rawReference {
 	var refs []rawReference
-	record := func(fn string, callee string, _ token.Pos) {
+	record := func(fn, callee string, _ token.Pos) {
 		refs = append(refs, rawReference{Reference: Reference{
 			Path:     file.rel,
 			Function: fn,
