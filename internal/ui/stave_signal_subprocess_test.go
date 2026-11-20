@@ -30,9 +30,12 @@ const (
 	staveSignalMarkerFD       = 3
 	staveSignalActionStarted  = "ACTION_STARTED"
 	staveSignalCancelObserved = "CANCEL_OBSERVED"
-	// 15s is the current signal-helper bound. Successful runs return as soon as
-	// the marker arrives; a stuck subprocess must still fail at this bound
-	// rather than wait for the process. Do not widen it without new runner timings.
+	// 15s stays the signal-helper bound. #1914's green CI (runs 44180466636
+	// and 44200241534) finished the whole internal/ui package in 0.5–3.8s on
+	// ubuntu-latest and 1.0–6.1s on macos-26, and in 18–24s under -race.
+	// Successful helpers return when the marker arrives. The stuck-helper
+	// test still rejects a hang in 200ms–2s, so detection does not wait out
+	// this bound. Do not widen it without new runner timings.
 	staveSignalSubprocessBound = 15 * time.Second
 )
 
