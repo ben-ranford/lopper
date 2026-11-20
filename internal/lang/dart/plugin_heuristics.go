@@ -166,7 +166,7 @@ func resolvedFederatedFamilyRole(dependency string) (string, string) {
 	return dependency, federatedRoleApp
 }
 
-func relatedFederatedMembers(dependency string, family string, familyMembers map[string]string, candidates map[string]struct{}) []string {
+func relatedFederatedMembers(dependency, family string, familyMembers map[string]string, candidates map[string]struct{}) []string {
 	if len(familyMembers) == 0 {
 		return nil
 	}
@@ -191,7 +191,7 @@ func relatedFederatedMembers(dependency string, family string, familyMembers map
 	return related
 }
 
-func applyFederatedMetadata(info dependencyInfo, dependency string, family string, role string, related []string) dependencyInfo {
+func applyFederatedMetadata(info dependencyInfo, dependency, family, role string, related []string) dependencyInfo {
 	info.FederatedPlugin = true
 	info.FederatedFamily = family
 	info.FederatedRole = role

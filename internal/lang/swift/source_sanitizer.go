@@ -180,7 +180,7 @@ func detectSwiftStringStart(content []byte, index int) (int, int, bool, bool) {
 	return hashCount, cursor + 1, false, true
 }
 
-func matchesSwiftStringDelimiter(content []byte, index int, rawHashCount int, multiline bool) bool {
+func matchesSwiftStringDelimiter(content []byte, index, rawHashCount int, multiline bool) bool {
 	delimiterLen := swiftStringDelimiterLength(rawHashCount, multiline)
 	if index+delimiterLen > len(content) {
 		return false

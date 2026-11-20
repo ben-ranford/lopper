@@ -104,7 +104,7 @@ func isElixirSigilLetter(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
 }
 
-func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
+func sanitizeElixirSourceAt(content, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	switch {
 	case state.inComment:
 		return sanitizeElixirCommentByte(content, index, state)
@@ -128,7 +128,7 @@ func sanitizeElixirCommentByte(content []byte, index int, state *elixirSourceMas
 	return 0
 }
 
-func sanitizeElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
+func sanitizeElixirHeredocByte(content, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
 	maskElixirSourceByte(sanitized, index)
 	if !isElixirTripleQuote(content, index, quote) {
 		return 0
@@ -143,7 +143,7 @@ func sanitizeElixirHeredocByte(content []byte, sanitized []byte, index int, stat
 	return 2
 }
 
-func sanitizeElixirQuotedByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
+func sanitizeElixirQuotedByte(content, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
 	maskElixirSourceByte(sanitized, index)
 	if state.escaped {
 		state.escaped = false
@@ -163,7 +163,7 @@ func sanitizeElixirQuotedByte(content []byte, sanitized []byte, index int, state
 	return 0
 }
 
-func startElixirSanitizedRegion(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
+func startElixirSanitizedRegion(content, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	if isElixirTripleQuote(content, index, '"') {
 		maskElixirSourceByte(sanitized, index)
 		maskElixirSourceByte(sanitized, index+1)

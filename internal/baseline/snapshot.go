@@ -52,7 +52,7 @@ func SaveSnapshot[T any](dir, key string, now time.Time, report T, existsErr err
 	})
 }
 
-func SortedCopyByStrings[T any](items []T, primaryKey func(T) string, secondaryKey func(T) string) []T {
+func SortedCopyByStrings[T any](items []T, primaryKey, secondaryKey func(T) string) []T {
 	copied := append([]T(nil), items...)
 	slices.SortFunc(copied, func(left, right T) int {
 		if diff := strings.Compare(primaryKey(left), primaryKey(right)); diff != 0 {

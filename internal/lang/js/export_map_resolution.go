@@ -24,7 +24,7 @@ func resolveExportNode(value any, profile runtimeProfile, scope string, surface 
 	}
 }
 
-func resolveStringExportNode(value string, scope string, surface *ExportSurface) ([]string, bool) {
+func resolveStringExportNode(value, scope string, surface *ExportSurface) ([]string, bool) {
 	if !isLikelyCodeAsset(value) {
 		if surface != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("skipping non-js export target at %s: %s", scope, value))

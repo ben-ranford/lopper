@@ -60,7 +60,7 @@ func scanRepoWithOptions(ctx context.Context, repoPath string, manifests []packa
 	return result, nil
 }
 
-func scanManifestRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) (bool, error) {
+func scanManifestRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) (bool, error) {
 	if result.SkippedFilesByBound {
 		return true, nil
 	}
@@ -90,7 +90,7 @@ func mergeDeclaredDependencies(dest, incoming map[string]dependencyInfo) {
 	}
 }
 
-func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots map[string]struct{}, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+func scanPackageRoot(ctx context.Context, repoPath string, manifest packageManifest, allRoots, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
 	root := manifest.Root
 	if root == "" {
 		root = repoPath
@@ -149,11 +149,11 @@ func scanPackageDir(root, path, name string, allRoots map[string]struct{}) error
 	return nil
 }
 
-func scanPackageFileEntry(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+func scanPackageFileEntry(repoPath, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
 	return scanPackageFileEntryWithOptions(repoPath, path, depLookup, scannedFiles, fileCount, result, false)
 }
 
-func scanPackageFileEntryWithOptions(repoPath string, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) error {
+func scanPackageFileEntryWithOptions(repoPath, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult, includeLocalPathImports bool) error {
 	if !strings.EqualFold(filepath.Ext(path), ".dart") {
 		return nil
 	}

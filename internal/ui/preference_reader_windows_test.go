@@ -95,7 +95,7 @@ func TestPreferenceConsoleKeysAndErrors(t *testing.T) {
 	}
 }
 
-func preferenceNativeKey(virtualKey uint16, char uint16, down bool, modifiers uint32) xwindows.InputRecord {
+func preferenceNativeKey(virtualKey, char uint16, down bool, modifiers uint32) xwindows.InputRecord {
 	record := preferenceKey(char, down, 1)
 	binary.LittleEndian.PutUint16(record.Event[6:8], virtualKey)
 	binary.LittleEndian.PutUint32(record.Event[12:16], modifiers)

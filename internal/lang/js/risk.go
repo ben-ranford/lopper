@@ -13,7 +13,7 @@ const (
 	riskCodeDeepGraph     = "deep-transitive-graph"
 )
 
-func assessRiskCues(repoPath string, dependency string, dependencyRootPath string, surface ExportSurface) ([]report.RiskCue, []string) {
+func assessRiskCues(repoPath, dependency, dependencyRootPath string, surface ExportSurface) ([]report.RiskCue, []string) {
 	depRoot := dependencyRootPath
 	if depRoot == "" {
 		root, err := dependencyRoot(repoPath, dependency)
@@ -70,7 +70,7 @@ func (a *riskCueAggregator) finalize() ([]report.RiskCue, []string) {
 	return a.cues, a.warnings
 }
 
-func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, entrypoints []string) ([]report.RiskCue, []string) {
+func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency, depRoot string, entrypoints []string) ([]report.RiskCue, []string) {
 	cue, err := buildDynamicLoaderRiskCue(depRoot, entrypoints)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
@@ -82,7 +82,7 @@ func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency s
 	return cues, warnings
 }
 
-func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
 	cue, err := buildNativeModuleRiskCue(depRoot, pkg)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
@@ -94,7 +94,7 @@ func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency st
 	return cues, warnings
 }
 
-func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency, repoPath, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
 	_ = dependency
 	cue := buildTransitiveDepthRiskCue(repoPath, depRoot, pkg)
 	if cue != nil {

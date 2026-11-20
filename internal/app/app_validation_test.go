@@ -716,12 +716,12 @@ affected:
 	assertReachableVulnerabilityThresholdFromAdvisoryVersion(t, "osv-safe.yml", advisorySource, "1.0.0", "GHSA-osv-safe", "low", false)
 }
 
-func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName string, advisorySource string, wantID string, wantSeverity string) {
+func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName, advisorySource, wantID, wantSeverity string) {
 	t.Helper()
 	assertReachableVulnerabilityThresholdFromAdvisoryVersion(t, fileName, advisorySource, "1.0.0", wantID, wantSeverity, true)
 }
 
-func assertReachableVulnerabilityThresholdFromAdvisoryVersion(t *testing.T, fileName string, advisorySource string, version string, wantID string, wantSeverity string, wantThresholdError bool) {
+func assertReachableVulnerabilityThresholdFromAdvisoryVersion(t *testing.T, fileName, advisorySource, version, wantID, wantSeverity string, wantThresholdError bool) {
 	t.Helper()
 	tmp := t.TempDir()
 	advisoryPath := filepath.Join(tmp, fileName)

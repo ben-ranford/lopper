@@ -320,7 +320,7 @@ func lessCSVQualifiedCount(moduleA, nameA string, countA int, moduleB, nameB str
 	return countA > countB
 }
 
-func formatCSVQualifiedValues[T any](items []T, module func(T) string, name func(T) string) string {
+func formatCSVQualifiedValues[T any](items []T, module, name func(T) string) string {
 	less := func(a, b T) bool {
 		return lessCSVQualifiedName(module(a), name(a), module(b), name(b))
 	}
@@ -330,7 +330,7 @@ func formatCSVQualifiedValues[T any](items []T, module func(T) string, name func
 	return formatCSVSorted(items, less, render)
 }
 
-func formatCSVCodeValues[T any](items []T, code func(T) string, value func(T) string) string {
+func formatCSVCodeValues[T any](items []T, code, value func(T) string) string {
 	less := func(a, b T) bool {
 		if code(a) == code(b) {
 			return value(a) < value(b)

@@ -99,7 +99,7 @@ func mergeDependencyRuntimeFamily(merged *report.DependencyReport, left, right r
 	merged.RuntimeUsage = mergeRuntimeUsage(left.RuntimeUsage, right.RuntimeUsage)
 }
 
-func mergeDependencyMetadataFamily(merged *report.DependencyReport, _ report.DependencyReport, right report.DependencyReport) {
+func mergeDependencyMetadataFamily(merged *report.DependencyReport, _, right report.DependencyReport) {
 	if merged.ReachabilityConfidence == nil {
 		merged.ReachabilityConfidence = right.ReachabilityConfidence
 	}
@@ -168,7 +168,7 @@ func importUseKey(item report.ImportUse) string {
 	return item.Module + "\x00" + item.Name
 }
 
-func runtimeUsageSignals(usage *report.RuntimeUsage) (hasStatic bool, hasRuntime bool) {
+func runtimeUsageSignals(usage *report.RuntimeUsage) (hasStatic, hasRuntime bool) {
 	if usage == nil {
 		return false, false
 	}
@@ -340,7 +340,7 @@ func sortCodemodSkips(items []report.CodemodSkip) {
 	})
 }
 
-func mergeUniqueSorted[T any](left []T, right []T, keyFn func(T) string, sortFn func([]T)) []T {
+func mergeUniqueSorted[T any](left, right []T, keyFn func(T) string, sortFn func([]T)) []T {
 	merged := make(map[string]T)
 	for _, elem := range left {
 		merged[keyFn(elem)] = elem

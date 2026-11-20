@@ -672,7 +672,7 @@ func writeDependency(repo, name, entrypoint string) error {
 	return os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644)
 }
 
-func mustWritePackage(t *testing.T, root string, pkgJSON string) {
+func mustWritePackage(t *testing.T, root, pkgJSON string) {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", root, err)

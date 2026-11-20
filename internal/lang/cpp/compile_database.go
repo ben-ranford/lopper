@@ -470,7 +470,7 @@ func compileSystemPathSet(paths []includeSearchPath) map[string]struct{} {
 	return systemPaths
 }
 
-func appendCompileSearchPaths(result []includeSearchPath, paths []includeSearchPath, seen map[string]struct{}, include func(includeSearchPath) bool) []includeSearchPath {
+func appendCompileSearchPaths(result, paths []includeSearchPath, seen map[string]struct{}, include func(includeSearchPath) bool) []includeSearchPath {
 	for _, includePath := range paths {
 		if includePath.Path == "" || !include(includePath) {
 			continue

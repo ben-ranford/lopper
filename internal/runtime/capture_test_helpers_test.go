@@ -57,7 +57,7 @@ func setupFakeRuntimeTools(t *testing.T) string {
 	return toolDir
 }
 
-func setupFakeRuntimeToolScript(t *testing.T, tool string, script string) string {
+func setupFakeRuntimeToolScript(t *testing.T, tool, script string) string {
 	t.Helper()
 
 	toolDir := setupFakeRuntimeTools(t)

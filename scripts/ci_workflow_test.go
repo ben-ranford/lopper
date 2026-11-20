@@ -347,7 +347,7 @@ func TestCIWorkflowIsolatesSuppressionValidationFromCheckedOutCode(t *testing.T)
 	assertWorkflowStepOrder(t, aggregate, "Require every verification job", "Verify inline suppression tracking issues were published")
 }
 
-func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
+func assertWorkflowMarkerOrder(t *testing.T, script, beforeMarker, afterMarker string) {
 	t.Helper()
 
 	beforeIndex := strings.Index(script, beforeMarker)
@@ -360,7 +360,7 @@ func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string,
 	}
 }
 
-func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label string, wantUses string, wantInputs map[string]string) {
+func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label, wantUses string, wantInputs map[string]string) {
 	t.Helper()
 	if step.Uses != wantUses {
 		t.Fatalf("%s action = %q, want %q", label, step.Uses, wantUses)
@@ -372,7 +372,7 @@ func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label string,
 	}
 }
 
-func shellArrayValues(t *testing.T, script string, name string) []string {
+func shellArrayValues(t *testing.T, script, name string) []string {
 	t.Helper()
 	marker := name + "=("
 	start := strings.Index(script, marker)
@@ -393,7 +393,7 @@ func shellArrayValues(t *testing.T, script string, name string) []string {
 	return values
 }
 
-func assertWorkflowStepAbsent(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) {
+func assertWorkflowStepAbsent(t *testing.T, jobs map[string]workflowJobConfig, jobName, stepName string) {
 	t.Helper()
 
 	job, ok := jobs[jobName]
@@ -744,13 +744,13 @@ func assertScenarioUsesDistinctMergeBase(t *testing.T, scenario prBaseScenario) 
 	}
 }
 
-func assertActFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string) {
+func assertActFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script, runLabel string) {
 	t.Helper()
 
 	assertFetchStepResolvesImmutableBase(t, scenario, script, runLabel, defaultShellEnv())
 }
 
-func assertFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string, baseEnv []string) {
+func assertFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script, runLabel string, baseEnv []string) {
 	t.Helper()
 
 	githubEnv := filepath.Join(t.TempDir(), "github.env")
@@ -936,7 +936,7 @@ func assertRunStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, scrip
 	assertImmutableBaseValue(t, makeEnvText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, cfg.runLabel+" run step")
 }
 
-func assertLopperStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string) {
+func assertLopperStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script, runLabel string) {
 	t.Helper()
 
 	lopperLog := filepath.Join(t.TempDir(), "lopper.log")
@@ -968,7 +968,7 @@ func buildFakeLopperScript(logPath string) string {
 	return "#!/bin/sh\nset -eu\nrepo=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --repo)\n      repo=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nprintf 'repo=%s\\nsha=%s\\n' \"$repo\" \"$(git -C \"$repo\" rev-parse HEAD)\" >> " + shellQuote(logPath) + "\nprintf '{}\\n'\n"
 }
 
-func assertImmutableBaseValue(t *testing.T, text string, wantBaseSHA string, forbiddenHeadParentSHA string, forbiddenDriftSHA string, label string) {
+func assertImmutableBaseValue(t *testing.T, text, wantBaseSHA, forbiddenHeadParentSHA, forbiddenDriftSHA, label string) {
 	t.Helper()
 
 	if !strings.Contains(text, wantBaseSHA) {
@@ -1033,7 +1033,7 @@ func shellQuote(path string) string {
 // the per-file suspect scan loop body out of the real "verify" gate's run
 // script, for tests that execute that body directly against a synthetic
 // file_json fixture.
-func extractSuspectScanVarsAndLoop(t *testing.T, gate workflowStepConfig) (varsBlock string, loopBody string) {
+func extractSuspectScanVarsAndLoop(t *testing.T, gate workflowStepConfig) (varsBlock, loopBody string) {
 	t.Helper()
 
 	const varsStart = `no_prefix="no"`

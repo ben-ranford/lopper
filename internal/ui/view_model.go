@@ -140,7 +140,7 @@ func summaryDependencyDetailView(dep summaryDependencyView) detailDependencyView
 	return mapDetailDependencyView(summaryDependencyToReport(dep))
 }
 
-func buildSummaryDisplayView(base summaryReportView, sorted []summaryDependencyView, paged []summaryDependencyView) summaryDisplayView {
+func buildSummaryDisplayView(base summaryReportView, sorted, paged []summaryDependencyView) summaryDisplayView {
 	summaryDeps := summaryViewDependenciesToReport(sorted)
 	return summaryDisplayView{
 		UsageUncertainty:    base.UsageUncertainty,
@@ -441,7 +441,7 @@ func mapDetailRuntimeUsage(usage *report.RuntimeUsage) *detailRuntimeUsageView {
 	}
 }
 
-func mapDetailViews[Input any, View any](items []Input, mapItem func(Input) View) []View {
+func mapDetailViews[Input, View any](items []Input, mapItem func(Input) View) []View {
 	views := make([]View, 0, len(items))
 	for _, item := range items {
 		views = append(views, mapItem(item))

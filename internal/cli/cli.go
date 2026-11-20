@@ -22,7 +22,7 @@ type CommandLine struct {
 	VersionOutput string
 }
 
-func New(executor Executor, out io.Writer, errOut io.Writer) *CommandLine {
+func New(executor Executor, out, errOut io.Writer) *CommandLine {
 	return &CommandLine{
 		Executor:      executor,
 		Out:           out,

@@ -108,7 +108,7 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 	return nil
 }
 
-func applyNestedListOverride(name string, target *[]string, nested *[]string, targetSet *bool) error {
+func applyNestedListOverride(name string, target, nested *[]string, targetSet *bool) error {
 	if nested == nil {
 		return nil
 	}

@@ -122,7 +122,7 @@ func hasNamespacePrefix(ancestors []string, namespaces map[string]struct{}) bool
 	return false
 }
 
-func namespaceAncestors(module string, segmentLimit int, byteLimit int) ([]string, bool) {
+func namespaceAncestors(module string, segmentLimit, byteLimit int) ([]string, bool) {
 	module = normalizeNamespace(module)
 	if module == "" {
 		return nil, false

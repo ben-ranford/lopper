@@ -32,11 +32,11 @@ type scanResult struct {
 	SkippedSymlinks   int
 }
 
-func scanRepo(ctx context.Context, repoPath string, depPrefixes map[string]string, depAliases map[string]string) (scanResult, error) {
+func scanRepo(ctx context.Context, repoPath string, depPrefixes, depAliases map[string]string) (scanResult, error) {
 	return scanRepoWithSourceReader(ctx, repoPath, depPrefixes, depAliases, safeio.ReadFileUnderLimit)
 }
 
-func scanRepoWithinRoot(ctx context.Context, repoPath string, root safeio.Root, depPrefixes map[string]string, depAliases map[string]string) (scanResult, error) {
+func scanRepoWithinRoot(ctx context.Context, repoPath string, root safeio.Root, depPrefixes, depAliases map[string]string) (scanResult, error) {
 	result := scanResult{}
 	if repoPath == "" {
 		return result, fs.ErrInvalid
@@ -82,7 +82,7 @@ func rootedJVMSourceReader(parent safeio.Root, leaf string) jvmSourceReader {
 	}
 }
 
-func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes map[string]string, depAliases map[string]string, readSource jvmSourceReader) (scanResult, error) {
+func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes, depAliases map[string]string, readSource jvmSourceReader) (scanResult, error) {
 	result := scanResult{}
 	if repoPath == "" {
 		return result, fs.ErrInvalid
@@ -119,11 +119,11 @@ func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes 
 	return result, nil
 }
 
-func scanJVMSourceFile(repoPath string, path string, depPrefixes map[string]string, depAliases map[string]string, result *scanResult) error {
+func scanJVMSourceFile(repoPath, path string, depPrefixes, depAliases map[string]string, result *scanResult) error {
 	return scanJVMSourceFileWithReader(repoPath, path, nil, depPrefixes, depAliases, result, safeio.ReadFileUnderLimit)
 }
 
-func scanJVMSourceFileWithReader(repoPath string, path string, entry fs.DirEntry, depPrefixes map[string]string, depAliases map[string]string, result *scanResult, readSource jvmSourceReader) error {
+func scanJVMSourceFileWithReader(repoPath, path string, entry fs.DirEntry, depPrefixes, depAliases map[string]string, result *scanResult, readSource jvmSourceReader) error {
 	if !isSourceFile(path) {
 		return nil
 	}
@@ -239,7 +239,7 @@ func parsePackage(content []byte) string {
 	return strings.TrimSpace(string(matches[1]))
 }
 
-func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
+func parseImports(content []byte, filePath, filePackage string, depPrefixes, depAliases map[string]string) []importBinding {
 	sanitized := shared.StripBlockComments(content)
 	parser := jvmImportParser{
 		filePackage: filePackage,
@@ -282,7 +282,7 @@ func (p *jvmImportParser) dependencyFor(module string) string {
 	return fallbackDependency(module)
 }
 
-func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
+func buildImportRecord(matches []string, module, dependency string) (shared.ImportRecord, bool) {
 	wildcard := strings.TrimSpace(matches[2]) == ".*"
 	symbol := lastModuleSegment(module)
 	if wildcard {
@@ -330,7 +330,7 @@ func shouldIgnoreImport(module, filePackage string) bool {
 	return false
 }
 
-func resolveDependency(module string, depPrefixes map[string]string, depAliases map[string]string) string {
+func resolveDependency(module string, depPrefixes, depAliases map[string]string) string {
 	module = normalizeJVMModuleForLookup(module)
 	best := ""
 	bestLen := 0

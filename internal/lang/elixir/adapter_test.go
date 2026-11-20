@@ -49,7 +49,7 @@ func TestDetectWithConfidenceFixtures(t *testing.T) {
 	}
 }
 
-func assertDetectionFixture(t *testing.T, repoPath string, wantRootPart string, noRootPart string) {
+func assertDetectionFixture(t *testing.T, repoPath, wantRootPart, noRootPart string) {
 	t.Helper()
 	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repoPath)
 	if err != nil {

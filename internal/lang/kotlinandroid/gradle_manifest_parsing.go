@@ -41,7 +41,7 @@ func parseGradleDependencyContentForPath(path, content string) []dependencyDescr
 	return dedupeDescriptors(descriptors)
 }
 
-func parseGradleDependencyContentWithCatalog(path string, content string, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
+func parseGradleDependencyContentWithCatalog(path, content string, catalogResolver shared.GradleCatalogResolver) ([]dependencyDescriptor, []string) {
 	descriptors := parseGradleDependencyContentForPath(path, content)
 	catalogDescriptors, warnings := catalogResolver.ParseDependencyReferences(path, content)
 	for _, descriptor := range catalogDescriptors {

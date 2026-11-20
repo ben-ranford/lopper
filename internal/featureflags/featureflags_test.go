@@ -557,7 +557,7 @@ func assertNoDefaultReleaseLock(t *testing.T, release string) {
 	}
 }
 
-func assertDefaultReleaseLocksInvalid(t *testing.T, data string, want string) {
+func assertDefaultReleaseLocksInvalid(t *testing.T, data, want string) {
 	t.Helper()
 	withDefaultReleaseLocks(t, data)
 	if err := ValidateDefaultReleaseLocks(); err == nil || !strings.Contains(err.Error(), want) {

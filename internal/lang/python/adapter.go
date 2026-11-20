@@ -125,7 +125,7 @@ func scanRepoWithCatalog(ctx context.Context, repoPath string, excludedPaths map
 	return result, nil
 }
 
-func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result *scanResult, excludedPaths map[string]struct{}) error {
+func scanPythonRepoEntry(repoPath, path string, entry fs.DirEntry, result *scanResult, excludedPaths map[string]struct{}) error {
 	if shared.IsExcludedPath(excludedPaths, path) {
 		if entry.IsDir() {
 			return filepath.SkipDir
@@ -182,7 +182,7 @@ var (
 	}
 )
 
-func parseImports(content []byte, filePath string, repoPath string) []importBinding {
+func parseImports(content []byte, filePath, repoPath string) []importBinding {
 	var pending *pendingFromImport
 	var stringMask pythonStringMask
 
@@ -534,11 +534,11 @@ func (m *pythonStringMask) finishShortFStringLine() {
 	m.resetMultilineString()
 }
 
-func (m *pythonStringMask) startMultilineString(quote string, line string, index *int, builder *strings.Builder) {
+func (m *pythonStringMask) startMultilineString(quote, line string, index *int, builder *strings.Builder) {
 	m.startFStringAwareString(quote+quote+quote, line, index, builder)
 }
 
-func (m *pythonStringMask) startFStringAwareString(delimiter string, line string, index *int, builder *strings.Builder) {
+func (m *pythonStringMask) startFStringAwareString(delimiter, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = delimiter
 	m.multilineFString = hasPythonFStringPrefix(line, *index)
 	m.multilineReplacementFields = nil
@@ -653,7 +653,7 @@ func isPythonIdentifierByte(b byte) bool {
 	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
-func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
+func continuePendingFromImport(pending **pendingFromImport, trimmed, lineNoComment, filePath, repoPath string, index int) ([]importBinding, bool) {
 	if *pending == nil {
 		return nil, false
 	}
@@ -668,7 +668,7 @@ func continuePendingFromImport(pending **pendingFromImport, trimmed string, line
 	return records, true
 }
 
-func appendPendingFromImportLine(pending *pendingFromImport, symbols string, line string, index int) {
+func appendPendingFromImportLine(pending *pendingFromImport, symbols, line string, index int) {
 	pending.symbolLines = append(pending.symbolLines, fromImportSymbolLine{
 		symbols: symbols,
 		line:    line,
@@ -677,7 +677,7 @@ func appendPendingFromImportLine(pending *pendingFromImport, symbols string, lin
 	pending.parenDepth += fromImportParenthesisDelta(symbols)
 }
 
-func parseImportRecord(trimmed string, lineNoComment string, filePath string, repoPath string, index int, pending **pendingFromImport) []importBinding {
+func parseImportRecord(trimmed, lineNoComment, filePath, repoPath string, index int, pending **pendingFromImport) []importBinding {
 	if trimmed == "" {
 		return nil
 	}
@@ -687,7 +687,7 @@ func parseImportRecord(trimmed string, lineNoComment string, filePath string, re
 	return parseFromImportRecord(lineNoComment, filePath, repoPath, index, pending)
 }
 
-func parseFromImportRecord(lineNoComment string, filePath string, repoPath string, index int, pending **pendingFromImport) []importBinding {
+func parseFromImportRecord(lineNoComment, filePath, repoPath string, index int, pending **pendingFromImport) []importBinding {
 	matches := fromLinePattern.FindStringSubmatch(lineNoComment)
 	if len(matches) != 3 {
 		return nil
@@ -709,7 +709,7 @@ func parseFromImportRecord(lineNoComment string, filePath string, repoPath strin
 	return parseFromImportLine(matches[1], symbols, filePath, repoPath, index, lineNoComment)
 }
 
-func parseImportLine(partsText string, filePath string, repoPath string, index int, line string) []importBinding {
+func parseImportLine(partsText, filePath, repoPath string, index int, line string) []importBinding {
 	bindings := make([]importBinding, 0)
 	for _, part := range splitCSV(partsText) {
 		moduleName, local := parseImportPart(part)
@@ -734,7 +734,7 @@ func parseImportLine(partsText string, filePath string, repoPath string, index i
 	return bindings
 }
 
-func parseFromImportLine(moduleValue string, symbolsValue string, filePath string, repoPath string, index int, line string) []importBinding {
+func parseFromImportLine(moduleValue, symbolsValue, filePath, repoPath string, index int, line string) []importBinding {
 	moduleName, dependency, ok := resolveFromImportDependency(moduleValue, repoPath)
 	if !ok {
 		return nil
@@ -743,7 +743,7 @@ func parseFromImportLine(moduleValue string, symbolsValue string, filePath strin
 	return parseFromImportSymbols(moduleName, dependency, symbolsValue, filePath, index, line)
 }
 
-func parseFromImportLines(moduleValue string, symbolLines []fromImportSymbolLine, filePath string, repoPath string) []importBinding {
+func parseFromImportLines(moduleValue string, symbolLines []fromImportSymbolLine, filePath, repoPath string) []importBinding {
 	moduleName, dependency, ok := resolveFromImportDependency(moduleValue, repoPath)
 	if !ok {
 		return nil
@@ -768,7 +768,7 @@ func resolveFromImportDependency(moduleValue, repoPath string) (string, string, 
 	return moduleName, dependency, true
 }
 
-func parseFromImportSymbols(moduleName string, dependency string, symbolsValue string, filePath string, index int, line string) []importBinding {
+func parseFromImportSymbols(moduleName, dependency, symbolsValue, filePath string, index int, line string) []importBinding {
 	symbolsValue = normalizeFromImportSymbols(symbolsValue)
 
 	bindings := make([]importBinding, 0)

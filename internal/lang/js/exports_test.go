@@ -114,7 +114,7 @@ func TestResolveDependencyExportsWarnsOnAmbiguousConditionMap(t *testing.T) {
 	}
 }
 
-func writeDependencyFixture(t *testing.T, repoPath string, depName string, packageJSON string, entrypoint string) {
+func writeDependencyFixture(t *testing.T, repoPath, depName, packageJSON, entrypoint string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
@@ -128,7 +128,7 @@ func writeDependencyFixture(t *testing.T, repoPath string, depName string, packa
 	}
 }
 
-func writeDependencyFiles(t *testing.T, repoPath string, depName string, packageJSON string, files map[string]string) {
+func writeDependencyFiles(t *testing.T, repoPath, depName, packageJSON string, files map[string]string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {

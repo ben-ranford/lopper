@@ -42,7 +42,7 @@ func LoadSnapshot(dir, key string) (Report, string, string, error) {
 	return baselineutil.LoadConfiguredStoreSnapshot(dir, key, baselineutil.MaxSnapshotBytes, baselineSnapshots)
 }
 
-func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
+func SaveSnapshot(dir, key string, rep Report, now time.Time) (string, error) {
 	return baselineutil.SaveConfiguredSnapshot(dir, key, now, rep, baselineSnapshots)
 }
 

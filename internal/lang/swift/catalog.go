@@ -79,7 +79,7 @@ func (s *packageManagerCatalogState) Active() bool {
 
 type catalogLoader func(string, *dependencyCatalog) (bool, []string, error)
 
-func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, manifestLoader catalogLoader, lockLoader catalogLoader) (packageManagerCatalogState, []string, error) {
+func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, manifestLoader, lockLoader catalogLoader) (packageManagerCatalogState, []string, error) {
 	manifestFound, manifestWarnings, err := manifestLoader(repoPath, catalog)
 	if err != nil {
 		return packageManagerCatalogState{}, nil, err
@@ -136,7 +136,7 @@ func discoveredSwiftCatalogSources(opts dependencyCatalogOptions) []string {
 	return sources
 }
 
-func managerMissingWarnings(state packageManagerCatalogState, manifestWarning string, lockWarning string) []string {
+func managerMissingWarnings(state packageManagerCatalogState, manifestWarning, lockWarning string) []string {
 	warnings := make([]string, 0, 2)
 	if !state.ManifestFound {
 		warnings = append(warnings, manifestWarning)
@@ -475,7 +475,7 @@ func resolveImportDependency(catalog dependencyCatalog, moduleName string) strin
 	return resolveDependencyReference(catalog, moduleName)
 }
 
-func ensureDependency(catalog *dependencyCatalog, depID string, declared bool, resolved bool, version string, revision string, source string) {
+func ensureDependency(catalog *dependencyCatalog, depID string, declared, resolved bool, version, revision, source string) {
 	depID = normalizeDependencyID(depID)
 	if depID == "" {
 		return
@@ -495,7 +495,7 @@ func ensureDependency(catalog *dependencyCatalog, depID string, declared bool, r
 	catalog.Dependencies[depID] = meta
 }
 
-func ensureDeclaredDependencyForManager(catalog *dependencyCatalog, depID string, manager string) {
+func ensureDeclaredDependencyForManager(catalog *dependencyCatalog, depID, manager string) {
 	ensureDependency(catalog, depID, true, false, "", "", "")
 
 	depID = normalizeDependencyID(depID)
@@ -514,7 +514,7 @@ func ensureDeclaredDependencyForManager(catalog *dependencyCatalog, depID string
 	catalog.Dependencies[depID] = meta
 }
 
-func ensureResolvedDependencyForManager(catalog *dependencyCatalog, depID string, version string, revision string, source string, manager string) {
+func ensureResolvedDependencyForManager(catalog *dependencyCatalog, depID, version, revision, source, manager string) {
 	ensureDependency(catalog, depID, false, true, version, revision, source)
 
 	depID = normalizeDependencyID(depID)
@@ -533,10 +533,10 @@ func ensureResolvedDependencyForManager(catalog *dependencyCatalog, depID string
 	catalog.Dependencies[depID] = meta
 }
 
-func mapAlias(catalog *dependencyCatalog, alias string, depID string) {
+func mapAlias(catalog *dependencyCatalog, alias, depID string) {
 	setLookup(catalog.AliasToDependency, lookupKey(alias), normalizeDependencyID(depID))
 }
 
-func mapModule(catalog *dependencyCatalog, module string, depID string) {
+func mapModule(catalog *dependencyCatalog, module, depID string) {
 	setLookup(catalog.ModuleToDependency, lookupKey(module), normalizeDependencyID(depID))
 }

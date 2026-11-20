@@ -671,7 +671,7 @@ func assertMCPPolicyTraceHelpers(t *testing.T) {
 	}
 }
 
-func writeAdvisoryFixture(t *testing.T, dir string, name string) string {
+func writeAdvisoryFixture(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("advisories:\n  - id: GHSA-outside\n    package: lib\n    ecosystem: npm\n    severity: high\n"), 0o600); err != nil {
@@ -680,7 +680,7 @@ func writeAdvisoryFixture(t *testing.T, dir string, name string) string {
 	return path
 }
 
-func writeConfigAdvisorySource(t *testing.T, repo string, source string) {
+func writeConfigAdvisorySource(t *testing.T, repo, source string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, ".lopper.yml"), []byte("advisories:\n  source: "+source+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

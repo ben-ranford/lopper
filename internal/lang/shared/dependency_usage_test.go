@@ -594,7 +594,7 @@ func TestBuildRequestedDependenciesWithWeights(t *testing.T) {
 		dependencyCalled = true
 		return report.DependencyReport{Name: dependency}, []string{fmt.Sprintf("dep-%d", scan)}
 	}
-	topFn := func(topN int, scan int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
+	topFn := func(topN, scan int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 		topCalled = true
 		if topN != 3 || scan != 5 {
 			t.Fatalf("unexpected top arguments: topN=%d scan=%d", topN, scan)

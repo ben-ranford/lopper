@@ -69,12 +69,12 @@ func registryWithTestAdapters(t *testing.T, adapters ...*testAdapter) *Registry 
 	return registry
 }
 
-func registryForResolve(t *testing.T, js Detection, python Detection) *Registry {
+func registryForResolve(t *testing.T, js, python Detection) *Registry {
 	t.Helper()
 	return registryWithTestAdapters(t, &testAdapter{id: "js-ts", detection: js}, &testAdapter{id: "python", detection: python})
 }
 
-func requireResolvedAdapterID(t *testing.T, registry *Registry, mode string, want string) {
+func requireResolvedAdapterID(t *testing.T, registry *Registry, mode, want string) {
 	t.Helper()
 	candidates, err := registry.Resolve(context.Background(), ".", mode)
 	if err != nil {

@@ -640,7 +640,7 @@ func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 	return false
 }
 
-func containsRecommendationMessage(dep report.DependencyReport, code string, needle string) bool {
+func containsRecommendationMessage(dep report.DependencyReport, code, needle string) bool {
 	for _, rec := range dep.Recommendations {
 		if rec.Code == code && strings.Contains(strings.ToLower(rec.Message), strings.ToLower(needle)) {
 			return true
@@ -649,7 +649,7 @@ func containsRecommendationMessage(dep report.DependencyReport, code string, nee
 	return false
 }
 
-func assertProvenanceSource(t *testing.T, dependencies []report.DependencyReport, name string, expected string) {
+func assertProvenanceSource(t *testing.T, dependencies []report.DependencyReport, name, expected string) {
 	t.Helper()
 	dep, ok := findDependency(dependencies, name)
 	if !ok {
@@ -707,7 +707,7 @@ func containsWarning(warnings []string, needle string) bool {
 	return false
 }
 
-func writeFile(t *testing.T, path string, content string) {
+func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	testutil.MustWriteFile(t, path, content)
 }

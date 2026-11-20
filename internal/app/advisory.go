@@ -48,7 +48,7 @@ func executeAdvisoryStatus(req AdvisoryRequest) (string, error) {
 	return persistJSONCommandOutput(manifest, req.OutputPath, "advisory cache status")
 }
 
-func persistJSONCommandOutput(value any, outputPath string, description string) (string, error) {
+func persistJSONCommandOutput(value any, outputPath, description string) (string, error) {
 	payload, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return "", err

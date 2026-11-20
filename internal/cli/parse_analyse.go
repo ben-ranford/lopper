@@ -178,7 +178,7 @@ func validateSuggestOnlyTarget(suggestOnly bool, dependency string, top int) err
 	return nil
 }
 
-func validateCodemodApplyFlags(suggestOnly bool, applyCodemod bool, applyConfirm bool, allowDirty bool, dependency string, top int) error {
+func validateCodemodApplyFlags(suggestOnly, applyCodemod, applyConfirm, allowDirty bool, dependency string, top int) error {
 	if suggestOnly && applyCodemod {
 		return fmt.Errorf("--suggest-only and --apply-codemod cannot be combined")
 	}

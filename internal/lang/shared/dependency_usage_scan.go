@@ -30,7 +30,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	return usage
 }
 
-func scanTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
+func scanTokenUsage(content []byte, importCount, usage map[string]int) {
 	for i := 0; i < len(content); {
 		if !isWordByte(content[i]) {
 			i++
@@ -47,7 +47,7 @@ func scanTokenUsage(content []byte, importCount map[string]int, usage map[string
 	}
 }
 
-func scanUnicodeTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
+func scanUnicodeTokenUsage(content []byte, importCount, usage map[string]int) {
 	for index := 0; index < len(content); {
 		start, end, ok := nextUnicodeIdentifier(content, index)
 		if !ok {

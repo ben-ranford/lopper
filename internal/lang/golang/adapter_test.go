@@ -1143,7 +1143,7 @@ func TestBuildRecommendationsMatrix(t *testing.T) {
 	}
 }
 
-func reportDependency(name string, used []string, unused []string) report.DependencyReport {
+func reportDependency(name string, used, unused []string) report.DependencyReport {
 	dep := report.DependencyReport{Name: name}
 	for _, item := range used {
 		dep.UsedImports = append(dep.UsedImports, report.ImportUse{Name: item, Module: name})
@@ -2887,7 +2887,7 @@ func TestLoadGoModuleInfoReplacementCollisionBranch(t *testing.T) {
 	}
 }
 
-func writeFile(t *testing.T, path string, content string) {
+func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)

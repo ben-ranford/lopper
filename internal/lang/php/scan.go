@@ -113,11 +113,11 @@ func (c *scanCoordinator) scanEntry(path string, entry fs.DirEntry) error {
 	return c.scanFile(path)
 }
 
-func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanState) error {
+func scanDirEntry(repoPath, path string, entry fs.DirEntry, state *scanState) error {
 	return scanDirEntryWithExcludedPaths(repoPath, path, entry, state, nil)
 }
 
-func scanDirEntryWithExcludedPaths(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedPaths map[string]struct{}) error {
+func scanDirEntryWithExcludedPaths(repoPath, path string, entry fs.DirEntry, state *scanState, excludedPaths map[string]struct{}) error {
 	if shared.IsExcludedPath(excludedPaths, path) {
 		return filepath.SkipDir
 	}
@@ -200,7 +200,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	return nil
 }
 
-func scanFileEntry(repoPath string, path string, resolver composerResolver, result *scanResult, state *scanState) error {
+func scanFileEntry(repoPath, path string, resolver composerResolver, result *scanResult, state *scanState) error {
 	coordinator := scanCoordinator{
 		repoPath: repoPath,
 		resolver: resolver,

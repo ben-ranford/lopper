@@ -47,7 +47,7 @@ func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
 	return baselineutil.ValidateSnapshotKey(requestedKey, storedKey, ErrBaselineKeyMismatch)
 }
 
-func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
+func SaveSnapshot(dir, key string, rep Report, now time.Time) (string, error) {
 	if hasIncompleteUsageCoverage(rep) {
 		return "", ErrIncompleteUsageCoverage
 	}

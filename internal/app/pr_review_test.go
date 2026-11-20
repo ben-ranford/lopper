@@ -226,7 +226,7 @@ func TestAnalysePRReviewWorktreeRejectsEscapingTrustedAdvisorySource(t *testing.
 	}
 }
 
-func setStringFieldIfPresent(target any, field string, value string) {
+func setStringFieldIfPresent(target any, field, value string) {
 	v := reflect.ValueOf(target)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return
@@ -1195,7 +1195,7 @@ func TestExecutePRReviewRegressionGateFailsClosedForTypedOversizedGemspecCoverag
 	})
 }
 
-func prReviewOversizedGemspecAnalyzer(path string, evidence []string, warnings []string) *pathAwarePRReviewAnalyzer {
+func prReviewOversizedGemspecAnalyzer(path string, evidence, warnings []string) *pathAwarePRReviewAnalyzer {
 	return &pathAwarePRReviewAnalyzer{
 		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
 		headReport: report.Report{

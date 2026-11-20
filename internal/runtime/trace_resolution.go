@@ -18,7 +18,7 @@ func runtimeModuleFromEvent(event Event, dependency string) string {
 	return runtimeModuleFromEventForLanguage(event, runtimeLanguageJSTS, dependency)
 }
 
-func runtimeModuleFromEventForLanguage(event Event, language string, dependency string) string {
+func runtimeModuleFromEventForLanguage(event Event, language, dependency string) string {
 	switch normalizeRuntimeLanguage(language) {
 	case runtimeLanguagePython:
 		return pythonRuntimeModuleFromEvent(event, dependency)
