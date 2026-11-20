@@ -156,7 +156,7 @@ def exclusive_write(directory, name, data):
             while view:
                 wrote = os.write(fd, view)
                 if wrote <= 0:
-                    raise OSError("zero write")
+                    raise OSError(ZERO_WRITE)
                 view = view[wrote:]
             os.fsync(fd)
         finally:
@@ -177,7 +177,7 @@ def write_chunk(target, chunk, count):
         while offset < count:
             wrote = os.write(target, chunk[offset:count])
             if wrote <= 0:
-                raise OSError("zero write")
+                raise OSError(ZERO_WRITE)
             offset += wrote
     except OSError:
         return offset, True
@@ -684,12 +684,14 @@ OFFICIAL_GO_TARBALL_SHA256 = "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00
 OFFICIAL_GO_TREE_SHA256 = "e03103468fede9c84b22d727ed374e563f27de5647a7f7a84cf299ab7b42595e"
 COMPILER_CUSTODY = "compiler executable custody"
 COMPILER_INTEGRITY = "compiler integrity mismatch"
+ZERO_WRITE = "zero write"
 MAX_TOOLCHAIN_FILES = 20000
 MAX_TOOLCHAIN_BYTES = 300000000
+FIXTURE_MODE = int("777", 8)
 
 
 def sealed_file_mode(relative):
-    if relative.startswith("bin/") or relative.startswith("pkg/tool/"):
+    if relative.startswith(("bin/", "pkg/tool/")):
         return 0o750
     return 0o640
 
@@ -707,39 +709,61 @@ def ensure_private_dir(path, root):
         current = current.parent
 
 
+def reject_source_file(info):
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(COMPILER_CUSTODY)
+    if info.st_size > MAX_TOOLCHAIN_BYTES:
+        raise ValueError(COMPILER_INTEGRITY)
+
+
+def confirm_same_file(fd, info):
+    current = os.fstat(fd)
+    if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+        raise ValueError(COMPILER_CUSTODY)
+
+
+def write_view(out, chunk):
+    view = memoryview(chunk)
+    while view:
+        wrote = os.write(out, view)
+        if wrote <= 0:
+            raise OSError(ZERO_WRITE)
+        view = view[wrote:]
+
+
+def write_stream(src, dest):
+    out = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640)
+    try:
+        total = 0
+        while True:
+            chunk = os.read(src, 1024 * 1024)
+            if not chunk:
+                return total
+            total += len(chunk)
+            if total > MAX_TOOLCHAIN_BYTES:
+                raise ValueError(COMPILER_INTEGRITY)
+            write_view(out, chunk)
+    finally:
+        os.close(out)
+
+
+def confirm_mode(path, mode):
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or stat.S_IMODE(info.st_mode) != mode:
+        raise ValueError(COMPILER_CUSTODY)
+
+
 def copy_regular(source, dest, mode):
     info = os.lstat(source)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_TOOLCHAIN_BYTES:
-        raise ValueError(COMPILER_CUSTODY if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) else COMPILER_INTEGRITY)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    src = os.open(source, flags)
+    reject_source_file(info)
+    src = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        current = os.fstat(src)
-        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-            raise ValueError(COMPILER_CUSTODY)
-        out = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640)
-        try:
-            total = 0
-            while True:
-                chunk = os.read(src, 1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_TOOLCHAIN_BYTES:
-                    raise ValueError(COMPILER_INTEGRITY)
-                view = memoryview(chunk)
-                while view:
-                    wrote = os.write(out, view)
-                    if wrote <= 0:
-                        raise OSError("zero write")
-                    view = view[wrote:]
-        finally:
-            os.close(out)
+        confirm_same_file(src, info)
+        total = write_stream(src, dest)
     finally:
         os.close(src)
     os.chmod(dest, mode)
-    if stat.S_ISLNK(os.lstat(dest).st_mode) or stat.S_IMODE(os.lstat(dest).st_mode) != mode:
-        raise ValueError(COMPILER_CUSTODY)
+    confirm_mode(dest, mode)
     return total
 
 
@@ -837,37 +861,48 @@ def seal_toolcache_toolchain(source, destination, expected_tree):
         raise
 
 
-def assert_compiler_custody(mode):
-    if mode not in ("admit", "tamper"):
-        raise AssertionError("unknown compiler custody mode")
+def assert_official_pins():
     if OFFICIAL_GO_TARBALL_SHA256 != "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840":
         raise AssertionError("official Go tarball pin drifted")
     if OFFICIAL_GO_TREE_SHA256 != "e03103468fede9c84b22d727ed374e563f27de5647a7f7a84cf299ab7b42595e":
         raise AssertionError("official Go tree pin drifted")
+
+
+def assert_private_modes(source, destination, private):
+    if private != destination / "bin" / "go" or private.read_bytes() != b"official-go":
+        raise AssertionError("private compiler is not the copied toolchain")
+    compiler = destination / "pkg" / "tool" / "linux_amd64" / "compile"
+    version = destination / "VERSION"
+    modes = (stat.S_IMODE(private.lstat().st_mode), stat.S_IMODE(compiler.lstat().st_mode), stat.S_IMODE(version.lstat().st_mode))
+    if modes != (0o750, 0o750, 0o640):
+        raise AssertionError("private toolchain modes are not safe")
+    if stat.S_IMODE((source / "bin" / "go").lstat().st_mode) != FIXTURE_MODE:
+        raise AssertionError("toolcache mode was changed in place")
+    if (source / "bin" / "go").read_bytes() != b"official-go":
+        raise AssertionError("toolcache bytes were rewritten")
+
+
+def assert_writable_toolcache_matches():
     import tempfile
     with tempfile.TemporaryDirectory() as directory:
         directory = pathlib.Path(directory)
         source = directory / "toolcache"
-        write_fixture_toolchain(source, b"official-go", 0o777)
+        write_fixture_toolchain(source, b"official-go", FIXTURE_MODE)
+        destination = directory / "private"
+        private = seal_toolcache_toolchain(source, destination, toolchain_tree_digest(source))
+        assert_private_modes(source, destination, private)
+
+
+def assert_tampered_toolchain_rejected():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+        source = directory / "toolcache"
+        write_fixture_toolchain(source, b"official-go", FIXTURE_MODE)
         expected = toolchain_tree_digest(source)
-        if mode == "admit":
-            destination = directory / "private"
-            private = seal_toolcache_toolchain(source, destination, expected)
-            if private != destination / "bin" / "go" or private.read_bytes() != b"official-go":
-                raise AssertionError("private compiler is not the copied toolchain")
-            if stat.S_IMODE(private.lstat().st_mode) != 0o750:
-                raise AssertionError("private go mode is not 0750")
-            compiler = destination / "pkg" / "tool" / "linux_amd64" / "compile"
-            version = destination / "VERSION"
-            if stat.S_IMODE(compiler.lstat().st_mode) != 0o750 or stat.S_IMODE(version.lstat().st_mode) != 0o640:
-                raise AssertionError("private toolchain modes are not safe")
-            if stat.S_IMODE((source / "bin" / "go").lstat().st_mode) != 0o777:
-                raise AssertionError("toolcache mode was changed in place")
-            if (source / "bin" / "go").read_bytes() != b"official-go":
-                raise AssertionError("toolcache bytes were rewritten")
-            return
-        (source / "bin" / "go").write_bytes(b"tampered-go")
-        os.chmod(source / "bin" / "go", 0o777)
+        tampered = source / "bin" / "go"
+        tampered.write_bytes(b"tampered-go")
+        os.chmod(tampered, FIXTURE_MODE)
         destination = directory / "rejected"
         try:
             seal_toolcache_toolchain(source, destination, expected)
@@ -878,6 +913,17 @@ def assert_compiler_custody(mode):
             raise AssertionError("tampered toolchain accepted")
         if destination.exists():
             raise AssertionError("tampered toolchain copy was kept")
+
+
+def assert_compiler_custody(mode):
+    assert_official_pins()
+    if mode == "admit":
+        assert_writable_toolcache_matches()
+        return
+    if mode == "tamper":
+        assert_tampered_toolchain_rejected()
+        return
+    raise AssertionError("unknown compiler custody mode")
 
 
 def write_fixture_toolchain(root, go_bytes, mode):
@@ -896,12 +942,7 @@ def write_fixture_toolchain(root, go_bytes, mode):
             os.chmod(pathlib.Path(dirpath) / name, mode)
 
 
-def compile_normal(root, build, result):
-    if os.environ.get("GOFLAGS") or os.environ.get("GOEXPERIMENT"):
-        raise ValueError("unreviewed compile flags")
-    required = module_go_version(root)
-    if required != OFFICIAL_GO_VERSION:
-        raise ValueError("compiler version")
+def toolcache_source(root):
     located = shutil.which("go")
     if not located:
         raise ValueError(COMPILER_CUSTODY)
@@ -916,7 +957,17 @@ def compile_normal(root, build, result):
     source = go_path.parent.parent
     if source.is_relative_to(root) or root.is_relative_to(source):
         raise ValueError(COMPILER_CUSTODY)
+    return source
+
+
+def compile_normal(root, build, result):
+    if os.environ.get("GOFLAGS") or os.environ.get("GOEXPERIMENT"):
+        raise ValueError("unreviewed compile flags")
+    required = module_go_version(root)
+    if required != OFFICIAL_GO_VERSION:
+        raise ValueError("compiler version")
     # Copy first. The image toolcache is writable, so its go binary is not executed.
+    source = toolcache_source(root)
     destination = build / "goroot"
     private = seal_toolcache_toolchain(source, destination, OFFICIAL_GO_TREE_SHA256)
     env = dict(os.environ, GOTOOLCHAIN="local", GOENV="off", GOPROXY="off", GOSUMDB="off", GOROOT=str(destination))
