@@ -1393,15 +1393,30 @@ jobs:
       - name: Write release provenance predicate
         env:
           RELEASE_SOURCE_SHA: ${{ needs.prepare-release.outputs.sha }}
+          RELEASE_SOURCE_REF: refs/tags/${{ needs.prepare-release.outputs.tag }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           set -euo pipefail
           source_sha="${RELEASE_SOURCE_SHA:?}"
           output_path="${RUNNER_TEMP:?}/lopper-release-provenance.json"
+          source_ref="${RELEASE_SOURCE_REF:?}"
           if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Release source SHA must be a lowercase full 40-character commit SHA." >&2
             exit 1
           fi
+          case "${source_ref}" in
+            refs/tags/*|refs/heads/*) ;;
+            *)
+              echo "Release source ref must name a refs/tags or refs/heads ref." >&2
+              exit 1
+              ;;
+          esac
+          case "${source_ref}" in
+            *..*|*"@"*|*"//"*|*" "*|*"\\"*|*/)
+              echo "Release source ref is invalid." >&2
+              exit 1
+              ;;
+          esac
           if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
             echo "GitHub OIDC token request is unavailable." >&2
             exit 1
@@ -1411,6 +1426,7 @@ jobs:
           predicate="$(
             OIDC_TOKEN="${oidc_token}" \
               RELEASE_SOURCE_SHA="${source_sha}" \
+              RELEASE_SOURCE_REF="${source_ref}" \
               GITHUB_SHA="${GITHUB_SHA}" \
               GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
               GITHUB_REF="${GITHUB_REF}" \
@@ -1428,6 +1444,7 @@ jobs:
 
           token = os.environ.pop("OIDC_TOKEN", "")
           source_sha = os.environ["RELEASE_SOURCE_SHA"]
+          source_ref = os.environ["RELEASE_SOURCE_REF"]
           github_sha = os.environ["GITHUB_SHA"]
           repository = os.environ["GITHUB_REPOSITORY"]
           ref = os.environ["GITHUB_REF"]
@@ -1474,6 +1491,10 @@ jobs:
           workflow_path = workflow_path_ref[len(prefix):].split("@", 1)[0]
           if workflow_path == "" or workflow_path.startswith("/") or ".." in workflow_path.split("/"):
               fail("OIDC workflow path is invalid.")
+          if re.fullmatch(r"refs/(tags|heads)/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}", source_ref) is None or ".." in source_ref or "@" in source_ref or "//" in source_ref or source_ref.endswith("/"):
+              fail("Release source ref is invalid.")
+          if source_ref == workflow_ref and source_sha != workflow_sha:
+              fail("Release source ref does not match the workflow commit.")
 
           def dependency(uri_ref, digest):
               return {
@@ -1483,7 +1504,7 @@ jobs:
 
           dependencies = []
           seen = set()
-          for item in (dependency(workflow_ref, workflow_sha), dependency(source_sha, source_sha)):
+          for item in (dependency(workflow_ref, workflow_sha), dependency(source_ref, source_sha)):
               key = (item["uri"], item["digest"]["gitCommit"])
               if key in seen:
                   continue
@@ -1523,8 +1544,8 @@ jobs:
           unset oidc_token
           umask 077
           printf '%s' "${predicate}" > "${output_path}"
-          if [[ ! -s "${output_path}" ]] || ! grep -F -q "${source_sha}" "${output_path}" || ! grep -F -q "${GITHUB_SHA}" "${output_path}"; then
-            echo "Release provenance predicate does not record the workflow and release source SHAs." >&2
+          if [[ ! -s "${output_path}" ]] || ! grep -F -q "${source_sha}" "${output_path}" || ! grep -F -q "${source_ref}" "${output_path}" || ! grep -F -q "${GITHUB_SHA}" "${output_path}"; then
+            echo "Release provenance predicate does not record the workflow commit and the selected release ref." >&2
             rm -f "${output_path}"
             exit 1
           fi

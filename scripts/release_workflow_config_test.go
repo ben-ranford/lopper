@@ -5957,21 +5957,21 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 	t.Parallel()
 
 	type source struct {
-		path, job, sha string
+		path, job, sha, ref string
 	}
 	sources := []source{
-		{path: ".github/workflows/release.yml", job: "publish", sha: "${{ needs.prepare-release.outputs.sha }}"},
-		{path: ".github/workflows/rolling.yml", job: "publish-rolling", sha: "${{ needs.prepare-rolling.outputs.source_sha }}"},
-		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-images", sha: "${{ inputs.source_sha || github.sha }}"},
-		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-manifest", sha: "${{ inputs.source_sha || github.sha }}"},
-		{path: ".github/workflows/docker-ghcr.yml", job: "build-and-push", sha: "${{ github.sha }}"},
+		{path: ".github/workflows/release.yml", job: "publish", sha: "${{ needs.prepare-release.outputs.sha }}", ref: "refs/tags/${{ needs.prepare-release.outputs.tag }}"},
+		{path: ".github/workflows/rolling.yml", job: "publish-rolling", sha: "${{ needs.prepare-rolling.outputs.source_sha }}", ref: "refs/tags/${{ needs.prepare-rolling.outputs.tag }}"},
+		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-images", sha: "${{ inputs.source_sha || github.sha }}", ref: "refs/tags/${{ inputs.tag }}"},
+		{path: ".github/workflows/release-orchestration.yml", job: "publish-ghcr-manifest", sha: "${{ inputs.source_sha || github.sha }}", ref: "refs/tags/${{ inputs.tag }}"},
+		{path: ".github/workflows/docker-ghcr.yml", job: "build-and-push", sha: "${{ github.sha }}", ref: "${{ github.ref }}"},
 	}
 	var run string
 	for _, source := range sources {
 		workflow := readWorkflowConfig(t, source.path)
 		step := workflowStepByName(t, workflow.Jobs, source.job, "Write release provenance predicate")
-		if step.Env["RELEASE_SOURCE_SHA"] != source.sha {
-			t.Fatalf("%s %s source SHA = %q", source.path, source.job, step.Env["RELEASE_SOURCE_SHA"])
+		if step.Env["RELEASE_SOURCE_SHA"] != source.sha || step.Env["RELEASE_SOURCE_REF"] != source.ref {
+			t.Fatalf("%s %s source = %#v", source.path, source.job, step.Env)
 		}
 		if run == "" {
 			run = step.Run
@@ -6002,13 +6002,14 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/bin/sh\nprintf '%s' \"$FIXTURE_JWT\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runPredicate := func(t *testing.T, releaseSHA, githubSHA string) ([]byte, error) {
+	runPredicate := func(t *testing.T, releaseSHA, githubSHA, sourceRef string) ([]byte, error) {
 		t.Helper()
 		cmd := exec.Command("bash", "-c", run)
 		cmd.Env = append(os.Environ(),
 			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"FIXTURE_JWT="+token,
 			"RELEASE_SOURCE_SHA="+releaseSHA,
+			"RELEASE_SOURCE_REF="+sourceRef,
 			"RUNNER_TEMP="+dir,
 			"ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/token",
 			"ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token",
@@ -6027,7 +6028,8 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 		}
 		return predicate, nil
 	}
-	predicate, err := runPredicate(t, sourceSHA, workflowSHA)
+	sourceRef := "refs/tags/v1.8.9"
+	predicate, err := runPredicate(t, sourceSHA, workflowSHA, sourceRef)
 	if err != nil {
 		t.Fatalf("predicate writer failed: %v\n%s", err, predicate)
 	}
@@ -6035,21 +6037,45 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 	if err := json.Unmarshal(predicate, &got); err != nil {
 		t.Fatal(err)
 	}
-	dependencies, _ := got["buildDefinition"].(map[string]any)["resolvedDependencies"].([]any)
+	buildDefinition, _ := got["buildDefinition"].(map[string]any)
+	dependencies, _ := buildDefinition["resolvedDependencies"].([]any)
 	if len(dependencies) != 2 {
 		t.Fatalf("resolved dependencies = %#v", got)
 	}
+	assertDependencyCommit(t, dependencies, "refs/heads/main", workflowSHA)
+	assertDependencyCommit(t, dependencies, sourceRef, sourceSHA)
 	assertTextContainsAll(t, string(predicate), "release provenance predicate", []string{
-		`"gitCommit":"` + workflowSHA + `"`,
-		`"gitCommit":"` + sourceSHA + `"`,
 		`"id":"https://github.com/ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main"`,
 	})
-	if _, err := runPredicate(t, sourceSHA, strings.Repeat("c", 40)); err == nil {
+	if _, err := runPredicate(t, sourceSHA, strings.Repeat("c", 40), sourceRef); err == nil {
 		t.Fatal("predicate writer accepted an OIDC SHA that differs from GITHUB_SHA")
 	}
-	if _, err := runPredicate(t, "not-a-sha", workflowSHA); err == nil {
+	if _, err := runPredicate(t, "not-a-sha", workflowSHA, sourceRef); err == nil {
 		t.Fatal("predicate writer accepted a malformed release source SHA")
 	}
+	if _, err := runPredicate(t, sourceSHA, workflowSHA, "refs/heads/main"); err == nil {
+		t.Fatal("predicate writer accepted one ref resolved to two commits")
+	}
+	if _, err := runPredicate(t, sourceSHA, workflowSHA, "not-a-ref"); err == nil {
+		t.Fatal("predicate writer accepted a source ref that is not a git ref")
+	}
+}
+
+func assertDependencyCommit(t *testing.T, dependencies []any, ref, commit string) {
+	t.Helper()
+	wantURI := "git+https://github.com/ben-ranford/lopper@" + ref
+	for _, item := range dependencies {
+		dependency, _ := item.(map[string]any)
+		if dependency["uri"] != wantURI {
+			continue
+		}
+		digest, _ := dependency["digest"].(map[string]any)
+		if digest["gitCommit"] != commit {
+			t.Fatalf("%s commit = %#v, want %s", ref, digest["gitCommit"], commit)
+		}
+		return
+	}
+	t.Fatalf("missing provenance dependency %s in %#v", wantURI, dependencies)
 }
 
 func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
