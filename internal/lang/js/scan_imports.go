@@ -133,13 +133,15 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 	return bindings
 }
 
+const maxDynamicCalleeBytes = len("require")
+
 func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath string) (report.ImportUse, bool) {
 	functionNode := node.ChildByFieldName("function")
 	if functionNode == nil {
 		return report.ImportUse{}, false
 	}
-	functionName := nodeText(functionNode, content)
-	if functionName != "require" && functionName != "import" {
+	functionName, ok := boundedCalleeName(functionNode, content)
+	if !ok || (functionName != "require" && functionName != "import") {
 		return report.ImportUse{}, false
 	}
 	argumentsNode := node.ChildByFieldName("arguments")
@@ -156,6 +158,17 @@ func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath stri
 		Locations:  []report.Location{location},
 		Provenance: []string{"unresolved-" + functionName},
 	}, true
+}
+
+func boundedCalleeName(functionNode *sitter.Node, content []byte) (string, bool) {
+	start, end := int(functionNode.StartByte()), int(functionNode.EndByte())
+	if start < 0 || end < start || end > len(content) {
+		return "", false
+	}
+	if span := end - start; span == 0 || span > maxDynamicCalleeBytes {
+		return "", false
+	}
+	return string(content[start:end]), true
 }
 
 func parseRequireBinding(call *sitter.Node, content []byte, module, relPath string) []ImportBinding {
