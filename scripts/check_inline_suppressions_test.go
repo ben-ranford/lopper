@@ -833,7 +833,7 @@ func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *tes
 	}
 }
 
-func assertSuppressionDetectedForNarrowSingleQuoteSource(t *testing.T, path string, wrapperStart string, wrapperEnd string, line string) {
+func assertSuppressionDetectedForNarrowSingleQuoteSource(t *testing.T, path, wrapperStart, wrapperEnd, line string) {
 	t.Helper()
 
 	repoDir := newInlineSuppressionRepo(t)
@@ -948,7 +948,7 @@ func TestInlineSuppressionCheckSeedsQuoteStateAcrossADiffContextGap(t *testing.T
 	}
 }
 
-func assertSuppressionCheckPassesForSourceNamed(t *testing.T, filename string, source string) {
+func assertSuppressionCheckPassesForSourceNamed(t *testing.T, filename, source string) {
 	t.Helper()
 
 	repoDir := newInlineSuppressionRepo(t)
@@ -977,7 +977,7 @@ func TestInlineSuppressionCheckRequiresAFreeStandingHashInAHashOnlyLanguage(t *t
 	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo foo#nolint\n")
 }
 
-func assertSuppressionDetectedForFileAndLine(t *testing.T, filename string, line string) {
+func assertSuppressionDetectedForFileAndLine(t *testing.T, filename, line string) {
 	t.Helper()
 
 	repoDir := newInlineSuppressionRepo(t)
@@ -1532,7 +1532,7 @@ func runSuppressionCheckWithEnv(repoDir string, env ...string) (string, error) {
 	return string(output), err
 }
 
-func runCommand(t *testing.T, dir string, name string, args ...string) string {
+func runCommand(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 
 	cmd := exec.Command(name, args...)
@@ -1568,7 +1568,7 @@ func withoutGitEnv() []string {
 	return filtered
 }
 
-func writeFile(t *testing.T, path string, content string) {
+func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	writeFileMode(t, path, content, 0o644)
 }
@@ -1583,7 +1583,7 @@ func readFile(t *testing.T, path string) string {
 	return string(content)
 }
 
-func writeFileMode(t *testing.T, path string, content string, mode os.FileMode) {
+func writeFileMode(t *testing.T, path, content string, mode os.FileMode) {
 	t.Helper()
 	testutil.MustInstallFile(t, path, content, mode)
 }

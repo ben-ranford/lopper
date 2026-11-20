@@ -2397,7 +2397,7 @@ func TestReleaseWorkflowHomebrewPublicationUsesFreshCredentialScopedClone(t *tes
 	}
 }
 
-func assertWorkflowJobOmitsText(t *testing.T, job workflowJobConfig, forbidden string, message string) {
+func assertWorkflowJobOmitsText(t *testing.T, job workflowJobConfig, forbidden, message string) {
 	t.Helper()
 
 	data, err := yaml.Marshal(job)
@@ -4971,7 +4971,7 @@ func BenchmarkShared(b *testing.B) {
 	runGitCommand(t, repo, "commit", "-m", "change benchmark harness")
 }
 
-func assertChangedBenchmarkHarnessOutput(t *testing.T, output string, wantOutput string) {
+func assertChangedBenchmarkHarnessOutput(t *testing.T, output, wantOutput string) {
 	t.Helper()
 
 	for _, want := range []string{
@@ -5831,7 +5831,7 @@ func TestReleaseOrchestrationRequiresExactTrustedArchitectureTags(t *testing.T) 
 	}
 }
 
-func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle string, jobLabel string) {
+func assertGHCRJobDoesNotReference(t *testing.T, job workflowJobConfig, needle, jobLabel string) {
 	t.Helper()
 
 	assertStringMapDoesNotContain(t, job.Env, needle, jobLabel+" job env")
@@ -5889,7 +5889,7 @@ func assertFreshGHCRPublisherStep(t *testing.T, step workflowStepConfig) {
 	}
 }
 
-func assertStringMapDoesNotContain(t *testing.T, values map[string]string, needle string, label string) {
+func assertStringMapDoesNotContain(t *testing.T, values map[string]string, needle, label string) {
 	t.Helper()
 
 	for key, value := range values {
@@ -5897,7 +5897,7 @@ func assertStringMapDoesNotContain(t *testing.T, values map[string]string, needl
 	}
 }
 
-func assertStringsDoNotContain(t *testing.T, values []string, needle string, label string) {
+func assertStringsDoNotContain(t *testing.T, values []string, needle, label string) {
 	t.Helper()
 
 	for _, value := range values {
@@ -5915,7 +5915,7 @@ func mapValues(values map[string]string) []string {
 	return result
 }
 
-func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName string, suffix string) {
+func assertArchImageTagStep(t *testing.T, step workflowStepConfig, stepName, suffix string) {
 	t.Helper()
 
 	if step.Shell != "bash" {
@@ -6063,7 +6063,7 @@ func validationFormulaCommitSnippet(t *testing.T, step workflowStepConfig, formu
 	return strings.TrimSpace(step.Run[start:])
 }
 
-func assertFileRemoteCloneUsesValidationCommit(t *testing.T, formulaPath string, candidateFormula string, validationCommit string) {
+func assertFileRemoteCloneUsesValidationCommit(t *testing.T, formulaPath, candidateFormula, validationCommit string) {
 	t.Helper()
 
 	repoPath := filepath.Join(t.TempDir(), "homebrew-tap")
@@ -6522,7 +6522,7 @@ func assertPrivilegedStepOmitsUnsafePatterns(t *testing.T, pushStep workflowStep
 	}
 }
 
-func assertImmutableSourceBinding(t *testing.T, workflowPath string, run string, tc homebrewTapWorkflowCase) {
+func assertImmutableSourceBinding(t *testing.T, workflowPath, run string, tc homebrewTapWorkflowCase) {
 	t.Helper()
 
 	for _, want := range []string{
@@ -6549,7 +6549,7 @@ func assertImmutableSourceBinding(t *testing.T, workflowPath string, run string,
 	}
 }
 
-func runReleaseImageTagScript(t *testing.T, imageTags string, suffix string) string {
+func runReleaseImageTagScript(t *testing.T, imageTags, suffix string) string {
 	t.Helper()
 
 	cmd := releaseImageTagScriptCommand(t, imageTags, suffix)
@@ -6560,7 +6560,7 @@ func runReleaseImageTagScript(t *testing.T, imageTags string, suffix string) str
 	return string(output)
 }
 
-func releaseImageTagScriptCommand(t *testing.T, imageTags string, suffix string) *exec.Cmd {
+func releaseImageTagScriptCommand(t *testing.T, imageTags, suffix string) *exec.Cmd {
 	t.Helper()
 
 	cmd := exec.Command("bash", repoPath(t, "scripts/release-image-tags.sh"))
@@ -6593,7 +6593,7 @@ func workflowContiguousStepIndices(job workflowJobConfig, names []string) ([]int
 	return indices, nil
 }
 
-func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) workflowStepConfig {
+func workflowStepByName(t *testing.T, jobs map[string]workflowJobConfig, jobName, stepName string) workflowStepConfig {
 	t.Helper()
 
 	return jobs[jobName].Steps[workflowStepIndexByName(t, jobs, jobName, stepName)]
@@ -6609,7 +6609,7 @@ func workflowJobByName(t *testing.T, jobs map[string]workflowJobConfig, jobName 
 	return job
 }
 
-func workflowStepIndexByName(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) int {
+func workflowStepIndexByName(t *testing.T, jobs map[string]workflowJobConfig, jobName, stepName string) int {
 	t.Helper()
 
 	job, ok := jobs[jobName]
@@ -6625,7 +6625,7 @@ func workflowStepIndexByName(t *testing.T, jobs map[string]workflowJobConfig, jo
 	return -1
 }
 
-func assertWorkflowEnvKeyOnlyOnStep(t *testing.T, jobs map[string]workflowJobConfig, key string, wantJob string, wantStep string) {
+func assertWorkflowEnvKeyOnlyOnStep(t *testing.T, jobs map[string]workflowJobConfig, key, wantJob, wantStep string) {
 	t.Helper()
 
 	credentialedSteps := 0
@@ -6835,7 +6835,7 @@ func assertWorkflowStepRunOmitsAll(t *testing.T, step workflowStepConfig, stepLa
 	}
 }
 
-func assertTextAppearsBefore(t *testing.T, text string, earlier string, later string, message string) {
+func assertTextAppearsBefore(t *testing.T, text, earlier, later, message string) {
 	t.Helper()
 
 	earlierIndex := strings.Index(text, earlier)
@@ -6877,7 +6877,7 @@ func assertWorkflowStepRunContainsAll(t *testing.T, step workflowStepConfig, ste
 	}
 }
 
-func assertTextContainsAll(t *testing.T, text string, textLabel string, wants []string) {
+func assertTextContainsAll(t *testing.T, text, textLabel string, wants []string) {
 	t.Helper()
 
 	for _, want := range wants {
@@ -6887,7 +6887,7 @@ func assertTextContainsAll(t *testing.T, text string, textLabel string, wants []
 	}
 }
 
-func assertWorkflowStepEnvMissing(t *testing.T, step workflowStepConfig, key string, message string) {
+func assertWorkflowStepEnvMissing(t *testing.T, step workflowStepConfig, key, message string) {
 	t.Helper()
 
 	if _, ok := step.Env[key]; ok {
@@ -7212,12 +7212,12 @@ func currentGoSumEntries(t *testing.T, modulePath string) string {
 	return strings.Join(entries, "\n") + "\n"
 }
 
-func writeExecutableFile(t *testing.T, path string, contents string) {
+func writeExecutableFile(t *testing.T, path, contents string) {
 	t.Helper()
 	writeFileMode(t, path, contents, 0o755)
 }
 
-func assertPinnedGoBinInvocations(t *testing.T, logPath string, resolvedGoBin string) {
+func assertPinnedGoBinInvocations(t *testing.T, logPath, resolvedGoBin string) {
 	t.Helper()
 
 	logBytes, err := os.ReadFile(logPath)
@@ -7356,13 +7356,13 @@ func runGitCommand(t *testing.T, dir string, args ...string) string {
 	return string(output)
 }
 
-func assertMemoryBenchArtifacts(t *testing.T, repo string, wantStatus string, wantContains []string, wantOmit []string) {
+func assertMemoryBenchArtifacts(t *testing.T, repo, wantStatus string, wantContains, wantOmit []string) {
 	t.Helper()
 
 	assertMemoryBenchArtifactsAtPaths(t, repo, filepath.Join(".artifacts", "memory-bench-summary.md"), filepath.Join(".artifacts", "memory-bench-status.txt"), wantStatus, wantContains, wantOmit)
 }
 
-func assertMemoryBenchArtifactsAtPaths(t *testing.T, repo string, summaryRelPath string, statusRelPath string, wantStatus string, wantContains []string, wantOmit []string) {
+func assertMemoryBenchArtifactsAtPaths(t *testing.T, repo, summaryRelPath, statusRelPath, wantStatus string, wantContains, wantOmit []string) {
 	t.Helper()
 
 	statusPath := filepath.Join(repo, statusRelPath)
@@ -7392,7 +7392,7 @@ func assertMemoryBenchArtifactsAtPaths(t *testing.T, repo string, summaryRelPath
 	}
 }
 
-func embeddedPythonScript(t *testing.T, run string, marker string) string {
+func embeddedPythonScript(t *testing.T, run, marker string) string {
 	t.Helper()
 
 	_, after, ok := strings.Cut(run, marker+"\n")
@@ -7466,7 +7466,7 @@ func writeTarFixture(t *testing.T, members []tarFixtureMember) string {
 	return archivePath
 }
 
-func assertTarValidatorRejects(t *testing.T, validator string, archivePath string, want string) {
+func assertTarValidatorRejects(t *testing.T, validator, archivePath, want string) {
 	t.Helper()
 
 	cmd := exec.Command("python3", "-", archivePath)
@@ -7480,7 +7480,7 @@ func assertTarValidatorRejects(t *testing.T, validator string, archivePath strin
 	}
 }
 
-func assertTarValidatorAccepts(t *testing.T, validator string, archivePath string) {
+func assertTarValidatorAccepts(t *testing.T, validator, archivePath string) {
 	t.Helper()
 
 	cmd := exec.Command("python3", "-", archivePath)

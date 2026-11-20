@@ -707,19 +707,19 @@ func holdPinningFixtureWriter(t *testing.T, repoDir string) {
 	})
 }
 
-func writeRepoScriptFixture(t *testing.T, repoDir string, path string) {
+func writeRepoScriptFixture(t *testing.T, repoDir, path string) {
 	t.Helper()
 
 	data := readRepoFile(t, path)
 	writeFixtureFileMode(t, repoDir, path, data, 0o755)
 }
 
-func writeFixtureFile(t *testing.T, repoDir string, path string, content string) {
+func writeFixtureFile(t *testing.T, repoDir, path, content string) {
 	t.Helper()
 	writeFixtureFileMode(t, repoDir, path, content, 0o644)
 }
 
-func writeFixtureFileMode(t *testing.T, repoDir string, path string, content string, mode os.FileMode) {
+func writeFixtureFileMode(t *testing.T, repoDir, path, content string, mode os.FileMode) {
 	t.Helper()
 
 	writeFileMode(t, filepath.Join(repoDir, path), content, mode)
