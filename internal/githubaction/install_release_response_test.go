@@ -300,11 +300,22 @@ if [[ "$request_url" == "$checksum_url" ]]; then
     printf '%s' "$http_code"
     exit 0
   fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    digest="$(sha256sum "$FIXTURE_ARCHIVE" | awk 'NR == 1 { print $1 }')"
+  if command -v python3 >/dev/null 2>&1; then
+    digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$FIXTURE_ARCHIVE")"
+  elif command -v python >/dev/null 2>&1; then
+    digest="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$FIXTURE_ARCHIVE")"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$FIXTURE_ARCHIVE" | head -n 1)"
+    digest="${digest%%$'\r'}"
+    digest="${digest#\\}"
+    digest="${digest%% *}"
+    digest="${digest#\\}"
   else
-    digest="$(shasum -a 256 "$FIXTURE_ARCHIVE" | awk 'NR == 1 { print $1 }')"
+    digest="$(shasum -a 256 "$FIXTURE_ARCHIVE" | head -n 1)"
+    digest="${digest%%$'\r'}"
+    digest="${digest%% *}"
   fi
+  digest="$(printf '%s' "$digest" | tr '[:upper:]' '[:lower:]')"
   case "${FIXTURE_CHECKSUM_MODE:-ok}" in
     mismatch)
       digest="$(printf '%.64s' '0000000000000000000000000000000000000000000000000000000000000000')"

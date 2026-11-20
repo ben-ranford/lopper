@@ -25,10 +25,14 @@ import (
 )
 
 const (
-	staveSignalHelperEnv       = "LOPPER_STAVE_SIGNAL_HELPER"
-	staveSignalMarkerFD        = 3
-	staveSignalActionStarted   = "ACTION_STARTED"
-	staveSignalCancelObserved  = "CANCEL_OBSERVED"
+	staveSignalHelperEnv      = "LOPPER_STAVE_SIGNAL_HELPER"
+	staveSignalStuckHelperEnv = "LOPPER_STAVE_STUCK_HELPER"
+	staveSignalMarkerFD       = 3
+	staveSignalActionStarted  = "ACTION_STARTED"
+	staveSignalCancelObserved = "CANCEL_OBSERVED"
+	// 15s is the current signal-helper bound. Successful runs return as soon as
+	// the marker arrives; a stuck subprocess must still fail at this bound
+	// rather than wait for the process. Do not widen it without new runner timings.
 	staveSignalSubprocessBound = 15 * time.Second
 )
 
@@ -518,13 +522,49 @@ func receiveSignalMarker(ctx context.Context, stream *signalMarkerStream, proces
 }
 
 func waitSignalProcess(processDone <-chan error) error {
-	timer := time.NewTimer(staveSignalSubprocessBound)
+	return waitSignalProcessWithin(processDone, staveSignalSubprocessBound)
+}
+
+func waitSignalProcessWithin(processDone <-chan error, bound time.Duration) error {
+	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
 	case err := <-processDone:
 		return err
 	case <-timer.C:
 		return context.DeadlineExceeded
+	}
+}
+
+func TestStaveSignalDeadlineReportsAStuckSubprocess(t *testing.T) {
+	if os.Getenv(staveSignalStuckHelperEnv) == "1" {
+		time.Sleep(time.Minute)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestStaveSignalDeadlineReportsAStuckSubprocess$")
+	cmd.Env = append(os.Environ(), staveSignalStuckHelperEnv+"=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start stuck helper: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process == nil {
+			return
+		}
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill stuck helper: %v", err)
+		}
+	})
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	const bound = 200 * time.Millisecond
+	started := time.Now()
+	err := waitSignalProcessWithin(done, bound)
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stuck subprocess wait: %v", err)
+	}
+	if elapsed < bound || elapsed > 2*time.Second {
+		t.Fatalf("stuck subprocess deadline elapsed %s, want between %s and 2s", elapsed, bound)
 	}
 }
 

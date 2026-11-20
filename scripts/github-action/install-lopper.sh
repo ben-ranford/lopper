@@ -67,15 +67,22 @@ curl_with_token() {
 
 sha256_file() {
   local file="$1"
+  local line=""
   local digest=""
   if command -v sha256sum >/dev/null 2>&1; then
-    digest="$(sha256sum "$file" | awk 'NR == 1 { print $1 }')"
+    line="$(sha256sum "$file" | head -n 1)"
   elif command -v shasum >/dev/null 2>&1; then
-    digest="$(shasum -a 256 "$file" | awk 'NR == 1 { print $1 }')"
+    line="$(shasum -a 256 "$file" | head -n 1)"
   else
     error "sha256sum or shasum is required to verify the Lopper release archive."
     exit 1
   fi
+  line="${line%%$'\r'}"
+  # GNU coreutils prefixes an escaped line with a backslash when the path contains one.
+  line="${line#\\}"
+  digest="${line%% *}"
+  digest="${digest#\\}"
+  digest="$(printf '%s' "$digest" | tr '[:upper:]' '[:lower:]')"
   if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
     error "Unable to compute a SHA-256 digest for the Lopper release archive."
     exit 1
