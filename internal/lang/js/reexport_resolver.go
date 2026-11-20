@@ -6,10 +6,17 @@ import (
 	"strings"
 )
 
+const (
+	maxReExportResolutionSteps      = 128
+	reExportResolutionBudgetWarning = "re-export attribution exceeded resolution budget"
+)
+
 type reExportResolver struct {
-	filesByPath  map[string]FileScan
-	resolveCache map[string]string
-	warningSet   map[string]struct{}
+	filesByPath       map[string]FileScan
+	resolveCache      map[string]string
+	warningSet        map[string]struct{}
+	resolutionSteps   int
+	resolutionLimited bool
 }
 
 type resolvedAttribution struct {
@@ -56,6 +63,8 @@ func (r *reExportResolver) resolveImportAttribution(importerPath string, imp Imp
 	if imp.Kind == ImportDefault {
 		requestedExport = "default"
 	}
+	r.resolutionSteps = 0
+	r.resolutionLimited = false
 
 	origin, ok := r.resolveExportOrigin(resolveExportRequest{
 		importerPath:    normalizeModulePath(importerPath),

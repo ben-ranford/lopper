@@ -18,6 +18,14 @@ type exportOrigin struct {
 }
 
 func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (exportOrigin, bool) {
+	if r.resolutionSteps >= maxReExportResolutionSteps {
+		if !r.resolutionLimited {
+			r.resolutionLimited = true
+			r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
+		}
+		return exportOrigin{}, false
+	}
+	r.resolutionSteps++
 	if r.hasResolutionCycle(req) {
 		return exportOrigin{}, false
 	}
