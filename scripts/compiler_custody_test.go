@@ -21,6 +21,18 @@ func TestCompilerCustodyRejectsTamperedBinary(t *testing.T) {
 	runCompilerCustody(t, "tamper")
 }
 
+// TestCompilerCustodyFallsBackToOfficialTarball rejects a toolcache that adds
+// setup.sh and uses a checksum-verified official archive instead.
+func TestCompilerCustodyFallsBackToOfficialTarball(t *testing.T) {
+	runCompilerCustody(t, "fallback")
+}
+
+// TestCompilerCustodyRejectsUnverifiedDownload fails closed when that archive
+// checksum does not match, and does not keep the mismatched toolcache copy.
+func TestCompilerCustodyRejectsUnverifiedDownload(t *testing.T) {
+	runCompilerCustody(t, "bad-archive")
+}
+
 func runCompilerCustody(t *testing.T, mode string) {
 	t.Helper()
 	python, err := exec.LookPath("python3")
