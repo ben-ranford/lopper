@@ -11,7 +11,7 @@ import (
 
 var exitFunc = os.Exit
 
-func run(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
+func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	runner := app.New(out, in)
 	commandLine := cli.New(runner, out, errOut)
 	return commandLine.Run(context.Background(), args)

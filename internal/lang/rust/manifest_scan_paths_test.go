@@ -208,7 +208,7 @@ func mustCreateDirEntry(t *testing.T, path string) os.DirEntry {
 	return mustFindDirEntryByName(t, filepath.Dir(path), filepath.Base(path))
 }
 
-func mustCreateFileEntry(t *testing.T, path string, contents string) os.DirEntry {
+func mustCreateFileEntry(t *testing.T, path, contents string) os.DirEntry {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)

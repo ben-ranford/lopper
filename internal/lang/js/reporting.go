@@ -201,7 +201,7 @@ type dependencyImportAttributionContext struct {
 	unusedImports map[string]*report.ImportUse
 }
 
-func applyDependencyImportAttribution(file FileScan, imp ImportBinding, ctx *dependencyImportAttributionContext) (matched bool, ambiguous bool) {
+func applyDependencyImportAttribution(file FileScan, imp ImportBinding, ctx *dependencyImportAttributionContext) (matched, ambiguous bool) {
 	attributed, provenance := attributedImportBinding(file.Path, imp, ctx.dependency, ctx.resolver)
 	if !matchesDependency(attributed.Module, ctx.dependency) {
 		return false, false
@@ -398,7 +398,7 @@ func removeOverlappingUnusedImports(unused, used []report.ImportUse) []report.Im
 	return filtered
 }
 
-func buildUnusedExports(module string, surface map[string]struct{}, used map[string]struct{}) []report.SymbolRef {
+func buildUnusedExports(module string, surface, used map[string]struct{}) []report.SymbolRef {
 	items := make([]report.SymbolRef, 0, len(surface))
 	for name := range surface {
 		if _, ok := used[name]; ok {
@@ -412,7 +412,7 @@ func buildUnusedExports(module string, surface map[string]struct{}, used map[str
 	return items
 }
 
-func countUsedExports(surface map[string]struct{}, used map[string]struct{}) int {
+func countUsedExports(surface, used map[string]struct{}) int {
 	count := 0
 	for name := range used {
 		if _, ok := surface[name]; ok {

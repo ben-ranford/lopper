@@ -382,7 +382,7 @@ func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []strin
 	return uniqueSorted(remapped)
 }
 
-func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
+func annotateRuntimeTraceIfPresent(runtimeTracePath, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
 	if runtimeTracePath == "" {
 		return reportData, nil
 	}

@@ -1668,8 +1668,9 @@ func assertWindowsFallbackRejectsAfterLatePin(
 	t *testing.T,
 	originalInfo fs.FileInfo,
 	revalidate func() (fs.FileInfo, error),
-	closeErr error,
+	closeErr,
 	wantErr error,
+
 	wantSubstring string,
 ) {
 	t.Helper()

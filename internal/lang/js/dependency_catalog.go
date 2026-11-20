@@ -62,7 +62,7 @@ func newDependencyCollector() dependencyCollector {
 	}
 }
 
-func (c *dependencyCollector) recordImport(repoPath string, importerPath string, imp ImportBinding) {
+func (c *dependencyCollector) recordImport(repoPath, importerPath string, imp ImportBinding) {
 	dep := dependencyFromModule(imp.Module)
 	if dep == "" {
 		return

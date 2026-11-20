@@ -107,7 +107,7 @@ func writeSwiftDemoCarthageProject(t *testing.T, repo string, dependencies []swi
 	writeSwiftDemoSourceFile(t, repo, mainContent)
 }
 
-func writeSwiftDemoSourceFile(t *testing.T, repo string, mainContent string) {
+func writeSwiftDemoSourceFile(t *testing.T, repo, mainContent string) {
 	t.Helper()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Sources", "Demo", swiftMainFileName), mainContent)
 }

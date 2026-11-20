@@ -1151,7 +1151,7 @@ func TestRemotePolicyURLValidation(t *testing.T) {
 	}
 }
 
-func assertLoadConfigErrorContains(t *testing.T, config string, expectedText string) {
+func assertLoadConfigErrorContains(t *testing.T, config, expectedText string) {
 	t.Helper()
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, lopperYMLName), config)

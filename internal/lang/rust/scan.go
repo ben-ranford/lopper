@@ -209,7 +209,7 @@ func compileScanWarnings(result scanResult) []string {
 	return append(warnings, summarizeUnresolved(result.UnresolvedImports)...)
 }
 
-func scanRustSourceFile(repoPath string, crateRoot string, path string, depLookup map[string]dependencyInfo, result *scanResult) error {
+func scanRustSourceFile(repoPath, crateRoot, path string, depLookup map[string]dependencyInfo, result *scanResult) error {
 	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableRustFile)
 	if errors.Is(err, safeio.ErrFileTooLarge) {
 		result.SkippedLargeFiles++

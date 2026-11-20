@@ -223,7 +223,7 @@ func podSourceCandidates(podName string) []string {
 	return []string{name, base}
 }
 
-func addPodMappings(catalog *dependencyCatalog, depID string, podName string, ambiguousModules map[string]struct{}) {
+func addPodMappings(catalog *dependencyCatalog, depID, podName string, ambiguousModules map[string]struct{}) {
 	mapAlias(catalog, depID, depID)
 	for _, alias := range podAliasCandidates(podName) {
 		mapAlias(catalog, alias, depID)

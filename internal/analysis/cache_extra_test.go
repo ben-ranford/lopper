@@ -1315,7 +1315,7 @@ func mustWritePointer(t *testing.T, pointerPath string, pointer cachePointer) {
 	mustWriteFile(t, pointerPath, payload)
 }
 
-func mustWriteCachedObject(t *testing.T, cacheDir string, objectDigest string, data report.Report) {
+func mustWriteCachedObject(t *testing.T, cacheDir, objectDigest string, data report.Report) {
 	t.Helper()
 	payload, err := json.Marshal(cachedPayload{Report: data})
 	if err != nil {

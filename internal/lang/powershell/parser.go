@@ -306,7 +306,7 @@ func parsePowerShellImports(content []byte, filePath string, declared map[string
 	return imports, warnings
 }
 
-func parsePowerShellLine(line string, filePath string, lineNo int, declared map[string]struct{}) ([]importBinding, []string) {
+func parsePowerShellLine(line, filePath string, lineNo int, declared map[string]struct{}) ([]importBinding, []string) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return nil, nil
@@ -348,7 +348,7 @@ func parsePowerShellLine(line string, filePath string, lineNo int, declared map[
 	return nil, nil
 }
 
-func parseRequiresLine(requiresBody string, line string, filePath string, lineNo int, declared map[string]struct{}) ([]importBinding, []string) {
+func parseRequiresLine(requiresBody, line, filePath string, lineNo int, declared map[string]struct{}) ([]importBinding, []string) {
 	requiresBody = stripPowerShellInlineComment(requiresBody)
 	expr, hasModulesOption := extractRequiresModulesExpression(requiresBody)
 	if !hasModulesOption {
@@ -430,7 +430,7 @@ func parseRequiresModulesDependencies(expr string, declared map[string]struct{})
 	return dependencies, warnings
 }
 
-func newImportBinding(dependency string, module string, filePath string, lineNo int, line string, source string) importBinding {
+func newImportBinding(dependency, module, filePath string, lineNo int, line, source string) importBinding {
 	dependency = normalizeDependencyID(dependency)
 	if module == "" {
 		module = dependency

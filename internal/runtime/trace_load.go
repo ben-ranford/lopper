@@ -92,7 +92,7 @@ func addRuntimeEvent(trace *Trace, language, dependency, module, parent, entrypo
 	addSymbolCount(trace.DependencySymbols, dependency, module, symbol)
 }
 
-func addCount(target map[string]map[string]int, dependency string, value string) {
+func addCount(target map[string]map[string]int, dependency, value string) {
 	if dependency == "" || value == "" {
 		return
 	}
@@ -104,7 +104,7 @@ func addCount(target map[string]map[string]int, dependency string, value string)
 	items[value]++
 }
 
-func addSymbolCount(target map[string]map[string]int, dependency string, module string, symbol string) {
+func addSymbolCount(target map[string]map[string]int, dependency, module, symbol string) {
 	if dependency == "" || symbol == "" {
 		return
 	}
@@ -128,7 +128,7 @@ func addCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, v
 	items[value]++
 }
 
-func addSymbolCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, module string, symbol string) {
+func addSymbolCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, module, symbol string) {
 	if key.Name == "" || symbol == "" {
 		return
 	}

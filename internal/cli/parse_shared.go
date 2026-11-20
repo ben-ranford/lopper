@@ -20,7 +20,7 @@ func parseFlagSet(fs *flag.FlagSet, args []string) error {
 	return nil
 }
 
-func resolveScopePatterns(visited map[string]bool, flagName string, cliValues []string, configValues []string) []string {
+func resolveScopePatterns(visited map[string]bool, flagName string, cliValues, configValues []string) []string {
 	if visited[flagName] {
 		if len(cliValues) == 0 {
 			return nil

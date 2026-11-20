@@ -112,11 +112,11 @@ func shouldSkipDir(name string) bool {
 	return swiftSkippedDirs[strings.ToLower(name)]
 }
 
-func setLookup(target map[string]string, key string, depID string) {
+func setLookup(target map[string]string, key, depID string) {
 	_ = setLookupWithStatus(target, key, depID)
 }
 
-func setLookupWithStatus(target map[string]string, key string, depID string) bool {
+func setLookupWithStatus(target map[string]string, key, depID string) bool {
 	if key == "" || depID == "" {
 		return false
 	}

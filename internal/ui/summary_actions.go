@@ -239,7 +239,7 @@ func readSummaryBaselineFileOption(args []string, index int, action *summaryActi
 	})
 }
 
-func readSummaryBaselineScopedOption(args []string, index int, actual summaryActionKind, allowed summaryActionKind, assign func(string)) (int, bool, error) {
+func readSummaryBaselineScopedOption(args []string, index int, actual, allowed summaryActionKind, assign func(string)) (int, bool, error) {
 	if actual != allowed {
 		return index, true, fmt.Errorf("unknown %s option: %s", actual, args[index])
 	}

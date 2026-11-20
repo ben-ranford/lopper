@@ -23,7 +23,7 @@ type Detail struct {
 
 const noneLabel = "  (none)"
 
-func NewDetail(out io.Writer, analyzer analysis.Analyser, repoPath string, language string) *Detail {
+func NewDetail(out io.Writer, analyzer analysis.Analyser, repoPath, language string) *Detail {
 	if language == "" {
 		language = "auto"
 	}

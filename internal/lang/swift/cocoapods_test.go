@@ -145,7 +145,7 @@ func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 	return false
 }
 
-func assertCocoaPodsModuleMapping(t *testing.T, dependency swiftFixturePodDependency, importedModule string, usageExpression string, dependencyQuery string, expectedDependency string) {
+func assertCocoaPodsModuleMapping(t *testing.T, dependency swiftFixturePodDependency, importedModule, usageExpression, dependencyQuery, expectedDependency string) {
 	t.Helper()
 
 	repo := t.TempDir()

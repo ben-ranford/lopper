@@ -370,7 +370,7 @@ func discoverPubIdentityManifestsWithContext(ctx context.Context, repoPath strin
 	snapshot.pubFiles = append(snapshot.pubFiles, discoverAdapterIdentityManifestsWithContext(ctx, repoPath, warnings, dartlang.ShouldSkipDirectory, isPubIdentityManifest)...)
 }
 
-func discoverAdapterIdentityManifestsWithContext(ctx context.Context, repoPath string, warnings *identityWarningCollector, shouldSkip func(string) bool, isManifest func(string) bool) []string {
+func discoverAdapterIdentityManifestsWithContext(ctx context.Context, repoPath string, warnings *identityWarningCollector, shouldSkip, isManifest func(string) bool) []string {
 	paths := make([]string, 0)
 	if err := walkIdentityFiles(ctx, repoPath, warnings, shouldSkip, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {

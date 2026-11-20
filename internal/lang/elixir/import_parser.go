@@ -13,7 +13,7 @@ func parseImports(content []byte, filePath string, declared map[string]struct{})
 	return parseImportsFromSanitized(content, sanitizeElixirSource(content), filePath, declared)
 }
 
-func parseImportsFromSanitized(content []byte, sanitized []byte, filePath string, declared map[string]struct{}) []shared.ImportRecord {
+func parseImportsFromSanitized(content, sanitized []byte, filePath string, declared map[string]struct{}) []shared.ImportRecord {
 	if len(sanitized) != len(content) {
 		return nil
 	}

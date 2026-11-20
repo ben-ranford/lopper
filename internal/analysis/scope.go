@@ -91,11 +91,11 @@ func (b *scopeCopyBudget) reserve(path string, size int64) error {
 	return nil
 }
 
-func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
+func applyPathScope(repoPath string, includePatterns, excludePatterns []string) (string, []string, func(), error) {
 	return applyPathScopeWithContext(context.Background(), repoPath, includePatterns, excludePatterns)
 }
 
-func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatterns []string, excludePatterns []string, skippedDirs ...string) (string, []string, func(), error) {
+func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatterns, excludePatterns []string, skippedDirs ...string) (string, []string, func(), error) {
 	includePatterns = normalizePatterns(includePatterns)
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
@@ -271,7 +271,7 @@ func recordScopeSkip(stats *scopeStats, slashed string, includeMatched bool, inc
 	recordScopeSkipReason(stats, slashed, reason)
 }
 
-func recordScopeSkipReason(stats *scopeStats, slashed string, reason string) {
+func recordScopeSkipReason(stats *scopeStats, slashed, reason string) {
 	if len(stats.skippedDiagnostics) >= maxScopeDiagnostics {
 		return
 	}

@@ -131,17 +131,17 @@ func buildDescriptorLookups(descriptors []dependencyDescriptor) (map[string]stri
 	return prefixes, aliases
 }
 
-type lookupKeyStrategy func(group string, artifact string) ([]string, []string)
+type lookupKeyStrategy func(group, artifact string) ([]string, []string)
 
-func addGroupLookups(prefixes map[string]string, aliases map[string]string, name string, group string) {
+func addGroupLookups(prefixes, aliases map[string]string, name, group string) {
 	addLookupByStrategy(prefixes, aliases, name, group, "", groupLookupStrategy)
 }
 
-func addArtifactLookups(prefixes map[string]string, aliases map[string]string, name string, group string, artifact string) {
+func addArtifactLookups(prefixes, aliases map[string]string, name, group, artifact string) {
 	addLookupByStrategy(prefixes, aliases, name, group, artifact, artifactLookupStrategy)
 }
 
-func addLookupByStrategy(prefixes map[string]string, aliases map[string]string, name string, group string, artifact string, strategy lookupKeyStrategy) {
+func addLookupByStrategy(prefixes, aliases map[string]string, name, group, artifact string, strategy lookupKeyStrategy) {
 	prefixKeys, aliasKeys := strategy(group, artifact)
 	for _, key := range prefixKeys {
 		prefixes[key] = name
@@ -581,7 +581,7 @@ func parseDependencyDescriptorsFromMatches(matches [][]string) []dependencyDescr
 	return descriptors
 }
 
-func parseBuildFiles(repoPath string, primaryName string, parser func(content string) []dependencyDescriptor, additionalNames ...string) []dependencyDescriptor {
+func parseBuildFiles(repoPath, primaryName string, parser func(content string) []dependencyDescriptor, additionalNames ...string) []dependencyDescriptor {
 	names := append([]string{primaryName}, additionalNames...)
 	descriptors := make([]dependencyDescriptor, 0)
 	seen := make(map[string]struct{})
@@ -655,7 +655,7 @@ func collectBuildFilesWithinRoot(ctx context.Context, repoPath string, root safe
 	return collector.descriptors, shared.DedupeWarnings(collector.warnings), nil
 }
 
-func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
+func parseBuildFileEntry(repoPath, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir

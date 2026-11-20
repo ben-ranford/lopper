@@ -18,11 +18,11 @@ func CanceledContext() context.Context {
 	return ctx
 }
 
-func MustWriteFile(t *testing.T, path string, content string) {
+func MustWriteFile(t *testing.T, path, content string) {
 	MustWriteFileMode(t, path, content, 0o600)
 }
 
-func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMode) {
+func MustWriteFileMode(t *testing.T, path, content string, perm os.FileMode) {
 	t.Helper()
 	MustWriteFileWithModes(t, path, content, perm, 0o750)
 }
@@ -39,7 +39,7 @@ func MustWriteFileWithModes(t *testing.T, path, content string, perm, dirPerm os
 	}
 }
 
-func MustWritePaddedFile(t *testing.T, path string, content string, minBytes int64) {
+func MustWritePaddedFile(t *testing.T, path, content string, minBytes int64) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
@@ -89,7 +89,7 @@ func WriteNumberedTextFiles(t *testing.T, dir string, count int) {
 	}
 }
 
-func WriteTempFile(t *testing.T, filename string, content string) string {
+func WriteTempFile(t *testing.T, filename, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), filename)
 	MustWriteFileMode(t, path, content, 0o644)

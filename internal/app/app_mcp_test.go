@@ -55,7 +55,7 @@ func mustMCPMutationFeatureSet(t *testing.T) featureflags.Set {
 	return mustMCPFeatureSetWithMutations(t, false, true)
 }
 
-func mustMCPFeatureSetWithMutations(t *testing.T, disableServer bool, enableMutations bool) featureflags.Set {
+func mustMCPFeatureSetWithMutations(t *testing.T, disableServer, enableMutations bool) featureflags.Set {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{
 		{

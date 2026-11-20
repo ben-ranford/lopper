@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-func sendWebhookJSON(ctx context.Context, client *http.Client, webhookURL string, body []byte, buildErrMsg string, sendErrMsg string, statusErrFmt string) error {
+func sendWebhookJSON(ctx context.Context, client *http.Client, webhookURL string, body []byte, buildErrMsg, sendErrMsg, statusErrFmt string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("%s: %w", buildErrMsg, err)

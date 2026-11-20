@@ -397,7 +397,7 @@ func writeFlagSection(b *strings.Builder, title string, flags []featureflags.Fla
 	b.WriteByte('\n')
 }
 
-func writeNewPreviewSection(b *strings.Builder, current []featureflags.Flag, previous []featureflags.Flag, compared bool) {
+func writeNewPreviewSection(b *strings.Builder, current, previous []featureflags.Flag, compared bool) {
 	b.WriteString("### Newly added preview flags since previous release\n\n")
 	if !compared {
 		b.WriteString("Not compared; no previous feature catalog was provided.\n\n")

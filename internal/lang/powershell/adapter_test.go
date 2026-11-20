@@ -115,7 +115,7 @@ func TestPowerShellReportHelpersCoverNilAndEmptyBranches(t *testing.T) {
 	}
 }
 
-func writePowerShellFile(t *testing.T, path string, content string) {
+func writePowerShellFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)

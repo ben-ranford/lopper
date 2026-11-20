@@ -91,7 +91,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsagePercentFo
 	return dep, warnings
 }
 
-func buildRecommendations(dep report.DependencyReport, ambiguousCount int, undeclaredCount int, minUsagePercentForRecommendations int) []report.Recommendation {
+func buildRecommendations(dep report.DependencyReport, ambiguousCount, undeclaredCount, minUsagePercentForRecommendations int) []report.Recommendation {
 	recommendations := make([]report.Recommendation, 0, 3)
 	if undeclaredCount > 0 {
 		recommendations = append(recommendations, report.Recommendation{

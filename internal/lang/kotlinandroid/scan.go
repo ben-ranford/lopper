@@ -40,7 +40,7 @@ func newScanResult() scanResult {
 	}
 }
 
-func (s *scanResult) addFallbackModule(module string, dependency string, declared bool) {
+func (s *scanResult) addFallbackModule(module, dependency string, declared bool) {
 	module = strings.TrimSpace(module)
 	if module == "" {
 		return
@@ -121,7 +121,7 @@ func scanRepo(ctx context.Context, repoPath string, lookups dependencyLookups) (
 	return result, nil
 }
 
-func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependencyLookups, result *scanResult) error {
+func scanKotlinAndroidSourceFile(repoPath, path string, lookups dependencyLookups, result *scanResult) error {
 	if !isSourceFile(path) {
 		return nil
 	}
@@ -179,7 +179,7 @@ func parsePackage(content []byte) string {
 	return ""
 }
 
-func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
+func parseImports(content []byte, filePath, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
 	sanitized := shared.StripBlockComments(content)
 	parser := kotlinAndroidImportParser{
 		filePackage: filePackage,
@@ -246,7 +246,7 @@ func (p *kotlinAndroidImportParser) fallbackDependency(module string) (string, b
 	return dependency, true
 }
 
-func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {
+func buildImportRecord(matches []string, module, dependency string) (shared.ImportRecord, bool) {
 	symbol, wildcard := resolvedImportSymbol(matches, module)
 	if symbol == "" {
 		return shared.ImportRecord{}, false

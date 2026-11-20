@@ -110,7 +110,7 @@ func importedModuleSet(imports []importBinding) map[string]struct{} {
 	return importModules
 }
 
-func lineHasPotentialUnqualifiedSymbolUsage(line string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
+func lineHasPotentialUnqualifiedSymbolUsage(line string, importModules, localDeclaredSymbols map[string]struct{}) bool {
 	locations := swiftUpperIdentifierPattern.FindAllStringIndex(line, -1)
 	genericEnds := swiftGenericSpecializationEnds(line)
 	for _, location := range locations {
@@ -165,7 +165,7 @@ func swiftGenericSpecializationEnds(line string) map[int]int {
 	return ends
 }
 
-func isIgnoredUnqualifiedSymbol(key string, importModules map[string]struct{}, localDeclaredSymbols map[string]struct{}) bool {
+func isIgnoredUnqualifiedSymbol(key string, importModules, localDeclaredSymbols map[string]struct{}) bool {
 	if key == "" {
 		return true
 	}

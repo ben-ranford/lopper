@@ -52,7 +52,7 @@ func LoadByteFuzzCorpus(tb testing.TB, dir string) []ByteFuzzSeed {
 	return seeds
 }
 
-func readRootedFuzzSeed(tb testing.TB, root *os.Root, dir string, name string) string {
+func readRootedFuzzSeed(tb testing.TB, root *os.Root, dir, name string) string {
 	tb.Helper()
 
 	file, err := root.Open(name)
@@ -72,7 +72,7 @@ func readRootedFuzzSeed(tb testing.TB, root *os.Root, dir string, name string) s
 	return string(body)
 }
 
-func parseByteFuzzSeed(tb testing.TB, path string, raw string) []byte {
+func parseByteFuzzSeed(tb testing.TB, path, raw string) []byte {
 	tb.Helper()
 
 	header, body, ok := strings.Cut(raw, "\n")

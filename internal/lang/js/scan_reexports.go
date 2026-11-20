@@ -91,7 +91,7 @@ func parseReExportClause(node *sitter.Node, content []byte, relPath string, hasS
 	return bindings
 }
 
-func makeReExportBinding(sourceModule string, sourceExportName string, exportName string, relPath string, node *sitter.Node) ReExportBinding {
+func makeReExportBinding(sourceModule, sourceExportName, exportName, relPath string, node *sitter.Node) ReExportBinding {
 	location := report.Location{
 		File:   relPath,
 		Line:   int(node.StartPoint().Row) + 1,

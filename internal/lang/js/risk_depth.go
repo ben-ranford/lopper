@@ -10,7 +10,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func buildTransitiveDepthRiskCue(repoPath string, depRoot string, pkg packageJSON) *report.RiskCue {
+func buildTransitiveDepthRiskCue(repoPath, depRoot string, pkg packageJSON) *report.RiskCue {
 	depth := estimateTransitiveDepth(repoPath, depRoot, pkg)
 	if depth < 4 {
 		return nil
@@ -28,13 +28,13 @@ func buildTransitiveDepthRiskCue(repoPath string, depRoot string, pkg packageJSO
 	}
 }
 
-func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) int {
+func estimateTransitiveDepth(repoPath, depRoot string, pkg packageJSON) int {
 	memo := make(map[string]int)
 	visiting := make(map[string]struct{})
 	return transitiveDepth(repoPath, depRoot, pkg, memo, visiting, 512)
 }
 
-func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) int {
+func transitiveDepth(repoPath, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) int {
 	if cached, ok := memo[pkgRoot]; ok {
 		return cached
 	}

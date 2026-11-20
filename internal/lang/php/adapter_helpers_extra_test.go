@@ -1011,7 +1011,7 @@ func scanVendorLibRepo(t *testing.T, repo string, namespaceToDep map[string]stri
 	return scan
 }
 
-func assertIncompleteScanWarning(t *testing.T, scan scanResult, reason string, warning string) {
+func assertIncompleteScanWarning(t *testing.T, scan scanResult, reason, warning string) {
 	t.Helper()
 	if !usageIncompleteForTest(t, scan) {
 		t.Fatalf("expected %s to mark scan usage incomplete", reason)
@@ -2750,7 +2750,7 @@ func TestLoadComposerLockMappingsSkipsInvalidEntries(t *testing.T) {
 	}
 }
 
-func hasNamespaceDependencyMapping(namespaceToDep map[string]string, namespaceFragment string, dependency string) bool {
+func hasNamespaceDependencyMapping(namespaceToDep map[string]string, namespaceFragment, dependency string) bool {
 	for namespace, current := range namespaceToDep {
 		if strings.Contains(namespace, namespaceFragment) && current == dependency {
 			return true

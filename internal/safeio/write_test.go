@@ -12646,7 +12646,7 @@ func (f *atomicCleanupFailureFixture) openFile(name string, flag int, perm os.Fi
 	return f.base.OpenFile(name, flag, perm)
 }
 
-func (*atomicCleanupFailureFixture) linkIfMatches(_ string, newName string, _ fs.FileInfo, _ string) error {
+func (*atomicCleanupFailureFixture) linkIfMatches(_, newName string, _ fs.FileInfo, _ string) error {
 	if newName == "target" {
 		return syscall.EPERM
 	}

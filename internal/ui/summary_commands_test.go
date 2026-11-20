@@ -129,7 +129,7 @@ func TestSummaryCommandHandlersPagingAndShortcuts(t *testing.T) {
 	}
 }
 
-func newSummaryCommandExpectation(command string, wantApplied bool, page int, pageSize int, sortMode sortMode) summaryCommandExpectation {
+func newSummaryCommandExpectation(command string, wantApplied bool, page, pageSize int, sortMode sortMode) summaryCommandExpectation {
 	return summaryCommandExpectation{
 		command:     command,
 		want:        summaryState{page: page, pageSize: pageSize, sortMode: sortMode},

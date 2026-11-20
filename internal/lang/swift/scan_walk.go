@@ -63,7 +63,7 @@ func isLargeSwiftFile(entry fs.DirEntry) bool {
 	return err == nil && info.Size() > maxScannableSwiftFile
 }
 
-func (s *repoScanner) buildFileScan(path string, fallback string, content []byte) fileScan {
+func (s *repoScanner) buildFileScan(path, fallback string, content []byte) fileScan {
 	relPath := s.relativePath(path, fallback)
 	mappedImports := s.resolveImports(parseSwiftImports(content, relPath))
 	return fileScan{

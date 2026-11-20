@@ -29,7 +29,7 @@ func fallbackAtomicIfAbsent(root Root, tempRel, attemptedLinkSourceRel, targetRe
 	return nil
 }
 
-func windowsHardLinkUnsupported(err error, _ string, newName string) bool {
+func windowsHardLinkUnsupported(err error, _, newName string) bool {
 	var linkErr *os.LinkError
 	if !errors.As(err, &linkErr) ||
 		linkErr.Op != "linkat" ||

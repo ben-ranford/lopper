@@ -255,7 +255,7 @@ func applyLanguageID(dependencies []report.DependencyReport, languageID string) 
 	}
 }
 
-func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies []report.DependencyReport) {
+func adjustRelativeLocations(repoPath, analyzedRoot string, dependencies []report.DependencyReport) {
 	prefix, err := filepath.Rel(repoPath, analyzedRoot)
 	if err != nil || prefix == "." || prefix == "" {
 		return
@@ -267,7 +267,7 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 	}
 }
 
-func adjustRelativeCoverageGaps(repoPath string, analyzedRoot string, gaps []report.CoverageGap) {
+func adjustRelativeCoverageGaps(repoPath, analyzedRoot string, gaps []report.CoverageGap) {
 	prefix, err := filepath.Rel(repoPath, analyzedRoot)
 	if err != nil || prefix == "." || prefix == "" {
 		return
