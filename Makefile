@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint reuse-check actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-produce cov-check cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint reuse-check actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check safeio-read-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-produce cov-check cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -69,7 +69,7 @@ GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFL
 # Keep the parallel CI partitions fixed so environment or command-line overrides
 # cannot omit a required gate. runtime-pycache-check runs after each partition.
 override CI_TEST_TARGETS := stave-ui-check test test-leaks test-tui
-override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test-race bench-gate build cov runtime-pycache-check
+override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check safeio-read-check security vuln-check test-race bench-gate build cov runtime-pycache-check
 
 format:
 	gofmt -w .
@@ -124,6 +124,9 @@ dup-check:
 
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
+
+safeio-read-check:
+	$(GO_CMD) run ./tools/safeioreadcheck -root . -allowlist .github/safeio-zero-limit-allowlist.txt
 
 github-actions-pinning:
 	@./scripts/check-github-actions-pinning.sh
@@ -291,7 +294,7 @@ build:
 manpage:
 	MANPAGE_DATE="$(MANPAGE_DATE)" ./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-tui test-race bench-gate build cov runtime-pycache-check
+ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check safeio-read-check security vuln-check stave-ui-check test test-leaks test-tui test-race bench-gate build cov runtime-pycache-check
 
 ci-tests: $(CI_TEST_TARGETS) runtime-pycache-check
 
