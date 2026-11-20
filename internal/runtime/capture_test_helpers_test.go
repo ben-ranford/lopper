@@ -2,10 +2,11 @@ package runtime
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -49,21 +50,15 @@ func setupFakeRuntimeTools(t *testing.T) string {
 		"uv",
 	}
 	for _, tool := range tools {
-		path := filepath.Join(toolDir, tool)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-			t.Fatalf("write fake runtime tool %q: %v", tool, err)
-		}
+		testutil.MustInstallFile(t, filepath.Join(toolDir, tool), "#!/bin/sh\nexit 0\n", 0o700)
 	}
 	return toolDir
 }
 
-func setupFakeRuntimeToolScript(t *testing.T, tool string, script string) string {
+func setupFakeRuntimeToolScript(t *testing.T, tool, script string) string {
 	t.Helper()
 
 	toolDir := setupFakeRuntimeTools(t)
-	path := filepath.Join(toolDir, tool)
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake runtime tool script %q: %v", tool, err)
-	}
+	testutil.MustInstallFile(t, filepath.Join(toolDir, tool), script, 0o700)
 	return toolDir
 }

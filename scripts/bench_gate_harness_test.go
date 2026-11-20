@@ -908,9 +908,7 @@ func TestBenchGateRoutesSelectorBuildFailureThroughInvalidGate(t *testing.T) {
 		"\tdone\n" +
 		"fi\n" +
 		"exec \"" + realGoBin + "\" \"$@\"\n"
-	if err := os.WriteFile(fakeGoPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake go wrapper: %v", err)
-	}
+	writeFileMode(t, fakeGoPath, script, 0o700)
 	fixture.goBin = fakeGoPath
 
 	output, exitCode := fixture.runBenchGate()

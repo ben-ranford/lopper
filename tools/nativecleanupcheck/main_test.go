@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func passingStream(t *testing.T) []byte {
@@ -200,9 +202,7 @@ func TestCustodyBeforeExecutionAndManifestParsing(t *testing.T) {
 	manifest := filepath.Join(root, "custody.json")
 	marker := filepath.Join(root, "executed")
 	sentinel := []byte("#!/bin/sh\ntouch " + marker + "\n")
-	if err := os.WriteFile(verifier, sentinel, 0700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustInstallBytes(t, verifier, sentinel, 0o700)
 	if err := os.WriteFile(manifest, []byte("not json"), 0600); err != nil {
 		t.Fatal(err)
 	}

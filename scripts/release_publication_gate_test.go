@@ -182,21 +182,15 @@ case "$*" in
  *) exit 1 ;;
 esac
 `
-			if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(mock), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "date"), []byte("#!/usr/bin/env bash\necho 1790726400\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
+			writeFileMode(t, filepath.Join(dir, "curl"), mock, 0o700)
+			writeFileMode(t, filepath.Join(dir, "date"), "#!/usr/bin/env bash\necho 1790726400\n", 0o700)
 			sleepMock := `#!/usr/bin/env bash
 set -eu
 [[ "$*" == 15 ]] || exit 23
 printf 'wait\n' >> "$STATE.waits"
 [[ "$SCENARIO" == analysis-never-ready ]] || touch "$STATE.ready"
 `
-			if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(sleepMock), 0700); err != nil {
-				t.Fatal(err)
-			}
+			writeFileMode(t, filepath.Join(dir, "sleep"), sleepMock, 0o700)
 			sha := strings.Repeat("a", 40)
 			if scenario == "invalid-sha" {
 				sha = "main"
@@ -251,9 +245,7 @@ func TestReleaseSonarPollingDeadline(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			dir := t.TempDir()
 			mock := "#!/usr/bin/env bash\nset -eu\nwhile [[ $# -gt 0 ]]; do\nif [[ $1 == --max-time ]]; then [[ $2 -gt 0 && $2 -le 3 ]] || exit 23; echo capped-request; exit 0; fi\nshift\ndone\nexit 24\n"
-			if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(mock), 0700); err != nil {
-				t.Fatal(err)
-			}
+			writeFileMode(t, filepath.Join(dir, "curl"), mock, 0o700)
 			cmd := exec.Command("bash", "-c", functions+"\n"+scenario.command)
 			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "SOURCE_SHA="+strings.Repeat("a", 40), "SONAR_TOKEN=test-token")
 			output, err := cmd.CombinedOutput()

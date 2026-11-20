@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestTrustedSearchDirsPreservesUsableDirectoryModes(t *testing.T) {
@@ -71,9 +73,7 @@ func TestTrustedSearchDirsPreservesDirectoryAliases(t *testing.T) {
 func setupRuntimeSearchTool(t *testing.T, mode os.FileMode) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "node"), []byte("#!/bin/sh\nprintf 'fixture-ok\\n'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustInstallFile(t, filepath.Join(dir, "node"), "#!/bin/sh\nprintf 'fixture-ok\\n'\n", 0o700)
 	if err := os.Chmod(dir, mode); err != nil {
 		t.Fatal(err)
 	}

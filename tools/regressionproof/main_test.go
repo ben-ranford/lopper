@@ -246,9 +246,7 @@ func TestExecRunnerSuccessfulCommandIgnoresStderrDiagnostics(t *testing.T) {
 	}
 
 	script := filepath.Join(t.TempDir(), "go-list-fixture.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'github.com/example/pkg\\n'\nprintf 'go: downloading example/module v1.0.0\\n' >&2\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustInstallFile(t, script, "#!/bin/sh\nprintf 'github.com/example/pkg\\n'\nprintf 'go: downloading example/module v1.0.0\\n' >&2\n", 0o700)
 	output, err := (&execRunner{}).Run(context.Background(), "sh", []string{script}, "", nil)
 	if err != nil {
 		t.Fatalf("successful command: %v", err)

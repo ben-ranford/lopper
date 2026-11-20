@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestCapturePythonRunnerProfilesMatchPytestDependencyTrace(t *testing.T) {
@@ -173,7 +175,5 @@ func TestCaptureChainsProjectSitecustomizeExactlyOnce(t *testing.T) {
 
 func writeRuntimeProfileTool(t *testing.T, dir, name, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake runtime profile tool %q: %v", name, err)
-	}
+	testutil.MustInstallFile(t, filepath.Join(dir, name), script, 0o700)
 }

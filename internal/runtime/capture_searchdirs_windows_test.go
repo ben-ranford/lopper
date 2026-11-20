@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestTrustedSearchDirsWindowsExtendedPaths(t *testing.T) {
@@ -79,9 +81,7 @@ func setupWindowsRuntimeSearchExecutable(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "node.exe"), contents, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustInstallBytes(t, filepath.Join(dir, "node.exe"), contents, 0o700)
 	return dir
 }
 

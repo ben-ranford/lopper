@@ -94,9 +94,7 @@ func newShellcheckInstallMocks(t *testing.T, preinstalled bool) shellcheckInstal
 		installedBinPath: filepath.Join(mockBin, ".shellcheck-after-install"),
 		logPath:          filepath.Join(t.TempDir(), "commands.log"),
 	}
-	if err := os.WriteFile(mocks.installedBinPath, []byte("#!/bin/sh\nprintf 'shellcheck --version\\n' >> \"$SHELLCHECK_INSTALL_LOG\"\nprintf 'ShellCheck - shell script analysis tool\\n'\n"), 0o755); err != nil {
-		t.Fatalf("write installed shellcheck mock: %v", err)
-	}
+	writeFileMode(t, mocks.installedBinPath, "#!/bin/sh\nprintf 'shellcheck --version\\n' >> \"$SHELLCHECK_INSTALL_LOG\"\nprintf 'ShellCheck - shell script analysis tool\\n'\n", 0o755)
 	writeShellcheckInstallMock(t, mockBin, "sudo", `
 printf 'sudo %s\n' "$*" >> "$SHELLCHECK_INSTALL_LOG"
 if [ "${SHELLCHECK_SUDO_FAIL:-}" = 1 ]; then
@@ -126,10 +124,7 @@ printf 'ShellCheck - shell script analysis tool\n'
 func writeShellcheckInstallMock(t *testing.T, dir, name, script string) {
 	t.Helper()
 
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+script), 0o755); err != nil {
-		t.Fatalf("write mock %s: %v", name, err)
-	}
+	writeFileMode(t, filepath.Join(dir, name), "#!/bin/sh\nset -eu\n"+script, 0o755)
 }
 
 func runShellcheckInstallStep(script string, mocks shellcheckInstallMocks, failSudo, failUpdate bool) (string, error) {

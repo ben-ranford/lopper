@@ -707,28 +707,22 @@ func holdPinningFixtureWriter(t *testing.T, repoDir string) {
 	})
 }
 
-func writeRepoScriptFixture(t *testing.T, repoDir string, path string) {
+func writeRepoScriptFixture(t *testing.T, repoDir, path string) {
 	t.Helper()
 
 	data := readRepoFile(t, path)
 	writeFixtureFileMode(t, repoDir, path, data, 0o755)
 }
 
-func writeFixtureFile(t *testing.T, repoDir string, path string, content string) {
+func writeFixtureFile(t *testing.T, repoDir, path, content string) {
 	t.Helper()
 	writeFixtureFileMode(t, repoDir, path, content, 0o644)
 }
 
-func writeFixtureFileMode(t *testing.T, repoDir string, path string, content string, mode os.FileMode) {
+func writeFixtureFileMode(t *testing.T, repoDir, path, content string, mode os.FileMode) {
 	t.Helper()
 
-	fullPath := filepath.Join(repoDir, path)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(fullPath), err)
-	}
-	if err := os.WriteFile(fullPath, []byte(content), mode); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	writeFileMode(t, filepath.Join(repoDir, path), content, mode)
 }
 
 func assertOutputContainsAll(t *testing.T, output string, wants []string) {

@@ -12,17 +12,19 @@ import (
 	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
+const mkdirErr = "mkdir %s: %v"
+
 func CanceledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
 }
 
-func MustWriteFile(t *testing.T, path string, content string) {
+func MustWriteFile(t *testing.T, path, content string) {
 	MustWriteFileMode(t, path, content, 0o600)
 }
 
-func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMode) {
+func MustWriteFileMode(t *testing.T, path, content string, perm os.FileMode) {
 	t.Helper()
 	MustWriteFileWithModes(t, path, content, perm, 0o750)
 }
@@ -32,17 +34,63 @@ func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMo
 func MustWriteFileWithModes(t *testing.T, path, content string, perm, dirPerm os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
+		t.Fatalf(mkdirErr, path, err)
 	}
 	if err := os.WriteFile(path, []byte(content), perm); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
-func MustWritePaddedFile(t *testing.T, path string, content string, minBytes int64) {
+// MustInstallFile writes an executable fixture to a temporary name, closes
+// that file, and renames it into place. Executing a path that is still open
+// for write returns ETXTBSY ("text file busy") when a parallel test forks.
+func MustInstallFile(t *testing.T, path, content string, perm os.FileMode) {
+	t.Helper()
+	MustInstallBytes(t, path, []byte(content), perm)
+}
+
+func MustInstallBytes(t *testing.T, path string, content []byte, perm os.FileMode) {
+	t.Helper()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf(mkdirErr, path, err)
+	}
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		t.Fatalf("create temp file for %s: %v", path, err)
+	}
+	tempPath := temp.Name()
+	defer func() {
+		if removeErr := os.Remove(tempPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			t.Errorf("remove temp file %s: %v", tempPath, removeErr)
+		}
+	}()
+	written, err := temp.Write(content)
+	if err != nil || written != len(content) {
+		closeErr := temp.Close()
+		t.Fatalf("write %s: wrote %d of %d bytes: %v (close: %v)", tempPath, written, len(content), err, closeErr)
+	}
+	if err := temp.Chmod(perm); err != nil {
+		closeErr := temp.Close()
+		t.Fatalf("chmod %s: %v (close: %v)", tempPath, err, closeErr)
+	}
+	if err := temp.Close(); err != nil {
+		t.Fatalf("close %s: %v", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			t.Fatalf("replace %s: rename: %v; remove: %v", path, err, removeErr)
+		}
+		if renameErr := os.Rename(tempPath, path); renameErr != nil {
+			t.Fatalf("rename %s to %s: %v", tempPath, path, renameErr)
+		}
+	}
+}
+
+func MustWritePaddedFile(t *testing.T, path, content string, minBytes int64) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
+		t.Fatalf(mkdirErr, path, err)
 	}
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
@@ -89,7 +137,7 @@ func WriteNumberedTextFiles(t *testing.T, dir string, count int) {
 	}
 }
 
-func WriteTempFile(t *testing.T, filename string, content string) string {
+func WriteTempFile(t *testing.T, filename, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), filename)
 	MustWriteFileMode(t, path, content, 0o644)
