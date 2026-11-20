@@ -19,8 +19,12 @@ import (
 	"github.com/creack/pty"
 )
 
-// 30s is the current PTY bound. Successful frames return early; a hung PTY
-// read still fails at this deadline. Do not widen it without new runner timings.
+// 30s stays the PTY bound. #1914's green CI (runs 44180466636 and
+// 44200241534) finished cmd/lopper in 29–49s on ubuntu-latest and 111–117s
+// on macos-26. Those are whole-package ceilings, so they do not justify a
+// tighter per-test deadline, and nothing in those logs reached a hung read.
+// Successful frames return early; a hung PTY read still fails here.
+// Do not widen it without new runner timings.
 const stavePTYTimeout = 30 * time.Second
 const stavePTYCleanupGrace = 2 * time.Second
 
