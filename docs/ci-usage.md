@@ -13,6 +13,9 @@ This repository includes these GitHub Actions workflows:
 - `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with Linux/Windows/Darwin build artifacts plus source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper-rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
 - `.github/workflows/memory-profiles.yml`: scheduled/manual alloc-space profiling for the watched hotspot packages (`dotnet`, `rust`, `analysis`, `golang`) with uploaded artifacts and a workflow summary
+- `.github/workflows/codeql.yml`: CodeQL for Go, and for JavaScript/TypeScript limited to `extensions/vscode-lopper`, on pull requests, pushes to `main`, and a weekly schedule
+- `.github/workflows/dependency-review.yml`: dependency review on pull requests
+- `.github/workflows/scorecard.yml`: OpenSSF Scorecard with SARIF upload to code scanning, on pushes to `main`, branch-protection changes, and a weekly schedule
 
 Homebrew tap automation:
 

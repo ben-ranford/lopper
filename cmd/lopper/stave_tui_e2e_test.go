@@ -19,6 +19,8 @@ import (
 	"github.com/creack/pty"
 )
 
+// 30s is the current PTY bound. Successful frames return early; a hung PTY
+// read still fails at this deadline. Do not widen it without new runner timings.
 const stavePTYTimeout = 30 * time.Second
 const stavePTYCleanupGrace = 2 * time.Second
 

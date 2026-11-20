@@ -18,6 +18,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# Jobs declare their own token permissions. Keep this default empty so a
+# new job cannot inherit a broader repository token.
+permissions: {}
+
 jobs:
   verify-checks:
     runs-on: ubuntu-latest
@@ -1313,8 +1317,26 @@ jobs:
           $verify = Join-Path $trusted 'scripts/proof-python/verify.ps1'
           $bootstrapSha256 = 'b74f65b784b648ddcd6dfa23836d77b6231a3c6272b0b972577d4d878b895391'
           $verifySha256 = '1eaa2b86f6e5c65ec49edfe320160b36b7777369c1fd5cc50257725121d2ca46'
-          git -c core.autocrlf=false -C $trusted checkout-index --force -- scripts/proof-python/provision.ps1 scripts/proof-python/verify.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Trusted provider byte-preserving checkout failed' }
+          # actions/checkout on windows-2025 follows Git for Windows core.autocrlf=true, so the
+          # worktree can be CRLF while HEAD and HEAD^{tree} still match the pin. cat-file emits
+          # the object bytes with no conversion; WriteAllBytes is what later hash checks read.
+          function Install-TrustedProviderBlob([string]$Spec, [string]$Destination) {
+            $start = New-Object System.Diagnostics.ProcessStartInfo
+            $start.FileName = 'git'
+            $start.UseShellExecute = $false
+            $start.RedirectStandardOutput = $true
+            foreach ($arg in @('-C', $trusted, '-c', 'core.autocrlf=false', 'cat-file', 'blob', $Spec)) {
+              [void]$start.ArgumentList.Add($arg)
+            }
+            $process = [System.Diagnostics.Process]::Start($start)
+            $memory = New-Object System.IO.MemoryStream
+            $process.StandardOutput.BaseStream.CopyTo($memory)
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0 -or $memory.Length -eq 0) { throw "Trusted provider blob read failed for $Spec" }
+            [System.IO.File]::WriteAllBytes($Destination, $memory.ToArray())
+          }
+          Install-TrustedProviderBlob 'HEAD:scripts/proof-python/provision.ps1' $bootstrap
+          Install-TrustedProviderBlob 'HEAD:scripts/proof-python/verify.ps1' $verify
           function Assert-TrustedProviderSource {
             if ((git -C $trusted rev-parse HEAD).Trim() -cne $expectedCommit -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O commit mismatch' }
             if ((git -C $trusted rev-parse 'HEAD^{tree}').Trim() -cne $expectedTree -or $LASTEXITCODE -ne 0) { throw 'Trusted provider O tree mismatch' }
@@ -1471,9 +1493,14 @@ jobs:
           GOFLAGS: ''
           GOCACHEPROG: ''
           GOAUTH: 'off'
+          # contents: read on this job. The pinned verifier only forwards absolute
+          # path variables, including TEMP, so the lookup token is a file there.
+          LOPPER_GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $proofArgs = @('test', '-count=1', '-json', '-p=1', '-timeout=20m', '-run', '^TestInstallScriptWindows', './internal/githubaction')
+          $releaseToken = Join-Path $env:TEMP 'lopper-release-lookup-token'
+          [System.IO.File]::WriteAllText($releaseToken, $env:LOPPER_GITHUB_TOKEN)
           $trusted = Join-Path $env:GITHUB_WORKSPACE '.trusted-provider-o'
           $expectedCommit = 'cb98176a60a71a64286e6dc23ea8dbb598196096'
           $expectedTree = 'b5762ca9c7fef765908e0843ff97d0577f587783'
@@ -1506,6 +1533,7 @@ jobs:
             & $env:TRUSTED_VERIFY -Verifier $env:TRUSTED_VERIFIER -VerifierSha256 $env:TRUSTED_VERIFIER_SHA256 -Bootstrap $env:TRUSTED_BOOTSTRAP -BootstrapSha256 $env:TRUSTED_BOOTSTRAP_SHA256 -Receipt $env:TRUSTED_RECEIPT -ReceiptSha256 $env:TRUSTED_RECEIPT_SHA256 -Go $env:TRUSTED_GO -GoSha256 $env:TRUSTED_GO_SHA256 -CanonicalRoot $env:TRUSTED_ROOT -PythonSha256 $env:TRUSTED_PYTHON_SHA256 -Python3Sha256 $env:TRUSTED_PYTHON3_SHA256 -Repository $env:GITHUB_WORKSPACE -ProofArguments $proofArgs
             $proofExit = $LASTEXITCODE
           } finally {
+            Remove-Item -LiteralPath $releaseToken -Force -ErrorAction SilentlyContinue
             # Independent host-side post-authentication after joined subject completion/failure.
             Assert-TrustedProviderInvocation
           }

@@ -2,75 +2,54 @@
 
 [![Release](https://github.com/ben-ranford/lopper/actions/workflows/release.yml/badge.svg)](https://github.com/ben-ranford/lopper/actions/workflows/release.yml)
 [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ben-ranford_lopper&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ben-ranford_lopper)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ben-ranford/lopper/badge)](https://scorecard.dev/viewer/?uri=github.com/ben-ranford/lopper)
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-0098ff?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=BenRanford.vscode-lopper)
 
-Lopper shows where a repository declares dependencies it barely uses.
+Lopper ranks declared dependencies whose imports it can see little or no use of.
 
-Point it at a repository to compare manifests with imports, rank the largest gaps, and produce a report for local investigation or CI. It runs locally and supports a CLI, terminal UI, GitHub Action, and MCP server.
+A low-usage score is evidence to inspect, not proof that removing a dependency is safe.
 
-## Highlights
+## Who it's for
 
-- Scan one language or every detected adapter in a repository
-- Rank dependencies by unused surface, with confidence and policy context
-- Export table, JSON, CSV, SARIF, and preview CycloneDX reports
-- Compare results with a saved baseline in CI
-- Inspect a result in the TUI or through an MCP client
-- Review results before removing dependencies; a low-usage score is evidence to inspect, not proof that removal is safe
+- Someone checking a checkout before deleting or upgrading a dependency.
+- A workflow that should write a report, compare a saved baseline, or upload SARIF.
+- The VS Code extension (`BenRanford.vscode-lopper`) and MCP clients, which call the same analysis.
 
-## Install
+Lopper runs locally. The same binary is the CLI, the [GitHub Action](action.yml), and the process inside the GHCR image.
+
+## Quickstart
+
+### CLI
 
 macOS and Linux with Homebrew:
 
 ```bash
 brew tap ben-ranford/tap
 brew install lopper
+lopper analyse --top 20 --repo . --language all
 ```
 
-For the rolling build, which tracks `main`:
+The rolling formula tracks `main`:
 
 ```bash
 brew install ben-ranford/tap/lopper-rolling
 ```
 
-On Windows, download the appropriate asset from the [latest GitHub release](https://github.com/ben-ranford/lopper/releases/latest).
+On Windows, download the asset for your architecture from the [latest release](https://github.com/ben-ranford/lopper/releases/latest).
 
-To run Lopper without installing it:
-
-```bash
-docker run --rm ghcr.io/ben-ranford/lopper:latest --help
-```
-
-## Start here
-
-Rank the 20 dependencies with the most unused surface:
-
-```bash
-lopper analyse --top 20 --repo . --language all
-```
-
-Inspect one dependency:
+Inspect one dependency, open the terminal UI, or write JSON:
 
 ```bash
 lopper analyse lodash --repo . --language js-ts
-```
-
-Place `--` before a dependency name or snapshot key that starts with a dash. Arguments after `--` stay positional; commands such as `features` and `mcp`, which accept no positional arguments, reject them.
-
-Open the terminal UI:
-
-```bash
 lopper tui --repo . --language all
-```
-
-Write a machine-readable report:
-
-```bash
 lopper analyse --top 20 --repo . --language all --format json > lopper.json
 ```
 
+Place `--` before a dependency name or snapshot key that starts with a dash. Arguments after `--` stay positional. Commands such as `features` and `mcp`, which accept no positional arguments, reject them.
+
 ![Lopper ranking dependencies in the terminal](docs/demos/assets/quickstart-top.gif)
 
-## Use it in GitHub Actions
+### GitHub Action
 
 ```yaml
 - uses: ben-ranford/lopper@v1
@@ -81,16 +60,53 @@ lopper analyse --top 20 --repo . --language all --format json > lopper.json
     top: "20"
 ```
 
-For reproducible CI, pin both the action and `version` to a concrete release. The [CI guide](docs/ci-usage.md) covers baselines, PR comments, threshold gates, and SARIF uploads.
+`version: action` follows the action ref when it can. For a reproducible job, pin the action ref and `version` to the same release tag, for example the tag on the [latest release](https://github.com/ben-ranford/lopper/releases/latest). The [CI guide](docs/ci-usage.md) covers baselines, pull-request comments, threshold gates, and SARIF uploads.
+
+### Docker
+
+Stable releases publish `ghcr.io/ben-ranford/lopper:latest` for `linux/amd64` and `linux/arm64`. The rolling workflow also tags `ghcr.io/ben-ranford/lopper:rolling`. The image entrypoint is the `lopper` binary and the process user is `lopper`, so a mounted tree has to be readable by that user.
+
+```bash
+docker run --rm ghcr.io/ben-ranford/lopper:latest --help
+docker run --rm -v "$PWD":/repo:ro -w /repo ghcr.io/ben-ranford/lopper:latest analyse --top 20 --repo . --language all
+```
 
 ## Supported languages
 
-`js-ts`, `python`, `cpp`, `jvm`, `kotlin-android`, `go`, `php`, `ruby`, `rust`, `dotnet`, `elixir`, `swift`, `dart`, and `powershell`.
+These adapter IDs are the `--language` values in `internal/cli/usage.go`. `--language auto` selects the highest-confidence adapter. `--language all` merges every matching adapter.
 
-Use `lopper --help` for the current adapter IDs and options. `--language auto` selects the highest-confidence adapter; `--language all` merges results from every matching adapter.
+| ID | What that adapter reads |
+| --- | --- |
+| `js-ts` | `package.json` (including npm `workspaces`), `pnpm-workspace.yaml`, Yarn catalogs in `.yarnrc.yml`, and `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts` sources |
+| `python` | `pyproject.toml`, `Pipfile`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `requirements.txt`, `setup.py`, and `.py` sources |
+| `cpp` | `CMakeLists.txt`, `Makefile`, `makefile`, `GNUmakefile`, `compile_commands.json`, `vcpkg.json`, `vcpkg-lock.json`, `conanfile.txt`, `conan.lock`, and C/C++ sources |
+| `jvm` | `pom.xml`, `build.gradle`, `build.gradle.kts`, Gradle `*.versions.toml` catalogs, and `.java`, `.kt`, `.kts` sources |
+| `kotlin-android` | `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`, `gradle.lockfile`, Gradle `*.versions.toml` catalogs, and `AndroidManifest.xml` |
+| `go` | `go.mod` and `go.work`. `vendor/modules.txt` is included when `go-vendored-provenance` is enabled, which it is by default |
+| `php` | `composer.json`, `composer.lock`, and PHP sources |
+| `ruby` | `Gemfile`, `Gemfile.lock`, `*.gemspec`, and `.rb` sources |
+| `rust` | `Cargo.toml`, including workspaces. `Cargo.lock` is a detection signal |
+| `dotnet` | `*.csproj`, `*.fsproj`, `Directory.Packages.props`, and `*.sln` |
+| `elixir` | `mix.exs`, `mix.lock`, and `.ex` / `.exs` sources |
+| `swift` | `Package.swift`, `Package.resolved`, `Podfile`, and `Podfile.lock`. `Cartfile` and `Cartfile.resolved` are included when `swift-carthage` is enabled, which it is by default |
+| `dart` | `pubspec.yaml`, `pubspec.yml`, `pubspec.lock`, and `.dart` sources |
+| `powershell` | `.psd1` module manifests (`RequiredModules`), `.psm1` modules, and `.ps1` scripts |
 
-## More documentation
+Lockfile drift is a separate check from usage ranking. `internal/app/lockfile_drift_ruleset.go` compares manifests with lockfiles for npm (`package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`), Bundler, Composer, Cargo, Go modules (`go.sum`), Pipenv, Poetry, and uv. The stable `lockfile-drift-ecosystem-expansion` flag, on by default, adds .NET `packages.lock.json`, Dart, Elixir, and SwiftPM.
 
+## Reports and interfaces
+
+- Output formats: `table`, `csv`, `json`, `sarif`, and `pr-comment`. `cyclonedx-json` requires `sbom-attestation-exports-preview`.
+- Compare a run with a baseline file or a saved snapshot, and fail when the waste increase crosses a threshold.
+- `lopper tui` opens the terminal UI. The Stave UI is `stave-tui-preview` and stays off unless that flag is enabled.
+- `lopper mcp` serves the local stdio MCP server. `mcp-server` is stable and on by default.
+- The GitHub Action accepts `dashboard` and `pr-review` modes. Both stay off unless `action-dashboard-mode-preview` or `dependency-surface-pr-review-preview` is enabled.
+
+Other flags, including ones that stay off in stable builds, are listed in [feature flags](docs/feature-flags.md).
+
+## Documentation
+
+- [Roadmap](ROADMAP.md)
 - [CI and GitHub Action](docs/ci-usage.md)
 - [Repository configuration and threshold tuning](docs/threshold-tuning.md)
 - [Feature flags and release channels](docs/feature-flags.md)
@@ -101,4 +117,6 @@ Use `lopper --help` for the current adapter IDs and options. `--language auto` s
 - [SARIF code scanning](docs/sarif-code-scanning.md)
 - [Report schema](docs/report-schema.md)
 - [Language adapter architecture](docs/extensibility.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 - [Contributing](CONTRIBUTING.md)
