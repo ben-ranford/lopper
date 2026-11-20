@@ -156,7 +156,7 @@ def exclusive_write(directory, name, data):
             while view:
                 wrote = os.write(fd, view)
                 if wrote <= 0:
-                    raise OSError("zero write")
+                    raise OSError(ZERO_WRITE)
                 view = view[wrote:]
             os.fsync(fd)
         finally:
@@ -177,7 +177,7 @@ def write_chunk(target, chunk, count):
         while offset < count:
             wrote = os.write(target, chunk[offset:count])
             if wrote <= 0:
-                raise OSError("zero write")
+                raise OSError(ZERO_WRITE)
             offset += wrote
     except OSError:
         return offset, True
@@ -674,33 +674,323 @@ def module_go_version(root):
     return b"go" + match.group(1)
 
 
+# Official go1.27.4 linux-amd64 release from https://go.dev/dl/go1.27.4.linux-amd64.tar.gz.
+# The tarball checksum is the value published by go.dev. The tree digest is SHA256 over
+# sorted "relative-path\0file-sha256\n" records for every regular file in that archive's
+# go/ directory. ubuntu-26.04 image builds run chmod -R 777 /opt, so the toolcache copy
+# is mode 0777; seal_toolcache_toolchain copies it privately and fails closed on mismatch.
+OFFICIAL_GO_VERSION = b"go1.27.4"
+OFFICIAL_GO_TARBALL_SHA256 = "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
+OFFICIAL_GO_TREE_SHA256 = "e03103468fede9c84b22d727ed374e563f27de5647a7f7a84cf299ab7b42595e"
+COMPILER_CUSTODY = "compiler executable custody"
+COMPILER_INTEGRITY = "compiler integrity mismatch"
+ZERO_WRITE = "zero write"
+MAX_TOOLCHAIN_FILES = 20000
+MAX_TOOLCHAIN_BYTES = 300000000
+FIXTURE_MODE = int("777", 8)
+
+
+def sealed_file_mode(relative):
+    if relative.startswith(("bin/", "pkg/tool/")):
+        return 0o750
+    return 0o640
+
+
+def ensure_private_dir(path, root):
+    path.mkdir(parents=True, exist_ok=True)
+    current = path
+    while True:
+        os.chmod(current, 0o750)
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o022:
+            raise ValueError(COMPILER_CUSTODY)
+        if current == root:
+            return
+        current = current.parent
+
+
+def reject_source_file(info):
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(COMPILER_CUSTODY)
+    if info.st_size > MAX_TOOLCHAIN_BYTES:
+        raise ValueError(COMPILER_INTEGRITY)
+
+
+def confirm_same_file(fd, info):
+    current = os.fstat(fd)
+    if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+        raise ValueError(COMPILER_CUSTODY)
+
+
+def write_view(out, chunk):
+    view = memoryview(chunk)
+    while view:
+        wrote = os.write(out, view)
+        if wrote <= 0:
+            raise OSError(ZERO_WRITE)
+        view = view[wrote:]
+
+
+def write_stream(src, dest):
+    out = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640)
+    try:
+        total = 0
+        while True:
+            chunk = os.read(src, 1024 * 1024)
+            if not chunk:
+                return total
+            total += len(chunk)
+            if total > MAX_TOOLCHAIN_BYTES:
+                raise ValueError(COMPILER_INTEGRITY)
+            write_view(out, chunk)
+    finally:
+        os.close(out)
+
+
+def confirm_mode(path, mode):
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or stat.S_IMODE(info.st_mode) != mode:
+        raise ValueError(COMPILER_CUSTODY)
+
+
+def copy_regular(source, dest, mode):
+    info = os.lstat(source)
+    reject_source_file(info)
+    src = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        confirm_same_file(src, info)
+        total = write_stream(src, dest)
+    finally:
+        os.close(src)
+    os.chmod(dest, mode)
+    confirm_mode(dest, mode)
+    return total
+
+
+def list_tree_files(root):
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = pathlib.Path(dirpath) / name
+            relative = path.relative_to(root).as_posix()
+            if not relative or relative.startswith("../") or "/../" in relative:
+                raise ValueError(COMPILER_CUSTODY)
+            files.append((relative, path))
+            if len(files) > MAX_TOOLCHAIN_FILES:
+                raise ValueError(COMPILER_INTEGRITY)
+    if not files:
+        raise ValueError(COMPILER_CUSTODY)
+    return files
+
+
+def toolchain_tree_digest(root):
+    """Content digest of a toolchain tree. Modes are not part of the digest."""
+    records = []
+    total = 0
+    for relative, path in list_tree_files(root):
+        file_hash, size = hash_regular(path)
+        total += size
+        if total > MAX_TOOLCHAIN_BYTES:
+            raise ValueError(COMPILER_INTEGRITY)
+        records.append(relative + "\0" + file_hash + "\n")
+    records.sort()
+    return hashlib.sha256("".join(records).encode()).hexdigest()
+
+
+def hash_regular(path):
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(COMPILER_CUSTODY)
+    src = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        current = os.fstat(src)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError(COMPILER_CUSTODY)
+        hasher = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(src, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_TOOLCHAIN_BYTES:
+                raise ValueError(COMPILER_INTEGRITY)
+            hasher.update(chunk)
+        return hasher.hexdigest(), total
+    finally:
+        os.close(src)
+
+
+def seal_toolcache_toolchain(source, destination, expected_tree):
+    """Copy source into a private tree with safe modes and require the official content digest.
+
+    The source may be mode 0777. This never chmods it and never executes it. A content
+    mismatch, symlink, or writable private file removes the private tree and fails closed.
+    """
+    if not isinstance(expected_tree, str) or re.fullmatch(r"[0-9a-f]{64}", expected_tree) is None:
+        raise ValueError(COMPILER_INTEGRITY)
+    source = pathlib.Path(source)
+    destination = pathlib.Path(destination)
+    if source.is_symlink() or not source.is_dir() or destination.exists():
+        raise ValueError(COMPILER_CUSTODY)
+    source_resolved = source.resolve(strict=True)
+    parent = destination.parent.resolve(strict=True)
+    if parent == source_resolved or parent.is_relative_to(source_resolved):
+        raise ValueError(COMPILER_CUSTODY)
+    try:
+        ensure_private_dir(destination, destination)
+        total = 0
+        for relative, path in list_tree_files(source):
+            dest = destination.joinpath(*relative.split("/"))
+            ensure_private_dir(dest.parent, destination)
+            total += copy_regular(path, dest, sealed_file_mode(relative))
+            if total > MAX_TOOLCHAIN_BYTES:
+                raise ValueError(COMPILER_INTEGRITY)
+        if toolchain_tree_digest(destination) != expected_tree:
+            raise ValueError(COMPILER_INTEGRITY)
+        private = destination / "bin" / "go"
+        info = private.lstat()
+        if private.is_symlink() or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o750:
+            raise ValueError(COMPILER_CUSTODY)
+        if not private.resolve(strict=True).is_relative_to(destination.resolve(strict=True)):
+            raise ValueError(COMPILER_CUSTODY)
+        return private
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+
+def assert_official_pins():
+    if OFFICIAL_GO_TARBALL_SHA256 != "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840":
+        raise AssertionError("official Go tarball pin drifted")
+    if OFFICIAL_GO_TREE_SHA256 != "e03103468fede9c84b22d727ed374e563f27de5647a7f7a84cf299ab7b42595e":
+        raise AssertionError("official Go tree pin drifted")
+
+
+def assert_private_modes(source, destination, private):
+    if private != destination / "bin" / "go" or private.read_bytes() != b"official-go":
+        raise AssertionError("private compiler is not the copied toolchain")
+    compiler = destination / "pkg" / "tool" / "linux_amd64" / "compile"
+    version = destination / "VERSION"
+    modes = (stat.S_IMODE(private.lstat().st_mode), stat.S_IMODE(compiler.lstat().st_mode), stat.S_IMODE(version.lstat().st_mode))
+    if modes != (0o750, 0o750, 0o640):
+        raise AssertionError("private toolchain modes are not safe")
+    if stat.S_IMODE((source / "bin" / "go").lstat().st_mode) != FIXTURE_MODE:
+        raise AssertionError("toolcache mode was changed in place")
+    if (source / "bin" / "go").read_bytes() != b"official-go":
+        raise AssertionError("toolcache bytes were rewritten")
+
+
+def assert_writable_toolcache_matches():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+        source = directory / "toolcache"
+        write_fixture_toolchain(source, b"official-go", FIXTURE_MODE)
+        destination = directory / "private"
+        private = seal_toolcache_toolchain(source, destination, toolchain_tree_digest(source))
+        assert_private_modes(source, destination, private)
+
+
+def assert_tampered_toolchain_rejected():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        directory = pathlib.Path(directory)
+        source = directory / "toolcache"
+        write_fixture_toolchain(source, b"official-go", FIXTURE_MODE)
+        expected = toolchain_tree_digest(source)
+        tampered = source / "bin" / "go"
+        tampered.write_bytes(b"tampered-go")
+        os.chmod(tampered, FIXTURE_MODE)
+        destination = directory / "rejected"
+        try:
+            seal_toolcache_toolchain(source, destination, expected)
+        except ValueError as error:
+            if str(error) != COMPILER_INTEGRITY:
+                raise AssertionError("tampered toolchain error was " + str(error)) from error
+        else:
+            raise AssertionError("tampered toolchain accepted")
+        if destination.exists():
+            raise AssertionError("tampered toolchain copy was kept")
+
+
+def assert_compiler_custody(mode):
+    assert_official_pins()
+    if mode == "admit":
+        assert_writable_toolcache_matches()
+        return
+    if mode == "tamper":
+        assert_tampered_toolchain_rejected()
+        return
+    raise AssertionError("unknown compiler custody mode")
+
+
+def write_fixture_toolchain(root, go_bytes, mode):
+    files = {
+        "bin/go": go_bytes,
+        "pkg/tool/linux_amd64/compile": b"official-compile",
+        "VERSION": b"go1.27.4\n",
+    }
+    for relative, content in files.items():
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    for dirpath, dirnames, filenames in os.walk(root):
+        os.chmod(dirpath, mode)
+        for name in dirnames + filenames:
+            os.chmod(pathlib.Path(dirpath) / name, mode)
+
+
+def toolcache_source(root):
+    located = shutil.which("go")
+    if not located:
+        raise ValueError(COMPILER_CUSTODY)
+    go_path = pathlib.Path(located)
+    if go_path.is_symlink() or not go_path.is_file():
+        raise ValueError(COMPILER_CUSTODY)
+    if not go_path.is_absolute():
+        go_path = pathlib.Path.cwd() / go_path
+    go_path = go_path.absolute()
+    if go_path.name != "go" or go_path.parent.name != "bin" or go_path.is_relative_to(root):
+        raise ValueError(COMPILER_CUSTODY)
+    source = go_path.parent.parent
+    if source.is_relative_to(root) or root.is_relative_to(source):
+        raise ValueError(COMPILER_CUSTODY)
+    return source
+
+
 def compile_normal(root, build, result):
-    go = file_identity(shutil.which("go"))
-    if pathlib.Path(go["realpath"]).is_relative_to(root) or go["mode"] & 0o022:
-        raise ValueError("compiler executable custody")
     if os.environ.get("GOFLAGS") or os.environ.get("GOEXPERIMENT"):
         raise ValueError("unreviewed compile flags")
-    # Verify the installed runtime with local toolchain selection before using
-    # the unchanged fixed version. No toolchain/module download fallback.
-    env = dict(os.environ, GOTOOLCHAIN="local", GOENV="off", GOPROXY="off", GOSUMDB="off")
-    result["go_executable"] = go
-    go_version = subprocess.check_output([go["realpath"], "version"], env=env)
-    result["go_version"] = go_version[:4096].decode(errors="replace")
     required = module_go_version(root)
+    if required != OFFICIAL_GO_VERSION:
+        raise ValueError("compiler version")
+    # Copy first. The image toolcache is writable, so its go binary is not executed.
+    source = toolcache_source(root)
+    destination = build / "goroot"
+    private = seal_toolcache_toolchain(source, destination, OFFICIAL_GO_TREE_SHA256)
+    env = dict(os.environ, GOTOOLCHAIN="local", GOENV="off", GOPROXY="off", GOSUMDB="off", GOROOT=str(destination))
+    result["go_executable"] = file_identity(private)
+    if result["go_executable"]["mode"] & 0o022:
+        raise ValueError(COMPILER_CUSTODY)
+    go_version = subprocess.check_output([str(private), "version"], env=env)
+    result["go_version"] = go_version[:4096].decode(errors="replace")
     if not go_version.startswith(b"go version " + required + b" "):
         raise ValueError("compiler version")
-    env["GOTOOLCHAIN"] = required.decode()
-    goroot = subprocess.check_output([go["realpath"], "env", "GOROOT"], env=env).decode().strip()
-    result["go_executable"] = go
-    result["compiler"] = file_identity(pathlib.Path(goroot) / "pkg/tool/linux_amd64/compile")
+    compiler = destination / "pkg" / "tool" / "linux_amd64" / "compile"
+    result["compiler"] = file_identity(compiler)
+    if result["compiler"]["mode"] & 0o022:
+        raise ValueError(COMPILER_CUSTODY)
     result["go_version"] = go_version.decode()
+    result["go_toolchain"] = {"tarball_sha256": OFFICIAL_GO_TARBALL_SHA256, "tree_sha256": OFFICIAL_GO_TREE_SHA256}
     binary = build / "hook.test"
-    compile_status = subprocess.call([go["realpath"], "test", "-c", "-ldflags", "-X github.com/ben-ranford/lopper/internal/version.buildChannel=dev", "-o", str(binary), "./scripts"], cwd=root, env=env)
+    compile_status = subprocess.call([str(private), "test", "-c", "-ldflags", "-X github.com/ben-ranford/lopper/internal/version.buildChannel=dev", "-o", str(binary), "./scripts"], cwd=root, env=env)
     result["compile_status"] = compile_status
     if compile_status:
         raise ValueError("normal compile failed")
     result["binary"] = file_identity(binary)
-    buildinfo = subprocess.check_output([go["realpath"], "version", "-m", str(binary)], env=env)
+    buildinfo = subprocess.check_output([str(private), "version", "-m", str(binary)], env=env)
     if len(buildinfo) > 8192:
         raise ValueError("buildinfo bound")
     result["buildinfo"] = buildinfo.decode()
@@ -832,6 +1122,8 @@ def selftest():
         facts = raw_facts(directory, "exit23", 64)
         assert facts["raw_wait4_facts"] == [{"returned_pid_numeric": 298351, "wait_status_pointer_contents": "OPAQUE"}]
     assert len(SLOTS) == 23 and sum(SLOTS.values()) == MAX_RETAINED
+    assert_compiler_custody("admit")
+    assert_compiler_custody("tamper")
     assert observe("/nonexistent-native-trace-selftest", "exit0", 23)["tracer_wait_result"] == {"kind": "EXIT", "value": 23}
     assert observe("/nonexistent-native-trace-selftest", "signal", -15)["sink_wait_status"] == "UNOBSERVABLE"
     prior_pin = os.environ.get("TRACE_DRIVER_SHA256")
