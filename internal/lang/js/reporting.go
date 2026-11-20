@@ -439,6 +439,8 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 	}
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
+	seenWarnings := make(map[string]struct{}, len(warnings))
+	warnings = appendUniqueDependencyWarnings(nil, seenWarnings, warnings)
 	for _, dep := range dependencies {
 		depReport, depWarnings := buildDependencyReport(dependencyReportOptions{
 			RepoPath:                          repoPath,
@@ -451,7 +453,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 			IncludeRegistryProvenance:         includeRegistryProvenance,
 		})
 		reports = append(reports, depReport)
-		warnings = append(warnings, depWarnings...)
+		warnings = appendUniqueDependencyWarnings(warnings, seenWarnings, depWarnings)
 	}
 
 	if scanResult.UsageIncomplete || slices.ContainsFunc(reports, func(dependency report.DependencyReport) bool {
@@ -475,4 +477,30 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
 	return shared.ResolveMinUsageRecommendationThreshold(value)
+}
+
+const (
+	maxAggregatedDependencyWarnings = 32
+	aggregatedWarningCapNotice      = "additional dependency warnings omitted after the report cap"
+)
+
+func appendUniqueDependencyWarnings(dst []string, seen map[string]struct{}, extra []string) []string {
+	for _, warning := range extra {
+		if warning == "" {
+			continue
+		}
+		if _, exists := seen[warning]; exists {
+			continue
+		}
+		if len(dst) >= maxAggregatedDependencyWarnings {
+			if _, capped := seen[aggregatedWarningCapNotice]; !capped {
+				seen[aggregatedWarningCapNotice] = struct{}{}
+				dst = append(dst, aggregatedWarningCapNotice)
+			}
+			return dst
+		}
+		seen[warning] = struct{}{}
+		dst = append(dst, warning)
+	}
+	return dst
 }
