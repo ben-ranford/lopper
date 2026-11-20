@@ -2,6 +2,19 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.11](https://github.com/ben-ranford/lopper/compare/v1.8.10...v1.8.11) (2026-11-20)
+
+
+### Bug Fixes
+
+* **ci:** remove redundant URLError handling and duplicate fixture literals ([#1931](https://github.com/ben-ranford/lopper/issues/1931)) ([223c7fd](https://github.com/ben-ranford/lopper/commit/223c7fdfd2806825c06e30864996f044197fe7ba))
+* **ci:** verify the official Go archive when the toolcache tree differs ([#1928](https://github.com/ben-ranford/lopper/issues/1928)) ([1c392df](https://github.com/ben-ranford/lopper/commit/1c392df290e92d6e8f04caa0d3819c76e80c9f24))
+
+
+### Code Refactoring
+
+* group same-type parameters and merge a nested shell if ([#1929](https://github.com/ben-ranford/lopper/issues/1929)) ([04d1aa3](https://github.com/ben-ranford/lopper/commit/04d1aa3359323efdf1147adc2753264d6c505d71))
+
 ## [1.8.10](https://github.com/ben-ranford/lopper/compare/v1.8.9...v1.8.10) (2026-11-20)
 
 * Source builds require Go `1.27.4` or newer (previously `1.27.1`).
