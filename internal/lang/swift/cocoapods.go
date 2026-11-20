@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -12,20 +11,21 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	manifestPath := filepath.Join(repoPath, podManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := readCatalogFile(repoPath, podManifestName, maxPodManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", podManifestName, err)
+		return false, nil, err
 	}
 
 	declarations := parsePodDeclarations(content)
+	if len(declarations) > maxPodDeclarations {
+		return false, nil, fmt.Errorf("read %s: %w", podManifestName, errPodDeclarationLimit)
+	}
 	warnings := make([]string, 0, 2)
 	ambiguousModules := make(map[string]struct{})
 	for _, declaration := range declarations {
@@ -46,17 +46,19 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 }
 
 func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	lockPath := filepath.Join(repoPath, podLockName)
-	content, err := safeio.ReadFileUnder(repoPath, lockPath)
+	content, err := readCatalogFile(repoPath, podLockName, maxPodLockBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", podLockName, err)
+		return false, nil, err
 	}
 
 	entries, err := parsePodLockEntries(content)
 	if err != nil {
+		if errors.Is(err, errPodLockEntryLimit) {
+			return false, nil, fmt.Errorf("read %s: %w", podLockName, err)
+		}
 		return false, nil, fmt.Errorf("parse %s: %w", podLockName, err)
 	}
 
@@ -106,6 +108,9 @@ func parsePodLockEntries(content []byte) ([]podLockEntry, error) {
 	doc := podLockDocument{}
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, err
+	}
+	if len(doc.Pods) > maxPodLockEntries || len(doc.Dependencies) > maxPodLockEntries || len(doc.ExternalSources) > maxPodLockEntries || len(doc.CheckoutOptions) > maxPodLockEntries {
+		return nil, errPodLockEntryLimit
 	}
 
 	entries := make([]podLockEntry, 0, len(doc.Pods))

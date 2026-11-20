@@ -7,12 +7,9 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
-
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error) {
@@ -148,13 +145,12 @@ func managerMissingWarnings(state packageManagerCatalogState, manifestWarning st
 }
 
 func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	manifestPath := filepath.Join(repoPath, packageManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := readCatalogFile(repoPath, packageManifestName, maxSwiftPackageManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", packageManifestName, err)
+		return false, nil, err
 	}
 
 	warnings := make([]string, 0)
@@ -200,17 +196,19 @@ func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 }
 
 func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-	resolvedPath := filepath.Join(repoPath, packageResolvedName)
-	content, err := safeio.ReadFileUnder(repoPath, resolvedPath)
+	content, err := readCatalogFile(repoPath, packageResolvedName, maxSwiftPackageResolvedBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
 		}
-		return false, nil, fmt.Errorf("read %s: %w", packageResolvedName, err)
+		return false, nil, err
 	}
 
 	pins, err := parseResolvedPins(content)
 	if err != nil {
+		if errors.Is(err, errResolvedPinLimit) {
+			return false, nil, fmt.Errorf("read %s: %w", packageResolvedName, err)
+		}
 		return false, nil, fmt.Errorf("parse %s: %w", packageResolvedName, err)
 	}
 	warnings := make([]string, 0)
@@ -272,6 +270,9 @@ func parseResolvedPins(content []byte) ([]resolvedPin, error) {
 	doc := resolvedDocument{}
 	if err := json.Unmarshal(content, &doc); err != nil {
 		return nil, err
+	}
+	if len(doc.Pins) > maxResolvedPins || len(doc.Object.Pins) > maxResolvedPins || len(doc.Pins)+len(doc.Object.Pins) > maxResolvedPins {
+		return nil, errResolvedPinLimit
 	}
 	pins := make([]resolvedPin, 0, len(doc.Pins)+len(doc.Object.Pins))
 	pins = append(pins, doc.Pins...)
