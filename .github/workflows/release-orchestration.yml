@@ -414,6 +414,8 @@ jobs:
       arm64_digest: ${{ steps.publish_arm64.outputs.digest }}
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
+      id-token: write
       packages: write
     steps:
       - name: Download amd64 OCI publication payload
@@ -727,6 +729,191 @@ jobs:
           provenance: false
           sbom: true
 
+      - name: Resolve GHCR image name
+        id: ghcr_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          printf 'name=ghcr.io/%s/lopper\n' "${owner}" >> "$GITHUB_OUTPUT"
+
+      - name: Write release provenance predicate
+        env:
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          RELEASE_SOURCE_REF: refs/tags/${{ inputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          source_sha="${RELEASE_SOURCE_SHA:?}"
+          output_path="${RUNNER_TEMP:?}/lopper-release-provenance.json"
+          source_ref="${RELEASE_SOURCE_REF:?}"
+          if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release source SHA must be a lowercase full 40-character commit SHA." >&2
+            exit 1
+          fi
+          case "${source_ref}" in
+            refs/tags/*|refs/heads/*) ;;
+            *)
+              echo "Release source ref must name a refs/tags or refs/heads ref." >&2
+              exit 1
+              ;;
+          esac
+          case "${source_ref}" in
+            *..*|*"@"*|*"//"*|*" "*|*"\\"*|*/)
+              echo "Release source ref is invalid." >&2
+              exit 1
+              ;;
+          esac
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "GitHub OIDC token request is unavailable." >&2
+            exit 1
+          fi
+          oidc_token="$(curl -fsSL --retry 3 --retry-delay 2 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=lopper-release-provenance")"
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          predicate="$(
+            OIDC_TOKEN="${oidc_token}" \
+              RELEASE_SOURCE_SHA="${source_sha}" \
+              RELEASE_SOURCE_REF="${source_ref}" \
+              GITHUB_SHA="${GITHUB_SHA}" \
+              GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+              GITHUB_REF="${GITHUB_REF}" \
+              GITHUB_SERVER_URL="${GITHUB_SERVER_URL}" \
+              python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import sys
+
+          def fail(message):
+              sys.stderr.write(message + "\n")
+              sys.exit(1)
+
+          token = os.environ.pop("OIDC_TOKEN", "")
+          source_sha = os.environ["RELEASE_SOURCE_SHA"]
+          source_ref = os.environ["RELEASE_SOURCE_REF"]
+          github_sha = os.environ["GITHUB_SHA"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          ref = os.environ["GITHUB_REF"]
+          server = os.environ["GITHUB_SERVER_URL"].rstrip("/")
+          sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+          if sha_pattern.fullmatch(source_sha) is None or sha_pattern.fullmatch(github_sha) is None:
+              fail("Release provenance SHAs must be lowercase full commit SHAs.")
+          parts = token.split(".")
+          if len(parts) != 3 or parts[1] == "":
+              fail("OIDC token payload is invalid.")
+          try:
+              payload = parts[1]
+              payload += "=" * ((4 - len(payload) % 4) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(payload))
+          except Exception:
+              fail("OIDC token payload is invalid.")
+          if not isinstance(claims, dict):
+              fail("OIDC token payload is invalid.")
+
+          def claim_string(key):
+              if key not in claims:
+                  fail("OIDC token is missing claim " + key)
+              value = claims[key]
+              if isinstance(value, bool) or value is None:
+                  fail("OIDC token claim " + key + " is invalid.")
+              if isinstance(value, int):
+                  return str(value)
+              if isinstance(value, str) and value != "":
+                  return value
+              fail("OIDC token claim " + key + " is invalid.")
+
+          workflow_sha = claim_string("sha")
+          workflow_ref = claim_string("ref")
+          workflow_repository = claim_string("repository")
+          if workflow_sha != github_sha or workflow_repository != repository or workflow_ref != ref:
+              fail("OIDC token does not match the GitHub workflow context.")
+          if not sha_pattern.fullmatch(workflow_sha):
+              fail("OIDC workflow SHA is invalid.")
+          workflow_path_ref = claim_string("workflow_ref")
+          job_workflow_ref = claim_string("job_workflow_ref")
+          prefix = repository + "/"
+          if not workflow_path_ref.startswith(prefix) or not job_workflow_ref.startswith(prefix):
+              fail("OIDC workflow ref is outside the repository.")
+          workflow_path = workflow_path_ref[len(prefix):].split("@", 1)[0]
+          if workflow_path == "" or workflow_path.startswith("/") or ".." in workflow_path.split("/"):
+              fail("OIDC workflow path is invalid.")
+          if re.fullmatch(r"refs/(tags|heads)/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}", source_ref) is None or ".." in source_ref or "@" in source_ref or "//" in source_ref or source_ref.endswith("/"):
+              fail("Release source ref is invalid.")
+          if source_ref == workflow_ref and source_sha != workflow_sha:
+              fail("Release source ref does not match the workflow commit.")
+
+          def dependency(uri_ref, digest):
+              return {
+                  "uri": "git+" + server + "/" + repository + "@" + uri_ref,
+                  "digest": {"gitCommit": digest},
+              }
+
+          dependencies = []
+          seen = set()
+          for item in (dependency(workflow_ref, workflow_sha), dependency(source_ref, source_sha)):
+              key = (item["uri"], item["digest"]["gitCommit"])
+              if key in seen:
+                  continue
+              seen.add(key)
+              dependencies.append(item)
+          predicate = {
+              "buildDefinition": {
+                  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                  "externalParameters": {
+                      "workflow": {
+                          "ref": workflow_ref,
+                          "repository": server + "/" + repository,
+                          "path": workflow_path,
+                      }
+                  },
+                  "internalParameters": {
+                      "github": {
+                          "event_name": claim_string("event_name"),
+                          "repository_id": claim_string("repository_id"),
+                          "repository_owner_id": claim_string("repository_owner_id"),
+                          "runner_environment": claim_string("runner_environment"),
+                      }
+                  },
+                  "resolvedDependencies": dependencies,
+              },
+              "runDetails": {
+                  "builder": {"id": server + "/" + job_workflow_ref},
+                  "metadata": {
+                      "invocationId": server + "/" + repository + "/actions/runs/" + claim_string("run_id") + "/attempts/" + claim_string("run_attempt"),
+                  },
+              },
+          }
+          json.dump(predicate, sys.stdout, separators=(",", ":"), sort_keys=True)
+          sys.stdout.write("\n")
+          PY
+          )"
+          unset oidc_token
+          umask 077
+          printf '%s' "${predicate}" > "${output_path}"
+          if [[ ! -s "${output_path}" ]] || ! grep -F -q "${source_sha}" "${output_path}" || ! grep -F -q "${source_ref}" "${output_path}" || ! grep -F -q "${GITHUB_SHA}" "${output_path}"; then
+            echo "Release provenance predicate does not record the workflow commit and the selected release ref." >&2
+            rm -f "${output_path}"
+            exit 1
+          fi
+      - name: Attest amd64 release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/lopper-release-provenance.json
+          subject-name: ${{ steps.ghcr_image.outputs.name }}
+          subject-digest: ${{ steps.publish_amd64.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest arm64 release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/lopper-release-provenance.json
+          subject-name: ${{ steps.ghcr_image.outputs.name }}
+          subject-digest: ${{ steps.publish_arm64.outputs.digest }}
+          push-to-registry: true
+
   prepare-ghcr-manifest:
     runs-on: ubuntu-latest
     permissions:
@@ -812,6 +999,8 @@ jobs:
       - prepare-ghcr-manifest
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
+      id-token: write
       packages: write
     steps:
       - name: Download manifest publication payload
@@ -1018,3 +1207,203 @@ jobs:
               "${expected_image_name}@${arm64_digest}"
             docker buildx imagetools inspect "${image_ref}"
           done < "${IMAGE_TAGS_FILE}"
+
+      - name: Resolve published manifest digest
+        id: manifest_digest
+        shell: bash
+        env:
+          IMAGE_TAGS_FILE: ${{ runner.temp }}/ghcr-manifest-publication/image-tags.txt
+        run: |
+          set -euo pipefail
+          mapfile -t image_refs < "${IMAGE_TAGS_FILE}"
+          if [ "${#image_refs[@]}" -lt 1 ]; then
+            echo "::error::Manifest publication did not record an image reference." >&2
+            exit 1
+          fi
+          digest=""
+          for image_ref in "${image_refs[@]}"; do
+            ref_digest="$(docker buildx imagetools inspect --format '{{printf "%s" .Manifest.Digest}}' "${image_ref}")"
+            if [[ ! "${ref_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Published manifest digest is invalid." >&2
+              exit 1
+            fi
+            if [ -z "${digest}" ]; then
+              digest="${ref_digest}"
+            elif [ "${ref_digest}" != "${digest}" ]; then
+              echo "::error::Published manifest tags do not share one digest." >&2
+              exit 1
+            fi
+          done
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          {
+            printf 'digest=%s\n' "${digest}"
+            printf 'name=ghcr.io/%s/lopper\n' "${owner}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write release provenance predicate
+        env:
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          RELEASE_SOURCE_REF: refs/tags/${{ inputs.tag }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          source_sha="${RELEASE_SOURCE_SHA:?}"
+          output_path="${RUNNER_TEMP:?}/lopper-release-provenance.json"
+          source_ref="${RELEASE_SOURCE_REF:?}"
+          if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release source SHA must be a lowercase full 40-character commit SHA." >&2
+            exit 1
+          fi
+          case "${source_ref}" in
+            refs/tags/*|refs/heads/*) ;;
+            *)
+              echo "Release source ref must name a refs/tags or refs/heads ref." >&2
+              exit 1
+              ;;
+          esac
+          case "${source_ref}" in
+            *..*|*"@"*|*"//"*|*" "*|*"\\"*|*/)
+              echo "Release source ref is invalid." >&2
+              exit 1
+              ;;
+          esac
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "GitHub OIDC token request is unavailable." >&2
+            exit 1
+          fi
+          oidc_token="$(curl -fsSL --retry 3 --retry-delay 2 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=lopper-release-provenance")"
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          predicate="$(
+            OIDC_TOKEN="${oidc_token}" \
+              RELEASE_SOURCE_SHA="${source_sha}" \
+              RELEASE_SOURCE_REF="${source_ref}" \
+              GITHUB_SHA="${GITHUB_SHA}" \
+              GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+              GITHUB_REF="${GITHUB_REF}" \
+              GITHUB_SERVER_URL="${GITHUB_SERVER_URL}" \
+              python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import sys
+
+          def fail(message):
+              sys.stderr.write(message + "\n")
+              sys.exit(1)
+
+          token = os.environ.pop("OIDC_TOKEN", "")
+          source_sha = os.environ["RELEASE_SOURCE_SHA"]
+          source_ref = os.environ["RELEASE_SOURCE_REF"]
+          github_sha = os.environ["GITHUB_SHA"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          ref = os.environ["GITHUB_REF"]
+          server = os.environ["GITHUB_SERVER_URL"].rstrip("/")
+          sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+          if sha_pattern.fullmatch(source_sha) is None or sha_pattern.fullmatch(github_sha) is None:
+              fail("Release provenance SHAs must be lowercase full commit SHAs.")
+          parts = token.split(".")
+          if len(parts) != 3 or parts[1] == "":
+              fail("OIDC token payload is invalid.")
+          try:
+              payload = parts[1]
+              payload += "=" * ((4 - len(payload) % 4) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(payload))
+          except Exception:
+              fail("OIDC token payload is invalid.")
+          if not isinstance(claims, dict):
+              fail("OIDC token payload is invalid.")
+
+          def claim_string(key):
+              if key not in claims:
+                  fail("OIDC token is missing claim " + key)
+              value = claims[key]
+              if isinstance(value, bool) or value is None:
+                  fail("OIDC token claim " + key + " is invalid.")
+              if isinstance(value, int):
+                  return str(value)
+              if isinstance(value, str) and value != "":
+                  return value
+              fail("OIDC token claim " + key + " is invalid.")
+
+          workflow_sha = claim_string("sha")
+          workflow_ref = claim_string("ref")
+          workflow_repository = claim_string("repository")
+          if workflow_sha != github_sha or workflow_repository != repository or workflow_ref != ref:
+              fail("OIDC token does not match the GitHub workflow context.")
+          if not sha_pattern.fullmatch(workflow_sha):
+              fail("OIDC workflow SHA is invalid.")
+          workflow_path_ref = claim_string("workflow_ref")
+          job_workflow_ref = claim_string("job_workflow_ref")
+          prefix = repository + "/"
+          if not workflow_path_ref.startswith(prefix) or not job_workflow_ref.startswith(prefix):
+              fail("OIDC workflow ref is outside the repository.")
+          workflow_path = workflow_path_ref[len(prefix):].split("@", 1)[0]
+          if workflow_path == "" or workflow_path.startswith("/") or ".." in workflow_path.split("/"):
+              fail("OIDC workflow path is invalid.")
+          if re.fullmatch(r"refs/(tags|heads)/[A-Za-z0-9][A-Za-z0-9._/-]{0,200}", source_ref) is None or ".." in source_ref or "@" in source_ref or "//" in source_ref or source_ref.endswith("/"):
+              fail("Release source ref is invalid.")
+          if source_ref == workflow_ref and source_sha != workflow_sha:
+              fail("Release source ref does not match the workflow commit.")
+
+          def dependency(uri_ref, digest):
+              return {
+                  "uri": "git+" + server + "/" + repository + "@" + uri_ref,
+                  "digest": {"gitCommit": digest},
+              }
+
+          dependencies = []
+          seen = set()
+          for item in (dependency(workflow_ref, workflow_sha), dependency(source_ref, source_sha)):
+              key = (item["uri"], item["digest"]["gitCommit"])
+              if key in seen:
+                  continue
+              seen.add(key)
+              dependencies.append(item)
+          predicate = {
+              "buildDefinition": {
+                  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                  "externalParameters": {
+                      "workflow": {
+                          "ref": workflow_ref,
+                          "repository": server + "/" + repository,
+                          "path": workflow_path,
+                      }
+                  },
+                  "internalParameters": {
+                      "github": {
+                          "event_name": claim_string("event_name"),
+                          "repository_id": claim_string("repository_id"),
+                          "repository_owner_id": claim_string("repository_owner_id"),
+                          "runner_environment": claim_string("runner_environment"),
+                      }
+                  },
+                  "resolvedDependencies": dependencies,
+              },
+              "runDetails": {
+                  "builder": {"id": server + "/" + job_workflow_ref},
+                  "metadata": {
+                      "invocationId": server + "/" + repository + "/actions/runs/" + claim_string("run_id") + "/attempts/" + claim_string("run_attempt"),
+                  },
+              },
+          }
+          json.dump(predicate, sys.stdout, separators=(",", ":"), sort_keys=True)
+          sys.stdout.write("\n")
+          PY
+          )"
+          unset oidc_token
+          umask 077
+          printf '%s' "${predicate}" > "${output_path}"
+          if [[ ! -s "${output_path}" ]] || ! grep -F -q "${source_sha}" "${output_path}" || ! grep -F -q "${source_ref}" "${output_path}" || ! grep -F -q "${GITHUB_SHA}" "${output_path}"; then
+            echo "Release provenance predicate does not record the workflow commit and the selected release ref." >&2
+            rm -f "${output_path}"
+            exit 1
+          fi
+      - name: Attest multi-arch release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/lopper-release-provenance.json
+          subject-name: ${{ steps.manifest_digest.outputs.name }}
+          subject-digest: ${{ steps.manifest_digest.outputs.digest }}
+          push-to-registry: true

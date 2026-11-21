@@ -304,7 +304,16 @@ func TestDockerPublicationPermissions(t *testing.T) {
 	if len(workflow.Permissions) != 1 || workflow.Permissions["contents"] != "read" {
 		t.Fatal("Docker workflow must default to read-only contents")
 	}
-	assertWorkflowJobPermissions(t, workflowJobByName(t, workflow.Jobs, "build-and-push"), "Docker publisher", map[string]string{"contents": "read", "packages": "write"})
+	assertWorkflowJobPermissions(t, workflowJobByName(t, workflow.Jobs, "build-and-push"), "Docker publisher", map[string]string{
+		"attestations": "write",
+		"contents":     "read",
+		"id-token":     "write",
+		"packages":     "write",
+	})
+	attestImage := workflowStepByName(t, workflow.Jobs, "build-and-push", "Attest GHCR image")
+	if attestImage.Uses != "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8" || attestImage.With["push-to-registry"] != "true" || attestImage.With["subject-digest"] != "${{ steps.push.outputs.digest }}" || attestImage.With["predicate-type"] != "https://slsa.dev/provenance/v1" || attestImage.With["predicate-path"] != "${{ runner.temp }}/lopper-release-provenance.json" {
+		t.Fatalf("docker GHCR attestation = %#v", attestImage)
+	}
 	assertWorkflowJobPermissions(t, workflowJobByName(t, workflow.Jobs, "verify-publication-source"), "Docker source gate", map[string]string{"contents": "read"})
 }
 

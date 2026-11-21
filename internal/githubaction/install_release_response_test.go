@@ -95,7 +95,11 @@ func TestInstallScriptLargeResponseInstallsAndCleans(t *testing.T) {
 	installDir := filepath.Join(fixture.dir, "installed binary")
 	assertReleaseFileContains(t, fixture.pathFile, installDir+"\n")
 	assertReleaseFileContains(t, fixture.output, "binary-path="+filepath.Join(installDir, actionBinaryName(runtime.GOOS))+"\n")
+	assertReleaseFileContains(t, fixture.calls, "checksum\n")
 	assertReleaseFileContains(t, fixture.calls, "asset\n")
+	if strings.Contains(output, "without checksum verification") {
+		t.Fatalf("verified install warned that the checksum was absent: %s", output)
+	}
 	assertReleaseRunnerClean(t, fixture.runner)
 }
 
@@ -106,9 +110,146 @@ func TestInstallScriptDownloadFailureCleans(t *testing.T) {
 	if err == nil {
 		t.Fatalf("download failure unexpectedly installed: %s", output)
 	}
+	assertReleaseFileContains(t, fixture.calls, "checksum\n")
 	assertReleaseFileContains(t, fixture.calls, "asset\n")
 	assertReleaseRunnerClean(t, fixture.runner)
 	assertReleaseFileAbsent(t, fixture.pathFile)
+}
+
+func TestInstallScriptRejectsUnverifiedChecksums(t *testing.T) {
+	for _, tc := range []struct{ name, mode, status, want string }{
+		{"mismatch", "mismatch", "", "does not match SHA256SUMS"},
+		{"missing entry", "missing", "", "exactly one entry"},
+		{"malformed", "malformed", "", "invalid line"},
+		{"oversize", "oversize", "", "exceeds 64 KiB"},
+		{"checksum transport", "ok", "22", "could not be downloaded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newReleaseResponseFixture(t, []byte(`[{"tag_name":"v1.8.12"}]`))
+			writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
+			fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_MODE="+tc.mode, "FIXTURE_CHECKSUM_STATUS="+tc.status)
+			output, err := fixture.run(t, "v1.8", "", false, "")
+			if err == nil || (tc.want != "" && !strings.Contains(output, tc.want)) {
+				t.Fatalf("expected checksum failure %q, got %v\n%s", tc.want, err, output)
+			}
+			assertReleaseFileContains(t, fixture.calls, "checksum\n")
+			if tc.name == "checksum transport" {
+				content, readErr := os.ReadFile(fixture.calls)
+				if readErr != nil || strings.Contains(string(content), "asset\n") {
+					t.Fatalf("checksum transport failure downloaded the archive: %v\n%s", readErr, content)
+				}
+			}
+			assertReleaseRunnerClean(t, fixture.runner)
+			assertReleaseFileAbsent(t, fixture.pathFile)
+		})
+	}
+}
+
+func TestInstallScriptChecksumPolicy(t *testing.T) {
+	for _, platform := range []struct{ os, arch string }{
+		{"linux", "amd64"},
+		{"darwin", "arm64"},
+		{"windows", runtime.GOARCH},
+	} {
+		t.Run(platform.os, func(t *testing.T) {
+			t.Run("published checksum matches", func(t *testing.T) {
+				output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "200", "")
+				if strings.Contains(output, "without checksum verification") {
+					t.Fatalf("matching checksum warned: %s", output)
+				}
+			})
+			t.Run("published checksum mismatches", func(t *testing.T) {
+				output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "mismatch", "200", "")
+				if err == nil || !strings.Contains(output, "does not match SHA256SUMS") {
+					t.Fatalf("expected checksum mismatch, got %v\n%s", err, output)
+				}
+			})
+			t.Run("published checksum omits archive", func(t *testing.T) {
+				output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "missing", "200", "")
+				if err == nil || !strings.Contains(output, "exactly one entry") {
+					t.Fatalf("expected missing checksum entry, got %v\n%s", err, output)
+				}
+			})
+			t.Run("no published checksum warns and installs", func(t *testing.T) {
+				output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "404", "")
+				for _, want := range []string{"does not publish SHA256SUMS", "without checksum verification", "Installed lopper fixture"} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("missing %q in %s", want, output)
+					}
+				}
+			})
+			t.Run("strict mode rejects a missing checksum", func(t *testing.T) {
+				fixture := checksumPolicyFixture(t, platform.os, platform.arch)
+				writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
+				fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_HTTP=404", "LOPPER_CHECKSUM_STRICT=true")
+				output, err := fixture.run(t, "v1.8.12", "", false, "")
+				if err == nil || !strings.Contains(output, "does not publish SHA256SUMS") || !strings.Contains(output, "Refusing to install") {
+					t.Fatalf("strict mode accepted a missing checksum: %v\n%s", err, output)
+				}
+				if strings.Contains(output, "without checksum verification") {
+					t.Fatalf("strict mode warned instead of refusing: %s", output)
+				}
+				content, readErr := os.ReadFile(fixture.calls)
+				if readErr != nil || strings.Contains(string(content), "asset\n") {
+					t.Fatalf("strict mode downloaded the archive: %v\n%s", readErr, content)
+				}
+				assertReleaseFileAbsent(t, fixture.pathFile)
+			})
+		})
+	}
+}
+
+func installWithChecksumPolicy(t *testing.T, goos, arch, mode, httpCode, strict string) string {
+	t.Helper()
+	output, err := installWithChecksumPolicyResult(t, goos, arch, mode, httpCode, strict)
+	if err != nil {
+		t.Fatalf("install %s/%s mode %q http %s: %v\n%s", goos, arch, mode, httpCode, err, output)
+	}
+	return output
+}
+
+func installWithChecksumPolicyResult(t *testing.T, goos, arch, mode, httpCode, strict string) (string, error) {
+	t.Helper()
+	fixture := checksumPolicyFixture(t, goos, arch)
+	archivePath := filepath.Join(fixture.dir, "archive")
+	if goos == "windows" && mode == "" && (httpCode == "200" || httpCode == "404") {
+		writeWindowsActionArchive(t, archivePath, nativeActionFixture(t), "lopper.exe")
+	} else {
+		writeReleaseArchive(t, archivePath)
+	}
+	if mode != "" {
+		fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_MODE="+mode)
+	}
+	if httpCode != "" {
+		fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_HTTP="+httpCode)
+	}
+	if strict != "" {
+		fixture.env = append(fixture.env, "LOPPER_CHECKSUM_STRICT="+strict)
+	}
+	return fixture.run(t, "v1.8.12", "", false, "")
+}
+
+func checksumPolicyFixture(t *testing.T, goos, arch string) releaseResponseFixture {
+	t.Helper()
+	fixture := newReleaseResponseFixture(t, []byte(`[{"tag_name":"v1.8.12"}]`))
+	extension := "tar.gz"
+	actionOS := goos
+	if goos == "windows" {
+		extension = "zip"
+		actionOS = "Windows_NT"
+		unzip := strings.TrimSpace(runCommand(t, exec.Command("bash", "-c", "command -v unzip")))
+		writeExecutable(t, filepath.Join(fixture.dir, "bin", "unzip"), "#!/usr/bin/env bash\nset -euo pipefail\n\"$FIXTURE_UNZIP\" \"$@\"\n")
+		writeExecutable(t, filepath.Join(fixture.dir, "bin", "cygpath"), "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\"\n")
+		fixture.env = append(fixture.env, "FIXTURE_UNZIP="+unzip)
+	}
+	fixture.env = append(fixture.env,
+		"LOPPER_ACTION_OS="+actionOS,
+		"LOPPER_ACTION_ARCH="+arch,
+		"FIXTURE_OS="+goos,
+		"FIXTURE_ARCH="+arch,
+		"FIXTURE_ARCHIVE_EXTENSION="+extension,
+	)
+	return fixture
 }
 
 func newReleaseResponseFixture(t *testing.T, payload []byte) releaseResponseFixture {
@@ -134,9 +275,71 @@ if [[ "$#" == 2 && "$1" == -fsSL && "$2" == 'https://api.github.com/repos/ben-ra
   cat "$FIXTURE_RESPONSE"
   exit "${FIXTURE_CURL_STATUS:-0}"
 fi
-if [[ "$#" == 4 && "$1" == -fsSL && "$2" == "https://github.com/ben-ranford/lopper/releases/download/v1.8.12/lopper_v1.8.12_${FIXTURE_OS}_${FIXTURE_ARCH}.${FIXTURE_ARCHIVE_EXTENSION}" && "$3" == -o ]]; then
+archive_name="lopper_v1.8.12_${FIXTURE_OS}_${FIXTURE_ARCH}.${FIXTURE_ARCHIVE_EXTENSION}"
+checksum_url="https://github.com/ben-ranford/lopper/releases/download/v1.8.12/SHA256SUMS"
+asset_url="https://github.com/ben-ranford/lopper/releases/download/v1.8.12/${archive_name}"
+request_url=""
+output_path=""
+previous=""
+for arg in "$@"; do
+  if [[ "$previous" == -o ]]; then
+    output_path="$arg"
+  fi
+  case "$arg" in
+    http://*|https://*) request_url="$arg" ;;
+  esac
+  previous="$arg"
+done
+if [[ "$request_url" == "$checksum_url" ]]; then
+  printf 'checksum\n' >> "$FIXTURE_CALLS"
+  if [[ "${FIXTURE_CHECKSUM_STATUS:-0}" != 0 ]]; then
+    exit "${FIXTURE_CHECKSUM_STATUS}"
+  fi
+  http_code="${FIXTURE_CHECKSUM_HTTP:-200}"
+  if [[ "$http_code" != 200 ]]; then
+    printf '%s' "$http_code"
+    exit 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$FIXTURE_ARCHIVE")"
+  elif command -v python >/dev/null 2>&1; then
+    digest="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$FIXTURE_ARCHIVE")"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$FIXTURE_ARCHIVE" | head -n 1)"
+    digest="${digest%%$'\r'}"
+    digest="${digest#\\}"
+    digest="${digest%% *}"
+    digest="${digest#\\}"
+  else
+    digest="$(shasum -a 256 "$FIXTURE_ARCHIVE" | head -n 1)"
+    digest="${digest%%$'\r'}"
+    digest="${digest%% *}"
+  fi
+  digest="$(printf '%s' "$digest" | tr '[:upper:]' '[:lower:]')"
+  case "${FIXTURE_CHECKSUM_MODE:-ok}" in
+    mismatch)
+      digest="$(printf '%.64s' '0000000000000000000000000000000000000000000000000000000000000000')"
+      printf '%s  %s\n' "$digest" "$archive_name" > "$output_path"
+      ;;
+    missing)
+      printf '%s  %s\n' "$digest" "other-archive.tar.gz" > "$output_path"
+      ;;
+    malformed)
+      printf 'not a checksum\n' > "$output_path"
+      ;;
+    oversize)
+      dd if=/dev/zero bs=65537 count=1 of="$output_path" status=none
+      ;;
+    *)
+      printf '%s  %s\n' "$digest" "$archive_name" > "$output_path"
+      ;;
+  esac
+  printf '200'
+  exit 0
+fi
+if [[ "$request_url" == "$asset_url" && -n "$output_path" ]]; then
   printf 'asset\n' >> "$FIXTURE_CALLS"
-  cp "$FIXTURE_ARCHIVE" "$4"
+  cp "$FIXTURE_ARCHIVE" "$output_path"
   exit "${FIXTURE_ASSET_STATUS:-0}"
 fi
 printf 'unexpected HTTP request: %s\n' "$*" >&2
