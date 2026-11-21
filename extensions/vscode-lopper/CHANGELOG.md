@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.11 (2026-11-20)
+
+- No user-visible VS Code extension changes.
+
+## 1.8.10 (2026-11-20)
+
+- ci: reap failed downloads and parallelise isolated fixtures
+- Updated VS Code behavior: bound Gradle reads during Android inference
+
 ## 1.8.9 (2026-10-05)
 
 - No user-visible VS Code extension changes.

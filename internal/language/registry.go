@@ -59,7 +59,7 @@ func (r *Registry) Register(adapter Adapter) error {
 	return nil
 }
 
-func (r *Registry) Select(ctx context.Context, repoPath string, languageID string) (CandidateAdapter, error) {
+func (r *Registry) Select(ctx context.Context, repoPath, languageID string) (CandidateAdapter, error) {
 	candidates, err := r.Resolve(ctx, repoPath, languageID)
 	if err != nil {
 		return nil, err
@@ -70,11 +70,11 @@ func (r *Registry) Select(ctx context.Context, repoPath string, languageID strin
 	return candidates[0].Adapter, nil
 }
 
-func (r *Registry) Resolve(ctx context.Context, repoPath string, languageID string) ([]Candidate, error) {
+func (r *Registry) Resolve(ctx context.Context, repoPath, languageID string) ([]Candidate, error) {
 	return r.ResolveWithFilter(ctx, repoPath, languageID, nil)
 }
 
-func (r *Registry) ResolveWithFilter(ctx context.Context, repoPath string, languageID string, filter AdapterFilter) ([]Candidate, error) {
+func (r *Registry) ResolveWithFilter(ctx context.Context, repoPath, languageID string, filter AdapterFilter) ([]Candidate, error) {
 	if r == nil {
 		return nil, errors.New("language registry is nil")
 	}

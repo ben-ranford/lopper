@@ -21,7 +21,7 @@ const testPHPHeader = "<?php\n"
 const testExpectedOneDependencyReportFmt = "expected one dependency report, got %d"
 const testAnalyseErrFmt = "analyse: %v"
 
-func writeTestComposerPackage(t *testing.T, repo string, dependency string, namespace string) {
+func writeTestComposerPackage(t *testing.T, repo, dependency, namespace string) {
 	t.Helper()
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
 	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
@@ -905,7 +905,7 @@ func containsWarning(warnings []string, needle string) bool {
 	return false
 }
 
-func writeFile(t *testing.T, path string, content string) {
+func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)

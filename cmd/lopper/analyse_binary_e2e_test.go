@@ -173,7 +173,7 @@ int main() { return 0; }
 	})
 }
 
-func buildBinary(t *testing.T, moduleRoot string, binaryPath string) {
+func buildBinary(t *testing.T, moduleRoot, binaryPath string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), binaryBuildTimeout)
@@ -274,7 +274,7 @@ func runAnalyseBinary(t *testing.T, binaryPath, workspaceRoot string, args []str
 	return decodeJSON(t, stdout.Bytes())
 }
 
-func copyDir(t *testing.T, src string, dst string) {
+func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
 	if err := filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

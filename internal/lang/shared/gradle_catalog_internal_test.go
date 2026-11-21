@@ -240,7 +240,7 @@ func assertGradleCatalogRegistryDirectoryFiltering(t *testing.T) {
 	}
 }
 
-func assertGradleCatalogRegistrySourcePathResolution(t *testing.T, repo string, defaultCatalogPath string) {
+func assertGradleCatalogRegistrySourcePathResolution(t *testing.T, repo, defaultCatalogPath string) {
 	t.Helper()
 
 	relativePath := resolveGradleCatalogSourcePath(repo, "gradle/test-libs.versions.toml")
@@ -358,7 +358,7 @@ dependencyResolutionManagement {
 	}
 }
 
-func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo string, settingsPath string) {
+func assertGradleCatalogRegistrySettingsLoading(t *testing.T, repo, settingsPath string) {
 	t.Helper()
 
 	writeGradleCatalogTestFile(t, settingsPath, `

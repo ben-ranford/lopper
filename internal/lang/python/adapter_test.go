@@ -622,7 +622,7 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 	}
 }
 
-func assertImportBinding(t *testing.T, got importBinding, want importBinding) {
+func assertImportBinding(t *testing.T, got, want importBinding) {
 	t.Helper()
 	if got.Dependency != want.Dependency || got.Module != want.Module || got.Name != want.Name || got.Local != want.Local {
 		t.Fatalf("unexpected import binding: got %#v, want dependency=%q module=%q name=%q local=%q", got, want.Dependency, want.Module, want.Name, want.Local)
@@ -693,7 +693,7 @@ func assertDependencyNamesInclude(t *testing.T, names []string, dependencies ...
 	}
 }
 
-func analysePythonDependency(t *testing.T, source string, dependency string) report.DependencyReport {
+func analysePythonDependency(t *testing.T, source, dependency string) report.DependencyReport {
 	t.Helper()
 	return analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, dependency, false)
 }

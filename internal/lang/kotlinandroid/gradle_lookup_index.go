@@ -25,17 +25,17 @@ func buildDependencyLookupIndex(descriptors []dependencyDescriptor) dependencyLo
 	return lookups
 }
 
-type lookupKeyStrategy func(group string, artifact string) ([]string, []string)
+type lookupKeyStrategy func(group, artifact string) ([]string, []string)
 
-func addGroupLookups(lookups dependencyLookups, name string, group string) {
+func addGroupLookups(lookups dependencyLookups, name, group string) {
 	addLookupByStrategy(lookups, name, group, "", groupLookupStrategy)
 }
 
-func addArtifactLookups(lookups dependencyLookups, name string, group string, artifact string) {
+func addArtifactLookups(lookups dependencyLookups, name, group, artifact string) {
 	addLookupByStrategy(lookups, name, group, artifact, artifactLookupStrategy)
 }
 
-func addLookupByStrategy(lookups dependencyLookups, name string, group string, artifact string, strategy lookupKeyStrategy) {
+func addLookupByStrategy(lookups dependencyLookups, name, group, artifact string, strategy lookupKeyStrategy) {
 	prefixKeys, aliasKeys := strategy(group, artifact)
 	for _, key := range prefixKeys {
 		recordLookup(lookups.Prefixes, lookups.Ambiguous, key, name)
@@ -45,7 +45,7 @@ func addLookupByStrategy(lookups dependencyLookups, name string, group string, a
 	}
 }
 
-func recordLookup(target map[string]string, ambiguous map[string][]string, key string, value string) {
+func recordLookup(target map[string]string, ambiguous map[string][]string, key, value string) {
 	if key == "" {
 		return
 	}

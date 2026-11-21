@@ -129,7 +129,7 @@ func skipElixirComment(content []byte, start int, out *strings.Builder) int {
 	return i
 }
 
-func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{}) error {
+func addUmbrellaRoots(repoPath, appsPath string, roots map[string]struct{}) error {
 	appsRoot := filepath.Join(repoPath, appsPath)
 	if !shared.IsPathWithin(repoPath, appsRoot) {
 		return nil

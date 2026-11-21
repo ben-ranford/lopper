@@ -111,7 +111,7 @@ func (r *Registry) applyReleaseLockDefaults(channel Channel, lock *ReleaseLock, 
 	}
 }
 
-func (r *Registry) applyExplicitOverrides(enabled map[string]bool, enable []string, disable []string) ([]DeprecatedReference, error) {
+func (r *Registry) applyExplicitOverrides(enabled map[string]bool, enable, disable []string) ([]DeprecatedReference, error) {
 	explicitEnable, enableDeprecations, err := r.resolveRefs(enable)
 	if err != nil {
 		return nil, err

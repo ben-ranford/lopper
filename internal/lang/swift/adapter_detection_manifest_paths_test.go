@@ -919,7 +919,7 @@ func TestSwiftSanitizesStringsAndComments(t *testing.T) {
 	}
 }
 
-func assertSwiftStringStart(t *testing.T, content []byte, index int, wantHashCount int, wantNextIndex int, wantMultiline bool, wantOK bool) {
+func assertSwiftStringStart(t *testing.T, content []byte, index, wantHashCount, wantNextIndex int, wantMultiline, wantOK bool) {
 	t.Helper()
 
 	hashCount, nextIndex, multiline, ok := detectSwiftStringStart(content, index)

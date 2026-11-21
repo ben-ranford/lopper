@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func resolveDependency(path string, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) string {
+func resolveDependency(path, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult) string {
 	path = strings.TrimSpace(strings.TrimPrefix(path, "::"))
 	if path == "" {
 		return ""

@@ -244,7 +244,7 @@ func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
 	return normalized
 }
 
-func unionDirSet(primary map[string]struct{}, extra map[string]struct{}) map[string]struct{} {
+func unionDirSet(primary, extra map[string]struct{}) map[string]struct{} {
 	if len(primary) == 0 && len(extra) == 0 {
 		return nil
 	}

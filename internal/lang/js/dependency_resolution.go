@@ -53,7 +53,7 @@ func resolveDependencyRootFromDir(repoPath, startDir, dependency string) string 
 	return ""
 }
 
-func resolveDependencyRootsFromDeclarationDirs(repoPath string, dependency string, declarationDirs map[string]struct{}) []string {
+func resolveDependencyRootsFromDeclarationDirs(repoPath, dependency string, declarationDirs map[string]struct{}) []string {
 	rootsSet := make(map[string]struct{})
 	for dir := range declarationDirs {
 		if resolved := resolveDependencyRootFromDir(repoPath, dir, dependency); resolved != "" {
@@ -69,7 +69,7 @@ func resolveDependencyRootsFromDeclarationDirs(repoPath string, dependency strin
 	return roots
 }
 
-func resolveDependencyRootsFromScan(repoPath string, dependency string, scanResult ScanResult) []string {
+func resolveDependencyRootsFromScan(repoPath, dependency string, scanResult ScanResult) []string {
 	rootsSet := make(map[string]struct{})
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {

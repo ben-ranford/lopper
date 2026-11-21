@@ -417,7 +417,7 @@ func TestSuppressedUnusedImportsPreserveVulnerabilityScoringAndPathEvidence(t *t
 	}
 }
 
-func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport, wantUsedImports []report.ImportUse, wantSuppressedUnused []report.ImportUse) {
+func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport, wantUsedImports, wantSuppressedUnused []report.ImportUse) {
 	t.Helper()
 
 	if !usageIncompleteForMergeTest(merged) {

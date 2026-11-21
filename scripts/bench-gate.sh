@@ -264,10 +264,8 @@ benchmark_harness_append_file() {
 	fingerprint_kind="$1";
 	fingerprint_file="$2";
 	fingerprint_hash="$3";
-	if [ -z "$fingerprint_hash" ]; then
-		if ! fingerprint_hash=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
-			return 1;
-		fi;
+	if [ -z "$fingerprint_hash" ] && ! fingerprint_hash=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
+		return 1;
 	fi;
 	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash" >> "$fingerprint_manifest_tmp";
 };

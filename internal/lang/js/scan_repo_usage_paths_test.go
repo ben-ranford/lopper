@@ -262,7 +262,7 @@ func TestJSScanRepoRejectsSymlinkedSource(t *testing.T) {
 	}
 }
 
-func assertIdentifierUsageState(t *testing.T, tree *sitter.Tree, source []byte, name string, parentType string, want bool) {
+func assertIdentifierUsageState(t *testing.T, tree *sitter.Tree, source []byte, name, parentType string, want bool) {
 	t.Helper()
 	node := findIdentifierNode(tree.RootNode(), source, name, parentType)
 	if node == nil {

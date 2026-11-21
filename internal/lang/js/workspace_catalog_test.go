@@ -817,7 +817,7 @@ func installWorkspaceCatalogDependencies(t *testing.T, repo string, names ...str
 	}
 }
 
-func assertWorkspaceCatalogDependencies(t *testing.T, deps []string, expected []string, present bool) {
+func assertWorkspaceCatalogDependencies(t *testing.T, deps, expected []string, present bool) {
 	t.Helper()
 
 	for _, dependency := range expected {

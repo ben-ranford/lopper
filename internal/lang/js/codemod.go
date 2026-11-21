@@ -53,7 +53,7 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	return &report.CodemodReport{Mode: codemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, dedupeStrings(lineWarnings)
 }
 
-func buildCodemodForFile(repoPath string, dependency string, resolver subpathResolver, file FileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
+func buildCodemodForFile(repoPath, dependency string, resolver subpathResolver, file FileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
 	suggestions := make([]report.CodemodSuggestion, 0)
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)
@@ -83,7 +83,7 @@ type codemodOutcome struct {
 	skip       *report.CodemodSkip
 }
 
-func buildCodemodOutcome(repoPath string, dependency string, resolver subpathResolver, file FileScan, imp ImportBinding, lineCache map[string][]string) (codemodOutcome, string, bool) {
+func buildCodemodOutcome(repoPath, dependency string, resolver subpathResolver, file FileScan, imp ImportBinding, lineCache map[string][]string) (codemodOutcome, string, bool) {
 	reasonCode, reasonMessage := codemodSkipReason(imp, file)
 	if reasonCode != "" {
 		skip := newCodemodSkip(file.Path, imp, reasonCode, reasonMessage)

@@ -67,14 +67,14 @@ func mustReadFile(t *testing.T, path string) []byte {
 	return content
 }
 
-func writeMalformedJS(t *testing.T, path string, content string) {
+func writeMalformedJS(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write bad.js: %v", err)
 	}
 }
 
-func parseFile(t *testing.T, parser *sourceParser, path string, label string) (*sitter.Tree, []byte) {
+func parseFile(t *testing.T, parser *sourceParser, path, label string) (*sitter.Tree, []byte) {
 	t.Helper()
 	content := mustReadFile(t, path)
 	tree, err := parser.Parse(context.Background(), path, content)
@@ -84,7 +84,7 @@ func parseFile(t *testing.T, parser *sourceParser, path string, label string) (*
 	return tree, content
 }
 
-func exerciseScanRepoEntryDeleteBranch(t *testing.T, parser *sourceParser, repo string, path string) {
+func exerciseScanRepoEntryDeleteBranch(t *testing.T, parser *sourceParser, repo, path string) {
 	t.Helper()
 	entry, err := os.ReadDir(repo)
 	if err != nil || len(entry) == 0 {

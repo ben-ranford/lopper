@@ -38,7 +38,7 @@ const (
 	expectedSingleDependencyFmt = "expected one dependency report, got %d"
 )
 
-func writeManifestFixture(t *testing.T, path string, content string) {
+func writeManifestFixture(t *testing.T, path, content string) {
 	t.Helper()
 	testutil.MustWriteFile(t, path, content)
 }

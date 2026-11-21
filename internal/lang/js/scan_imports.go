@@ -52,7 +52,7 @@ func parseImportStatement(node *sitter.Node, content []byte, relPath string) []I
 	return bindings
 }
 
-func parseImportClause(node *sitter.Node, content []byte, module string, relPath string) []ImportBinding {
+func parseImportClause(node *sitter.Node, content []byte, module, relPath string) []ImportBinding {
 	bindings := make([]ImportBinding, 0)
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
@@ -75,7 +75,7 @@ func parseImportClause(node *sitter.Node, content []byte, module string, relPath
 	return bindings
 }
 
-func parseNamedImports(node *sitter.Node, content []byte, module string, relPath string) []ImportBinding {
+func parseNamedImports(node *sitter.Node, content []byte, module, relPath string) []ImportBinding {
 	bindings := make([]ImportBinding, 0)
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
@@ -158,7 +158,7 @@ func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath stri
 	}, true
 }
 
-func parseRequireBinding(call *sitter.Node, content []byte, module string, relPath string) []ImportBinding {
+func parseRequireBinding(call *sitter.Node, content []byte, module, relPath string) []ImportBinding {
 	declarator := call.Parent()
 	for declarator != nil && declarator.Type() != "variable_declarator" {
 		declarator = declarator.Parent()
@@ -184,7 +184,7 @@ func parseRequireBinding(call *sitter.Node, content []byte, module string, relPa
 	}
 }
 
-func parseObjectPattern(node *sitter.Node, content []byte, module string, relPath string) []ImportBinding {
+func parseObjectPattern(node *sitter.Node, content []byte, module, relPath string) []ImportBinding {
 	bindings := make([]ImportBinding, 0)
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
@@ -212,7 +212,7 @@ func parseObjectPattern(node *sitter.Node, content []byte, module string, relPat
 	return bindings
 }
 
-func makeImportBinding(module string, exportName string, localName string, kind ImportKind, relPath string, node *sitter.Node) ImportBinding {
+func makeImportBinding(module, exportName, localName string, kind ImportKind, relPath string, node *sitter.Node) ImportBinding {
 	location := shared.Location(relPath, int(node.StartPoint().Row)+1, int(node.StartPoint().Column)+1)
 	return ImportBinding{
 		Module:     module,

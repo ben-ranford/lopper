@@ -240,7 +240,7 @@ func openRootChildPinnedWith(root Root, name, requestedPath string, openRootNoFo
 	return openPinnedRootAliasWith(targetPath, requestedPath, openRootNoFollowFn, statFn, sameFileFn)
 }
 
-func openPinnedRootAliasWith(targetPath string, requestedPath string, openRootNoFollowFn func(string) (Root, error), statFn func(string) (fs.FileInfo, error), sameFileFn func(fs.FileInfo, fs.FileInfo) bool) (Root, string, error) {
+func openPinnedRootAliasWith(targetPath, requestedPath string, openRootNoFollowFn func(string) (Root, error), statFn func(string) (fs.FileInfo, error), sameFileFn func(fs.FileInfo, fs.FileInfo) bool) (Root, string, error) {
 	next, err := openRootNoFollowFn(targetPath)
 	if err != nil {
 		return nil, "", err
@@ -489,7 +489,7 @@ func splitPinnedPath(name string) (string, []string) {
 	return cleanName, parts
 }
 
-func openPinnedAncestors(root Root, parts []string) (_ []Root, _ Root, _ string, _ string, err error) {
+func openPinnedAncestors(root Root, parts []string) (_ []Root, _ Root, _, _ string, err error) {
 	opened := make([]Root, 0, len(parts)-1)
 	current := root
 	currentPath := ""
@@ -932,7 +932,7 @@ func createQuarantinedCopyTarget(root Root, originalRel, message string, expecte
 	return target, createdInfo, nil
 }
 
-func copyIntoQuarantinedTarget(target, source File, root Root, originalRel, message string, expected fs.FileInfo, createdInfo fs.FileInfo) (fs.FileInfo, bool, error) {
+func copyIntoQuarantinedTarget(target, source File, root Root, originalRel, message string, expected, createdInfo fs.FileInfo) (fs.FileInfo, bool, error) {
 	if _, err := io.Copy(target, source); err != nil {
 		if info, statErr := target.Stat(); statErr == nil {
 			createdInfo = info

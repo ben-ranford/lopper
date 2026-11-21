@@ -520,7 +520,7 @@ func parsePackageVersions(repoPath, manifestPath string) ([]string, error) {
 	return parseManifestDependencies(repoPath, manifestPath, "PackageVersion")
 }
 
-func parseManifestDependencies(repoPath, manifestPath string, elementName string) ([]string, error) {
+func parseManifestDependencies(repoPath, manifestPath, elementName string) ([]string, error) {
 	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
 	if err != nil {
 		return nil, err
@@ -675,7 +675,7 @@ func isSourceFileName(lowerName string) bool {
 	return strings.HasSuffix(lowerName, csharpSourceExt) || strings.HasSuffix(lowerName, fsharpSourceExt)
 }
 
-func addSolutionRoots(repoPath string, solutionPath string, roots map[string]struct{}) error {
+func addSolutionRoots(repoPath, solutionPath string, roots map[string]struct{}) error {
 	content, err := safeio.ReadFileUnder(repoPath, solutionPath)
 	if err != nil {
 		return err

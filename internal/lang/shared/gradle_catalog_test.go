@@ -133,7 +133,7 @@ func TestIsGradleVersionCatalogFile(t *testing.T) {
 	}
 }
 
-func writeGradleCatalogTestFile(t *testing.T, path string, content string) {
+func writeGradleCatalogTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)

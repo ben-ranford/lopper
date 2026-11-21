@@ -645,7 +645,7 @@ func (s *Server) languageMetadata() []languageMetadata {
 	return items
 }
 
-func (s *Server) resolveFeatures(config thresholds.FeatureConfig, enable []string, disable []string) (featureflags.Set, error) {
+func (s *Server) resolveFeatures(config thresholds.FeatureConfig, enable, disable []string) (featureflags.Set, error) {
 	registry := s.featureRegistry
 	if registry == nil {
 		if err := featureflags.ValidateDefaultRegistry(); err != nil {

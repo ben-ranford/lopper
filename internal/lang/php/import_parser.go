@@ -172,21 +172,21 @@ func parseNamespaceReferences(content []byte, filePath string, resolver composer
 	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
 }
 
-func parseNamespaceReferencesText(text string, filePath string, resolver composerResolver) ([]importBinding, int) {
+func parseNamespaceReferencesText(text, filePath string, resolver composerResolver) ([]importBinding, int) {
 	result := parseNamespaceReferencesTextWithLineIndex(text, filePath, resolver, newPHPLineIndex(text))
 	return result.imports, result.unresolvedCount
 }
 
-func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex) namespaceReferenceParseResult {
+func parseNamespaceReferencesTextWithLineIndex(text, filePath string, resolver composerResolver, lineIndex phpLineIndex) namespaceReferenceParseResult {
 	return parseNamespaceReferencesTextWithLineIndexAndUseRanges(text, filePath, resolver, lineIndex, findPHPUseStatementRanges(text))
 }
 
-func parseNamespaceReferencesTextWithLineIndexAndUseRanges(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int) namespaceReferenceParseResult {
+func parseNamespaceReferencesTextWithLineIndexAndUseRanges(text, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int) namespaceReferenceParseResult {
 	namespaceDeclarations, _ := findNamespaceDeclarationsWithShortOpenTags(text, resolver.allowPHPShortOpenTags)
 	return parseNamespaceReferencesTextWithLineIndexAndUseRangesAndDeclarations(text, filePath, resolver, lineIndex, useRanges, namespaceDeclarations)
 }
 
-func parseNamespaceReferencesTextWithLineIndexAndUseRangesAndDeclarations(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int, namespaceDeclarations []phpNamespaceDeclaration) namespaceReferenceParseResult {
+func parseNamespaceReferencesTextWithLineIndexAndUseRangesAndDeclarations(text, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int, namespaceDeclarations []phpNamespaceDeclaration) namespaceReferenceParseResult {
 	namespaceText := maskUseStatementRanges(text, useRanges, namespaceDeclarationRanges(namespaceDeclarations))
 	matches := namespaceRefPattern.FindAllStringIndex(namespaceText, maxPHPNamespaceReferencesPerFile+1)
 	result := namespaceReferenceParseResult{}
@@ -926,7 +926,7 @@ func phpClassLikeKeywordAt(text string, offset int) bool {
 		hasKeywordAt(text, offset, "enum")
 }
 
-func popPHPClassLikeDelimiter(stack []byte, boundaries []int, classLikeKeywordOffsets []int, opener byte) ([]byte, []int, []int) {
+func popPHPClassLikeDelimiter(stack []byte, boundaries, classLikeKeywordOffsets []int, opener byte) ([]byte, []int, []int) {
 	if len(stack) == 0 || stack[len(stack)-1] != opener {
 		return stack, boundaries, classLikeKeywordOffsets
 	}
@@ -1422,7 +1422,7 @@ func isDuplicateNamespaceReference(seen map[string]struct{}, module string, line
 	return false
 }
 
-func namespaceImportBinding(filePath string, line int, local string, module string, dependency string) importBinding {
+func namespaceImportBinding(filePath string, line int, local, module, dependency string) importBinding {
 	return newImportBinding(filePath, line, dependency, module, local, local, true)
 }
 

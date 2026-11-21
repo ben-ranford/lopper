@@ -45,7 +45,7 @@ func BuildUnusedImportCodemodReport(repoPath, dependency string, scan scanResult
 	return &report.CodemodReport{Mode: shared.CodemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, shared.DedupeWarnings(warnings)
 }
 
-func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
+func buildPythonCodemodForFile(repoPath, dependency string, file fileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
 	suggestions := make([]report.CodemodSuggestion, 0)
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)

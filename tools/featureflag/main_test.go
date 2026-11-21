@@ -1976,7 +1976,7 @@ func applyReleaseDeltaArgs(release string) []string {
 	return []string{"apply-release-delta", "--release", release, "--delta", releaseDeltaPath}
 }
 
-func assertApplyReleaseDeltaError(t *testing.T, catalog string, applyRelease string, deltaRelease string, want string, updates ...releaseDeltaUpdate) {
+func assertApplyReleaseDeltaError(t *testing.T, catalog, applyRelease, deltaRelease, want string, updates ...releaseDeltaUpdate) {
 	t.Helper()
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, catalog)
@@ -2001,7 +2001,7 @@ func readFeatureCatalog(t *testing.T, catalogDir string) []featureflags.Flag {
 	return flags
 }
 
-func writeReleaseDeltaFile(t *testing.T, root string, release string, updates ...releaseDeltaUpdate) {
+func writeReleaseDeltaFile(t *testing.T, root, release string, updates ...releaseDeltaUpdate) {
 	t.Helper()
 
 	data, err := formatReleaseDelta(releaseDelta{Release: release, Updates: updates})

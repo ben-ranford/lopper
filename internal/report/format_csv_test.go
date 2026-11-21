@@ -500,7 +500,7 @@ func csvRowMap(header, row []string) map[string]string {
 	return result
 }
 
-func assertCSVRowHasValues(t *testing.T, got map[string]string, expected map[string]string) {
+func assertCSVRowHasValues(t *testing.T, got, expected map[string]string) {
 	t.Helper()
 	for key, value := range expected {
 		if got[key] != value {

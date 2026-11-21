@@ -435,7 +435,7 @@ func pageCount(total, pageSize int) int {
 	return 1 + (total-1)/pageSize
 }
 
-func paginateDependencies(deps []summaryDependencyView, page int, pageSize int) []summaryDependencyView {
+func paginateDependencies(deps []summaryDependencyView, page, pageSize int) []summaryDependencyView {
 	if pageSize <= 0 {
 		return deps
 	}
@@ -641,7 +641,7 @@ func (s *Summary) formatSummaryDisplay(display summaryDisplayView) (string, erro
 	return s.Formatter(display)
 }
 
-func renderSummaryFrame(formatted string, state summaryState, totalPages int, totalDependencies int) string {
+func renderSummaryFrame(formatted string, state summaryState, totalPages, totalDependencies int) string {
 	var builder strings.Builder
 	fmt.Fprintln(&builder, "Lopper TUI (summary)")
 	fmt.Fprintf(&builder, "Sort: %s | Page: %d/%d | Page size: %d | Total deps: %d\n", state.sortMode, state.page, totalPages, state.pageSize, totalDependencies)

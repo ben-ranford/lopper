@@ -59,7 +59,7 @@ func TestLoadConfigOverridesJSON(t *testing.T) {
 	}
 }
 
-func writeConfigFile(t *testing.T, dir string, name string, content string) string {
+func writeConfigFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
