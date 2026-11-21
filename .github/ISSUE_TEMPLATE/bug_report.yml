@@ -65,7 +65,7 @@ body:
     attributes:
       label: Environment
       description: OS, Go version, and relevant tooling versions.
-      placeholder: macOS 14, Go 1.25.7, Node 22
+      placeholder: macOS 14, Go 1.27.4, Node 22
     validations:
       required: true
 
