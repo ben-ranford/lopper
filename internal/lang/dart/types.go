@@ -110,7 +110,7 @@ var (
 	directiveStartPattern             = regexp.MustCompile(`^\s*(import|export)\b`)
 	directiveAliasClausePattern       = regexp.MustCompile(`^(?:deferred\s+as|as)\s+[A-Za-z_][A-Za-z0-9_]*\b`)
 	directiveCombinatorClausePattern  = regexp.MustCompile(`^(?:show|hide)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*`)
-	directiveConditionalClausePattern = regexp.MustCompile(`^if\s*\(\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\)\s*[rR]?['"][^'"]+['"]`)
+	directiveConditionalClausePattern = regexp.MustCompile(`^if\s*\(\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*(?:==\s*[rR]?['"][^'"]*['"]\s*)?\)\s*[rR]?['"][^'"]+['"]`)
 	aliasPattern                      = regexp.MustCompile(`\bas\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	identPattern                      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )

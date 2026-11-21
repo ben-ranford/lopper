@@ -41,6 +41,24 @@ func TestParseImportDirectiveAcceptsConditionalClauses(t *testing.T) {
 			module:    "package:http/http.dart",
 			clause:    "if (dart.library.io) 'src/io.dart' show Client, Request",
 		},
+		"equality test": {
+			directive: `import 'package:foo/foo.dart' if (dart.library.io == 'true') 'src/io.dart';`,
+			kind:      "import",
+			module:    "package:foo/foo.dart",
+			clause:    "if (dart.library.io == 'true') 'src/io.dart'",
+		},
+		"equality test double quoted": {
+			directive: `export 'src/api.dart' if (dart.library.io == "true") "src/api_io.dart";`,
+			kind:      "export",
+			module:    "src/api.dart",
+			clause:    `if (dart.library.io == "true") "src/api_io.dart"`,
+		},
+		"equality test with alias": {
+			directive: `import 'package:foo/foo.dart' if (dart.library.html=='true') 'src/html.dart' as foo;`,
+			kind:      "import",
+			module:    "package:foo/foo.dart",
+			clause:    "if (dart.library.html=='true') 'src/html.dart' as foo",
+		},
 		"raw string fallback": {
 			directive: `import 'package:http/http.dart' if (dart.library.io) r'src/io.dart';`,
 			kind:      "import",
@@ -77,16 +95,19 @@ func TestParseImportDirectiveAcceptsConditionalClauses(t *testing.T) {
 
 func TestParseImportDirectiveRejectsMalformedConditionalClauses(t *testing.T) {
 	testCases := map[string]string{
-		"branch without uri":         `import 'package:http/http.dart' if (dart.library.io);`,
-		"branch without parens":      `import 'package:http/http.dart' if dart.library.io 'src/io.dart';`,
-		"empty condition":            `import 'package:http/http.dart' if () 'src/io.dart';`,
-		"unquoted fallback":          `import 'package:http/http.dart' if (dart.library.io) src/io.dart;`,
-		"unknown clause after if":    `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' unless x;`,
-		"conditional before primary": `import if (dart.library.io) 'src/io.dart' 'package:http/http.dart';`,
-		"empty fallback uri":         `import 'package:http/http.dart' if (dart.library.io) '';`,
-		"empty condition segment":    `import 'package:http/http.dart' if (dart..io) 'src/io.dart';`,
-		"trailing dot condition":     `import 'package:http/http.dart' if (dart.library.) 'src/io.dart';`,
-		"branch after combinator":    `import 'package:http/http.dart' show Client if (dart.library.io) 'src/io.dart' as x unless y;`,
+		"branch without uri":          `import 'package:http/http.dart' if (dart.library.io);`,
+		"branch without parens":       `import 'package:http/http.dart' if dart.library.io 'src/io.dart';`,
+		"empty condition":             `import 'package:http/http.dart' if () 'src/io.dart';`,
+		"unquoted fallback":           `import 'package:http/http.dart' if (dart.library.io) src/io.dart;`,
+		"unknown clause after if":     `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' unless x;`,
+		"conditional before primary":  `import if (dart.library.io) 'src/io.dart' 'package:http/http.dart';`,
+		"empty fallback uri":          `import 'package:http/http.dart' if (dart.library.io) '';`,
+		"empty condition segment":     `import 'package:http/http.dart' if (dart..io) 'src/io.dart';`,
+		"trailing dot condition":      `import 'package:http/http.dart' if (dart.library.) 'src/io.dart';`,
+		"branch after combinator":     `import 'package:http/http.dart' show Client if (dart.library.io) 'src/io.dart' as x unless y;`,
+		"equality without operand":    `import 'package:foo/foo.dart' if (dart.library.io ==) 'src/io.dart';`,
+		"unquoted equality operand":   `import 'package:foo/foo.dart' if (dart.library.io == true) 'src/io.dart';`,
+		"equality on empty condition": `import 'package:foo/foo.dart' if (== 'true') 'src/io.dart';`,
 	}
 
 	for name, directive := range testCases {
