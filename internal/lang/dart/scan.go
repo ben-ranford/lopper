@@ -518,6 +518,8 @@ func isValidDirectiveClause(clause string) bool {
 		switch {
 		case directiveAliasClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveAliasClausePattern.ReplaceAllString(remaining, ""))
+		case directiveConditionalClausePattern.MatchString(remaining):
+			remaining = strings.TrimSpace(directiveConditionalClausePattern.ReplaceAllString(remaining, ""))
 		case directiveCombinatorClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveCombinatorClausePattern.ReplaceAllString(remaining, ""))
 		default:
@@ -539,6 +541,9 @@ func buildDirectiveBindings(kind, module, clause, dependency string, location re
 		}}
 	}
 
+	// Conditional branches carry URIs of their own; blank them so an alias or a
+	// show identifier can only be read from the clause itself.
+	clause = maskDirectiveStringLiterals(clause)
 	alias := extractAlias(clause)
 	showSymbols := parseShowSymbols(clause)
 	bindings := make([]importBinding, 0, 1+len(showSymbols))
@@ -576,6 +581,34 @@ func buildDirectiveBindings(kind, module, clause, dependency string, location re
 		Wildcard:   true,
 		Location:   location,
 	}}
+}
+
+func maskDirectiveStringLiterals(clause string) string {
+	var masked strings.Builder
+	masked.Grow(len(clause))
+	quote := byte(0)
+	for i := 0; i < len(clause); i++ {
+		character := clause[i]
+		if quote == 0 {
+			if character == '\'' || character == '"' {
+				quote = character
+				masked.WriteByte(' ')
+				continue
+			}
+			masked.WriteByte(character)
+			continue
+		}
+		if character == '\\' && i+1 < len(clause) {
+			masked.WriteString("  ")
+			i++
+			continue
+		}
+		if character == quote {
+			quote = 0
+		}
+		masked.WriteByte(' ')
+	}
+	return masked.String()
 }
 
 func extractAlias(clause string) string {
