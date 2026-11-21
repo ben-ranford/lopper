@@ -245,6 +245,39 @@ import class MyLib.Client`)
 	}
 }
 
+func TestParseSwiftAccessLevelImports(t *testing.T) {
+	importsContent := []byte(`public import PublicKit // trailing comment
+internal import InternalKit
+package import PackageKit
+fileprivate import FileKit
+private import struct ScopedKit.Entry
+@testable internal import TestKit
+open import InvalidKit
+/* public import CommentedKit */
+let message = "private import StringKit"
+`)
+	imports := parseSwiftImports(importsContent, swiftMainFileName)
+	modules := make([]string, 0, len(imports))
+	for _, imported := range imports {
+		modules = append(modules, imported.Module)
+	}
+	if !slices.Equal(modules, []string{"PublicKit", "InternalKit", "PackageKit", "FileKit", "ScopedKit", "TestKit"}) {
+		t.Fatalf("unexpected modules in access-level imports: %v", modules)
+	}
+}
+
+func TestSwiftAdapterCountsAccessLevelImportUsage(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
+	mainContent := `internal import Alamofire
+func run() {
+  _ = Alamofire.Session.default
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
+	if reportData.UsedExportsCount < 1 {
+		t.Fatalf("expected access-level import to count as used, got %#v", reportData)
+	}
+}
+
 type swiftFixtureDependency struct {
 	identity     string
 	manifestName string
