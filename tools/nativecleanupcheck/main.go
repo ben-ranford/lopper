@@ -679,7 +679,7 @@ func verifyOriginalControl(o options, c custody) error {
 
 // originalCleanupReserve matches the owner's cleanupReserve. A join or
 // recovery observation at or after this bound is no longer original authority.
-const originalCleanupReserve = 90 * time.Second
+const originalCleanupReserve = 4 * time.Minute
 
 func originalAuthorityDeadline(j joinRecord, now time.Time) error {
 	start, err := time.Parse(time.RFC3339Nano, j.CleanupStarted)

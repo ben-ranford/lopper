@@ -29,14 +29,16 @@ import (
 const commandAllowance = 5 * time.Second
 
 // cleanupReserve is the single post-subject teardown bound. The finally
-// helper repeats custody checks and two unfiltered SMB open-file scans
-// before it may remove the share. On hosted Windows runners that work
-// sometimes finishes inside the old 30s reserve and sometimes is still
-// running when the about-20s command budget expires, after the subject
-// test has already passed. 90s covers that tail. The helper is still killed
-// at this bound. See https://github.com/ben-ranford/lopper/issues/1905.
-const cleanupReserve = 90 * time.Second
-const ownerBudget = 11 * time.Minute
+// helper repeats custody checks and two unfiltered Get-SmbOpenFile scans
+// before it may remove the share. Those scans sometimes run past 90s on
+// windows-latest after the subject test has already passed (runs
+// 44819220437 and 44840012922). The helper then exits 1, the owner refuses
+// the control line, and CI reports a missing original-control record. Four
+// minutes covers that pair of scans plus the audit ahead of them. The helper
+// is still killed at this bound, and a late or failed observation still
+// produces no control line. See https://github.com/ben-ranford/lopper/issues/1905.
+const cleanupReserve = 4 * time.Minute
+const ownerBudget = 15 * time.Minute
 const captureLimit = 64 << 20
 
 type configuration struct {
