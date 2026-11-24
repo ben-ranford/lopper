@@ -32,7 +32,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), ".rb") {
 			return nil
 		}
-		content, err := safeio.ReadFileUnder(repoPath, path)
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxScannableRubyFile)
 		if err != nil {
 			return err
 		}

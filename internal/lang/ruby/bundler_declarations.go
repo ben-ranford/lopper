@@ -232,7 +232,7 @@ func addRubyDependency(out map[string]struct{}, sources map[string]rubyDependenc
 
 func readBundlerFile(repoPath, filename string) ([]byte, error) {
 	targetPath := filepath.Join(repoPath, filename)
-	content, err := safeio.ReadFileUnder(repoPath, targetPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, targetPath, maxBundlerManifestBytes)
 	switch {
 	case err == nil:
 		return content, nil

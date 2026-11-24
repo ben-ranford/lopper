@@ -17,6 +17,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const maxRegressionProofSourceBytes = 2 << 20
+
 func validateProofTarget(targetOS string) error {
 	return prmetadata.ValidateRegressionPlatform(targetOS)
 }
@@ -176,7 +178,7 @@ func validateLocalDeclarationTargets(repoRoot string, declarations []prmetadata.
 }
 
 func readRegressionSource(repoRoot, path string) ([]byte, *ast.File, error) {
-	data, err := safeio.ReadFileUnder(repoRoot, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoRoot, path, maxRegressionProofSourceBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read regression source %s: %w", path, err)
 	}

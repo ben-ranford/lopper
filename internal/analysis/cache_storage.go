@@ -11,7 +11,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const cacheObjectCorruptReason = "object-corrupt"
+const (
+	cacheObjectCorruptReason = "object-corrupt"
+	maxCacheObjectBytes      = 128 << 20
+	maxCachePointerBytes     = 4 << 10
+)
 
 type cachePointer struct {
 	InputDigest  string `json:"inputDigest"`
@@ -86,7 +90,7 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 
 func readCachedPayload(cachePath, objectDigest string) (cachedPayload, string, error) {
 	objectPath := filepath.Join(cachePath, "objects", objectDigest+".json")
-	objectData, err := safeio.ReadFileUnder(cachePath, objectPath)
+	objectData, err := safeio.ReadRegularFileUnderLimit(cachePath, objectPath, maxCacheObjectBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cachedPayload{}, "object-missing", nil

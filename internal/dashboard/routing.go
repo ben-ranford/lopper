@@ -298,13 +298,15 @@ func applyRoutingAssignment(item RemediationItem, owner, team, due, status, sour
 	return item
 }
 
+const maxCodeownersBytes = 3 * 1024 * 1024
+
 func LoadCodeowners(repoPath string) []CodeownerRule {
 	for _, candidate := range []string{
 		filepath.Join(repoPath, ".github", "CODEOWNERS"),
 		filepath.Join(repoPath, "CODEOWNERS"),
 		filepath.Join(repoPath, "docs", "CODEOWNERS"),
 	} {
-		data, err := safeio.ReadFileUnder(repoPath, candidate)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, candidate, maxCodeownersBytes)
 		if err != nil {
 			continue
 		}

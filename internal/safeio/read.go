@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 )
 
@@ -87,6 +88,41 @@ func ReadRegularFileWithinRootLimit(root Root, targetPath string, maxBytes int64
 		}
 	}()
 	return readOpenedFile(file, maxBytes)
+}
+
+// ReadRegularFileUnderLimit reads a regular file inside a confined root.
+func ReadRegularFileUnderLimit(rootDir, targetPath string, maxBytes int64) ([]byte, error) {
+	target, err := resolveRootedTarget(rootDir, targetPath, allowRootTarget)
+	if err != nil {
+		return nil, err
+	}
+	return readRegularFileAtRoot(target.rootAbs, target.rel, targetPath, "root", maxBytes)
+}
+
+// ReadRegularFileLimit reads a regular file through its pinned parent directory.
+func ReadRegularFileLimit(targetPath string, maxBytes int64) ([]byte, error) {
+	target, err := resolveExactFileTarget(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	return readRegularFileAtRoot(target.parentDir, target.fileName, targetPath, "parent", maxBytes)
+}
+
+func readRegularFileAtRoot(rootPath, relativePath, targetPath, label string, maxBytes int64) (_ []byte, err error) {
+	if maxBytes <= 0 {
+		return nil, fs.ErrInvalid
+	}
+	root, err := openReadRootNoFollow(rootPath, label)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	data, err := ReadRegularFileWithinRootLimit(root, relativePath, maxBytes)
+	return data, translateOpenNotExist(err, targetPath)
 }
 
 // ReadFileUnderLimit reads targetPath only if it resolves under rootDir and

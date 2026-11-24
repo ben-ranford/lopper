@@ -29,6 +29,8 @@ var (
 	releaseLockProviderFn         = featureflags.DefaultReleaseLock
 )
 
+const maxFeaturePolicyDocumentBytes = 4 << 20
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -253,7 +255,7 @@ func readCatalogFromPath(source catalogSource) ([]featureflags.Flag, error) {
 }
 
 func readCatalogDataFromPath(source catalogSource) ([]byte, error) {
-	data, err := safeio.ReadFileUnder(source.root, filepath.Join(source.root, source.path))
+	data, err := safeio.ReadRegularFileUnderLimit(source.root, filepath.Join(source.root, source.path), maxFeaturePolicyDocumentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read feature catalog: %w", err)
 	}
@@ -299,7 +301,7 @@ func readPreviousCatalog(path string) ([]featureflags.Flag, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf(resolveWorkingDirectoryError, err)
 	}
-	data, err := safeio.ReadFileUnder(root, filepath.Join(root, path))
+	data, err := safeio.ReadRegularFileUnderLimit(root, filepath.Join(root, path), maxFeaturePolicyDocumentBytes)
 	if err != nil {
 		return nil, false, fmt.Errorf("read previous feature catalog: %w", err)
 	}

@@ -6,12 +6,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const sourceReadByteLimit = 2 * 1024 * 1024
+
 // ReadSourceFile reads a source confined to repoPath and returns its display
 // path. When the supplied paths cannot be relativized (such as an absolute repo
 // and relative source), the display path remains sourcePath. Read errors return
 // neither partial content nor a display path.
 func ReadSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, sourcePath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, sourcePath, sourceReadByteLimit)
 	if err != nil {
 		return nil, "", err
 	}

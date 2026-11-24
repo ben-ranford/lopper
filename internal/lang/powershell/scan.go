@@ -58,7 +58,7 @@ func scanPowerShellFile(repoPath, path string, entry fs.DirEntry, scan *scanResu
 		return true, err
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxScannablePowerShellBytes)
 	if err != nil {
 		return true, err
 	}

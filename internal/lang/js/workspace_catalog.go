@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	jsPnpmWorkspaceFile = "pnpm-workspace.yaml"
-	jsYarnRCFile        = ".yarnrc.yml"
+	jsPnpmWorkspaceFile       = "pnpm-workspace.yaml"
+	jsYarnRCFile              = ".yarnrc.yml"
+	maxWorkspaceManifestBytes = 2 * 1024 * 1024
 )
 
 type workspaceDependencyCatalog struct {
@@ -128,7 +129,7 @@ func readWorkspacePackageJSON(repoPath, manifestPath string) (packageJSON, bool,
 		return packageJSON{}, false, fmt.Sprintf("workspace manifest path is a directory: %s", workspaceDisplayPath(repoPath, manifestPath))
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxWorkspaceManifestBytes)
 	if err != nil {
 		return packageJSON{}, false, fmt.Sprintf("unable to read workspace manifest %s: %v", workspaceDisplayPath(repoPath, manifestPath), err)
 	}
@@ -149,7 +150,7 @@ func readPnpmWorkspaceManifest(repoPath string) (pnpmWorkspaceManifest, bool, st
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsPnpmWorkspaceFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[pnpmWorkspaceManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[pnpmWorkspaceManifest](repoPath, path, maxWorkspaceManifestBytes)
 	if err != nil {
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsPnpmWorkspaceFile, err)
 	}
@@ -165,7 +166,7 @@ func readYarnCatalogManifest(repoPath string) (yarnCatalogManifest, bool, string
 		return yarnCatalogManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsYarnRCFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[yarnCatalogManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[yarnCatalogManifest](repoPath, path, maxWorkspaceManifestBytes)
 	if err != nil {
 		return yarnCatalogManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsYarnRCFile, err)
 	}

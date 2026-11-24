@@ -161,7 +161,7 @@ func manifestDependencyLookupsByRoot(repoPath string, manifestPaths, workspaceMa
 }
 
 func manifestDependencies(manifestPath, repoPath string) (map[string]dependencyInfo, map[string]dependencyInfo, error) {
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxCargoManifestBytes)
 	if err != nil {
 		return nil, nil, err
 	}

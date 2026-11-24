@@ -64,7 +64,7 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 
 	pubspecPath := filepath.Join(repo, "pubspec.yaml")
 	testutil.MustWriteFile(t, pubspecPath, "name: app\n")
-	parsed, err := ReadYAMLUnderRepo[manifest](repo, pubspecPath)
+	parsed, err := ReadYAMLUnderRepoLimit[manifest](repo, pubspecPath, 1*1024*1024)
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
@@ -73,13 +73,13 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 	}
 
 	missingPath := filepath.Join(repo, "missing.yaml")
-	if _, err := ReadYAMLUnderRepo[manifest](repo, missingPath); !errors.Is(err, os.ErrNotExist) {
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, missingPath, 1*1024*1024); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing file error, got %v", err)
 	}
 
 	invalidPath := filepath.Join(repo, "invalid.yaml")
 	testutil.MustWriteFile(t, invalidPath, "name: [\n")
-	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, invalidPath, 1*1024*1024); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
 		t.Fatalf("expected parse error for invalid yaml, got %v", err)
 	}
 }

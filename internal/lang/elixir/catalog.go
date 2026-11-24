@@ -10,7 +10,7 @@ import (
 func loadDeclaredDependencies(repoPath string) (map[string]struct{}, error) {
 	result := make(map[string]struct{})
 	readAndCollect := func(path string, collect func([]byte)) error {
-		content, err := safeio.ReadFileUnder(repoPath, path)
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxManifestBytes)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
