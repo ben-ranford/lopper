@@ -40,6 +40,50 @@ func CanonicalPackageNameForEcosystem(ecosystem, value string) string {
 	}
 }
 
+// BuildCanonicalPURL creates a canonical package URL from dependency identity
+// coordinates. It returns an empty value when the coordinates are incomplete.
+func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
+	ecosystem = CanonicalPackageEcosystem(ecosystem)
+	namespace = strings.TrimSpace(namespace)
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	if ecosystem == "" || name == "" || version == "" {
+		return ""
+	}
+	if ecosystem == "composer" && namespace == "" {
+		if vendor, packageName, ok := strings.Cut(name, "/"); ok && vendor != "" && packageName != "" {
+			namespace, name = vendor, packageName
+		} else {
+			return ""
+		}
+	}
+	if ecosystem == "golang" && namespace == "" {
+		if lastSlash := strings.LastIndexByte(name, '/'); lastSlash > 0 && lastSlash+1 < len(name) {
+			namespace, name = name[:lastSlash], name[lastSlash+1:]
+		}
+	}
+	if ecosystem == "npm" && namespace == "" && strings.HasPrefix(name, "@") {
+		if scope, packageName, ok := strings.Cut(name, "/"); ok && scope != "" && packageName != "" {
+			return CanonicalPURL("pkg:npm/" + escapeNPMScopeSegment(scope) + "/" + escapePURLSegment(packageName) + "@" + escapePURLSegment(version))
+		}
+		return ""
+	}
+	path := escapePURLSegment(name)
+	if namespace != "" {
+		segments := make([]string, 0, strings.Count(namespace, "/")+1)
+		for _, segment := range strings.Split(namespace, "/") {
+			if segment != "" {
+				segments = append(segments, escapePURLSegment(segment))
+			}
+		}
+		if len(segments) == 0 {
+			return ""
+		}
+		path = strings.Join(append(segments, path), "/")
+	}
+	return CanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+}
+
 func CanonicalPURL(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" || !strings.HasPrefix(strings.ToLower(trimmed), "pkg:") {
