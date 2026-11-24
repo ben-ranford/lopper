@@ -259,6 +259,9 @@ func discoverWorkspacePackageDirs(repoPath string, workspacePatterns []string) (
 func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (dirs map[string]struct{}, warnings []string) {
 	dirs = make(map[string]struct{})
 	warnings = make([]string, 0)
+	if shared.ShouldSkipDir(filepath.Base(searchRoot), skipDirectories) {
+		return dirs, warnings
+	}
 
 	root, warning := openWorkspaceSearchRoot(repoPath, searchRoot)
 	if root == nil {

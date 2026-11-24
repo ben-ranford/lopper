@@ -935,3 +935,19 @@ func assertWorkspaceManifestReaderWarning(t *testing.T, repo string, testCase wo
 		t.Fatalf("%s, got %q", testCase.wantWarningMsg, warning)
 	}
 }
+
+func TestDiscoverWorkspacePackageDirsSkipsExcludedSearchRoots(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		filepath.Join("packages", "app", testPackageJSONName):    `{"name":"app"}`,
+		filepath.Join("vendor", "vendored", testPackageJSONName): `{"name":"vendored"}`,
+		filepath.Join(".next", "generated", testPackageJSONName): `{"name":"generated"}`,
+	})
+
+	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"vendor/*", ".next/*", "packages/*"})
+	if !slices.Equal(dirs, []string{filepath.Join(repo, "packages", "app")}) || len(warnings) != 0 {
+		t.Fatalf("expected only the regular workspace package, got %v and warnings %v", dirs, warnings)
+	}
+}
