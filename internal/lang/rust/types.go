@@ -15,6 +15,7 @@ const (
 	maxScanFiles         = 2048
 	maxScannableRustFile = 2 * 1024 * 1024
 	maxManifestCount     = 256
+	maxScanRoots         = 256
 	maxWarningSamples    = 5
 	localModuleCacheSep  = "\x00"
 	workspaceFieldStart  = "members"
