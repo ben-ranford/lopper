@@ -1,6 +1,7 @@
 package rust
 
 import (
+	"iter"
 	"strings"
 	"unicode/utf8"
 
@@ -22,7 +23,10 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 }
 
 func appendUseClauseImports(imports []importBinding, clause string, ctx useImportContext) []importBinding {
-	entries := parseUseClause(clause)
+	entries, capped := parseUseClauseWithLimits(clause, maxUseClauseDepth, maxUseClauseEntries)
+	if capped {
+		recordRustUseStatementLimit(ctx.Scan, ctx.FilePath)
+	}
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
@@ -271,56 +275,68 @@ func normalizeUseSymbolNames(entry usePathEntry, module string) (string, string)
 	return name, local
 }
 
-func parseUseClause(clause string) []usePathEntry {
-	parts := splitTopLevel(clause, ',')
-	entries := make([]usePathEntry, 0)
-	for _, part := range parts {
-		expandUsePart(strings.TrimSpace(part), "", &entries)
-	}
-	return entries
+func parseUseClauseWithLimits(clause string, maxDepth, maxEntries int) ([]usePathEntry, bool) {
+	parser := useClauseParser{maxDepth: maxDepth, maxEntries: maxEntries}
+	parser.expandSegments(clause, "", 0)
+	return parser.entries, parser.capped
 }
 
-func expandUsePart(part, prefix string, out *[]usePathEntry) {
+type useClauseParser struct {
+	entries    []usePathEntry
+	maxDepth   int
+	maxEntries int
+	capped     bool
+}
+
+func (p *useClauseParser) expand(part, prefix string, depth int) {
+	if depth >= p.maxDepth || len(p.entries) >= p.maxEntries {
+		p.capped = true
+		return
+	}
 	part = strings.TrimSpace(part)
 	if part == "" {
 		return
 	}
 	part = strings.TrimPrefix(part, "pub ")
-	if expandUseBraceGroup(part, prefix, out) {
-		return
-	}
-	if expandUsePrefixedBraceGroup(part, prefix, out) {
+	if p.expandBraceGroup(part, prefix, depth) || p.expandPrefixedBraceGroup(part, prefix, depth) {
 		return
 	}
 	part, local := parseUseLocalAlias(part)
 	part, prefix, wildcard := normalizeUseWildcard(part, prefix)
-	*out = append(*out, makeUsePathEntry(prefix, part, local, wildcard))
+	p.entries = append(p.entries, makeUsePathEntry(prefix, part, local, wildcard))
 }
 
-func expandUseBraceGroup(part, prefix string, out *[]usePathEntry) bool {
+func (p *useClauseParser) expandBraceGroup(part, prefix string, depth int) bool {
 	if !strings.HasPrefix(part, "{") || !strings.HasSuffix(part, "}") {
 		return false
 	}
-	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}"))
-	expandUseSegments(inner, prefix, out)
+	p.expandSegments(part[1:len(part)-1], prefix, depth+1)
 	return true
 }
 
-func expandUsePrefixedBraceGroup(part, prefix string, out *[]usePathEntry) bool {
-	idx := strings.Index(part, "::{")
-	if idx < 0 || !strings.HasSuffix(part, "}") {
+func (p *useClauseParser) expandPrefixedBraceGroup(part, prefix string, depth int) bool {
+	index := strings.Index(part, "::{")
+	if index < 0 || !strings.HasSuffix(part, "}") {
 		return false
 	}
-	base := strings.TrimSpace(part[:idx])
-	inner := strings.TrimSpace(part[idx+3 : len(part)-1])
-	nextPrefix := joinPath(prefix, base)
-	expandUseSegments(inner, nextPrefix, out)
+	p.expandSegments(part[index+3:len(part)-1], joinPath(prefix, part[:index]), depth+1)
 	return true
 }
 
-func expandUseSegments(inner, prefix string, out *[]usePathEntry) {
-	for _, segment := range splitTopLevel(inner, ',') {
-		expandUsePart(segment, prefix, out)
+func (p *useClauseParser) expandSegments(inner, prefix string, depth int) {
+	if depth >= p.maxDepth {
+		p.capped = true
+		return
+	}
+	for segment := range topLevelUseSegments(inner, ',') {
+		if segment == "" {
+			continue
+		}
+		if len(p.entries) >= p.maxEntries {
+			p.capped = true
+			return
+		}
+		p.expand(segment, prefix, depth)
 	}
 }
 
@@ -398,25 +414,26 @@ func joinPath(prefix, value string) string {
 	}
 }
 
-func splitTopLevel(value string, sep rune) []string {
-	parts := make([]string, 0)
-	depth := 0
-	start := 0
-	for i, r := range value {
-		switch r {
-		case '{':
-			depth++
-		case '}':
-			depth--
-		case sep:
-			if depth == 0 {
-				parts = append(parts, strings.TrimSpace(value[start:i]))
-				start = i + 1
+func topLevelUseSegments(value string, sep rune) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		depth, start := 0, 0
+		for index, char := range value {
+			switch char {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			case sep:
+				if depth == 0 {
+					if !yield(strings.TrimSpace(value[start:index])) {
+						return
+					}
+					start = index + 1
+				}
 			}
 		}
+		yield(strings.TrimSpace(value[start:]))
 	}
-	parts = append(parts, strings.TrimSpace(value[start:]))
-	return parts
 }
 
 func lineColumn(content string, offset int) (int, int) {

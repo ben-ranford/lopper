@@ -40,6 +40,8 @@ type rustImportStatement struct {
 	Column int
 }
 
+const rustUseStatementLimitWarning = "Rust use statement processing reached its size or work limit; dependency coverage may be incomplete"
+
 func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool) ([]importBinding, []importBinding) {
 	externImports := make([]importBinding, 0)
 	useImports := make([]importBinding, 0)
@@ -62,17 +64,29 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 			useImports = appendUseClauseImports(useImports, string(stmt.Clause), ctx)
 		}
 	})
-	if limited && scan != nil {
-		const warning = "Rust use statement processing reached its size or work limit; dependency coverage may be incomplete"
-		scan.Warnings = append(scan.Warnings, warning)
-		scan.CoverageGaps = append(scan.CoverageGaps, report.CoverageGap{
-			Code:     report.CoverageGapRustUseStatementLimit,
-			Language: rustAdapterID,
-			Path:     filepath.ToSlash(filePath),
-			Evidence: []string{warning},
-		})
+	if limited {
+		recordRustUseStatementLimit(scan, filePath)
 	}
 	return externImports, useImports
+}
+
+func recordRustUseStatementLimit(scan *scanResult, filePath string) {
+	if scan == nil {
+		return
+	}
+	path := filepath.ToSlash(filePath)
+	for _, gap := range scan.CoverageGaps {
+		if gap.Code == report.CoverageGapRustUseStatementLimit && gap.Language == rustAdapterID && gap.Path == path {
+			return
+		}
+	}
+	scan.Warnings = append(scan.Warnings, rustUseStatementLimitWarning)
+	scan.CoverageGaps = append(scan.CoverageGaps, report.CoverageGap{
+		Code:     report.CoverageGapRustUseStatementLimit,
+		Language: rustAdapterID,
+		Path:     path,
+		Evidence: []string{rustUseStatementLimitWarning},
+	})
 }
 
 func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) bool {
