@@ -66,13 +66,14 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 
 func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) {
 	state := rustImportLexState{rawHashCount: -1}
+	useScan := rustUseTerminator{remaining: len(content)}
 	for lineStart, line := 0, 1; lineStart < len(content); line++ {
 		lineEnd := lineStart
 		for lineEnd < len(content) && content[lineEnd] != '\n' {
 			lineEnd++
 		}
 		if !state.insideRawString() && state.blockCommentDepth == 0 && !state.inString {
-			if kind, stmt, ok := parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
+			if kind, stmt, ok := useScan.parseRustImportStatement(content, lineStart, lineEnd, line, includeUse); ok {
 				visit(kind, stmt)
 			}
 		}
@@ -232,7 +233,7 @@ func hasRustRawStringTerminator(line []byte, index, hashCount int) bool {
 	return true
 }
 
-func parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
+func (scan *rustUseTerminator) parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
 	currentLine := content[lineStart:lineEnd]
 	firstContent := firstContentByteIndex(currentLine)
 	if firstContent >= len(currentLine) {
@@ -250,7 +251,7 @@ func parseRustImportStatement(content []byte, lineStart, lineEnd, line int, incl
 	}
 
 	if includeUse {
-		if stmt, ok := buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
+		if stmt, ok := scan.buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
 			return rustImportUse, stmt, true
 		}
 	}
@@ -260,7 +261,7 @@ func parseRustImportStatement(content []byte, lineStart, lineEnd, line int, incl
 	return 0, rustImportStatement{}, false
 }
 
-func buildRustUseStatement(content []byte, lineStart, line, statementStart int, statement []byte) (rustImportStatement, bool) {
+func (scan *rustUseTerminator) buildRustUseStatement(content []byte, lineStart, line, statementStart int, statement []byte) (rustImportStatement, bool) {
 	clauseStart, ok := matchRustUseStatement(statement)
 	if !ok {
 		return rustImportStatement{}, false
@@ -271,17 +272,39 @@ func buildRustUseStatement(content []byte, lineStart, line, statementStart int, 
 		return rustImportStatement{}, false
 	}
 
-	end := bytes.IndexByte(content[clauseOffset:], ';')
-	if end < 0 {
+	end := scan.next(content, clauseOffset)
+	work := end - clauseOffset + 1
+	if end == len(content) || work > maxRustUseStatementBytes || work > scan.remaining {
 		return rustImportStatement{}, false
 	}
 
+	scan.remaining -= work
 	stmtLine, column := lineColumnBytesFrom(content, line, lineStart, clauseOffset)
 	return rustImportStatement{
-		Clause: bytes.TrimSpace(content[clauseOffset : clauseOffset+end]),
+		Clause: bytes.TrimSpace(content[clauseOffset:end]),
 		Line:   stmtLine,
 		Column: column,
 	}, true
+}
+
+type rustUseTerminator struct {
+	nextOffset int
+	hasOffset  bool
+	remaining  int
+}
+
+// Consecutive import candidates start at increasing offsets. Remembering the
+// next delimiter or EOF means a missing terminator cannot rescan the same tail.
+func (scan *rustUseTerminator) next(content []byte, start int) int {
+	if !scan.hasOffset || scan.nextOffset < start {
+		scan.hasOffset = true
+		offset := bytes.IndexByte(content[start:], ';')
+		scan.nextOffset = len(content)
+		if offset >= 0 {
+			scan.nextOffset = start + offset
+		}
+	}
+	return scan.nextOffset
 }
 
 func buildRustExternCrateStatement(content []byte, lineEnd, line, firstContent, statementStart int, statement []byte) (rustImportStatement, bool) {
