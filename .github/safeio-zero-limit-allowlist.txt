@@ -1,0 +1,10 @@
+# Compatibility exceptions and temporary rows for focused milestone PRs.
+# Columns: path<TAB>function<TAB>callee<TAB>index<TAB>rationale
+internal/baseline/snapshot.go	LoadSnapshotFile	safeio.ReadFile	1	Explicit user-selected reports may exceed the indexed baseline limit; existing compatibility tests cover this load path.
+internal/lang/js/license.go	probeLicenseCandidate	safeio.ReadFileUnder	1	Tracked by #1944: license candidate parsing awaits its focused bounded-read change and retains the established diagnostic contract until that merge.
+internal/lang/swift/catalog.go	loadManifestData	safeio.ReadFileUnder	1	Tracked by #1945: SwiftPM manifest parsing awaits its focused bounded-read change while preserving existing package discovery until that merge.
+internal/lang/swift/catalog.go	loadResolvedData	safeio.ReadFileUnder	1	Tracked by #1945: SwiftPM resolved-file parsing awaits its focused bounded-read change while preserving existing pin decoding until that merge.
+internal/lang/swift/cocoapods.go	loadPodLockData	safeio.ReadFileUnder	1	Tracked by #1941: Podfile lock parsing awaits its focused bounded-read change while preserving existing lock diagnostics until that merge.
+internal/lang/swift/cocoapods.go	loadPodManifestData	safeio.ReadFileUnder	1	Tracked by #1941: Podfile parsing awaits its focused bounded-read change while preserving ordinary CocoaPods discovery behavior until that merge.
+internal/safeio/read.go	ReadFileUnder	safeio.ReadFileUnderLimit	1	Compatibility wrapper intentionally keeps the historical zero-limit API; new callers are rejected by this guard and must use an explicit positive limit.
+internal/safeio/read.go	ReadFileWithinRoot	safeio.ReadFileWithinRootLimit	1	Pinned-root compatibility preserves the historical zero-limit API; the guard rejects new callers unless they declare an explicit positive limit.
