@@ -32,6 +32,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, catalogWarnings...)
+	result.CoverageGaps = append(result.CoverageGaps, catalog.CoverageGaps...)
 
 	scan, err := scanRepo(ctx, repoPath, catalog)
 	if err != nil {

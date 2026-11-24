@@ -1,6 +1,9 @@
 package swift
 
-import "github.com/ben-ranford/lopper/internal/lang/shared"
+import (
+	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 const (
 	swiftAdapterID                        = "swift"
@@ -60,6 +63,7 @@ type dependencyCatalog struct {
 	AliasToDependency  map[string]string
 	ModuleToDependency map[string]string
 	LocalModules       map[string]struct{}
+	CoverageGaps       []report.CoverageGap
 	HasSwiftPM         bool
 	HasCocoaPods       bool
 	HasCarthage        bool

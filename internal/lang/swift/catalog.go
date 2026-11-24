@@ -38,7 +38,10 @@ func buildDependencyCatalogWithOptions(repoPath string, opts dependencyCatalogOp
 	}
 	warnings = append(warnings, manifestWarnings...)
 
-	cocoaPods, podWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadPodManifestData, loadPodLockData)
+	cocoaPods, podWarnings, err := loadPackageManagerCatalog(repoPath, &catalog,
+		loadBoundedCocoaPodsSource(podManifestName, loadPodManifestData),
+		loadBoundedCocoaPodsSource(podLockName, loadPodLockData),
+	)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
