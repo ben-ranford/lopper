@@ -427,6 +427,10 @@ func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Repor
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
 			return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil
 		},
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			report.FinalizeDerivedState(&reportData)
+			return reportData, nil
+		},
 	})
 }
 

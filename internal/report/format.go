@@ -11,6 +11,8 @@ func NewFormatter() *Formatter {
 }
 
 func (f *Formatter) Format(report Report, format Format) (string, error) {
+	FinalizeDerivedState(&report)
+
 	switch format {
 	case FormatTable:
 		return formatTable(report)

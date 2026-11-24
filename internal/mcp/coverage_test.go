@@ -215,6 +215,8 @@ func TestRunAnalysisToolAppliesLocalAdvisories(t *testing.T) {
 	}
 	reportData := sampleReport(repo)
 	reportData.Dependencies[0].UsedImports = []report.ImportUse{{Name: "default", Module: "lodash", Locations: []report.Location{{File: "app.ts", Line: 1}}}}
+	reportData.Summary = &report.Summary{DependencyCount: 99}
+	reportData.LanguageBreakdown = []report.LanguageSummary{{Language: "preserved", DependencyCount: 77}}
 	server := NewServer(Options{Analyzer: &fakeAnalyser{report: reportData}})
 
 	args := mustJSON(t, analysisToolArguments{
@@ -236,6 +238,12 @@ func TestRunAnalysisToolAppliesLocalAdvisories(t *testing.T) {
 	}
 	if len(payload.Report.Dependencies) != 1 || len(payload.Report.Dependencies[0].Vulnerabilities) != 1 {
 		t.Fatalf("expected annotated vulnerability finding, got %#v", payload.Report.Dependencies)
+	}
+	if payload.Report.Summary == nil || payload.Report.Summary.DependencyCount != 1 || payload.Report.Summary.Vulnerabilities == nil || payload.Report.Summary.Vulnerabilities.ReachableFindings != 1 {
+		t.Fatalf("expected advisory finalization to refresh summary, got %#v", payload.Report.Summary)
+	}
+	if len(payload.Report.LanguageBreakdown) != 1 || payload.Report.LanguageBreakdown[0].Language != "js-ts" {
+		t.Fatalf("expected advisory finalization to refresh language breakdown, got %#v", payload.Report.LanguageBreakdown)
 	}
 	if payload.Report.EffectivePolicy == nil || payload.Report.EffectivePolicy.Vulnerabilities.AdvisorySourcePath != advisoryPath {
 		t.Fatalf("expected advisory policy metadata, got %#v", payload.Report.EffectivePolicy)
