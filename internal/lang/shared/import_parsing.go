@@ -37,7 +37,23 @@ func StripBlockComments(content []byte) []byte {
 	copy(stripped, content)
 
 	inBlockComment := false
+	quote := byte(0)
+	escaped := false
 	for i := 0; i < len(stripped); i++ {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if stripped[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if stripped[i] == quote {
+				quote = 0
+			}
+			continue
+		}
 		if inBlockComment {
 			if i+1 < len(stripped) && stripped[i] == '*' && stripped[i+1] == '/' {
 				stripped[i] = ' '
@@ -49,6 +65,16 @@ func StripBlockComments(content []byte) []byte {
 			if stripped[i] != '\n' && stripped[i] != '\r' {
 				stripped[i] = ' '
 			}
+			continue
+		}
+		if i+1 < len(stripped) && stripped[i] == '/' && stripped[i+1] == '/' {
+			for i+1 < len(stripped) && stripped[i+1] != '\n' && stripped[i+1] != '\r' {
+				i++
+			}
+			continue
+		}
+		if stripped[i] == '\'' || stripped[i] == '"' {
+			quote = stripped[i]
 			continue
 		}
 		if i+1 < len(stripped) && stripped[i] == '/' && stripped[i+1] == '*' {
