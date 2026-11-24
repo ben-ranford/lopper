@@ -6,10 +6,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const runtimeTraceStateSchema = "v2"
 const runtimeTraceStateSuffix = ".state.json"
+const maxRuntimeTraceStateBytes = 1 << 20
 
 type runtimeTraceState struct {
 	Schema   string          `json:"schema"`
@@ -29,9 +32,9 @@ func reuseRuntimeTraceIfPossible(tracePath, command string, provider CaptureProv
 		return false, nil
 	}
 
-	stateData, err := os.ReadFile(runtimeTraceStatePath(tracePath))
+	stateData, err := safeio.ReadRegularFileLimit(runtimeTraceStatePath(tracePath), maxRuntimeTraceStateBytes)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, safeio.ErrFileTooLarge) {
 			return false, nil
 		}
 		return false, err
