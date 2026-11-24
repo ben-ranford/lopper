@@ -191,6 +191,9 @@ func decodeStructured(path string, data []byte, target any) error {
 		if err := decoder.Decode(target); err != nil {
 			return fmt.Errorf("invalid JSON advisory source: %w", err)
 		}
+		if err := requireJSONEOF(decoder); err != nil {
+			return fmt.Errorf("invalid JSON advisory source: %w", err)
+		}
 	default:
 		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		if err := decoder.Decode(target); err != nil {
