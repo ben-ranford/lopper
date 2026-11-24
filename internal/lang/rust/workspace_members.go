@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -40,7 +41,7 @@ func discoverWorkspaceMemberManifests(repoPath string, members []string) ([]stri
 		MaxTraversalEntries: maxWorkspaceEntries,
 		MaxFiles:            maxWorkspaceCandidates,
 		CountCandidate: func(_ string, entry fs.DirEntry) bool {
-			return entry.Name() == cargoTomlName
+			return strings.EqualFold(entry.Name(), cargoTomlName)
 		},
 	}
 	return discoverWorkspaceMemberManifestsWithBudget(repoPath, members, budget)
@@ -110,11 +111,12 @@ func walkWorkspaceMemberManifests(repoPath string, patterns []workspaceMemberPat
 	}()
 	var paths []string
 	remaining := maxWorkspaceMatchWork
-	err = shared.WalkRepoFilesWithinRoot(context.Background(), repoPath, root, budget, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		if entry.Name() != cargoTomlName {
+	err = shared.WalkRepoFilesWithinRootPinned(context.Background(), repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
+		if !isWorkspaceCargoManifest(file) {
 			return nil
 		}
-		rel, err := filepath.Rel(repoPath, filepath.Dir(path))
+		dir := filepath.Dir(file.Path)
+		rel, err := filepath.Rel(repoPath, dir)
 		if err != nil {
 			return err
 		}
@@ -127,11 +129,27 @@ func walkWorkspaceMemberManifests(repoPath string, patterns []workspaceMemberPat
 			return err
 		}
 		if matched {
-			paths = append(paths, path)
+			paths = append(paths, filepath.Join(dir, cargoTomlName))
 		}
 		return nil
 	})
 	return paths, err
+}
+
+func isWorkspaceCargoManifest(file shared.RootedWalkFile) bool {
+	if file.Leaf == cargoTomlName {
+		return true
+	}
+	if !strings.EqualFold(file.Leaf, cargoTomlName) {
+		return false
+	}
+	// Preserve the filesystem's lookup rules for the canonical manifest name.
+	canonical, err := file.Parent.Lstat(cargoTomlName)
+	if err != nil {
+		return false
+	}
+	actual, err := file.Entry.Info()
+	return err == nil && os.SameFile(canonical, actual)
 }
 
 func matchAnyWorkspaceMember(patterns []workspaceMemberPattern, parts []string, remaining *int) (bool, error) {

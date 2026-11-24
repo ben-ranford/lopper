@@ -2,6 +2,7 @@ package rust
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -64,6 +65,28 @@ func TestRustWorkspaceDiscoveryReportsPathDepthLimit(t *testing.T) {
 	_, warnings, gaps := discoverWorkspaceMemberManifests(repo, []string{"**"})
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "member path depth limit") || len(gaps) != 1 {
 		t.Fatalf("expected member path depth warning, got %v and %v", warnings, gaps)
+	}
+}
+
+func TestRustWorkspaceDiscoveryUsesFileSystemCaseRules(t *testing.T) {
+	repo := t.TempDir()
+	member := filepath.Join(repo, "member")
+	writeFile(t, filepath.Join(member, "cargo.toml"), "[package]\nname = 'member'")
+	canonical := filepath.Join(member, cargoTomlName)
+
+	paths, _, _ := discoverWorkspaceMemberManifests(repo, []string{"member"})
+	_, err := os.Stat(canonical)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if len(paths) != 0 {
+			t.Fatalf("expected case-sensitive lookup to skip, got %v", paths)
+		}
+	case err != nil:
+		t.Fatal(err)
+	default:
+		if !slices.Equal(paths, []string{canonical}) {
+			t.Fatalf("expected the canonical path on a case-insensitive file system, got %v", paths)
+		}
 	}
 }
 
