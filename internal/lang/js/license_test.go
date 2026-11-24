@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -255,6 +256,18 @@ func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	}
 	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
 		t.Fatalf("unexpected probe result: %#v", probe)
+	}
+}
+
+func TestProbeLicenseCandidateSkipsFileAboveLimit(t *testing.T) {
+	root := t.TempDir()
+	candidate := filepath.Join(root, "LICENSE")
+	const licenseLimit = 256 * 1024
+	content := "MIT License\nPermission is hereby granted...\n" + strings.Repeat(" ", licenseLimit)
+	testutil.MustWriteFile(t, candidate, content)
+
+	if probe := probeLicenseCandidate(root, candidate); probe != nil {
+		t.Fatalf("expected oversized license file to be skipped, got %#v", probe)
 	}
 }
 

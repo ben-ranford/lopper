@@ -11,6 +11,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const (
+	maxLicenseCandidates  = 5
+	maxLicenseWalkEntries = 4096
+	maxLicenseFileBytes   = 256 * 1024
+)
+
 func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) (*report.DependencyLicense, *report.DependencyProvenance, []string) {
 	if strings.TrimSpace(depRoot) == "" {
 		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{"unable to resolve dependency root for license/provenance detection"}
@@ -169,7 +175,7 @@ func probeLicenseCandidates(depRoot string, candidates []string) *licenseFilePro
 }
 
 func probeLicenseCandidate(depRoot, candidate string) *licenseFileProbe {
-	content, err := safeio.ReadFileUnder(depRoot, candidate)
+	content, err := safeio.ReadFileUnderLimit(depRoot, candidate, maxLicenseFileBytes)
 	if err != nil {
 		return nil
 	}
@@ -195,16 +201,21 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 
 func findLicenseFiles(depRoot string) []string {
 	files := make([]string, 0, 4)
-	if filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files)) != nil {
+	walkEntries := 0
+	if filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files, &walkEntries)) != nil {
 		return files
 	}
 	return files
 }
 
-func licenseWalkFunc(depRoot string, files *[]string) fs.WalkDirFunc {
+func licenseWalkFunc(depRoot string, files *[]string, walkEntries *int) fs.WalkDirFunc {
 	return func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		*walkEntries = *walkEntries + 1
+		if *walkEntries > maxLicenseWalkEntries {
+			return fs.SkipAll
 		}
 		if shouldSkipLicenseDir(depRoot, path, d) {
 			return filepath.SkipDir
@@ -213,7 +224,7 @@ func licenseWalkFunc(depRoot string, files *[]string) fs.WalkDirFunc {
 			return nil
 		}
 		*files = append(*files, path)
-		if len(*files) >= 5 {
+		if len(*files) >= maxLicenseCandidates {
 			return fs.SkipAll
 		}
 		return nil
