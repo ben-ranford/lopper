@@ -172,7 +172,51 @@ func (e *compileCommandEntry) compileArgs() []string {
 	if e.Command == "" {
 		return nil
 	}
-	return strings.Fields(e.Command)
+	return splitCompileCommand(e.Command)
+}
+
+func splitCompileCommand(command string) []string {
+	args := make([]string, 0)
+	var current strings.Builder
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if ch == '\\' && i+1 < len(command) && compileCommandEscapes(command[i+1], quote) {
+			i++
+			current.WriteByte(command[i])
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+				continue
+			}
+			current.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case ' ', '\t', '\n', '\r':
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+func compileCommandEscapes(next, quote byte) bool {
+	if next == '\\' || next == quote || next == '"' || next == '\'' {
+		return true
+	}
+	return quote == 0 && (next == ' ' || next == '\t')
 }
 
 func recordCompileSource(sourceFileSet map[string]struct{}, sourcePath string) {
