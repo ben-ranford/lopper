@@ -46,10 +46,9 @@ type FileScan struct {
 	Imports          []ImportBinding
 	UncertainImports []report.ImportUse
 	ReExports        []ReExportBinding
-	IdentifierUsage  map[string]int
-	NamespaceUsage   map[string]map[string]int
-
-	namedDestructureUsage map[report.Location]int
+	IdentifierUsage          map[string]int
+	NamespaceUsage           map[string]map[string]int
+	namedDestructureUsage    map[report.Location]int
 }
 
 type ScanResult struct {
@@ -145,9 +144,8 @@ func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
 		Imports:          imports,
 		UncertainImports: uncertainImports,
 		ReExports:        reExports,
-		IdentifierUsage:  identifierUsage,
-		NamespaceUsage:   namespaceUsage,
-
-		namedDestructureUsage: namedDestructureUsage,
+		IdentifierUsage:          identifierUsage,
+		NamespaceUsage:           namespaceUsage,
+		namedDestructureUsage:    namedDestructureUsage,
 	}
 }

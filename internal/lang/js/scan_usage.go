@@ -29,7 +29,7 @@ func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []Imp
 			return
 		}
 		location := moduleNames[name]
-		if location.Line > 0 && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node) {
+		if location.Line > 0 && ((isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node)) || isNamedObjectUsage(node)) {
 			destructures[location]++
 		}
 	})
@@ -61,13 +61,22 @@ func isDirectModuleScope(node *sitter.Node) bool {
 		case "import_specifier", "named_imports", "import_clause", "import_statement",
 			"pair_pattern", "object_pattern", "variable_declarator", "lexical_declaration",
 			"variable_declaration", "export_statement", "assignment_expression",
-			"parenthesized_expression", "expression_statement":
+		"parenthesized_expression", "expression_statement", "call_expression", "arguments":
 			continue
 		default:
 			return false
 		}
 	}
 	return false
+}
+
+func isNamedObjectUsage(node *sitter.Node) bool {
+	parent := node.Parent()
+	if parent == nil || (parent.Type() != "member_expression" && parent.Type() != "subscript_expression") {
+		return false
+	}
+	object := parent.ChildByFieldName("object")
+	return object != nil && object.ID() == node.ID() && isDirectModuleScope(parent)
 }
 
 func collectNamespaceUsage(tree *sitter.Tree, content []byte) map[string]map[string]int {
