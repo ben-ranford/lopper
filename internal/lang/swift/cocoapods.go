@@ -15,9 +15,14 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var (
+	errPodDeclarationLimit = errors.New("too many Podfile declarations")
+	errPodLockEntryLimit   = errors.New("too many Podfile.lock entries")
+)
+
 func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	manifestPath := filepath.Join(repoPath, podManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, manifestPath, maxPodManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -25,7 +30,10 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 		return false, nil, fmt.Errorf("read %s: %w", podManifestName, err)
 	}
 
-	declarations := parsePodDeclarations(content)
+	declarations, err := parsePodDeclarations(content)
+	if err != nil {
+		return false, nil, fmt.Errorf("parse %s: %w", podManifestName, err)
+	}
 	warnings := make([]string, 0, 2)
 	ambiguousModules := make(map[string]struct{})
 	for _, declaration := range declarations {
@@ -47,7 +55,7 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 
 func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	lockPath := filepath.Join(repoPath, podLockName)
-	content, err := safeio.ReadFileUnder(repoPath, lockPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, lockPath, maxPodLockBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -83,7 +91,7 @@ func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []strin
 	return true, warnings, nil
 }
 
-func parsePodDeclarations(content []byte) []string {
+func parsePodDeclarations(content []byte) ([]string, error) {
 	lines := strings.Split(string(content), "\n")
 	declarations := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -96,16 +104,22 @@ func parsePodDeclarations(content []byte) []string {
 			continue
 		}
 		if name := strings.TrimSpace(matches[1]); name != "" {
+			if len(declarations) >= maxPodDeclarations {
+				return nil, errPodDeclarationLimit
+			}
 			declarations = append(declarations, name)
 		}
 	}
-	return dedupeStrings(declarations)
+	return dedupeStrings(declarations), nil
 }
 
 func parsePodLockEntries(content []byte) ([]podLockEntry, error) {
 	doc := podLockDocument{}
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, err
+	}
+	if len(doc.Pods) > maxPodLockEntries {
+		return nil, errPodLockEntryLimit
 	}
 
 	entries := make([]podLockEntry, 0, len(doc.Pods))

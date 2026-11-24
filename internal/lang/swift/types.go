@@ -20,6 +20,9 @@ const (
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
 	maxPodDeclarations                    = 512
+	maxPodManifestBytes                   = 2 * 1024 * 1024
+	maxPodLockBytes                       = 8 * 1024 * 1024
+	maxPodLockEntries                     = 4096
 	maxCarthageDeclarations               = 512
 	maxWarningSamples                     = 5
 	ambiguousDependencyKey                = "\x00"

@@ -2,6 +2,7 @@ package swift
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -379,7 +381,7 @@ func TestSwiftCocoaPodsLockLoaderBranches(t *testing.T) {
 }
 
 func TestSwiftCocoaPodsParserAndWarningBranches(t *testing.T) {
-	if got := parsePodDeclarations([]byte("\n# comment\npod 'Alamofire'\nnot a pod\n")); !slices.Equal(got, []string{"Alamofire"}) {
+	if got, err := parsePodDeclarations([]byte("\n# comment\npod 'Alamofire'\nnot a pod\n")); err != nil || !slices.Equal(got, []string{"Alamofire"}) {
 		t.Fatalf("unexpected parsed pod declarations: %#v", got)
 	}
 	if _, err := parsePodLockEntries([]byte("PODS: [\n")); err == nil {
@@ -399,6 +401,47 @@ func TestSwiftCocoaPodsParserAndWarningBranches(t *testing.T) {
 	if !strings.Contains(warning, "Alpha, Beta, Delta, Epsilon, Eta") || !strings.Contains(warning, "+2 more") {
 		t.Fatalf("expected truncated ambiguity warning, got %q", warning)
 	}
+}
+
+func TestSwiftCocoaPodsCatalogLoadersBoundUntrustedInput(t *testing.T) {
+	t.Run("Podfile size", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), "pod 'Demo'\n"+strings.Repeat(" ", maxPodManifestBytes))
+		found, warnings, err := loadPodManifestData(repo, &dependencyCatalog{})
+		if found || len(warnings) != 0 || !errors.Is(err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected Podfile byte limit, found=%v warnings=%#v err=%v", found, warnings, err)
+		}
+	})
+
+	t.Run("Podfile.lock size", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, podLockName), "PODS: []\n"+strings.Repeat(" ", maxPodLockBytes))
+		found, warnings, err := loadPodLockData(repo, &dependencyCatalog{})
+		if found || len(warnings) != 0 || !errors.Is(err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected Podfile.lock byte limit, found=%v warnings=%#v err=%v", found, warnings, err)
+		}
+	})
+
+	t.Run("Podfile declarations", func(t *testing.T) {
+		var podfile strings.Builder
+		for i := 0; i <= maxPodDeclarations; i++ {
+			podfile.WriteString("pod 'Demo'\n")
+		}
+		if _, err := parsePodDeclarations([]byte(podfile.String())); !errors.Is(err, errPodDeclarationLimit) {
+			t.Fatalf("expected Podfile declaration limit, got %v", err)
+		}
+	})
+
+	t.Run("Podfile.lock entries", func(t *testing.T) {
+		var lockfile strings.Builder
+		lockfile.WriteString("PODS:\n")
+		for i := 0; i <= maxPodLockEntries; i++ {
+			lockfile.WriteString("  - Demo\n")
+		}
+		if _, err := parsePodLockEntries([]byte(lockfile.String())); !errors.Is(err, errPodLockEntryLimit) {
+			t.Fatalf("expected Podfile.lock entry limit, got %v", err)
+		}
+	})
 }
 
 func TestSwiftBuildDependencyCatalogSurfacesPodLoaderFailures(t *testing.T) {
