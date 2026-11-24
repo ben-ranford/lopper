@@ -203,7 +203,7 @@ func TestRustAdditionalUncoveredCoverageBranches(t *testing.T) {
 		t.Fatalf("expected blank workspace pattern match to be false without error, matched=%v err=%v", matched, err)
 	}
 
-	if matched, err := matchWorkspaceMemberPatternParts([]string{"**", "["}, []string{"crate"}); err == nil || matched {
+	if matched, err := workspaceMemberPatternMatches(filepath.Join("**", "["), "crate"); err == nil || matched {
 		t.Fatalf("expected invalid recursive workspace pattern to error, matched=%v err=%v", matched, err)
 	}
 
