@@ -2,7 +2,6 @@ package rust
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,9 +143,8 @@ func TestRustWorkspaceMemberPatternBranches(t *testing.T) {
 		t.Fatalf("expected non-matching recursive glob to fail, matched=%v err=%v", matched, err)
 	}
 
-	matched, err = matchWorkspaceMemberPatternParts(nil, nil)
-	if err != nil || !matched {
-		t.Fatalf("expected empty pattern parts to match empty candidate, matched=%v err=%v", matched, err)
+	if !matchWorkspaceMemberPatternParts(nil, nil) {
+		t.Fatal("expected empty pattern parts to match empty candidate")
 	}
 
 	if matched, err = workspaceMemberPatternMatches("[", "crate"); err == nil || matched {
@@ -156,67 +154,6 @@ func TestRustWorkspaceMemberPatternBranches(t *testing.T) {
 	if matched, err = workspaceMemberPatternMatches("crates/*", ""); err != nil || matched {
 		t.Fatalf("expected empty candidate not to match, matched=%v err=%v", matched, err)
 	}
-}
-
-func TestRustWorkspaceMemberCollectorBranches(t *testing.T) {
-	repo := t.TempDir()
-	collector := workspaceMemberCollector{
-		repoPath: repo,
-		pattern:  filepath.Join("crates", "*"),
-		roots:    map[string]struct{}{},
-	}
-
-	assertCollectorMatchDirectory(t, &collector, "", nil, context.Canceled, false, context.Canceled)
-
-	targetDir := filepath.Join(repo, "target")
-	targetEntry := mustCreateDirEntry(t, targetDir)
-	assertCollectorMatchDirectory(t, &collector, targetDir, targetEntry, nil, false, filepath.SkipDir)
-
-	filePath := filepath.Join(repo, "crates", "file.txt")
-	fileEntry := mustCreateFileEntry(t, filePath, "not a manifest")
-	assertCollectorMatchDirectory(t, &collector, filePath, fileEntry, nil, false, nil)
-
-	noManifestDir := filepath.Join(repo, "crates", "no-manifest")
-	noManifestEntry := mustCreateDirEntry(t, noManifestDir)
-	assertCollectorMatchDirectory(t, &collector, noManifestDir, noManifestEntry, nil, false, nil)
-
-	memberDir := filepath.Join(repo, "crates", "member")
-	memberEntry := mustCreateDirEntry(t, memberDir)
-	writeFile(t, filepath.Join(memberDir, cargoManifestFile), "[package]\nname = \"member\"\nversion = \"0.1.0\"\n")
-	assertCollectorMatchDirectory(t, &collector, memberDir, memberEntry, nil, true, nil)
-	if err := collector.walk(memberDir, memberEntry, nil); err != nil {
-		t.Fatalf("collector walk: %v", err)
-	}
-	if _, ok := collector.roots[memberDir]; !ok {
-		t.Fatalf("expected collector walk to record matched root, got %#v", collector.roots)
-	}
-}
-
-func assertCollectorMatchDirectory(t *testing.T, collector *workspaceMemberCollector, path string, entry os.DirEntry, walkErr error, wantMatched bool, wantErr error) {
-	t.Helper()
-	matched, err := collector.matchDirectory(path, entry, walkErr)
-	if !errors.Is(err, wantErr) || matched != wantMatched {
-		t.Fatalf("unexpected collector match result for %q: matched=%v err=%v wantMatched=%v wantErr=%v", path, matched, err, wantMatched, wantErr)
-	}
-}
-
-func mustCreateDirEntry(t *testing.T, path string) os.DirEntry {
-	t.Helper()
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	return mustFindDirEntryByName(t, filepath.Dir(path), filepath.Base(path))
-}
-
-func mustCreateFileEntry(t *testing.T, path, contents string) os.DirEntry {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-	return mustFindDirEntryByName(t, filepath.Dir(path), filepath.Base(path))
 }
 
 func TestRustHelperBranchCoverage(t *testing.T) {

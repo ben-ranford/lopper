@@ -174,21 +174,15 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 	if scopeMode == "repo" {
 		return discoverRepositoryManifestData(repoPath, rootManifest, deps)
 	}
-	paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
+	paths := make([]string, 0, 1+min(len(meta.WorkspaceMembers), maxWorkspacePatterns))
 	workspaceManifestPaths := make([]string, 0, 1)
-	warnings := make([]string, 0)
 	if meta.HasPackage || len(meta.WorkspaceMembers) == 0 {
 		paths = append(paths, rootManifest)
 	} else {
 		workspaceManifestPaths = append(workspaceManifestPaths, rootManifest)
 	}
-	for _, member := range meta.WorkspaceMembers {
-		memberManifests, warning := resolveWorkspaceMemberManifestPaths(repoPath, member)
-		if warning != "" {
-			warnings = append(warnings, warning)
-		}
-		paths = append(paths, memberManifests...)
-	}
+	memberPaths, warnings, workspaceGaps := discoverWorkspaceMemberManifests(repoPath, meta.WorkspaceMembers)
+	paths = append(paths, memberPaths...)
 
 	excludedSourceRoots, sourceFallbackRoots, nestedManifestPaths, malformedWarnings, malformedCoverageGaps, err := discoverMalformedNestedCargoRoots(repoPath, rootManifest, isolatedRoots...)
 	if err != nil {
@@ -202,7 +196,7 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 		ExcludedSourceRoots:    excludedSourceRoots,
 		SourceFallbackRoots:    sourceFallbackRoots,
 		Warnings:               shared.UniqueTrimmedStrings(warnings),
-		CoverageGaps:           malformedCoverageGaps,
+		CoverageGaps:           append(workspaceGaps, malformedCoverageGaps...),
 		ParsedDependencies:     make(map[string]map[string]dependencyInfo),
 	}
 	for _, manifestPath := range discovery.ManifestPaths {
@@ -361,18 +355,6 @@ func removeManifestPath(paths []string, target string) []string {
 	return filtered
 }
 
-func resolveWorkspaceMemberManifestPaths(repoPath, member string) ([]string, string) {
-	memberRoots := resolveWorkspaceMembers(repoPath, member)
-	if len(memberRoots) == 0 {
-		return nil, fmt.Sprintf("workspace member pattern %q did not resolve to a Cargo.toml", member)
-	}
-	paths := make([]string, 0, len(memberRoots))
-	for _, root := range memberRoots {
-		paths = append(paths, filepath.Join(root, cargoTomlName))
-	}
-	return paths, ""
-}
-
 func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 	paths, warnings, _, err := discoverManifestsByWalkWithStatus(repoPath)
 	return paths, warnings, err
@@ -429,106 +411,6 @@ func cargoManifestDiscoveryCoverageGaps(truncated bool) []report.CoverageGap {
 		Path:     ".",
 		Evidence: []string{cargoManifestDiscoveryCapWarning()},
 	}}
-}
-
-func resolveWorkspaceMembers(repoPath, pattern string) []string {
-	roots := make(map[string]struct{})
-	pattern = strings.TrimSpace(pattern)
-	if pattern == "" {
-		return nil
-	}
-	collector := workspaceMemberCollector{
-		repoPath: repoPath,
-		pattern:  pattern,
-		roots:    roots,
-	}
-	err := filepath.WalkDir(repoPath, collector.walk)
-	if err != nil {
-		return nil
-	}
-	return shared.SortedKeys(roots)
-}
-
-type workspaceMemberCollector struct {
-	repoPath string
-	pattern  string
-	roots    map[string]struct{}
-}
-
-func (c *workspaceMemberCollector) walk(path string, entry fs.DirEntry, walkErr error) error {
-	matched, err := c.matchDirectory(path, entry, walkErr)
-	if err != nil || !matched {
-		return err
-	}
-	c.roots[path] = struct{}{}
-	return nil
-}
-
-func (c *workspaceMemberCollector) matchDirectory(path string, entry fs.DirEntry, walkErr error) (bool, error) {
-	if walkErr != nil {
-		return false, walkErr
-	}
-	if !entry.IsDir() {
-		return false, nil
-	}
-	if shouldSkipDir(entry.Name()) {
-		return false, filepath.SkipDir
-	}
-
-	rel, err := filepath.Rel(c.repoPath, path)
-	if err != nil {
-		return false, err
-	}
-	matched, err := workspaceMemberPatternMatches(c.pattern, rel)
-	if err != nil || !matched {
-		return false, err
-	}
-
-	manifest := filepath.Join(path, cargoTomlName)
-	if _, err := os.Stat(manifest); err != nil {
-		return false, nil
-	}
-	return true, nil
-}
-
-func workspaceMemberPatternMatches(pattern, candidate string) (bool, error) {
-	pattern = filepath.ToSlash(filepath.Clean(strings.TrimSpace(pattern)))
-	candidate = filepath.ToSlash(filepath.Clean(strings.TrimSpace(candidate)))
-	if pattern == "" || candidate == "" {
-		return false, nil
-	}
-	patternParts := strings.Split(pattern, "/")
-	candidateParts := strings.Split(candidate, "/")
-	return matchWorkspaceMemberPatternParts(patternParts, candidateParts)
-}
-
-func matchWorkspaceMemberPatternParts(patternParts, candidateParts []string) (bool, error) {
-	if len(patternParts) == 0 {
-		return len(candidateParts) == 0, nil
-	}
-	if patternParts[0] == "**" {
-		if len(patternParts) == 1 {
-			return true, nil
-		}
-		for index := 0; index <= len(candidateParts); index++ {
-			matched, err := matchWorkspaceMemberPatternParts(patternParts[1:], candidateParts[index:])
-			if err != nil {
-				return false, err
-			}
-			if matched {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-	if len(candidateParts) == 0 {
-		return false, nil
-	}
-	matched, err := filepath.Match(patternParts[0], candidateParts[0])
-	if err != nil || !matched {
-		return false, err
-	}
-	return matchWorkspaceMemberPatternParts(patternParts[1:], candidateParts[1:])
 }
 
 func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string]dependencyInfo, error) {
