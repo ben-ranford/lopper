@@ -123,6 +123,9 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 
 func toSARIFArtifactURI(file string) string {
 	file = strings.ReplaceAll(file, "\\", "/")
+	if isUNCPath(file) {
+		return fileURLFromUNCPath(file)
+	}
 	file = path.Clean(file)
 	if isWindowsDriveAbsolutePath(file) || path.IsAbs(file) {
 		return fileURLFromPath(file)
@@ -133,6 +136,28 @@ func toSARIFArtifactURI(file string) string {
 	// URL path encoding preserves literal filename bytes and prevents a colon in
 	// the first segment from becoming a scheme. RawPath must remain unset.
 	return (&url.URL{Path: file}).String()
+}
+
+func isUNCPath(pathValue string) bool {
+	return strings.HasPrefix(pathValue, "//") && !strings.HasPrefix(pathValue, "///")
+}
+
+func fileURLFromUNCPath(pathValue string) string {
+	uncPath := strings.TrimPrefix(pathValue, "//")
+	host, sharePath, found := strings.Cut(uncPath, "/")
+	if host == "" || !found {
+		return ""
+	}
+	share, relativePath, _ := strings.Cut(sharePath, "/")
+	if share == "" {
+		return ""
+	}
+	cleanedPath := path.Clean("/" + relativePath)
+	return (&url.URL{
+		Scheme: "file",
+		Host:   host,
+		Path:   "/" + share + cleanedPath,
+	}).String()
 }
 
 func fileURLFromPath(pathValue string) string {

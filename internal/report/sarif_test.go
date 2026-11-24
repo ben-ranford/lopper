@@ -579,6 +579,26 @@ func TestToSARIFLocationWindowsAbsolutePathUsesFileURI(t *testing.T) {
 	}
 }
 
+func TestToSARIFLocationUNCPathUsesAuthorityFileURI(t *testing.T) {
+	got, ok := toSARIFLocation(Location{File: `\\server\share\src\space #?.go`, Line: 7, Column: 3})
+	if !ok {
+		t.Fatalf("expected valid sarif location")
+	}
+	if got.PhysicalLocation.ArtifactLocation.URI != "file://server/share/src/space%20%23%3F.go" {
+		t.Fatalf("unexpected UNC sarif uri: %q", got.PhysicalLocation.ArtifactLocation.URI)
+	}
+}
+
+func TestToSARIFLocationUNCPathRetainsShareRoot(t *testing.T) {
+	got, ok := toSARIFLocation(Location{File: `\\server\share\src\..\main.go`})
+	if !ok {
+		t.Fatalf("expected valid sarif location")
+	}
+	if got.PhysicalLocation.ArtifactLocation.URI != "file://server/share/main.go" {
+		t.Fatalf("unexpected UNC sarif uri: %q", got.PhysicalLocation.ArtifactLocation.URI)
+	}
+}
+
 func TestToSARIFLocationsNilAndOnlyInvalid(t *testing.T) {
 	if got := toSARIFLocations(nil); len(got) != 0 {
 		t.Fatalf("expected nil for nil input, got %v", got)

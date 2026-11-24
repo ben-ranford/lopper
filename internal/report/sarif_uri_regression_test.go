@@ -68,7 +68,7 @@ func TestSARIFArtifactLocationsRejectEscapingTraversal(t *testing.T) {
 }
 
 func TestSARIFArtifactLocationsPreserveLocalAbsoluteFiles(t *testing.T) {
-	for _, file := range []string{"/tmp/space #?.ts", `C:\tmp\space #?.ts`, `\\server\share\space #?.ts`} {
+	for _, file := range []string{"/tmp/space #?.ts", `C:\tmp\space #?.ts`} {
 		t.Run(file, func(t *testing.T) {
 			result := sarifFilenameResult(t, file)
 			if len(result.Locations) != 1 {
@@ -82,6 +82,20 @@ func TestSARIFArtifactLocationsPreserveLocalAbsoluteFiles(t *testing.T) {
 				t.Fatalf("absolute filename gained external URI semantics: %#v", parsed)
 			}
 		})
+	}
+}
+
+func TestSARIFArtifactLocationsPreserveUNCAuthority(t *testing.T) {
+	result := sarifFilenameResult(t, `\\server\share\space #?.ts`)
+	if len(result.Locations) != 1 {
+		t.Fatalf("expected one UNC location: %#v", result)
+	}
+	parsed, err := url.Parse(result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "file" || parsed.Host != "server" || parsed.Path != "/share/space #?.ts" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		t.Fatalf("UNC authority was not preserved: %#v", parsed)
 	}
 }
 
