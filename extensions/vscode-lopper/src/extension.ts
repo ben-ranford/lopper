@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -28,6 +27,11 @@ import {
 } from "./lopperRunner";
 import { RefreshSessionStore } from "./refreshSession";
 import { lopperScopeModeValues } from "./types";
+import {
+  isPathInsideWorkspace,
+  isSameWorkspacePath,
+  resolveWorkspaceFilePath,
+} from "./workspacePaths";
 import type {
   LopperBaselineComparison,
   LopperCodemodApplyReport,
@@ -2207,22 +2211,6 @@ class LopperExplorerTreeDataProvider implements vscode.TreeDataProvider<LopperEx
   }
 }
 
-function resolveWorkspaceFilePath(workspaceRoot: string, relativePath: string): string | undefined {
-  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
-  const candidatePath = path.resolve(resolvedWorkspaceRoot, relativePath);
-  return isPathInsideWorkspace(candidatePath, resolvedWorkspaceRoot) ? candidatePath : undefined;
-}
-
-function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
-  const resolvedWorkspaceRoot = canonicalizeExistingPath(workspaceRoot);
-  const resolvedCandidatePath = canonicalizeExistingPath(candidatePath);
-  if (!resolvedWorkspaceRoot || !resolvedCandidatePath) {
-    return false;
-  }
-  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedCandidatePath);
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
-}
-
 function formatLocationSummary(location: LopperLocation): string {
   return `${location.file}:${location.line}:${location.column}`;
 }
@@ -2233,37 +2221,6 @@ function findWorkspaceFolder(folderPath: string): vscode.WorkspaceFolder | undef
 
 function findContainingWorkspaceFolder(candidatePath: string): vscode.WorkspaceFolder | undefined {
   return (vscode.workspace.workspaceFolders ?? []).find((folder) => isPathInsideWorkspace(candidatePath, folder.uri.fsPath));
-}
-
-function isSameWorkspacePath(leftPath: string, rightPath: string): boolean {
-  const canonicalLeftPath = canonicalizeExistingPath(leftPath);
-  const canonicalRightPath = canonicalizeExistingPath(rightPath);
-  if (canonicalLeftPath && canonicalRightPath) {
-    return canonicalLeftPath === canonicalRightPath;
-  }
-  return path.resolve(leftPath) === path.resolve(rightPath);
-}
-
-function canonicalizeExistingPath(targetPath: string): string | undefined {
-  const pendingSegments: string[] = [];
-  let currentPath = path.resolve(targetPath);
-
-  while (true) {
-    try {
-      const canonicalBasePath = realpathSync.native(currentPath);
-      if (pendingSegments.length === 0) {
-        return canonicalBasePath;
-      }
-      return path.join(canonicalBasePath, ...pendingSegments);
-    } catch {
-      const parentPath = path.dirname(currentPath);
-      if (parentPath === currentPath) {
-        return undefined;
-      }
-      pendingSegments.unshift(path.basename(currentPath));
-      currentPath = parentPath;
-    }
-  }
 }
 
 function dependencySummaryText(dependency: LopperDependencyReport, analysis: WorkspaceAnalysis): string {
