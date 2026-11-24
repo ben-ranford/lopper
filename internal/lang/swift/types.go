@@ -1,6 +1,9 @@
 package swift
 
-import "github.com/ben-ranford/lopper/internal/lang/shared"
+import (
+	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 const (
 	swiftAdapterID                        = "swift"
@@ -20,6 +23,9 @@ const (
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
 	maxPodDeclarations                    = 512
+	maxPodManifestBytes                   = 2 * 1024 * 1024
+	maxPodLockBytes                       = 8 * 1024 * 1024
+	maxPodLockEntries                     = 4096
 	maxCarthageDeclarations               = 512
 	maxWarningSamples                     = 5
 	ambiguousDependencyKey                = "\x00"
@@ -57,6 +63,7 @@ type dependencyCatalog struct {
 	AliasToDependency  map[string]string
 	ModuleToDependency map[string]string
 	LocalModules       map[string]struct{}
+	CoverageGaps       []report.CoverageGap
 	HasSwiftPM         bool
 	HasCocoaPods       bool
 	HasCarthage        bool

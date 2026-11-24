@@ -12,6 +12,7 @@ const (
 	CoverageGapRustMalformedManifest    = "rust-malformed-manifest-declaration"
 	CoverageGapRustManifestDiscoveryCap = "rust-manifest-discovery-truncated"
 	CoverageGapRustSourceRootCap        = "rust-source-root-scan-truncated"
+	CoverageGapSwiftCocoaPodsLimit      = "swift-cocoapods-catalog-truncated"
 )
 
 func StableCoverageGaps(gaps []CoverageGap) []CoverageGap {

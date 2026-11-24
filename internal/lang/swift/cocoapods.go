@@ -12,12 +12,35 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var (
+	errPodDeclarationLimit = errors.New("too many Podfile declarations")
+	errPodLockEntryLimit   = errors.New("too many Podfile.lock entries")
+)
+
+func loadBoundedCocoaPodsSource(path string, loader catalogLoader) catalogLoader {
+	return func(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
+		found, warnings, err := loader(repoPath, catalog)
+		if !shared.IsPureSentinelError(err, safeio.ErrFileTooLarge, errPodDeclarationLimit, errPodLockEntryLimit) {
+			return found, warnings, err
+		}
+		warning := fmt.Sprintf("%v; CocoaPods coverage may be incomplete", err)
+		catalog.CoverageGaps = append(catalog.CoverageGaps, report.CoverageGap{
+			Code:     report.CoverageGapSwiftCocoaPodsLimit,
+			Language: swiftAdapterID,
+			Path:     path,
+			Evidence: []string{warning},
+		})
+		return true, append(warnings, warning), nil
+	}
+}
+
 func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	manifestPath := filepath.Join(repoPath, podManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, manifestPath, maxPodManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -25,7 +48,10 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 		return false, nil, fmt.Errorf("read %s: %w", podManifestName, err)
 	}
 
-	declarations := parsePodDeclarations(content)
+	declarations, err := parsePodDeclarations(content)
+	if err != nil {
+		return false, nil, fmt.Errorf("parse %s: %w", podManifestName, err)
+	}
 	warnings := make([]string, 0, 2)
 	ambiguousModules := make(map[string]struct{})
 	for _, declaration := range declarations {
@@ -47,7 +73,7 @@ func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []s
 
 func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	lockPath := filepath.Join(repoPath, podLockName)
-	content, err := safeio.ReadFileUnder(repoPath, lockPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, lockPath, maxPodLockBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -83,7 +109,7 @@ func loadPodLockData(repoPath string, catalog *dependencyCatalog) (bool, []strin
 	return true, warnings, nil
 }
 
-func parsePodDeclarations(content []byte) []string {
+func parsePodDeclarations(content []byte) ([]string, error) {
 	lines := strings.Split(string(content), "\n")
 	declarations := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -96,10 +122,13 @@ func parsePodDeclarations(content []byte) []string {
 			continue
 		}
 		if name := strings.TrimSpace(matches[1]); name != "" {
+			if len(declarations) >= maxPodDeclarations {
+				return nil, errPodDeclarationLimit
+			}
 			declarations = append(declarations, name)
 		}
 	}
-	return dedupeStrings(declarations)
+	return dedupeStrings(declarations), nil
 }
 
 func parsePodLockEntries(content []byte) ([]podLockEntry, error) {
@@ -107,12 +136,39 @@ func parsePodLockEntries(content []byte) ([]podLockEntry, error) {
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, err
 	}
+	return boundedPodLockEntries(doc, maxPodLockEntries)
+}
+
+func boundedPodLockEntries(doc podLockDocument, limit int) ([]podLockEntry, error) {
+	if len(doc.Pods) > limit {
+		return nil, errPodLockEntryLimit
+	}
 
 	entries := make([]podLockEntry, 0, len(doc.Pods))
+	remaining := limit
 	for _, raw := range doc.Pods {
+		cost := podLockExpansionSize(raw)
+		if cost > remaining {
+			return nil, errPodLockEntryLimit
+		}
+		remaining -= cost
 		entries = append(entries, podLockEntriesFromRaw(raw, doc)...)
 	}
 	return dedupePodLockEntries(entries), nil
+}
+
+// podLockExpansionSize charges each candidate before converting it to a specification.
+func podLockExpansionSize(raw any) int {
+	switch value := raw.(type) {
+	case string:
+		return 1
+	case map[string]any:
+		return len(value)
+	case map[any]any:
+		return len(value)
+	default:
+		return 0
+	}
 }
 
 func podLockEntriesFromRaw(raw any, doc podLockDocument) []podLockEntry {
