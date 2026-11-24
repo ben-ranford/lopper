@@ -26,10 +26,17 @@ func TestRustWorkspaceDiscoveryReportsLimits(t *testing.T) {
 	if !errors.Is(err, errWorkspacePatternLimit) {
 		t.Fatalf("expected a pattern size limit, got %v", err)
 	}
-	patterns := []workspaceMemberPattern{{parts: []string{"member"}}}
-	remaining := 1
-	if _, err := matchAnyWorkspaceMember(patterns, []string{"member"}, &remaining); !errors.Is(err, errWorkspaceMatchBudget) {
+	pattern := []string{"workspace", "*-member"}
+	path := []string{"workspace", "first-member"}
+	patterns := []workspaceMemberPattern{{parts: pattern, width: workspaceMatchWidth(pattern)}}
+	work := workspaceMatchWidth(pattern) * workspaceMatchWidth(path)
+	remaining := work - 1
+	if _, err := matchAnyWorkspaceMember(patterns, path, &remaining); !errors.Is(err, errWorkspaceMatchBudget) {
 		t.Fatalf("expected a pattern matching work limit, got %v", err)
+	}
+	remaining = work
+	if matched, err := matchAnyWorkspaceMember(patterns, path, &remaining); err != nil || !matched || remaining != 0 {
+		t.Fatalf("expected one match at the exact work limit, got matched=%t remaining=%d err=%v", matched, remaining, err)
 	}
 }
 

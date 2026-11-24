@@ -19,7 +19,7 @@ const (
 	maxWorkspacePathParts    = 64
 	maxWorkspaceEntries      = 32768
 	maxWorkspaceCandidates   = 2048
-	maxWorkspaceMatchCells   = 1 << 22
+	maxWorkspaceMatchWork    = 1 << 25
 )
 
 var (
@@ -32,6 +32,7 @@ type workspaceMemberPattern struct {
 	text    string
 	parts   []string
 	matched bool
+	width   int
 }
 
 func discoverWorkspaceMemberManifests(repoPath string, members []string) ([]string, []string, []report.CoverageGap) {
@@ -65,7 +66,7 @@ func discoverWorkspaceMemberManifestsWithBudget(repoPath string, members []strin
 		case err != nil:
 			warnings = append(warnings, fmt.Sprintf("invalid workspace member pattern %q: %v", member, err))
 		case len(parts) != 0:
-			patterns = append(patterns, workspaceMemberPattern{text: member, parts: parts})
+			patterns = append(patterns, workspaceMemberPattern{text: member, parts: parts, width: workspaceMatchWidth(parts)})
 		}
 	}
 	if len(patterns) == 0 {
@@ -108,7 +109,7 @@ func walkWorkspaceMemberManifests(repoPath string, patterns []workspaceMemberPat
 		err = errors.Join(err, root.Close())
 	}()
 	var paths []string
-	remaining := maxWorkspaceMatchCells
+	remaining := maxWorkspaceMatchWork
 	err = shared.WalkRepoFilesWithinRoot(context.Background(), repoPath, root, budget, shouldSkipDir, func(path string, entry fs.DirEntry) error {
 		if entry.Name() != cargoTomlName {
 			return nil
@@ -135,18 +136,28 @@ func walkWorkspaceMemberManifests(repoPath string, patterns []workspaceMemberPat
 
 func matchAnyWorkspaceMember(patterns []workspaceMemberPattern, parts []string, remaining *int) (bool, error) {
 	matched := false
+	pathWidth := workspaceMatchWidth(parts)
 	for i := range patterns {
-		cells := len(patterns[i].parts) * (1 + len(parts))
-		if cells > *remaining {
+		// A segment match can compare text for each position in a pattern.
+		work := patterns[i].width * pathWidth
+		if work > *remaining {
 			return false, errWorkspaceMatchBudget
 		}
-		*remaining -= cells
+		*remaining -= work
 		if matchWorkspaceMemberPatternParts(patterns[i].parts, parts) {
 			patterns[i].matched = true
 			matched = true
 		}
 	}
 	return matched, nil
+}
+
+func workspaceMatchWidth(parts []string) int {
+	width := 1
+	for _, part := range parts {
+		width += len(part) + 1
+	}
+	return width
 }
 
 func workspacePatternParts(pattern string) ([]string, error) {
