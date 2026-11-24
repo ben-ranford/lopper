@@ -477,6 +477,15 @@ func TestDiscoverWorkspacePackageDirsInRootGuardsAndFiltering(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSearchRootRequiresRepositoryContainment(t *testing.T) {
+	repo := t.TempDir()
+	emptyDir := t.TempDir()
+	dirs, warnings := discoverWorkspacePackageDirsInRoot(repo, filepath.Join(repo, jsPackageFile), emptyDir, nil)
+	if len(dirs) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "outside repository") {
+		t.Fatalf("expected empty result and containment diagnostic, got %v and %v", dirs, warnings)
+	}
+}
+
 func TestDiscoverWorkspacePackageDirsReportsWalkErrors(t *testing.T) {
 	t.Parallel()
 
@@ -924,5 +933,21 @@ func assertWorkspaceManifestReaderWarning(t *testing.T, repo string, testCase wo
 	}
 	if !strings.Contains(warning, "failed to parse "+testCase.fileName) {
 		t.Fatalf("%s, got %q", testCase.wantWarningMsg, warning)
+	}
+}
+
+func TestDiscoverWorkspacePackageDirsSkipsExcludedSearchRoots(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		filepath.Join("packages", "app", testPackageJSONName):    `{"name":"app"}`,
+		filepath.Join("vendor", "vendored", testPackageJSONName): `{"name":"vendored"}`,
+		filepath.Join(".next", "generated", testPackageJSONName): `{"name":"generated"}`,
+	})
+
+	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"vendor/*", ".next/*", "packages/*"})
+	if !slices.Equal(dirs, []string{filepath.Join(repo, "packages", "app")}) || len(warnings) != 0 {
+		t.Fatalf("expected only the regular workspace package, got %v and warnings %v", dirs, warnings)
 	}
 }
