@@ -35,11 +35,11 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 		RenamedAliasesByDep: options.renamedAliases,
 		LocalModuleCache:    make(map[string]bool),
 	}
-	roots, scanRootsCapped := boundedScanRoots(options.manifestPaths, repoPath)
+	roots, scanRootCandidates := boundedScanRoots(options.manifestPaths, repoPath)
 	lookupsByRoot := map[string]map[string]dependencyInfo(nil)
 	useRootLookups := len(options.sourceFallbackRoots) > 0 || options.useRootLookups
 	if useRootLookups {
-		roots, scanRootsCapped = boundedScanRootsPreservingNested(options.manifestPaths, repoPath)
+		roots, scanRootCandidates = boundedScanRootsPreservingNested(options.manifestPaths, repoPath)
 		var err error
 		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths, options.workspaceManifestPaths, options.excludedSourceRoots)
 		if err != nil {
@@ -89,8 +89,8 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 		completedRoots[filepath.Clean(sourceFallbackRoot)] = struct{}{}
 	}
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
-	if scanRootsCapped {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Rust source scanning capped at %d roots", maxScanRoots))
+	if scanRootCandidates > maxScanRoots {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("Rust source scanning capped at %d roots from %d candidates", maxScanRoots, scanRootCandidates))
 	}
 	result.Warnings = shared.UniqueTrimmedStrings(result.Warnings)
 	return result, nil

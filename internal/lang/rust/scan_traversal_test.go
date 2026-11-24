@@ -40,6 +40,7 @@ func TestScanRootsRetainsMemberRootsWithoutParentManifest(t *testing.T) {
 
 func TestScanRootsCapsSiblingWorkspaceMembers(t *testing.T) {
 	repo := t.TempDir()
+	// The regression test also compiles against the base, before maxScanRoots exists.
 	const want = 256
 	manifestPaths := make([]string, 0, want+1)
 	for index := range want + 1 {
@@ -49,5 +50,9 @@ func TestScanRootsCapsSiblingWorkspaceMembers(t *testing.T) {
 	roots := scanRoots(manifestPaths, repo)
 	if len(roots) != want {
 		t.Fatalf("expected workspace roots to cap at %d, got %d", want, len(roots))
+	}
+	slices.Reverse(manifestPaths)
+	if reversedRoots := scanRoots(manifestPaths, repo); !slices.Equal(roots, reversedRoots) {
+		t.Fatal("the manifest order changed the retained workspace roots")
 	}
 }
