@@ -22,6 +22,9 @@ const (
 	maxScanFiles                          = 4096
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
+	maxSwiftPackageManifestBytes          = 2 * 1024 * 1024
+	maxSwiftPackageResolvedBytes          = 8 * 1024 * 1024
+	maxResolvedPins                       = 8192
 	maxPodDeclarations                    = 512
 	maxPodManifestBytes                   = 2 * 1024 * 1024
 	maxPodLockBytes                       = 8 * 1024 * 1024

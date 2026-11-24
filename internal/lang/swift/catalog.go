@@ -15,6 +15,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var errResolvedPinLimit = errors.New("too many Package.resolved pins")
+
 func buildDependencyCatalog(repoPath string) (dependencyCatalog, []string, error) {
 	return buildDependencyCatalogWithOptions(repoPath, dependencyCatalogOptions{})
 }
@@ -152,7 +154,7 @@ func managerMissingWarnings(state packageManagerCatalogState, manifestWarning, l
 
 func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	manifestPath := filepath.Join(repoPath, packageManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, manifestPath, maxSwiftPackageManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -204,7 +206,7 @@ func loadManifestData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 
 func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	resolvedPath := filepath.Join(repoPath, packageResolvedName)
-	content, err := safeio.ReadFileUnder(repoPath, resolvedPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, resolvedPath, maxSwiftPackageResolvedBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -275,6 +277,9 @@ func parseResolvedPins(content []byte) ([]resolvedPin, error) {
 	doc := resolvedDocument{}
 	if err := json.Unmarshal(content, &doc); err != nil {
 		return nil, err
+	}
+	if len(doc.Pins) > maxResolvedPins || len(doc.Object.Pins) > maxResolvedPins || len(doc.Pins)+len(doc.Object.Pins) > maxResolvedPins {
+		return nil, errResolvedPinLimit
 	}
 	pins := make([]resolvedPin, 0, len(doc.Pins)+len(doc.Object.Pins))
 	pins = append(pins, doc.Pins...)
