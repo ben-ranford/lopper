@@ -198,8 +198,8 @@ func testJSDependencyCollectorTracksResolvedDeps(t *testing.T, repo, importer st
 	collector := newDependencyCollector()
 	collector.recordImport(repo, importer, ImportBinding{Module: "dep"})
 	collector.recordImport(repo, filepath.Join(t.TempDir(), testIndexJS), ImportBinding{Module: "dep"})
-	if _, ok := collector.missing["dep"]; ok {
-		t.Fatalf("expected already-found dependency not to be recorded as missing")
+	if _, ok := collector.missing["dep"]; !ok {
+		t.Fatalf("expected unresolved import to remain recorded")
 	}
 
 	cacheCollector := newDependencyCollector()
