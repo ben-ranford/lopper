@@ -4,30 +4,45 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
 
 func scanRoots(manifestPaths []string, repoPath string) []string {
+	roots, _ := boundedScanRoots(manifestPaths, repoPath)
+	return roots
+}
+
+func boundedScanRoots(manifestPaths []string, repoPath string) ([]string, int) {
 	roots := make([]string, 0, len(manifestPaths))
 	for _, manifestPath := range manifestPaths {
 		roots = append(roots, filepath.Dir(manifestPath))
 	}
 	roots = uniquePaths(roots)
 	if len(roots) == 0 {
-		return []string{repoPath}
+		return []string{repoPath}, 0
 	}
-	return collapseScanRoots(roots)
+	candidateCount := len(roots)
+	if candidateCount > maxScanRoots {
+		roots = roots[:maxScanRoots]
+	}
+	return collapseScanRoots(roots), candidateCount
 }
 
 func scanRootsPreservingNested(manifestPaths []string, repoPath string) []string {
+	roots, _ := boundedScanRootsPreservingNested(manifestPaths, repoPath)
+	return roots
+}
+
+func boundedScanRootsPreservingNested(manifestPaths []string, repoPath string) (retained, omitted []string) {
 	roots := make([]string, 0, len(manifestPaths))
 	for _, manifestPath := range manifestPaths {
 		roots = append(roots, filepath.Dir(manifestPath))
 	}
 	roots = uniquePaths(roots)
 	if len(roots) == 0 {
-		return []string{repoPath}
+		return []string{repoPath}, nil
 	}
 	sort.Slice(roots, func(i, j int) bool {
 		depthI := strings.Count(filepath.Clean(roots[i]), string(filepath.Separator))
@@ -37,7 +52,15 @@ func scanRootsPreservingNested(manifestPaths []string, repoPath string) []string
 		}
 		return roots[i] < roots[j]
 	})
-	return roots
+	if len(roots) <= maxScanRoots {
+		return roots, nil
+	}
+	retained, omitted = roots[:maxScanRoots], roots[maxScanRoots:]
+	if repoIndex := slices.Index(omitted, filepath.Clean(repoPath)); repoIndex >= 0 {
+		// Keep the repository package last so nested packages keep their own lookups.
+		retained[maxScanRoots-1], omitted[repoIndex] = omitted[repoIndex], retained[maxScanRoots-1]
+	}
+	return retained, omitted
 }
 
 func collapseScanRoots(roots []string) []string {
