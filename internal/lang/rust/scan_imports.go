@@ -2,6 +2,7 @@ package rust
 
 import (
 	"bytes"
+	"path/filepath"
 	"unicode"
 	"unicode/utf8"
 
@@ -42,7 +43,7 @@ type rustImportStatement struct {
 func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool) ([]importBinding, []importBinding) {
 	externImports := make([]importBinding, 0)
 	useImports := make([]importBinding, 0)
-	scanRustImportStatements(content, includeUse, func(kind rustImportKind, stmt rustImportStatement) {
+	limited := scanRustImportStatements(content, includeUse, func(kind rustImportKind, stmt rustImportStatement) {
 		switch kind {
 		case rustImportExternCrate:
 			binding, ok := parseExternCrateClause(stmt.Clause, filePath, crateRoot, depLookup, scan, stmt.Line, stmt.Column)
@@ -61,10 +62,20 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 			useImports = appendUseClauseImports(useImports, string(stmt.Clause), ctx)
 		}
 	})
+	if limited && scan != nil {
+		const warning = "Rust use statement processing reached its size or work limit; dependency coverage may be incomplete"
+		scan.Warnings = append(scan.Warnings, warning)
+		scan.CoverageGaps = append(scan.CoverageGaps, report.CoverageGap{
+			Code:     report.CoverageGapRustUseStatementLimit,
+			Language: rustAdapterID,
+			Path:     filepath.ToSlash(filePath),
+			Evidence: []string{warning},
+		})
+	}
 	return externImports, useImports
 }
 
-func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) {
+func scanRustImportStatements(content []byte, includeUse bool, visit func(rustImportKind, rustImportStatement)) bool {
 	state := rustImportLexState{rawHashCount: -1}
 	useScan := rustUseTerminator{remaining: len(content)}
 	for lineStart, line := 0, 1; lineStart < len(content); line++ {
@@ -83,6 +94,7 @@ func scanRustImportStatements(content []byte, includeUse bool, visit func(rustIm
 		}
 		lineStart = lineEnd + 1
 	}
+	return useScan.limited
 }
 
 type rustImportLexState struct {
@@ -233,7 +245,7 @@ func hasRustRawStringTerminator(line []byte, index, hashCount int) bool {
 	return true
 }
 
-func (scan *rustUseTerminator) parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
+func (ut *rustUseTerminator) parseRustImportStatement(content []byte, lineStart, lineEnd, line int, includeUse bool) (rustImportKind, rustImportStatement, bool) {
 	currentLine := content[lineStart:lineEnd]
 	firstContent := firstContentByteIndex(currentLine)
 	if firstContent >= len(currentLine) {
@@ -251,7 +263,7 @@ func (scan *rustUseTerminator) parseRustImportStatement(content []byte, lineStar
 	}
 
 	if includeUse {
-		if stmt, ok := scan.buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
+		if stmt, ok := ut.buildRustUseStatement(content, lineStart, line, statementStart, statement); ok {
 			return rustImportUse, stmt, true
 		}
 	}
@@ -261,7 +273,7 @@ func (scan *rustUseTerminator) parseRustImportStatement(content []byte, lineStar
 	return 0, rustImportStatement{}, false
 }
 
-func (scan *rustUseTerminator) buildRustUseStatement(content []byte, lineStart, line, statementStart int, statement []byte) (rustImportStatement, bool) {
+func (ut *rustUseTerminator) buildRustUseStatement(content []byte, lineStart, line, statementStart int, statement []byte) (rustImportStatement, bool) {
 	clauseStart, ok := matchRustUseStatement(statement)
 	if !ok {
 		return rustImportStatement{}, false
@@ -272,13 +284,17 @@ func (scan *rustUseTerminator) buildRustUseStatement(content []byte, lineStart, 
 		return rustImportStatement{}, false
 	}
 
-	end := scan.next(content, clauseOffset)
+	end := ut.next(content, clauseOffset)
+	if end == len(content) {
+		return rustImportStatement{}, false
+	}
 	work := end - clauseOffset + 1
-	if end == len(content) || work > maxRustUseStatementBytes || work > scan.remaining {
+	if work > maxRustUseStatementBytes || work > ut.remaining {
+		ut.limited = true
 		return rustImportStatement{}, false
 	}
 
-	scan.remaining -= work
+	ut.remaining -= work
 	stmtLine, column := lineColumnBytesFrom(content, line, lineStart, clauseOffset)
 	return rustImportStatement{
 		Clause: bytes.TrimSpace(content[clauseOffset:end]),
@@ -291,20 +307,21 @@ type rustUseTerminator struct {
 	nextOffset int
 	hasOffset  bool
 	remaining  int
+	limited    bool
 }
 
 // Consecutive import candidates start at increasing offsets. Remembering the
 // next delimiter or EOF means a missing terminator cannot rescan the same tail.
-func (scan *rustUseTerminator) next(content []byte, start int) int {
-	if !scan.hasOffset || scan.nextOffset < start {
-		scan.hasOffset = true
+func (ut *rustUseTerminator) next(content []byte, start int) int {
+	if !ut.hasOffset || ut.nextOffset < start {
+		ut.hasOffset = true
 		offset := bytes.IndexByte(content[start:], ';')
-		scan.nextOffset = len(content)
+		ut.nextOffset = len(content)
 		if offset >= 0 {
-			scan.nextOffset = start + offset
+			ut.nextOffset = start + offset
 		}
 	}
-	return scan.nextOffset
+	return ut.nextOffset
 }
 
 func buildRustExternCrateStatement(content []byte, lineEnd, line, firstContent, statementStart int, statement []byte) (rustImportStatement, bool) {
