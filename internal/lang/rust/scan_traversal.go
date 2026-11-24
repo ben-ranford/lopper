@@ -9,25 +9,39 @@ import (
 )
 
 func scanRoots(manifestPaths []string, repoPath string) []string {
+	roots, _ := boundedScanRoots(manifestPaths, repoPath)
+	return roots
+}
+
+func boundedScanRoots(manifestPaths []string, repoPath string) ([]string, bool) {
 	roots := make([]string, 0, len(manifestPaths))
 	for _, manifestPath := range manifestPaths {
 		roots = append(roots, filepath.Dir(manifestPath))
 	}
 	roots = uniquePaths(roots)
 	if len(roots) == 0 {
-		return []string{repoPath}
+		return []string{repoPath}, false
 	}
-	return collapseScanRoots(roots)
+	truncated := len(roots) > maxScanRoots
+	if truncated {
+		roots = roots[:maxScanRoots]
+	}
+	return collapseScanRoots(roots), truncated
 }
 
 func scanRootsPreservingNested(manifestPaths []string, repoPath string) []string {
+	roots, _ := boundedScanRootsPreservingNested(manifestPaths, repoPath)
+	return roots
+}
+
+func boundedScanRootsPreservingNested(manifestPaths []string, repoPath string) ([]string, bool) {
 	roots := make([]string, 0, len(manifestPaths))
 	for _, manifestPath := range manifestPaths {
 		roots = append(roots, filepath.Dir(manifestPath))
 	}
 	roots = uniquePaths(roots)
 	if len(roots) == 0 {
-		return []string{repoPath}
+		return []string{repoPath}, false
 	}
 	sort.Slice(roots, func(i, j int) bool {
 		depthI := strings.Count(filepath.Clean(roots[i]), string(filepath.Separator))
@@ -37,7 +51,11 @@ func scanRootsPreservingNested(manifestPaths []string, repoPath string) []string
 		}
 		return roots[i] < roots[j]
 	})
-	return roots
+	truncated := len(roots) > maxScanRoots
+	if truncated {
+		roots = roots[:maxScanRoots]
+	}
+	return roots, truncated
 }
 
 func collapseScanRoots(roots []string) []string {
