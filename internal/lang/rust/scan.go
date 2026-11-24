@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -35,20 +36,28 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 		RenamedAliasesByDep: options.renamedAliases,
 		LocalModuleCache:    make(map[string]bool),
 	}
-	roots, scanRootCandidates := boundedScanRoots(options.manifestPaths, repoPath)
-	lookupsByRoot := map[string]map[string]dependencyInfo(nil)
+	var roots, omittedRoots []string
+	var scanRootCandidates int
+	var lookupsByRoot map[string]map[string]dependencyInfo
 	useRootLookups := len(options.sourceFallbackRoots) > 0 || options.useRootLookups
 	if useRootLookups {
-		roots, scanRootCandidates = boundedScanRootsPreservingNested(options.manifestPaths, repoPath)
+		roots, omittedRoots = boundedScanRootsPreservingNested(options.manifestPaths, repoPath)
+		scanRootCandidates = len(roots) + len(omittedRoots)
 		var err error
 		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths, options.workspaceManifestPaths, options.excludedSourceRoots)
 		if err != nil {
 			return scanResult{}, err
 		}
+	} else {
+		roots, scanRootCandidates = boundedScanRoots(options.manifestPaths, repoPath)
 	}
 	scannedFiles := make(map[string]struct{})
 	fileCount := 0
-	completedRoots := make(map[string]struct{}, len(roots)+len(options.sourceFallbackRoots))
+	completedRoots := make(map[string]struct{}, len(roots)+len(omittedRoots)+len(options.sourceFallbackRoots))
+	for _, root := range omittedRoots {
+		// A parent walk must not attribute an omitted package to another package's dependencies.
+		completedRoots[filepath.Clean(root)] = struct{}{}
+	}
 	for _, root := range roots {
 		rootLookup := options.depLookup
 		result.RequireDeclaredDependency = false
@@ -90,7 +99,14 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	}
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
 	if scanRootCandidates > maxScanRoots {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Rust source scanning capped at %d roots from %d candidates", maxScanRoots, scanRootCandidates))
+		warning := fmt.Sprintf("Rust source scanning capped at %d roots from %d candidates", maxScanRoots, scanRootCandidates)
+		result.Warnings = append(result.Warnings, warning)
+		result.CoverageGaps = append(result.CoverageGaps, report.CoverageGap{
+			Code:     report.CoverageGapRustSourceRootCap,
+			Language: rustAdapterID,
+			Path:     ".",
+			Evidence: []string{warning},
+		})
 	}
 	result.Warnings = shared.UniqueTrimmedStrings(result.Warnings)
 	return result, nil

@@ -11,6 +11,7 @@ const (
 	CoverageGapDotNetMalformedManifest  = "dotnet-malformed-manifest-declaration"
 	CoverageGapRustMalformedManifest    = "rust-malformed-manifest-declaration"
 	CoverageGapRustManifestDiscoveryCap = "rust-manifest-discovery-truncated"
+	CoverageGapRustSourceRootCap        = "rust-source-root-scan-truncated"
 )
 
 func StableCoverageGaps(gaps []CoverageGap) []CoverageGap {
