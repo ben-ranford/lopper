@@ -477,6 +477,15 @@ func TestDiscoverWorkspacePackageDirsInRootGuardsAndFiltering(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSearchRootRequiresRepositoryContainment(t *testing.T) {
+	repo := t.TempDir()
+	emptyDir := t.TempDir()
+	dirs, warnings := discoverWorkspacePackageDirsInRoot(repo, filepath.Join(repo, jsPackageFile), emptyDir, nil)
+	if len(dirs) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "outside repository") {
+		t.Fatalf("expected empty result and containment diagnostic, got %v and %v", dirs, warnings)
+	}
+}
+
 func TestDiscoverWorkspacePackageDirsReportsWalkErrors(t *testing.T) {
 	t.Parallel()
 
