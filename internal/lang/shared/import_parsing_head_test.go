@@ -189,3 +189,23 @@ func TestMaskJVMImportSourcePreservesSourcePositions(t *testing.T) {
 		})
 	}
 }
+
+func TestStripBlockCommentsHonorsKotlinInterpolationPrefix(t *testing.T) {
+	const printedNote = "/* displayed note */"
+	const expressionNote = "/* expression note */"
+	source := []string{
+		`val card = $$"""`,
+		"  Default ${" + printedNote + " layout}",
+		"  Heading $${" + expressionNote + ` "Daily"}`,
+		"  Section $$${" + expressionNote + ` "Reference"}`,
+		`"""`,
+		`val label = $$$"Layout $${` + printedNote + ` layout}. Section $$${` + expressionNote + ` "Summary"}"`,
+		`val day = "Monday"`,
+	}
+
+	input := strings.Join(source, "\n")
+	want := strings.ReplaceAll(input, expressionNote, strings.Repeat(" ", len(expressionNote)))
+	if got := string(StripBlockComments([]byte(input))); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
