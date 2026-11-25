@@ -1,9 +1,14 @@
 package js
 
-import sitter "github.com/smacker/go-tree-sitter"
+import (
+	sitter "github.com/smacker/go-tree-sitter"
 
-func collectIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) map[string]int {
+	"github.com/ben-ranford/lopper/internal/report"
+)
+
+func collectIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
 	counts := make(map[string]int)
+	destructures := make(map[report.Location]int)
 	moduleNames := uniqueModuleNamedImports(imports)
 	root := tree.RootNode()
 	walkNode(root, func(node *sitter.Node) {
@@ -11,25 +16,35 @@ func collectIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportB
 			return
 		}
 		name := nodeText(node, content)
-		if name != "" && (isIdentifierUsage(node) || isNamedImportDestructure(node, moduleNames[name])) {
+		if name == "" {
+			return
+		}
+		if isIdentifierUsage(node) {
 			counts[name]++
+			return
+		}
+		location := moduleNames[name]
+		if location.Line > 0 && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node) {
+			destructures[location]++
 		}
 	})
 
-	return counts
+	return counts, destructures
 }
 
-func uniqueModuleNamedImports(imports []ImportBinding) map[string]bool {
-	names := make(map[string]bool, len(imports))
+func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Location {
+	names := make(map[string]report.Location)
 	for _, imported := range imports {
-		_, seen := names[imported.LocalName]
-		names[imported.LocalName] = !seen && imported.Kind == ImportNamed && imported.moduleScope
+		if !imported.moduleScope {
+			continue
+		}
+		location := imported.Location
+		if _, seen := names[imported.LocalName]; seen {
+			location = report.Location{}
+		}
+		names[imported.LocalName] = location
 	}
 	return names
-}
-
-func isNamedImportDestructure(node *sitter.Node, moduleNamed bool) bool {
-	return moduleNamed && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node)
 }
 
 // Only claim a binding when both its declaration and use are in direct module scope.

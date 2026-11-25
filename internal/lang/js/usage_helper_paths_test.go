@@ -129,7 +129,7 @@ function fn(param, { nested }, ...rest) {
 }
 `)
 	tree := mustParseJS(t, parser, source)
-	counts := collectIdentifierUsage(tree, source, nil)
+	counts, _ := collectIdentifierUsage(tree, source, nil)
 	for name, want := range map[string]int{
 		"declared": 1,
 		"param":    1,
@@ -161,7 +161,7 @@ void rest;
 `)
 
 	tree := mustParseJS(t, parser, source)
-	counts := collectIdentifierUsage(tree, source, nil)
+	counts, _ := collectIdentifierUsage(tree, source, nil)
 	if counts["util"] != 1 {
 		t.Fatalf("expected only rest destructure to count namespace identifier usage, got %#v", counts)
 	}
