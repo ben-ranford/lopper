@@ -40,3 +40,32 @@ func TestReExportResolutionBudget(t *testing.T) {
 		t.Fatalf("expected resolution budget warning, got %#v", reportData.Warnings)
 	}
 }
+
+func TestReExportResolutionLimitStopsRemainingCandidatesAndMarksUsageIncomplete(t *testing.T) {
+	scanResult := ScanResult{Files: []FileScan{
+		{Path: "src/index.ts", Imports: []ImportBinding{{Module: "./barrel", ExportName: "map", LocalName: "map", Kind: ImportNamed}}},
+		{Path: "src/barrel.ts", ReExports: []ReExportBinding{
+			{SourceModule: "./first", SourceExportName: "*", ExportName: "*"},
+			{SourceModule: "lodash", SourceExportName: "map", ExportName: "*"},
+		}},
+		{Path: "src/first.ts", ReExports: []ReExportBinding{{SourceModule: "./second", SourceExportName: "*", ExportName: "*"}}},
+		{Path: "src/second.ts", ReExports: []ReExportBinding{{SourceModule: "./third", SourceExportName: "*", ExportName: "*"}}},
+		{Path: "src/third.ts"},
+	}}
+	resolver := newReExportResolver(scanResult)
+	resolver.resolutionLimit = 2
+
+	usage := collectDependencyUsageSummaryWithResolver(scanResult, "lodash", resolver)
+	if !usage.usageIncomplete {
+		t.Fatalf("expected resolution limit to mark usage incomplete, got %#v", usage)
+	}
+	if len(usage.usedImports) != 0 || len(usage.unusedImports) != 0 {
+		t.Fatalf("expected the fallback dependency candidate to remain unprocessed, got %#v", usage)
+	}
+	if !strings.Contains(strings.Join(usage.warnings, "\n"), reExportResolutionBudgetWarning) {
+		t.Fatalf("expected resolution budget warning, got %#v", usage.warnings)
+	}
+	if !dependencyCoverageIncomplete(scanResult, ExportSurface{}, usage) {
+		t.Fatal("expected incomplete re-export attribution to suppress removal signals")
+	}
+}

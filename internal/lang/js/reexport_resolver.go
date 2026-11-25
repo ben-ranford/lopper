@@ -12,11 +12,13 @@ const (
 )
 
 type reExportResolver struct {
-	filesByPath       map[string]FileScan
-	resolveCache      map[string]string
-	warningSet        map[string]struct{}
-	resolutionSteps   int
-	resolutionLimited bool
+	filesByPath          map[string]FileScan
+	resolveCache         map[string]string
+	warningSet           map[string]struct{}
+	resolutionSteps      int
+	resolutionLimit      int
+	resolutionLimited    bool
+	resolutionIncomplete bool
 }
 
 type resolvedAttribution struct {
@@ -31,10 +33,19 @@ func newReExportResolver(scanResult ScanResult) *reExportResolver {
 		filesByPath[normalizeModulePath(file.Path)] = file
 	}
 	return &reExportResolver{
-		filesByPath:  filesByPath,
-		resolveCache: make(map[string]string),
-		warningSet:   make(map[string]struct{}),
+		filesByPath:     filesByPath,
+		resolveCache:    make(map[string]string),
+		warningSet:      make(map[string]struct{}),
+		resolutionLimit: maxReExportResolutionSteps,
 	}
+}
+
+func (r *reExportResolver) resolutionBudgetReached() bool {
+	limit := r.resolutionLimit
+	if limit == 0 {
+		limit = maxReExportResolutionSteps
+	}
+	return r.resolutionSteps >= limit
 }
 
 func (r *reExportResolver) warnings() []string {

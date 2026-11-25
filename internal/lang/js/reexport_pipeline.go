@@ -18,9 +18,10 @@ type exportOrigin struct {
 }
 
 func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (exportOrigin, bool) {
-	if r.resolutionSteps >= maxReExportResolutionSteps {
+	if r.resolutionBudgetReached() {
 		if !r.resolutionLimited {
 			r.resolutionLimited = true
+			r.resolutionIncomplete = true
 			r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
 		}
 		return exportOrigin{}, false
@@ -39,6 +40,9 @@ func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (export
 		origin, ok := r.resolveExportCandidate(req, binding, visited)
 		if ok {
 			return origin, true
+		}
+		if r.resolutionLimited {
+			return exportOrigin{}, false
 		}
 	}
 
@@ -74,6 +78,9 @@ func selectReExportCandidates(bindings []ReExportBinding, requestedExport string
 }
 
 func (r *reExportResolver) resolveExportCandidate(req resolveExportRequest, binding ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
+	if r.resolutionLimited {
+		return exportOrigin{}, false
+	}
 	nextExport := normalizeRequestedExport(binding.SourceExportName, req.requestedExport)
 	if matchesDependency(binding.SourceModule, req.dependency) {
 		return r.dependencyExportOrigin(req, binding.SourceModule, nextExport), true
