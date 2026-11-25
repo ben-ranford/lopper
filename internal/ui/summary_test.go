@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,6 +123,45 @@ func TestSummaryRenderBuildsDisplayViewFromBoundary(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "formatted table") {
 		t.Fatalf("expected rendered frame to include formatter output, got %q", rendered)
+	}
+}
+
+func TestSummaryFormatterPreservesFilteredAggregatesAcrossPages(t *testing.T) {
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{Name: "match-alpha", Language: "go", UsedExportsCount: 1, TotalExportsCount: 4, UsedPercent: 25, License: &report.DependencyLicense{SPDX: "MIT"}},
+		{Name: "match-beta", Language: "rust", UsedExportsCount: 3, TotalExportsCount: 6, UsedPercent: 50},
+		{Name: "other", Language: "python", UsedExportsCount: 9, TotalExportsCount: 10, UsedPercent: 90},
+	}}
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: reportData}, report.NewFormatter())
+	view := mapSummaryReportView(reportData)
+
+	for _, test := range []struct {
+		page       int
+		visible    string
+		notVisible string
+	}{
+		{page: 1, visible: "match-alpha", notVisible: "match-beta"},
+		{page: 2, visible: "match-beta", notVisible: "match-alpha"},
+	} {
+		t.Run(fmt.Sprintf("page %d", test.page), func(t *testing.T) {
+			rendered, err := summary.renderSummary(view, summaryState{filter: "match", sortMode: sortByName, page: test.page, pageSize: 1})
+			if err != nil {
+				t.Fatalf("render summary: %v", err)
+			}
+			for _, expected := range []string{
+				"Summary: 2 deps, Used/Total: 4/10 (40.0%)",
+				"Licenses: known=1, unknown=1, denied=0",
+				"- go: 1 deps, Used/Total: 1/4 (25.0%)",
+				"- rust: 1 deps, Used/Total: 3/6 (50.0%)",
+			} {
+				if !strings.Contains(rendered, expected) {
+					t.Fatalf("expected filtered aggregate %q, got %q", expected, rendered)
+				}
+			}
+			if !strings.Contains(rendered, test.visible) || strings.Contains(rendered, test.notVisible) || strings.Contains(rendered, "other") {
+				t.Fatalf("expected only page row %q, got %q", test.visible, rendered)
+			}
+		})
 	}
 }
 

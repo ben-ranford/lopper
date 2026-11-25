@@ -78,12 +78,7 @@ func normalizeSnapshotReport(rep Report) Report {
 
 func repairSnapshotReport(rep Report) Report {
 	repaired := rep
-	if repaired.Summary == nil {
-		repaired.Summary = ComputeSummary(repaired.Dependencies)
-	}
-	if len(repaired.LanguageBreakdown) == 0 {
-		repaired.LanguageBreakdown = ComputeLanguageBreakdown(repaired.Dependencies)
-	}
+	FinalizeDerivedState(&repaired)
 	return repaired
 }
 

@@ -80,8 +80,9 @@ func TestApplyVulnerabilityExceptionsIfNeededAddsDiagnostics(t *testing.T) {
 	if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "expired vulnerability exception restored GHSA-test") {
 		t.Fatalf("expected expired exception warning, got %#v", got.Warnings)
 	}
+	report.FinalizeDerivedState(&got)
 	if got.Summary == nil || got.Summary.Vulnerabilities == nil || got.Summary.Vulnerabilities.ReachableFindings != 0 {
-		t.Fatalf("expected suppressed finding summary to be recomputed, got %#v", got.Summary)
+		t.Fatalf("expected finalization to derive the suppressed finding summary, got %#v", got.Summary)
 	}
 
 	unchanged, err := applyVulnerabilityExceptionsIfNeeded(reportData, AnalyseRequest{}, time.Time{})
