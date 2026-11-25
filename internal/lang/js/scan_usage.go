@@ -6,7 +6,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func collectIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
+func collectIdentifierUsage(tree *sitter.Tree, content []byte) map[string]int {
+	counts, _ := collectFileIdentifierUsage(tree, content, nil)
+	return counts
+}
+
+func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
 	counts := make(map[string]int)
 	destructures := make(map[report.Location]int)
 	moduleNames := uniqueModuleNamedImports(imports)

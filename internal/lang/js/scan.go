@@ -137,7 +137,7 @@ func ScanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPat
 func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
 	imports, uncertainImports := collectImportBindings(tree, content, relPath)
 	reExports := collectReExportBindings(tree, content, relPath, imports)
-	identifierUsage, namedDestructureUsage := collectIdentifierUsage(tree, content, imports)
+	identifierUsage, namedDestructureUsage := collectFileIdentifierUsage(tree, content, imports)
 	namespaceUsage := collectNamespaceUsage(tree, content)
 
 	return FileScan{
