@@ -44,19 +44,23 @@ func scanImportSource(content []byte, javaSource, maskLiterals bool) []byte {
 		return content
 	}
 
-	stripped := make([]byte, len(content))
-	copy(stripped, content)
+	stripped := bytes.Clone(content)
+	source := importSourceMask{raw: stripped, code: stripped}
+	if javaSource {
+		source.code, source.offsets = javaImportLexicalSource(stripped)
+	}
+	code := source.code
 
-	for index := 0; index < len(stripped); {
+	for index := 0; index < len(code); {
 		switch {
-		case !javaSource && stripped[index] == '`':
-			index = afterImportDelimiter(stripped, index+1, "`\r\n")
-		case stripped[index] == '\'' || stripped[index] == '"':
-			index = scanImportQuotedLiteral(stripped, index, javaSource, maskLiterals)
-		case hasBytePrefix(stripped, index, '/', '/'):
-			index = afterImportDelimiter(stripped, index+2, "\r\n")
-		case hasBytePrefix(stripped, index, '/', '*'):
-			index = maskImportBlockComment(stripped, index, !javaSource)
+		case !javaSource && code[index] == '`':
+			index = afterImportDelimiter(code, index+1, "`\r\n")
+		case code[index] == '\'' || code[index] == '"':
+			index = source.scanQuotedLiteral(index, javaSource, maskLiterals)
+		case hasBytePrefix(code, index, '/', '/'):
+			index = afterImportDelimiter(code, index+2, "\r\n")
+		case hasBytePrefix(code, index, '/', '*'):
+			index = source.scanBlockComment(index, !javaSource)
 		default:
 			index++
 		}
@@ -92,15 +96,46 @@ func maskImportBlockComment(content []byte, start int, allowNesting bool) int {
 	return index
 }
 
-func scanImportQuotedLiteral(content []byte, start int, javaSource, maskLiteral bool) int {
-	end := skipImportQuotedLiteral(content, start, javaSource)
-	if maskLiteral {
+type importSourceMask struct {
+	raw          []byte
+	code         []byte
+	offsets      []javaImportOffset
+	nextOffset   int
+	displacement int
+}
+
+func (s *importSourceMask) scanQuotedLiteral(start int, javaSource, maskLiteral bool) int {
+	end := skipImportQuotedLiteral(s.code, start, javaSource)
+	if maskLiteral && end > start+2 {
 		// Keep the boundary bytes so a literal cannot act as leading whitespace.
-		for index := start + 1; index < end-1; index++ {
-			maskNonNewline(content, index)
-		}
+		s.mask(start+1, end-1)
 	}
 	return end
+}
+
+func (s *importSourceMask) scanBlockComment(start int, allowNesting bool) int {
+	end := maskImportBlockComment(s.code, start, allowNesting)
+	if len(s.offsets) != 0 {
+		s.mask(start, end)
+	}
+	return end
+}
+
+func (s *importSourceMask) mask(start, end int) {
+	rawStart := s.rawIndex(start)
+	rawEnd := s.rawIndex(end)
+	for index := rawStart; index < rawEnd; index++ {
+		maskNonNewline(s.raw, index)
+	}
+}
+
+func (s *importSourceMask) rawIndex(codeIndex int) int {
+	// Mask ranges are visited in source order.
+	for s.nextOffset < len(s.offsets) && s.offsets[s.nextOffset].codeIndex <= codeIndex {
+		s.displacement = s.offsets[s.nextOffset].displacement
+		s.nextOffset++
+	}
+	return codeIndex + s.displacement
 }
 
 func skipImportQuotedLiteral(content []byte, start int, javaSource bool) int {
