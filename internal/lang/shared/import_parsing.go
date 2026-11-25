@@ -38,9 +38,18 @@ func StripBlockComments(content []byte) []byte {
 
 	inBlockComment := false
 	quote := byte(0)
+	tripleQuote := false
 	escaped := false
 	for i := 0; i < len(stripped); i++ {
 		if quote != 0 {
+			if tripleQuote {
+				if i+2 < len(stripped) && stripped[i] == quote && stripped[i+1] == quote && stripped[i+2] == quote {
+					quote = 0
+					tripleQuote = false
+					i += 2
+				}
+				continue
+			}
 			if escaped {
 				escaped = false
 				continue
@@ -71,6 +80,12 @@ func StripBlockComments(content []byte) []byte {
 			for i+1 < len(stripped) && stripped[i+1] != '\n' && stripped[i+1] != '\r' {
 				i++
 			}
+			continue
+		}
+		if i+2 < len(stripped) && stripped[i] == '"' && stripped[i+1] == '"' && stripped[i+2] == '"' {
+			quote = stripped[i]
+			tripleQuote = true
+			i += 2
 			continue
 		}
 		if stripped[i] == '\'' || stripped[i] == '"' {
