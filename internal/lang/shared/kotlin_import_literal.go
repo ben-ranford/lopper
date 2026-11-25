@@ -37,6 +37,12 @@ func scanKotlinImportString(content []byte, index int, modes []kotlinImportMode)
 		return min(index+2, len(content)), modes
 	case hasBytePrefix(content, index, '$', '{'):
 		return index + 2, append(modes, kotlinTemplateExpression)
+	case hasBytePrefix(content, index, '$', '`'):
+		end := afterImportDelimiter(content, index+2, "`\r\n")
+		if end > index+3 && content[end-1] == '`' {
+			return end, modes
+		}
+		return index + 1, modes
 	case mode == kotlinQuotedString && content[index] == '"':
 		return index + 1, modes[:len(modes)-1]
 	case mode == kotlinRawString && hasImportTextBlockDelimiter(content, index):
@@ -67,28 +73,8 @@ func scanKotlinImportExpression(content []byte, index int, modes []kotlinImportM
 	case hasBytePrefix(content, index, '/', '/'):
 		return afterImportDelimiter(content, index+2, "\r\n"), modes
 	case hasBytePrefix(content, index, '/', '*'):
-		return maskKotlinTemplateBlockComment(content, index), modes
+		return maskImportBlockComment(content, index, true), modes
 	default:
 		return index + 1, modes
 	}
-}
-
-func maskKotlinTemplateBlockComment(content []byte, start int) int {
-	content[start], content[start+1] = ' ', ' '
-	index := start + 2
-	depth := 1
-	for index < len(content) && depth > 0 {
-		if hasBytePrefix(content, index, '/', '*') {
-			content[index], content[index+1] = ' ', ' '
-			depth++
-			index += 2
-			continue
-		}
-		next, state := scanBlockComment(content, index)
-		if state == scannerStateCode {
-			depth--
-		}
-		index = next
-	}
-	return index
 }

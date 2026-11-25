@@ -71,6 +71,40 @@ func TestStripBlockCommentsForFilePreservesKotlinTemplates(t *testing.T) {
 	}
 }
 
+func TestStripBlockCommentsForFilePreservesKotlinQuotedTemplateReferences(t *testing.T) {
+	const escaped = "`item \"label\"`"
+	source := []string{
+		"val " + escaped + " = \"Daily\"",
+		"val title = \"$" + escaped + " /* literal note */\"",
+		"val rawTitle = \"\"\"$" + escaped + "\"\"\"",
+		"val price = \"$`\"",
+	}
+	for _, declaration := range source {
+		const comment = "/* ordinary note */"
+		content := []byte(declaration + "\n" + comment + "\n")
+		want := declaration + "\n" + strings.Repeat(" ", len(comment)) + "\n"
+		if got := string(StripBlockCommentsForFile(content, "Example.kt")); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestStripBlockCommentsForFileHonorsLanguageCommentNesting(t *testing.T) {
+	const note = "/* opening /* inner note */"
+	const kotlinTail = "  keep the reader's note inside */"
+	kotlinSource := note + "\r\n" + kotlinTail + "\r\nval next = 2"
+	kotlinWant := strings.Repeat(" ", len(note)) + "\r\n" +
+		strings.Repeat(" ", len(kotlinTail)) + "\r\nval next = 2"
+	if got := string(StripBlockCommentsForFile([]byte(kotlinSource), "Example.kt")); got != kotlinWant {
+		t.Errorf("got Kotlin source %q, want %q", got, kotlinWant)
+	}
+	const javaTail = " int next = 2;"
+	javaWant := strings.Repeat(" ", len(note)) + javaTail
+	if got := string(StripBlockCommentsForFile([]byte(note+javaTail), "Example.java")); got != javaWant {
+		t.Errorf("got Java source %q, want %q", got, javaWant)
+	}
+}
+
 func TestStripBlockCommentsPreservesEscapedQuoteMarkers(t *testing.T) {
 	content := []byte(`val text = "escaped \" quote and /* literal marker */"
 /* ordinary comment */

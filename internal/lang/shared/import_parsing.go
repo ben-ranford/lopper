@@ -56,7 +56,7 @@ func stripBlockComments(content []byte, javaSource bool) []byte {
 		case hasBytePrefix(stripped, index, '/', '/'):
 			index = afterImportDelimiter(stripped, index+2, "\r\n")
 		case hasBytePrefix(stripped, index, '/', '*'):
-			index = maskImportBlockComment(stripped, index)
+			index = maskImportBlockComment(stripped, index, !javaSource)
 		default:
 			index++
 		}
@@ -72,16 +72,24 @@ func afterImportDelimiter(content []byte, start int, delimiters string) int {
 	return len(content)
 }
 
-func maskImportBlockComment(content []byte, start int) int {
+func maskImportBlockComment(content []byte, start int, allowNesting bool) int {
 	content[start], content[start+1] = ' ', ' '
-	for index := start + 2; index < len(content); {
+	index := start + 2
+	depth := 1
+	for index < len(content) && depth > 0 {
+		if allowNesting && hasBytePrefix(content, index, '/', '*') {
+			content[index], content[index+1] = ' ', ' '
+			depth++
+			index += 2
+			continue
+		}
 		next, state := scanBlockComment(content, index)
 		if state == scannerStateCode {
-			return next
+			depth--
 		}
 		index = next
 	}
-	return len(content)
+	return index
 }
 
 func skipImportQuotedLiteral(content []byte, start int, javaSource bool) int {
