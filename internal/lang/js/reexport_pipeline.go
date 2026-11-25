@@ -18,6 +18,9 @@ type exportOrigin struct {
 }
 
 func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (exportOrigin, bool) {
+	if !r.consumeResolutionBudget(1) {
+		return exportOrigin{}, false
+	}
 	if r.hasResolutionCycle(req) {
 		return exportOrigin{}, false
 	}
@@ -27,13 +30,22 @@ func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (export
 		return exportOrigin{}, false
 	}
 
-	for _, binding := range selectReExportCandidates(file.ReExports, req.requestedExport) {
-		origin, ok := r.resolveExportCandidate(req, binding, visited)
-		if ok {
+	return r.resolveReExportCandidates(req, file.ReExports, visited)
+}
+
+func (r *reExportResolver) resolveReExportCandidates(req resolveExportRequest, bindings []ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
+	// Selecting candidates examines the file's bindings, including those that do not match.
+	if !r.consumeResolutionBudget(len(bindings)) {
+		return exportOrigin{}, false
+	}
+	for _, binding := range selectReExportCandidates(bindings, req.requestedExport) {
+		if origin, ok := r.resolveExportCandidate(req, binding, visited); ok {
 			return origin, true
 		}
+		if r.resolutionLimited {
+			return exportOrigin{}, false
+		}
 	}
-
 	return exportOrigin{}, false
 }
 
@@ -66,6 +78,9 @@ func selectReExportCandidates(bindings []ReExportBinding, requestedExport string
 }
 
 func (r *reExportResolver) resolveExportCandidate(req resolveExportRequest, binding ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
+	if !r.consumeResolutionBudget(1) {
+		return exportOrigin{}, false
+	}
 	nextExport := normalizeRequestedExport(binding.SourceExportName, req.requestedExport)
 	if matchesDependency(binding.SourceModule, req.dependency) {
 		return r.dependencyExportOrigin(req, binding.SourceModule, nextExport), true
