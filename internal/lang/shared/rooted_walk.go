@@ -30,6 +30,10 @@ type RootedWalkBudget struct {
 	MaxFiles            int
 	MaxWorkItems        int
 	CountCandidate      func(path string, entry fs.DirEntry) bool
+	// OnSkippedDescendantDirectoryError optionally records a pure permission
+	// error while opening or listing a descendant directory. Root,
+	// budget, cancellation, identity, and cleanup errors remain fatal.
+	OnSkippedDescendantDirectoryError func(path string, err error)
 }
 
 // RootedWalkFile identifies a non-directory entry and its pinned parent.
@@ -131,6 +135,9 @@ func (w *rootedRepoWalker) walkDirectory(ctx context.Context, parentRoot safeio.
 	}
 	currentRoot, err := openPinnedChildRoot(parentRoot, entry.Name(), relPath)
 	if err != nil {
+		if w.skipDescendantDirectoryError(relPath, path, err) {
+			return walkContextErr(ctx)
+		}
 		return err
 	}
 	defer func() {
@@ -140,7 +147,7 @@ func (w *rootedRepoWalker) walkDirectory(ctx context.Context, parentRoot safeio.
 }
 
 func (w *rootedRepoWalker) walkDirectoryChildren(ctx context.Context, root safeio.Root, relPath, path string) error {
-	entries, err := w.readDir(ctx, root, path)
+	entries, err := w.readDir(ctx, root, relPath, path)
 	if err != nil {
 		return err
 	}
@@ -174,12 +181,15 @@ func (w *rootedRepoWalker) walkFile(parentRoot safeio.Root, path string, entry f
 	})
 }
 
-func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, path string) (entries []fs.DirEntry, err error) {
+func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, relPath, path string) (entries []fs.DirEntry, err error) {
 	if err := walkContextErr(ctx); err != nil {
 		return nil, err
 	}
 	file, err := safeio.OpenPinnedDirectory(root, ".")
 	if err != nil {
+		if w.skipDescendantDirectoryError(relPath, path, err) {
+			return nil, walkContextErr(ctx)
+		}
 		return nil, err
 	}
 	defer func() {
@@ -190,6 +200,7 @@ func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, path s
 			sortRootedWalkEntries(entries)
 		}
 	}()
+	queuedBefore := w.state.traversalEntriesQueued
 
 	for {
 		if err := walkContextErr(ctx); err != nil {
@@ -201,6 +212,10 @@ func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, path s
 		}
 		batch, done, readErr := w.readDirBatch(path, file, readSize)
 		if readErr != nil {
+			if w.skipDescendantDirectoryError(relPath, path, readErr) {
+				w.consumeQueuedTraversalEntries(w.state.traversalEntriesQueued - queuedBefore)
+				return nil, walkContextErr(ctx)
+			}
 			return nil, readErr
 		}
 		entries = append(entries, batch...)
@@ -208,6 +223,18 @@ func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, path s
 			return entries, nil
 		}
 	}
+}
+
+func (w *rootedRepoWalker) skipDescendantDirectoryError(relPath, path string, err error) bool {
+	if relPath == "." || w.budget.OnSkippedDescendantDirectoryError == nil {
+		return false
+	}
+	var multiUnwrapper safeio.UnwrapAller
+	if errors.As(err, &multiUnwrapper) || !IsPureSentinelError(err, fs.ErrPermission) {
+		return false
+	}
+	w.budget.OnSkippedDescendantDirectoryError(path, err)
+	return true
 }
 
 func (w *rootedRepoWalker) readDirBatch(path string, file rootedReadDirFile, readSize int) ([]fs.DirEntry, bool, error) {
@@ -285,6 +312,15 @@ func (w *rootedRepoWalker) dequeueTraversalEntry() bool {
 	}
 	w.state.traversalEntriesQueued--
 	return true
+}
+
+func (w *rootedRepoWalker) consumeQueuedTraversalEntries(count int) {
+	if count <= 0 {
+		return
+	}
+	count = min(count, w.state.traversalEntriesQueued)
+	w.state.traversalEntriesQueued -= count
+	w.state.traversalEntriesSeen += count
 }
 
 func (w *rootedRepoWalker) countFile(path string) error {
