@@ -29,6 +29,15 @@ func StripLineComment(line, marker string) string {
 }
 
 func StripBlockComments(content []byte) []byte {
+	return stripBlockComments(content, false)
+}
+
+// StripJavaBlockComments preserves escape sequences in Java text blocks.
+func StripJavaBlockComments(content []byte) []byte {
+	return stripBlockComments(content, true)
+}
+
+func stripBlockComments(content []byte, textBlockEscapes bool) []byte {
 	if len(content) == 0 {
 		return content
 	}
@@ -42,20 +51,26 @@ func StripBlockComments(content []byte) []byte {
 	escaped := false
 	for i := 0; i < len(stripped); i++ {
 		if quote != 0 {
+			if !tripleQuote || textBlockEscapes {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if stripped[i] == '\\' {
+					escaped = true
+					continue
+				}
+			}
 			if tripleQuote {
 				if i+2 < len(stripped) && stripped[i] == quote && stripped[i+1] == quote && stripped[i+2] == quote {
+					i += 2
+					// Kotlin raw strings may contain extra quotes before their closing delimiter.
+					for !textBlockEscapes && i+1 < len(stripped) && stripped[i+1] == quote {
+						i++
+					}
 					quote = 0
 					tripleQuote = false
-					i += 2
 				}
-				continue
-			}
-			if escaped {
-				escaped = false
-				continue
-			}
-			if stripped[i] == '\\' {
-				escaped = true
 				continue
 			}
 			if stripped[i] == quote {
