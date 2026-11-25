@@ -54,6 +54,10 @@ func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Locatio
 
 // Only claim a binding when both its declaration and use are in direct module scope.
 func isDirectModuleScope(node *sitter.Node) bool {
+	return hasDirectModuleScope(node, false)
+}
+
+func hasDirectModuleScope(node *sitter.Node, allowExpressionContainers bool) bool {
 	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
 		switch parent.Type() {
 		case "program":
@@ -63,6 +67,13 @@ func isDirectModuleScope(node *sitter.Node) bool {
 			"variable_declaration", "export_statement", "assignment_expression",
 			"parenthesized_expression", "expression_statement", "call_expression", "arguments":
 			continue
+		case "member_expression", "subscript_expression", "binary_expression", "ternary_expression",
+			"if_statement", "else_clause", "unary_expression", "update_expression", "await_expression",
+			"new_expression", "sequence_expression", "array", "object", "pair", "spread_element",
+			"template_string", "template_substitution":
+			if !allowExpressionContainers {
+				return false
+			}
 		default:
 			return false
 		}
@@ -76,7 +87,7 @@ func isNamedObjectUsage(node *sitter.Node) bool {
 		return false
 	}
 	object := parent.ChildByFieldName("object")
-	return object != nil && object.ID() == node.ID() && isDirectModuleScope(parent)
+	return object != nil && object.ID() == node.ID() && hasDirectModuleScope(parent, true)
 }
 
 func collectNamespaceUsage(tree *sitter.Tree, content []byte) map[string]map[string]int {
