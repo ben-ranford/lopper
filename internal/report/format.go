@@ -35,6 +35,13 @@ func (f *Formatter) Format(report Report, format Format) (string, error) {
 	}
 }
 
+// FormatTableView formats a table with caller-provided derived aggregates.
+// It is for views that intentionally display a dependency page with summary
+// data computed from a larger filtered set.
+func (f *Formatter) FormatTableView(report Report) (string, error) {
+	return formatTable(report)
+}
+
 func formatJSON(report Report) (string, error) {
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

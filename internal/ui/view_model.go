@@ -81,7 +81,7 @@ func newSummaryFormatter(formatter *report.Formatter) summaryFormatter {
 		formatter = report.NewFormatter()
 	}
 	return func(view summaryDisplayView) (string, error) {
-		return formatter.Format(summaryDisplayViewToReport(view), report.FormatTable)
+		return formatter.FormatTableView(summaryDisplayViewToReport(view))
 	}
 }
 
@@ -141,7 +141,8 @@ func summaryDependencyDetailView(dep summaryDependencyView) detailDependencyView
 }
 
 func buildSummaryDisplayView(base summaryReportView, sorted, paged []summaryDependencyView) summaryDisplayView {
-	summaryDeps := summaryViewDependenciesToReport(sorted)
+	filteredReport := report.Report{Dependencies: summaryViewDependenciesToReport(sorted)}
+	report.FinalizeDerivedState(&filteredReport)
 	return summaryDisplayView{
 		UsageUncertainty:    base.UsageUncertainty,
 		Scope:               base.Scope,
@@ -150,8 +151,8 @@ func buildSummaryDisplayView(base summaryReportView, sorted, paged []summaryDepe
 		EffectivePolicy:     base.EffectivePolicy,
 		BaselineComparison:  base.BaselineComparison,
 		Warnings:            append([]string(nil), base.Warnings...),
-		Summary:             report.ComputeSummary(summaryDeps),
-		LanguageBreakdown:   report.ComputeLanguageBreakdown(summaryDeps),
+		Summary:             filteredReport.Summary,
+		LanguageBreakdown:   filteredReport.LanguageBreakdown,
 		Dependencies:        append([]summaryDependencyView(nil), paged...),
 	}
 }
