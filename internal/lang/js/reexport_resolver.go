@@ -40,12 +40,21 @@ func newReExportResolver(scanResult ScanResult) *reExportResolver {
 	}
 }
 
-func (r *reExportResolver) resolutionBudgetReached() bool {
+func (r *reExportResolver) consumeResolutionBudget() bool {
 	limit := r.resolutionLimit
 	if limit == 0 {
 		limit = maxReExportResolutionSteps
 	}
-	return r.resolutionSteps >= limit
+	if r.resolutionSteps < limit {
+		r.resolutionSteps++
+		return true
+	}
+	if !r.resolutionLimited {
+		r.resolutionLimited = true
+		r.resolutionIncomplete = true
+		r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
+	}
+	return false
 }
 
 func (r *reExportResolver) warnings() []string {

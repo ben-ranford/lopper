@@ -45,12 +45,9 @@ func TestReExportResolutionLimitStopsRemainingCandidatesAndMarksUsageIncomplete(
 	scanResult := ScanResult{Files: []FileScan{
 		{Path: "src/index.ts", Imports: []ImportBinding{{Module: "./barrel", ExportName: "map", LocalName: "map", Kind: ImportNamed}}},
 		{Path: "src/barrel.ts", ReExports: []ReExportBinding{
-			{SourceModule: "./first", SourceExportName: "*", ExportName: "*"},
+			{SourceModule: "unrelated", SourceExportName: "map", ExportName: "*"},
 			{SourceModule: "lodash", SourceExportName: "map", ExportName: "*"},
 		}},
-		{Path: "src/first.ts", ReExports: []ReExportBinding{{SourceModule: "./second", SourceExportName: "*", ExportName: "*"}}},
-		{Path: "src/second.ts", ReExports: []ReExportBinding{{SourceModule: "./third", SourceExportName: "*", ExportName: "*"}}},
-		{Path: "src/third.ts"},
 	}}
 	resolver := newReExportResolver(scanResult)
 	resolver.resolutionLimit = 2
@@ -68,4 +65,35 @@ func TestReExportResolutionLimitStopsRemainingCandidatesAndMarksUsageIncomplete(
 	if !dependencyCoverageIncomplete(scanResult, ExportSurface{}, usage) {
 		t.Fatal("expected incomplete re-export attribution to suppress removal signals")
 	}
+}
+
+func TestResolveReExportCandidatesBranches(t *testing.T) {
+	req := resolveExportRequest{dependency: "lodash", requestedExport: "map"}
+
+	t.Run("stops an exact candidate at the budget", func(t *testing.T) {
+		resolver := newReExportResolver(ScanResult{})
+		resolver.resolutionLimit = 1
+		resolver.resolutionSteps = 1
+		if _, ok := resolver.resolveReExportCandidates(req, []ReExportBinding{{ExportName: "map", SourceModule: "lodash"}}, nil); ok {
+			t.Fatal("expected the exhausted budget to stop the exact candidate")
+		}
+	})
+
+	t.Run("skips unrelated bindings and resolves a wildcard", func(t *testing.T) {
+		resolver := newReExportResolver(ScanResult{})
+		origin, ok := resolver.resolveReExportCandidates(req, []ReExportBinding{
+			{ExportName: "named", SourceModule: "unrelated"},
+			{ExportName: "*", SourceModule: "lodash", SourceExportName: "map"},
+		}, nil)
+		if !ok || origin.dependencyModule != "lodash" || origin.dependencyExport != "map" {
+			t.Fatalf("expected wildcard dependency origin, got %#v and %v", origin, ok)
+		}
+	})
+
+	t.Run("returns unresolved when no candidates match", func(t *testing.T) {
+		resolver := newReExportResolver(ScanResult{})
+		if _, ok := resolver.resolveReExportCandidates(req, []ReExportBinding{{ExportName: "named", SourceModule: "unrelated"}}, nil); ok {
+			t.Fatal("expected no matching re-export candidate")
+		}
+	})
 }

@@ -18,15 +18,9 @@ type exportOrigin struct {
 }
 
 func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (exportOrigin, bool) {
-	if r.resolutionBudgetReached() {
-		if !r.resolutionLimited {
-			r.resolutionLimited = true
-			r.resolutionIncomplete = true
-			r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
-		}
+	if !r.consumeResolutionBudget() {
 		return exportOrigin{}, false
 	}
-	r.resolutionSteps++
 	if r.hasResolutionCycle(req) {
 		return exportOrigin{}, false
 	}
@@ -36,16 +30,37 @@ func (r *reExportResolver) resolveExportOrigin(req resolveExportRequest) (export
 		return exportOrigin{}, false
 	}
 
-	for _, binding := range selectReExportCandidates(file.ReExports, req.requestedExport) {
-		origin, ok := r.resolveExportCandidate(req, binding, visited)
-		if ok {
+	return r.resolveReExportCandidates(req, file.ReExports, visited)
+}
+
+func (r *reExportResolver) resolveReExportCandidates(req resolveExportRequest, bindings []ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
+	foundExact := false
+	for _, binding := range bindings {
+		if binding.ExportName != req.requestedExport {
+			continue
+		}
+		foundExact = true
+		if origin, ok := r.resolveExportCandidate(req, binding, visited); ok {
 			return origin, true
 		}
 		if r.resolutionLimited {
 			return exportOrigin{}, false
 		}
 	}
-
+	if foundExact {
+		return exportOrigin{}, false
+	}
+	for _, binding := range bindings {
+		if binding.ExportName != "*" {
+			continue
+		}
+		if origin, ok := r.resolveExportCandidate(req, binding, visited); ok {
+			return origin, true
+		}
+		if r.resolutionLimited {
+			return exportOrigin{}, false
+		}
+	}
 	return exportOrigin{}, false
 }
 
@@ -78,7 +93,7 @@ func selectReExportCandidates(bindings []ReExportBinding, requestedExport string
 }
 
 func (r *reExportResolver) resolveExportCandidate(req resolveExportRequest, binding ReExportBinding, visited map[string]struct{}) (exportOrigin, bool) {
-	if r.resolutionLimited {
+	if !r.consumeResolutionBudget() {
 		return exportOrigin{}, false
 	}
 	nextExport := normalizeRequestedExport(binding.SourceExportName, req.requestedExport)
