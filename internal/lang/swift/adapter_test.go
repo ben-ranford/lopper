@@ -278,6 +278,42 @@ func run() {
 	}
 }
 
+func TestParseSwiftImportsKeepsStatementLocations(t *testing.T) {
+	content := []byte("let note = \"; import Phantom\"\n import First;  internal import Second\nlet pattern = #/; import Phantom/#")
+	got := parseSwiftImports(content, swiftMainFileName)
+	if len(got) != 2 || got[0].Module != "First" || got[1].Module != "Second" {
+		t.Fatalf("unexpected imports: %#v", got)
+	}
+	if got[0].Location.Line != 2 || got[0].Location.Column != 2 ||
+		got[1].Location.Line != 2 || got[1].Location.Column != 17 {
+		t.Fatalf("unexpected import positions: %#v", got)
+	}
+}
+
+func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency(), swiftNIOFixtureDependency()}
+	cases := []struct {
+		name     string
+		source   string
+		wantUsed bool
+	}{
+		{"same line", "internal import Foundation; let session = Session.default", true},
+		{"separate lines", "internal import Foundation\nlet session = Session.default", true},
+		{"scoped import only", "internal import struct Foundation.URL", false},
+		{"masked semicolons", `internal import Foundation; let note = "; Session.default" // ; Session.default`, false},
+		{"local declaration", "internal import Foundation; struct Session {}\nlet session = Session()", false},
+		{"ambiguous imports", "internal import Foundation; import NIO; let session = Session.default", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := analyseSwiftDependencyUsage(t, dependencies, "import Alamofire\n"+tc.source)
+			if used := got.UsedExportsCount > 0; used != tc.wantUsed {
+				t.Errorf("Alamofire used = %t, want %t", used, tc.wantUsed)
+			}
+		})
+	}
+}
+
 type swiftFixtureDependency struct {
 	identity     string
 	manifestName string

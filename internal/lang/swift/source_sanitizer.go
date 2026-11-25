@@ -1,9 +1,40 @@
 package swift
 
-import "strings"
+import (
+	"iter"
+	"strings"
+)
 
-func swiftSymbolScanLines(content []byte) []string {
-	return strings.Split(blankSwiftStringsAndComments(content), "\n")
+type swiftStatement struct {
+	text   string
+	line   int
+	offset int
+}
+
+// Split leading import statements from the rest of each sanitized source line.
+// A semicolon elsewhere (for example in a Swift regex literal) is not an import boundary.
+func swiftStatements(content []byte) iter.Seq[swiftStatement] {
+	return func(yield func(swiftStatement) bool) {
+		lineNumber := 1
+		for line := range strings.SplitSeq(blankSwiftStringsAndComments(content), "\n") {
+			offset := 0
+			for {
+				part, rest, separated := strings.Cut(line, ";")
+				if !separated || !swiftImportPattern.MatchString(part) {
+					break
+				}
+				if !yield(swiftStatement{text: part, line: lineNumber, offset: offset}) {
+					return
+				}
+				offset += len(part) + 1
+				line = rest
+			}
+			if !yield(swiftStatement{text: line, line: lineNumber, offset: offset}) {
+				return
+			}
+			lineNumber++
+		}
+	}
 }
 
 func blankSwiftStringsAndComments(content []byte) string {

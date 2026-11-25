@@ -1,30 +1,25 @@
 package swift
 
 import (
-	"strings"
-
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 func parseSwiftImports(content []byte, filePath string) []importBinding {
-	sanitized := blankSwiftStringsAndComments(content)
-	return shared.ParseImportLines([]byte(sanitized), filePath, func(line string, index int) []shared.ImportRecord {
-		matches := swiftImportPattern.FindStringSubmatch(line)
+	var imports []importBinding
+	for statement := range swiftStatements(content) {
+		matches := swiftImportPattern.FindStringSubmatch(statement.text)
 		if len(matches) != 2 {
-			return nil
+			continue
 		}
-		moduleName := strings.TrimSpace(matches[1])
-		if moduleName == "" {
-			return nil
-		}
-		return []shared.ImportRecord{{
-			Module:   moduleName,
-			Name:     moduleName,
-			Local:    moduleName,
-			Wildcard: false,
-			Location: shared.LocationFromLine(filePath, index, line),
-		}}
-	})
+		module := matches[1]
+		imports = append(imports, importBinding{
+			Module:   module,
+			Name:     module,
+			Local:    module,
+			Location: shared.Location(filePath, statement.line, statement.offset+shared.FirstContentColumn(statement.text)),
+		})
+	}
+	return imports
 }
 
 func (s *repoScanner) resolveImports(imports []importBinding) []importBinding {
