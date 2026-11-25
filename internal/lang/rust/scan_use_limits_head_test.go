@@ -3,6 +3,8 @@ package rust
 import (
 	"slices"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func parseUseClause(clause string) []usePathEntry {
@@ -43,5 +45,30 @@ func TestParseUseClauseLimitsNestedGroupsAndEntries(t *testing.T) {
 	entries, capped = parseUseClauseWithLimits("serde::{Deserialize, Serialize}", 4, 1)
 	if !capped || len(entries) != 1 || entries[0].Path != "serde::Deserialize" {
 		t.Fatalf("expected entry limit to preserve the first ordinary import, got capped=%v entries=%#v", capped, entries)
+	}
+}
+
+func TestUseClauseLimitReportsPerFileCoverageAndKeepsEarlierImport(t *testing.T) {
+	scan := &scanResult{
+		UnresolvedImports: make(map[string]int),
+		LocalModuleCache:  make(map[string]bool),
+	}
+	ctx := useImportContext{
+		FilePath:  "src/lib.rs",
+		Line:      1,
+		Column:    1,
+		DepLookup: map[string]dependencyInfo{"serde": {Canonical: "serde"}},
+		Scan:      scan,
+	}
+	imports := appendUseClauseImportsWithLimits(nil, "serde::{Deserialize, Serialize}", ctx, 4, 1)
+	if len(imports) != 1 || imports[0].Dependency != "serde" || imports[0].Name != "Deserialize" {
+		t.Fatalf("expected the earlier import to remain available, got %#v", imports)
+	}
+	if len(scan.Warnings) != 1 || scan.Warnings[0] != rustUseStatementLimitWarning {
+		t.Fatalf("expected the per-file use limit warning, got %#v", scan.Warnings)
+	}
+	if len(scan.CoverageGaps) != 1 || scan.CoverageGaps[0].Code != report.CoverageGapRustUseStatementLimit ||
+		scan.CoverageGaps[0].Path != ctx.FilePath {
+		t.Fatalf("expected one per-file coverage gap, got %#v", scan.CoverageGaps)
 	}
 }

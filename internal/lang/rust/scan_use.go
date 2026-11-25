@@ -23,7 +23,11 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 }
 
 func appendUseClauseImports(imports []importBinding, clause string, ctx useImportContext) []importBinding {
-	entries, capped := parseUseClauseWithLimits(clause, maxUseClauseDepth, maxUseClauseEntries)
+	return appendUseClauseImportsWithLimits(imports, clause, ctx, maxUseClauseDepth, maxUseClauseEntries)
+}
+
+func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ctx useImportContext, maxDepth, maxEntries int) []importBinding {
+	entries, capped := parseUseClauseWithLimits(clause, maxDepth, maxEntries)
 	if capped {
 		recordRustUseStatementLimit(ctx.Scan, ctx.FilePath)
 	}
