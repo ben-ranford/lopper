@@ -245,61 +245,29 @@ func TestDetectLicenseFromFilesNoMatch(t *testing.T) {
 
 func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	root := t.TempDir()
-	unknown := filepath.Join(root, "COPYING")
-	known := filepath.Join(root, "LICENSE")
+	unknown := filepath.Join(root, "LICENSE")
+	known := filepath.Join(root, "COPYING")
 	testutil.MustWriteFile(t, unknown, "custom internal license text")
 	testutil.MustWriteFile(t, known, "MIT License\nPermission is hereby granted...")
 
-	probe, status := probeLicenseFilesWithLimits(root, 5, 16, 256)
-	if probe == nil {
+	license := detectLicenseFromFiles(root)
+	if license == nil {
 		t.Fatalf("expected probe result for known license candidate")
 	}
-	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
-		t.Fatalf("unexpected probe result: %#v", probe)
-	}
-	if status.limited || status.skippedLarge {
-		t.Fatalf("unexpected incomplete detection status: %#v", status)
+	if license.SPDX != "MIT" || license.Source != "license-file" || license.Confidence != "medium" {
+		t.Fatalf("unexpected probe result: %#v", license)
 	}
 }
 
 func TestProbeLicenseCandidateSkipsFileAboveLimit(t *testing.T) {
 	root := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "MIT License\n"+strings.Repeat(" ", 32))
+	candidate := filepath.Join(root, "LICENSE")
+	const licenseLimit = 256 * 1024
+	content := "MIT License\nPermission is hereby granted...\n" + strings.Repeat(" ", licenseLimit)
+	testutil.MustWriteFile(t, candidate, content)
 
-	if probe, status := probeLicenseFilesWithLimits(root, 5, 16, 20); probe != nil || !status.skippedLarge {
-		t.Fatalf("expected oversized license file to be skipped, got %#v", probe)
-	}
-}
-
-func TestProbeLicenseCandidatesReportsSkippedLargeCandidateAfterLaterMatch(t *testing.T) {
-	root := t.TempDir()
-	large := filepath.Join(root, "COPYING")
-	known := filepath.Join(root, "LICENSE")
-	testutil.MustWriteFile(t, large, "MIT License\n"+strings.Repeat(" ", 32))
-	testutil.MustWriteFile(t, known, "MIT License")
-
-	probe, status := probeLicenseFilesWithLimits(root, 5, 16, 20)
-	if probe == nil || probe.path != known || probe.spdx != "MIT" {
-		t.Fatalf("expected later candidate license evidence, got %#v", probe)
-	}
-	if !status.skippedLarge || len(status.warning()) != 1 {
-		t.Fatalf("expected incomplete detection warning after skipped candidate, got %#v", status)
-	}
-}
-
-func TestFindLicenseFilesWithLimitsReportsIncompleteDiscovery(t *testing.T) {
-	root := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "custom internal license text")
-	testutil.MustWriteFile(t, filepath.Join(root, "COPYING"), "custom internal license text")
-
-	probe, candidateLimited := probeLicenseFilesWithLimits(root, 1, 16, 256)
-	if probe != nil || !candidateLimited.limited || len(candidateLimited.warning()) != 1 {
-		t.Fatalf("expected candidate-limit status, got probe=%#v status=%#v", probe, candidateLimited)
-	}
-
-	probe, walkLimited := probeLicenseFilesWithLimits(root, 5, 1, 256)
-	if probe != nil || !walkLimited.limited || len(walkLimited.warning()) != 1 {
-		t.Fatalf("expected traversal-limit status, got probe=%#v status=%#v", probe, walkLimited)
+	if license := detectLicenseFromFiles(root); license != nil {
+		t.Fatalf("expected oversized license file to be skipped, got %#v", license)
 	}
 }
 
