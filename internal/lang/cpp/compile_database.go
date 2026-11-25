@@ -181,6 +181,12 @@ func splitCompileCommand(command string) []string {
 	var quote byte
 	for i := 0; i < len(command); i++ {
 		ch := command[i]
+		if ch == '\\' && i+1 < len(command) && command[i+1] == '\\' {
+			current.WriteByte(ch)
+			i++
+			current.WriteByte(command[i])
+			continue
+		}
 		if ch == '\\' && i+1 < len(command) && compileCommandEscapes(command[i+1], quote) {
 			i++
 			current.WriteByte(command[i])

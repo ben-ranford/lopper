@@ -26,6 +26,16 @@ func TestSplitCompileCommandPreservesQuotedArguments(t *testing.T) {
 			command: `c++ -DNAME=\"demo\" -c src/main.cpp`,
 			want:    []string{"c++", `-DNAME="demo"`, "-c", "src/main.cpp"},
 		},
+		{
+			name:    "unquoted UNC path",
+			command: `c++ -I\\server\share -c src/main.cpp`,
+			want:    []string{"c++", `-I\\server\share`, "-c", "src/main.cpp"},
+		},
+		{
+			name:    "quoted UNC path with spaces",
+			command: `c++ -I"\\server\shared include" -c src/main.cpp`,
+			want:    []string{"c++", `-I\\server\shared include`, "-c", "src/main.cpp"},
+		},
 	}
 
 	for _, test := range tests {
