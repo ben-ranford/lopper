@@ -13,7 +13,7 @@ func collectIdentifierUsage(tree *sitter.Tree, content []byte) map[string]int {
 
 func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
 	counts := make(map[string]int)
-	destructures := make(map[report.Location]int)
+	namedImportUsageByLocation := make(map[report.Location]int)
 	moduleNames := uniqueModuleNamedImports(imports)
 	root := tree.RootNode()
 	walkNode(root, func(node *sitter.Node) {
@@ -30,11 +30,11 @@ func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []Imp
 		}
 		location := moduleNames[name]
 		if location.Line > 0 && ((isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node)) || isNamedObjectUsage(node)) {
-			destructures[location]++
+			namedImportUsageByLocation[location]++
 		}
 	})
 
-	return counts, destructures
+	return counts, namedImportUsageByLocation
 }
 
 func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Location {
