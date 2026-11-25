@@ -47,7 +47,7 @@ func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 	namespace = strings.TrimSpace(namespace)
 	name = strings.TrimSpace(name)
 	version = strings.TrimSpace(version)
-	if ecosystem == "" || name == "" || version == "" {
+	if ecosystem == "" || !purlTypeRe.MatchString(ecosystem) || name == "" || version == "" {
 		return ""
 	}
 	if ecosystem == "composer" && namespace == "" {

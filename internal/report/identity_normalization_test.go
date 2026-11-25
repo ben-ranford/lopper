@@ -8,12 +8,14 @@ func TestBuildCanonicalPURL(t *testing.T) {
 	}{
 		{"npm", "", "@scope/package", "1.0.0", "pkg:npm/%40scope/package@1.0.0"},
 		{"composer", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
+		{"packagist", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
 		{"maven", "org.example", "library", "1.0.0", "pkg:maven/org.example/library@1.0.0"},
 		{"golang", "", "example.com/acme/library", "v1.0.0", "pkg:golang/example.com/acme/library@v1.0.0"},
 		{"pypi", "", "My_Package.Name", "1.0.0", "pkg:pypi/my-package-name@1.0.0"},
 		{"npm", "", "", "1.0.0", ""},
 		{"npm", "", "@scope", "1.0.0", ""},
 		{"composer", "", "acme", "1.0.0", ""},
+		{"invalid_type", "", "library", "1.0.0", ""},
 	} {
 		got := BuildCanonicalPURL(testCase.ecosystem, testCase.namespace, testCase.name, testCase.version)
 		if got != testCase.want {
