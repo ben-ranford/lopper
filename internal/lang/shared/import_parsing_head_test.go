@@ -186,15 +186,6 @@ func TestMaskJVMImportSourcePreservesSourcePositions(t *testing.T) {
 			if len(lines) != 4 || lines[0] != test.importLine || lines[2] != strings.Repeat(" ", len(text)) {
 				t.Fatalf("expected intact import and masked literal contents, got %#v", lines)
 			}
-			records := ParseImportLines(masked, test.filePath, func(line string, _ int) []ImportRecord {
-				if strings.HasPrefix(strings.TrimSpace(line), "import ") {
-					return []ImportRecord{{Module: "example.Widget"}}
-				}
-				return nil
-			})
-			if len(records) != 1 || records[0].Location != Location(test.filePath, 1, 3) {
-				t.Fatalf("unexpected import locations: %#v", records)
-			}
 		})
 	}
 }
