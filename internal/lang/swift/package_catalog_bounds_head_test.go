@@ -34,19 +34,19 @@ func TestSwiftPackageCatalogLoadersBoundUntrustedInput(t *testing.T) {
 
 func TestSwiftResolvedPinBudget(t *testing.T) {
 	content := []byte(`{"pins":[{"identity":"modern"}],"object":{"pins":[{"package":"Legacy"}]}}`)
-	if pins, err := parseResolvedPins(content, 2); len(pins) != 2 || err != nil {
+	if pins, err := parseResolvedPinsWithLimit(content, 2); len(pins) != 2 || err != nil {
 		t.Fatalf("expected two pins at the limit, got %#v and %v", pins, err)
 	}
-	if pins, err := parseResolvedPins(content, 1); len(pins) != 0 || !errors.Is(err, errResolvedPinLimit) {
+	if pins, err := parseResolvedPinsWithLimit(content, 1); len(pins) != 0 || !errors.Is(err, errResolvedPinLimit) {
 		t.Fatalf("expected the shared pin limit, got %#v and %v", pins, err)
 	}
-	if _, err := parseResolvedPins([]byte(`{"pins":{}}`), 2); err == nil {
+	if _, err := parseResolvedPinsWithLimit([]byte(`{"pins":{}}`), 2); err == nil {
 		t.Fatal("expected an error for pins outside an array")
 	}
-	if _, err := parseResolvedPins([]byte(`{"pins":[{"identity":1}]}`), 2); err == nil {
+	if _, err := parseResolvedPinsWithLimit([]byte(`{"pins":[{"identity":1}]}`), 2); err == nil {
 		t.Fatal("expected an error for an invalid pin")
 	}
-	if pins, err := parseResolvedPins([]byte(`{"pins":null,"object":{"pins":[]}}`), 2); len(pins) != 0 || err != nil {
+	if pins, err := parseResolvedPinsWithLimit([]byte(`{"pins":null,"object":{"pins":[]}}`), 2); len(pins) != 0 || err != nil {
 		t.Fatalf("expected no pins for empty and null arrays, got %#v and %v", pins, err)
 	}
 }

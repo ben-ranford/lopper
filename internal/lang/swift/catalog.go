@@ -237,7 +237,7 @@ func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		return false, nil, fmt.Errorf("read %s: %w", packageResolvedName, err)
 	}
 
-	pins, err := parseResolvedPins(content, maxResolvedPins)
+	pins, err := parseResolvedPins(content)
 	if err != nil {
 		return false, nil, fmt.Errorf("parse %s: %w", packageResolvedName, err)
 	}
@@ -296,7 +296,11 @@ func addResolvedPinMappings(catalog *dependencyCatalog, depID string, pin resolv
 	}
 }
 
-func parseResolvedPins(content []byte, limit int) ([]resolvedPin, error) {
+func parseResolvedPins(content []byte) ([]resolvedPin, error) {
+	return parseResolvedPinsWithLimit(content, maxResolvedPins)
+}
+
+func parseResolvedPinsWithLimit(content []byte, limit int) ([]resolvedPin, error) {
 	var doc struct {
 		Pins   json.RawMessage `json:"pins"`
 		Object struct {
