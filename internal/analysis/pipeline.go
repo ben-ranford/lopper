@@ -189,8 +189,7 @@ func finalizeReportWithIdentityPolicy(ctx context.Context, req Request, repoPath
 	report.ApplyLicensePolicy(reportData.Dependencies, req.LicenseDenyList)
 	reportData.Scope = scopeMetadata(req.ScopeMode, repoPath, analyzedRoots)
 	report.AnnotateRemovalCandidateScoresWithWeights(reportData.Dependencies, resolveRemovalCandidateWeights(req.RemovalCandidateWeights))
-	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
-	reportData.LanguageBreakdown = report.ComputeLanguageBreakdown(reportData.Dependencies)
+	report.FinalizeDerivedState(&reportData)
 	reportData.SchemaVersion = report.SchemaVersion
 	return reportData, nil
 }

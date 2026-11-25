@@ -104,6 +104,31 @@ func TestFormatTable(t *testing.T) {
 	assertOutputContains(t, output, expected...)
 }
 
+func TestFormatterFinalizesStaleDerivedState(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{{Name: "dep", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2}},
+		Summary:      &Summary{DependencyCount: 99},
+		LanguageBreakdown: []LanguageSummary{
+			{Language: "preserved", DependencyCount: 77},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatJSON)
+	if err != nil {
+		t.Fatalf("format JSON: %v", err)
+	}
+	var serialized Report
+	if err := json.Unmarshal([]byte(output), &serialized); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	if serialized.Summary == nil || serialized.Summary.DependencyCount != 1 {
+		t.Fatalf("expected serialized summary to be finalized, got %#v", serialized.Summary)
+	}
+	if len(serialized.LanguageBreakdown) != 1 || serialized.LanguageBreakdown[0].Language != "go" {
+		t.Fatalf("expected serialized language breakdown to be finalized, got %#v", serialized.LanguageBreakdown)
+	}
+}
+
 func TestFormatTableRuntimeUsageIncludesModuleContext(t *testing.T) {
 	reportData := Report{
 		Dependencies: []DependencyReport{

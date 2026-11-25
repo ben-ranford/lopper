@@ -45,6 +45,10 @@ func (a *App) runAnalysePostStages(ctx context.Context, repoPath string, req Ana
 			return applyVulnerabilityExceptionsIfNeeded(reportData, req, now)
 		},
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			report.FinalizeDerivedState(&reportData)
+			return reportData, nil
+		},
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
 			return a.applyBaselineIfNeeded(reportData, repoPath, req)
 		},
 		analyseValidationStage(func(reportData report.Report) error {

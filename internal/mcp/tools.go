@@ -262,7 +262,7 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 			return analysisErrorResult(err)
 		}
 		report.AnnotateVulnerabilities(&reportData, advisories)
-		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+		report.FinalizeDerivedState(&reportData)
 	}
 	decorateReport(&reportData, resolved.thresholds, resolved.policySources, resolved.policyTrace, resolved.advisorySourcePath)
 	if resolved.baselinePath != "" {

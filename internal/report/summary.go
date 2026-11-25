@@ -12,6 +12,17 @@ type confidenceRollupStats struct {
 	highest float64
 }
 
+// FinalizeDerivedState refreshes report fields that are derived from dependency
+// state. Call it once after a sequence of dependency mutations and before the
+// report is serialized or compared.
+func FinalizeDerivedState(rep *Report) {
+	if rep == nil {
+		return
+	}
+	rep.Summary = ComputeSummary(rep.Dependencies)
+	rep.LanguageBreakdown = ComputeLanguageBreakdown(rep.Dependencies)
+}
+
 func ComputeSummary(dependencies []DependencyReport) *Summary {
 	if len(dependencies) == 0 {
 		return nil
