@@ -63,7 +63,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	warnings = append(warnings, riskWarnings...)
 	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
-	coverageIncomplete := opts.ScanResult.UsageIncomplete || surface.CoverageIncomplete
+	coverageIncomplete := dependencyCoverageIncomplete(opts.ScanResult, surface, usage)
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -108,6 +108,7 @@ type dependencyUsageSummary struct {
 	unusedImports           []report.ImportUse
 	unfilteredUnusedImports []report.ImportUse
 	warnings                []string
+	usageIncomplete         bool
 }
 
 type dependencyImportUsage struct {
@@ -117,11 +118,16 @@ type dependencyImportUsage struct {
 	UnusedImports        map[string]*report.ImportUse
 	HasAmbiguousWildcard bool
 	Warnings             []string
+	UsageIncomplete      bool
 }
 
 // collectDependencyUsageSummary aggregates dependency import usage into report-ready lists and warnings.
 func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dependencyUsageSummary {
-	usage := collectDependencyImportUsage(scanResult, dependency)
+	return collectDependencyUsageSummaryWithResolver(scanResult, dependency, newReExportResolver(scanResult))
+}
+
+func collectDependencyUsageSummaryWithResolver(scanResult ScanResult, dependency string, resolver *reExportResolver) dependencyUsageSummary {
+	usage := collectDependencyImportUsageWithResolver(scanResult, dependency, resolver)
 	usedImportList, unusedImportList := finalizeImportUsageLists(usage.UsedImports, usage.UnusedImports)
 	warnings := dependencyUsageWarnings(dependency, usage.UsedExports, usage.HasAmbiguousWildcard)
 	warnings = append(warnings, usage.Warnings...)
@@ -132,7 +138,12 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 		unusedImports:           unusedImportList,
 		unfilteredUnusedImports: shared.SortedImportUses(usage.UnusedImports),
 		warnings:                warnings,
+		usageIncomplete:         usage.UsageIncomplete,
 	}
+}
+
+func dependencyCoverageIncomplete(scanResult ScanResult, surface ExportSurface, usage dependencyUsageSummary) bool {
+	return scanResult.UsageIncomplete || surface.CoverageIncomplete || usage.usageIncomplete
 }
 
 // finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
@@ -163,6 +174,10 @@ func resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimePro
 }
 
 func collectDependencyImportUsage(scanResult ScanResult, dependency string) dependencyImportUsage {
+	return collectDependencyImportUsageWithResolver(scanResult, dependency, newReExportResolver(scanResult))
+}
+
+func collectDependencyImportUsageWithResolver(scanResult ScanResult, dependency string, resolver *reExportResolver) dependencyImportUsage {
 	result := dependencyImportUsage{
 		UsedExports:   make(map[string]struct{}),
 		Counts:        make(map[string]int),
@@ -171,7 +186,7 @@ func collectDependencyImportUsage(scanResult ScanResult, dependency string) depe
 	}
 	ctx := dependencyImportAttributionContext{
 		dependency:    dependency,
-		resolver:      newReExportResolver(scanResult),
+		resolver:      resolver,
 		usedExports:   result.UsedExports,
 		counts:        result.Counts,
 		usedImports:   result.UsedImports,
@@ -189,6 +204,7 @@ func collectDependencyImportUsage(scanResult ScanResult, dependency string) depe
 		}
 	}
 	result.Warnings = ctx.resolver.warnings()
+	result.UsageIncomplete = ctx.resolver.resolutionIncomplete
 	return result
 }
 
