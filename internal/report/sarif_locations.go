@@ -123,6 +123,12 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 
 func toSARIFArtifactURI(file string) string {
 	file = strings.ReplaceAll(file, "\\", "/")
+	if normalized, devicePath := normalizeWindowsDevicePath(file); devicePath {
+		if normalized == "" {
+			return ""
+		}
+		file = normalized
+	}
 	if isUNCPath(file) {
 		return fileURLFromUNCPath(file)
 	}
@@ -136,6 +142,26 @@ func toSARIFArtifactURI(file string) string {
 	// URL path encoding preserves literal filename bytes and prevents a colon in
 	// the first segment from becoming a scheme. RawPath must remain unset.
 	return (&url.URL{Path: file}).String()
+}
+
+func normalizeWindowsDevicePath(pathValue string) (string, bool) {
+	var devicePath string
+	switch {
+	case strings.HasPrefix(pathValue, "//?/"):
+		devicePath = strings.TrimPrefix(pathValue, "//?/")
+	case strings.HasPrefix(pathValue, "//./"):
+		devicePath = strings.TrimPrefix(pathValue, "//./")
+	default:
+		return pathValue, false
+	}
+
+	if len(devicePath) >= len("UNC/") && strings.EqualFold(devicePath[:len("UNC/")], "UNC/") {
+		return "//" + devicePath[len("UNC/"):], true
+	}
+	if isWindowsDriveAbsolutePath(devicePath) {
+		return devicePath, true
+	}
+	return "", true
 }
 
 func isUNCPath(pathValue string) bool {
