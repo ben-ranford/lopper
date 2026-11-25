@@ -22,20 +22,8 @@ var (
 )
 
 func loadBoundedCocoaPodsSource(path string, loader catalogLoader) catalogLoader {
-	return func(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
-		found, warnings, err := loader(repoPath, catalog)
-		if !shared.IsPureSentinelError(err, safeio.ErrFileTooLarge, errPodDeclarationLimit, errPodLockEntryLimit) {
-			return found, warnings, err
-		}
-		warning := fmt.Sprintf("%v; CocoaPods coverage may be incomplete", err)
-		catalog.CoverageGaps = append(catalog.CoverageGaps, report.CoverageGap{
-			Code:     report.CoverageGapSwiftCocoaPodsLimit,
-			Language: swiftAdapterID,
-			Path:     path,
-			Evidence: []string{warning},
-		})
-		return true, append(warnings, warning), nil
-	}
+	return loadBoundedCatalogSource(path, "CocoaPods", report.CoverageGapSwiftCocoaPodsLimit, loader,
+		safeio.ErrFileTooLarge, errPodDeclarationLimit, errPodLockEntryLimit)
 }
 
 func loadPodManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
