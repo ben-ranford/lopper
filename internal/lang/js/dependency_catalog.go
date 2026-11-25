@@ -73,9 +73,6 @@ func (c *dependencyCollector) recordImport(repoPath, importerPath string, imp Im
 		Dependency:   dep,
 	})
 	if resolvedRoot == "" {
-		if _, alreadyFound := c.found[dep]; alreadyFound {
-			return
-		}
 		c.missing[dep] = struct{}{}
 		return
 	}
@@ -95,7 +92,6 @@ func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionReque
 
 func (c *dependencyCollector) markFound(dep string) {
 	c.found[dep] = struct{}{}
-	delete(c.missing, dep)
 }
 
 func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
