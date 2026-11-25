@@ -53,8 +53,10 @@ func TestUseClauseLimitReportsPerFileCoverageAndKeepsEarlierImport(t *testing.T)
 		UnresolvedImports: make(map[string]int),
 		LocalModuleCache:  make(map[string]bool),
 	}
+	content := []byte("use serde::{Deserialize, Serialize};\nuse serde::Serialize;")
+	dependencyLookup := map[string]dependencyInfo{"serde": {Canonical: "serde"}}
 	limits := useClauseLimits{maxDepth: 4, maxEntries: 1}
-	_, imports := collectRustImportsWithUseClauseLimits([]byte("use serde::{Deserialize, Serialize};\nuse serde::Serialize;"), "src/lib.rs", "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan, true, limits)
+	_, imports := collectRustImportsWithUseClauseLimits(content, "src/lib.rs", "", dependencyLookup, scan, true, limits)
 	if len(imports) != 2 || imports[0].Dependency != "serde" || imports[0].Name != "Deserialize" || imports[1].Name != "Serialize" {
 		t.Fatalf("expected imports before and after the cap to remain available, got %#v", imports)
 	}
@@ -64,5 +66,10 @@ func TestUseClauseLimitReportsPerFileCoverageAndKeepsEarlierImport(t *testing.T)
 	if len(scan.CoverageGaps) != 1 || scan.CoverageGaps[0].Code != report.CoverageGapRustUseStatementLimit ||
 		scan.CoverageGaps[0].Path != "src/lib.rs" {
 		t.Fatalf("expected one per-file coverage gap, got %#v", scan.CoverageGaps)
+	}
+
+	_, importsWithoutScan := collectRustImportsWithUseClauseLimits(content, "src/lib.rs", "", dependencyLookup, nil, true, limits)
+	if !slices.Equal(importsWithoutScan, imports) {
+		t.Fatalf("expected the same imports without the coverage collector, got %#v", importsWithoutScan)
 	}
 }
