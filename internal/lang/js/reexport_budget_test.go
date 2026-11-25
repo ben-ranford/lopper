@@ -1,42 +1,36 @@
 package js
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
-	"time"
-
-	"github.com/ben-ranford/lopper/internal/language"
 )
 
 func TestReExportResolutionBudget(t *testing.T) {
-	const files = 200
-	repo := t.TempDir()
-	for i := 0; i < files-1; i++ {
-		body := fmt.Sprintf("export * from \"./f%d\"\n", i+1)
-		mustWriteFile(t, filepath.Join(repo, "src", fmt.Sprintf("f%d.ts", i)), body)
+	// A linear chain exercises the default work limit without timing or filesystem dependencies.
+	const moduleCount = 48
+	files := make([]FileScan, 0, moduleCount)
+	for index := 0; index < moduleCount-1; index++ {
+		files = append(files, FileScan{
+			Path: fmt.Sprintf("src/module%d.ts", index),
+			ReExports: []ReExportBinding{{
+				SourceModule: fmt.Sprintf("./module%d", index+1), SourceExportName: "*", ExportName: "*",
+			}},
+		})
 	}
-	mustWriteFile(t, filepath.Join(repo, "src", fmt.Sprintf("f%d.ts", files-1)), "export { map as x } from \"lodash\"\n")
-	mustWriteFile(t, filepath.Join(repo, "src", "index.ts"), "import { x } from \"./f0\"\nconsole.log(x)\n")
-	lodashDir := filepath.Join(repo, "node_modules", "lodash")
-	mustWriteFile(t, filepath.Join(lodashDir, "package.json"), testPackageJSONMain)
-	mustWriteFile(t, filepath.Join(lodashDir, "index.js"), "export function map() {}\n")
-
-	started := time.Now()
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: "lodash",
+	files = append(files, FileScan{
+		Path:      fmt.Sprintf("src/module%d.ts", moduleCount-1),
+		ReExports: []ReExportBinding{{SourceModule: "lodash", SourceExportName: "map", ExportName: "map"}},
 	})
-	if err != nil {
-		t.Fatalf(testAnalyseErrFmt, err)
+	resolver := newReExportResolver(ScanResult{Files: files})
+	_, ok := resolver.resolveImportAttribution(testImporterPath, ImportBinding{
+		Module: "./module0", ExportName: "map", Kind: ImportNamed,
+	}, "lodash")
+	warnings := resolver.warnings()
+	if !slices.Contains(warnings, "re-export attribution exceeded resolution budget") {
+		t.Fatalf("expected a resolution budget warning, got %v", warnings)
 	}
-	if time.Since(started) > 3*time.Second {
-		t.Fatalf("re-export resolution exceeded 3s for %d files", files)
-	}
-	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "re-export attribution exceeded resolution budget") {
-		t.Fatalf("expected resolution budget warning, got %#v", reportData.Warnings)
+	if ok {
+		t.Fatal("expected the dependency beyond the resolution budget to remain unattributed")
 	}
 }

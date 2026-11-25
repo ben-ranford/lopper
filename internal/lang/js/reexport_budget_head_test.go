@@ -14,7 +14,7 @@ func TestReExportResolutionLimitStopsRemainingCandidatesAndMarksUsageIncomplete(
 		}},
 	}}
 	resolver := newReExportResolver(scanResult)
-	resolver.resolutionLimit = 2
+	resolver.resolutionLimit = 4
 
 	usage := collectDependencyUsageSummaryWithResolver(scanResult, "lodash", resolver)
 	if !usage.usageIncomplete {
@@ -37,9 +37,20 @@ func TestResolveReExportCandidatesBranches(t *testing.T) {
 	t.Run("stops an exact candidate at the budget", func(t *testing.T) {
 		resolver := newReExportResolver(ScanResult{})
 		resolver.resolutionLimit = 1
-		resolver.resolutionSteps = 1
 		if _, ok := resolver.resolveReExportCandidates(req, []ReExportBinding{{ExportName: "map", SourceModule: "lodash"}}, nil); ok {
 			t.Fatal("expected the exhausted budget to stop the exact candidate")
+		}
+	})
+
+	t.Run("counts bindings that do not match", func(t *testing.T) {
+		resolver := newReExportResolver(ScanResult{})
+		resolver.resolutionLimit = 1
+		bindings := []ReExportBinding{{ExportName: "first"}, {ExportName: "second"}}
+		if _, ok := resolver.resolveReExportCandidates(req, bindings, nil); ok || !resolver.resolutionLimited {
+			t.Fatal("expected the binding scan to stop at the budget")
+		}
+		if _, ok := resolver.resolveExportOrigin(req); ok || resolver.resolutionSteps != 0 {
+			t.Fatal("expected exhaustion to stop further work on the same import")
 		}
 	})
 

@@ -40,20 +40,21 @@ func newReExportResolver(scanResult ScanResult) *reExportResolver {
 	}
 }
 
-func (r *reExportResolver) consumeResolutionBudget() bool {
+func (r *reExportResolver) consumeResolutionBudget(steps int) bool {
+	if r.resolutionLimited {
+		return false
+	}
 	limit := r.resolutionLimit
 	if limit == 0 {
 		limit = maxReExportResolutionSteps
 	}
-	if r.resolutionSteps < limit {
-		r.resolutionSteps++
+	if steps <= limit-r.resolutionSteps {
+		r.resolutionSteps += steps
 		return true
 	}
-	if !r.resolutionLimited {
-		r.resolutionLimited = true
-		r.resolutionIncomplete = true
-		r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
-	}
+	r.resolutionLimited = true
+	r.resolutionIncomplete = true
+	r.warningSet[reExportResolutionBudgetWarning] = struct{}{}
 	return false
 }
 
