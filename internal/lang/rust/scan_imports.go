@@ -43,10 +43,11 @@ type rustImportStatement struct {
 const rustUseStatementLimitWarning = "Rust use statement processing reached its size or work limit; dependency coverage may be incomplete"
 
 func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool) ([]importBinding, []importBinding) {
-	return collectRustImportsWithUseClauseLimits(content, filePath, crateRoot, depLookup, scan, includeUse, maxUseClauseDepth, maxUseClauseEntries)
+	limits := useClauseLimits{maxDepth: maxUseClauseDepth, maxEntries: maxUseClauseEntries}
+	return collectRustImportsWithUseClauseLimits(content, filePath, crateRoot, depLookup, scan, includeUse, limits)
 }
 
-func collectRustImportsWithUseClauseLimits(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool, maxDepth, maxEntries int) ([]importBinding, []importBinding) {
+func collectRustImportsWithUseClauseLimits(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool, limits useClauseLimits) ([]importBinding, []importBinding) {
 	externImports := make([]importBinding, 0)
 	useImports := make([]importBinding, 0)
 	clauseLimited := false
@@ -67,7 +68,7 @@ func collectRustImportsWithUseClauseLimits(content []byte, filePath, crateRoot s
 				Scan:      scan,
 			}
 			var capped bool
-			useImports, capped = appendUseClauseImportsWithLimits(useImports, string(stmt.Clause), ctx, maxDepth, maxEntries)
+			useImports, capped = appendUseClauseImportsWithLimits(useImports, string(stmt.Clause), ctx, limits)
 			clauseLimited = clauseLimited || capped
 		}
 	})

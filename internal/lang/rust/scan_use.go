@@ -22,8 +22,8 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 	return clause, line, column, true
 }
 
-func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ctx useImportContext, maxDepth, maxEntries int) ([]importBinding, bool) {
-	entries, capped := parseUseClauseWithLimits(clause, maxDepth, maxEntries)
+func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ctx useImportContext, limits useClauseLimits) ([]importBinding, bool) {
+	entries, capped := parseUseClauseWithLimits(clause, limits)
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
@@ -272,21 +272,25 @@ func normalizeUseSymbolNames(entry usePathEntry, module string) (string, string)
 	return name, local
 }
 
-func parseUseClauseWithLimits(clause string, maxDepth, maxEntries int) ([]usePathEntry, bool) {
-	parser := useClauseParser{maxDepth: maxDepth, maxEntries: maxEntries}
+func parseUseClauseWithLimits(clause string, limits useClauseLimits) ([]usePathEntry, bool) {
+	parser := useClauseParser{limits: limits}
 	parser.expandSegments(clause, "", 0)
 	return parser.entries, parser.capped
 }
 
-type useClauseParser struct {
-	entries    []usePathEntry
+type useClauseLimits struct {
 	maxDepth   int
 	maxEntries int
-	capped     bool
+}
+
+type useClauseParser struct {
+	entries []usePathEntry
+	limits  useClauseLimits
+	capped  bool
 }
 
 func (p *useClauseParser) expand(part, prefix string, depth int) {
-	if depth >= p.maxDepth || len(p.entries) >= p.maxEntries {
+	if depth >= p.limits.maxDepth || len(p.entries) >= p.limits.maxEntries {
 		p.capped = true
 		return
 	}
@@ -321,7 +325,7 @@ func (p *useClauseParser) expandPrefixedBraceGroup(part, prefix string, depth in
 }
 
 func (p *useClauseParser) expandSegments(inner, prefix string, depth int) {
-	if depth >= p.maxDepth {
+	if depth >= p.limits.maxDepth {
 		p.capped = true
 		return
 	}
@@ -329,7 +333,7 @@ func (p *useClauseParser) expandSegments(inner, prefix string, depth int) {
 		if segment == "" {
 			continue
 		}
-		if len(p.entries) >= p.maxEntries {
+		if len(p.entries) >= p.limits.maxEntries {
 			p.capped = true
 			return
 		}
