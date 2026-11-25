@@ -100,7 +100,7 @@ func countEscapedIdentifierUsage(scannable []byte, escapedLocals map[string]stru
 
 func escapedImportLocals(content []byte, imports []shared.ImportRecord) map[string]struct{} {
 	tracker := newEscapedImportTracker(imports)
-	for _, line := range strings.Split(string(shared.StripBlockComments(content)), "\n") {
+	for _, line := range strings.Split(string(shared.MaskJVMImportSource(content, "source.kt")), "\n") {
 		tracker.recordLine(line)
 	}
 	return tracker.escapedOnly()

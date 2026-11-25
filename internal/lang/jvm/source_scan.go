@@ -240,7 +240,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath, filePackage string, depPrefixes, depAliases map[string]string) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := shared.MaskJVMImportSource(content, filePath)
 	parser := jvmImportParser{
 		filePackage: filePackage,
 		depPrefixes: depPrefixes,

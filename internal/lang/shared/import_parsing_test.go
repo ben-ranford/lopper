@@ -71,3 +71,30 @@ func TestStripBlockComments(t *testing.T) {
 		t.Fatalf("expected trailing inline block comment to preserve import line, got %q", lines[4])
 	}
 }
+
+func TestStripBlockCommentsPreservesQuotedMarkers(t *testing.T) {
+	content := []byte("val first = \"annotation /* note */\"\nval second = 'x'\n/* ordinary comment */\nimport com.acme.Widget\n")
+
+	stripped := StripBlockComments(content)
+	lines := strings.Split(string(stripped), "\n")
+	if lines[0] != `val first = "annotation /* note */"` {
+		t.Fatalf("expected double-quoted text to remain unchanged, got %q", lines[0])
+	}
+	if lines[1] != "val second = 'x'" {
+		t.Fatalf("expected single-quoted text to remain unchanged, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "" {
+		t.Fatalf("expected block comment line to be blanked, got %q", lines[2])
+	}
+	if lines[3] != "import com.acme.Widget" {
+		t.Fatalf("expected import line to remain unchanged, got %q", lines[3])
+	}
+}
+
+func TestStripBlockCommentsIgnoresQuotesInLineComments(t *testing.T) {
+	source := []byte("// don't change line comments\n/* replace */\nimport demo.Visible\n")
+	got := string(StripBlockComments(source))
+	if strings.Contains(got, "replace") || !strings.Contains(got, "import demo.Visible") {
+		t.Fatalf("expected a stripped block and intact import, got %q", got)
+	}
+}
