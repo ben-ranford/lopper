@@ -169,7 +169,7 @@ func codemodSkipReason(imp ImportBinding, file FileScan) (string, string) {
 }
 
 func isNamedImportUsed(imp ImportBinding, file FileScan) bool {
-	return file.IdentifierUsage[imp.LocalName] > 0
+	return namedImportUsageCount(imp, file) > 0
 }
 
 func newCodemodSkip(file string, imp ImportBinding, reasonCode, message string) report.CodemodSkip {

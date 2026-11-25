@@ -414,6 +414,21 @@ map([1], (x) => x)
 	}
 }
 
+func TestCollectDependencyImportUsageTracksNamedImportObjectDestructure(t *testing.T) {
+	usage := collectDependencyImportUsageFromSource(t, "library", `import { config, start } from "library"
+const { port, host } = config
+start()
+`)
+	for _, exportName := range []string{"config", "start"} {
+		if _, ok := usage.UsedExports[exportName]; !ok {
+			t.Fatalf("expected named import %q to be used, got %#v", exportName, usage.UsedExports)
+		}
+	}
+	if len(usage.UnusedImports) != 0 {
+		t.Fatalf("expected no unused named imports, got %#v", usage.UnusedImports)
+	}
+}
+
 func TestCollectDependencyImportUsageNamespaceDestructureRestKeepsWildcard(t *testing.T) {
 	usage := collectDependencyImportUsageFromSource(t, "lodash", `import * as util from "lodash"
 const { map, ...rest } = util
