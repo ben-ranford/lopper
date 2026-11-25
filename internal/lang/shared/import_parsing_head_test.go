@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,31 @@ func TestStripBlockCommentsForFilePreservesKotlinBacktickIdentifier(t *testing.T
 	}
 }
 
+func TestStripBlockCommentsForFilePreservesKotlinTemplates(t *testing.T) {
+	const nestedComment = "/* optional /* note */ */"
+	source := []string{
+		`val title = "${"Reader's guide"}"`,
+		"val `named label` = \"Daily\"",
+		`val label = """${listOf(`,
+		`    title, // display title`,
+		"    " + nestedComment + ` buildString { append('}') },`,
+		"    `named label`,",
+		`    """Section ${"Intro"}"""`,
+		`).joinToString()}"""`,
+		`/* ordinary comment */ val next = 2`,
+	}
+	content := []byte(strings.Join(source, "\n"))
+	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.kt")), "\n")
+	want := slices.Clone(source)
+	want[4] = strings.Replace(want[4], nestedComment, strings.Repeat(" ", len(nestedComment)), 1)
+	if !slices.Equal(lines[:len(lines)-1], want[:len(want)-1]) {
+		t.Fatalf("expected only the comment inside the template expression to be stripped, got %#v", lines)
+	}
+	if got := strings.TrimSpace(lines[len(lines)-1]); got != "val next = 2" {
+		t.Fatalf("expected the ordinary comment after the templates to be stripped, got %q", got)
+	}
+}
+
 func TestStripBlockCommentsPreservesEscapedQuoteMarkers(t *testing.T) {
 	content := []byte(`val text = "escaped \" quote and /* literal marker */"
 /* ordinary comment */
@@ -62,20 +88,25 @@ import com.acme.Widget
 
 func TestStripBlockCommentsHandlesEndOfInput(t *testing.T) {
 	const unfinishedBlock = "/* note"
+	const unfinishedJavaString = `"label \" quoted`
+	const unfinishedJavaTextBlock = "\"\"\"\nlabel"
 	tests := []struct {
-		name    string
-		content string
-		want    string
+		name     string
+		filePath string
+		content  string
+		want     string
 	}{
 		{name: "line comment", content: "// note", want: "// note"},
 		{name: "unfinished block comment", content: unfinishedBlock, want: strings.Repeat(" ", len(unfinishedBlock))},
 		{name: "unfinished quoted string", content: `"note`, want: `"note`},
 		{name: "unfinished raw string", content: `"""note`, want: `"""note`},
+		{name: "unfinished Java string", filePath: "Example.java", content: unfinishedJavaString, want: unfinishedJavaString},
+		{name: "unfinished Java text block", filePath: "Example.java", content: unfinishedJavaTextBlock, want: unfinishedJavaTextBlock},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			input := []byte(test.content)
-			if got := string(StripBlockComments(input)); got != test.want {
+			if got := string(StripBlockCommentsForFile(input, test.filePath)); got != test.want {
 				t.Errorf("got %q, want %q", got, test.want)
 			}
 			if string(input) != test.content {

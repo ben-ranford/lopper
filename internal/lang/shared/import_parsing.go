@@ -84,10 +84,18 @@ func maskImportBlockComment(content []byte, start int) int {
 	return len(content)
 }
 
-func skipImportQuotedLiteral(content []byte, start int, textBlockEscapes bool) int {
-	if hasImportTextBlockDelimiter(content, start) {
-		return skipImportTextBlock(content, start+3, textBlockEscapes)
+func skipImportQuotedLiteral(content []byte, start int, javaSource bool) int {
+	switch {
+	case !javaSource && content[start] == '"':
+		return skipKotlinImportLiteral(content, start)
+	case hasImportTextBlockDelimiter(content, start):
+		return skipJavaImportTextBlock(content, start+3)
+	default:
+		return skipPlainImportLiteral(content, start)
 	}
+}
+
+func skipPlainImportLiteral(content []byte, start int) int {
 	quote := content[start]
 	for index := start + 1; index < len(content); index++ {
 		switch content[index] {
@@ -100,18 +108,13 @@ func skipImportQuotedLiteral(content []byte, start int, textBlockEscapes bool) i
 	return len(content)
 }
 
-func skipImportTextBlock(content []byte, start int, textBlockEscapes bool) int {
+func skipJavaImportTextBlock(content []byte, start int) int {
 	for index := start; index < len(content); index++ {
 		switch {
-		case textBlockEscapes && content[index] == '\\':
+		case content[index] == '\\':
 			index++
 		case hasImportTextBlockDelimiter(content, index):
-			end := index + 3
-			// Kotlin raw strings may contain extra quotes before their closing delimiter.
-			for !textBlockEscapes && end < len(content) && content[end] == '"' {
-				end++
-			}
-			return end
+			return index + 3
 		}
 	}
 	return len(content)
