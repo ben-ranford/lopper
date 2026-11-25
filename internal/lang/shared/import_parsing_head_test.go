@@ -21,3 +21,18 @@ import com.acme.Widget
 		t.Fatalf("expected only the ordinary comment to be stripped, got %#v", lines)
 	}
 }
+
+func TestStripBlockCommentsPreservesEscapedQuoteMarkers(t *testing.T) {
+	content := []byte(`val text = "escaped \" quote and /* literal marker */"
+/* ordinary comment */
+import com.acme.Widget
+`)
+
+	lines := strings.Split(string(StripBlockComments(content)), "\n")
+	if lines[0] != `val text = "escaped \" quote and /* literal marker */"` {
+		t.Fatalf("expected escaped quoted text to remain unchanged, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "" || lines[2] != "import com.acme.Widget" {
+		t.Fatalf("expected only the ordinary comment to be stripped, got %#v", lines)
+	}
+}
