@@ -30,6 +30,8 @@ type ImportBinding struct {
 	LocalName  string
 	Kind       ImportKind
 	Location   report.Location
+
+	moduleScope bool
 }
 
 type ReExportBinding struct {
@@ -46,6 +48,8 @@ type FileScan struct {
 	ReExports        []ReExportBinding
 	IdentifierUsage  map[string]int
 	NamespaceUsage   map[string]map[string]int
+
+	namedDestructureUsage map[report.Location]int
 }
 
 type ScanResult struct {
@@ -133,7 +137,7 @@ func ScanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPat
 func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
 	imports, uncertainImports := collectImportBindings(tree, content, relPath)
 	reExports := collectReExportBindings(tree, content, relPath, imports)
-	identifierUsage := collectIdentifierUsage(tree, content)
+	identifierUsage, namedDestructureUsage := collectFileIdentifierUsage(tree, content, imports)
 	namespaceUsage := collectNamespaceUsage(tree, content)
 
 	return FileScan{
@@ -143,5 +147,7 @@ func analyzeFile(tree *sitter.Tree, content []byte, relPath string) FileScan {
 		ReExports:        reExports,
 		IdentifierUsage:  identifierUsage,
 		NamespaceUsage:   namespaceUsage,
+
+		namedDestructureUsage: namedDestructureUsage,
 	}
 }

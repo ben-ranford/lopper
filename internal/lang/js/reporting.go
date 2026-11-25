@@ -326,13 +326,17 @@ func applyImportUsage(imp ImportBinding, file FileScan, usedExports map[string]s
 }
 
 func applyNamedImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
-	count := file.IdentifierUsage[imp.LocalName]
+	count := namedImportUsageCount(imp, file)
 	if count <= 0 {
 		return false
 	}
 	usedExports[imp.ExportName] = struct{}{}
 	counts[imp.ExportName] += count
 	return true
+}
+
+func namedImportUsageCount(imp ImportBinding, file FileScan) int {
+	return file.IdentifierUsage[imp.LocalName] + file.namedDestructureUsage[imp.Location]
 }
 
 func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {

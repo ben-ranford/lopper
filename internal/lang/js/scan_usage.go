@@ -1,25 +1,73 @@
 package js
 
-import sitter "github.com/smacker/go-tree-sitter"
+import (
+	sitter "github.com/smacker/go-tree-sitter"
+
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 func collectIdentifierUsage(tree *sitter.Tree, content []byte) map[string]int {
+	counts, _ := collectFileIdentifierUsage(tree, content, nil)
+	return counts
+}
+
+func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
 	counts := make(map[string]int)
+	destructures := make(map[report.Location]int)
+	moduleNames := uniqueModuleNamedImports(imports)
 	root := tree.RootNode()
 	walkNode(root, func(node *sitter.Node) {
 		if node.Type() != "identifier" {
-			return
-		}
-		if !isIdentifierUsage(node) {
 			return
 		}
 		name := nodeText(node, content)
 		if name == "" {
 			return
 		}
-		counts[name]++
+		if isIdentifierUsage(node) {
+			counts[name]++
+			return
+		}
+		location := moduleNames[name]
+		if location.Line > 0 && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node) {
+			destructures[location]++
+		}
 	})
 
-	return counts
+	return counts, destructures
+}
+
+func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Location {
+	names := make(map[string]report.Location)
+	for _, imported := range imports {
+		if !imported.moduleScope {
+			continue
+		}
+		location := imported.Location
+		if _, seen := names[imported.LocalName]; seen {
+			location = report.Location{}
+		}
+		names[imported.LocalName] = location
+	}
+	return names
+}
+
+// Only claim a binding when both its declaration and use are in direct module scope.
+func isDirectModuleScope(node *sitter.Node) bool {
+	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
+		switch parent.Type() {
+		case "program":
+			return true
+		case "import_specifier", "named_imports", "import_clause", "import_statement",
+			"pair_pattern", "object_pattern", "variable_declarator", "lexical_declaration",
+			"variable_declaration", "export_statement", "assignment_expression",
+			"parenthesized_expression", "expression_statement":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func collectNamespaceUsage(tree *sitter.Tree, content []byte) map[string]map[string]int {
