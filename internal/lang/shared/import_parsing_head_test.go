@@ -22,16 +22,26 @@ val next = 1
 	}
 }
 
-func TestStripJavaBlockCommentsPreservesEscapedTextBlockDelimiter(t *testing.T) {
+func TestStripBlockCommentsForFilePreservesJavaTextBlocks(t *testing.T) {
 	const textLine = `    Quote sequence \""" and /* literal marker */`
 	content := []byte("class Example {\n  String text = \"\"\"\n" + textLine + "\n    \"\"\";\n  /* ordinary comment */ int value = 1;\n}\n")
 
-	lines := strings.Split(string(StripJavaBlockComments(content)), "\n")
+	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.java")), "\n")
 	if lines[2] != textLine || strings.TrimSpace(lines[3]) != `""";` {
 		t.Fatalf("expected the complete text block to remain unchanged, got %#v", lines[1:4])
 	}
 	if got := strings.TrimSpace(lines[4]); got != "int value = 1;" {
 		t.Fatalf("expected the ordinary comment after the text block to be stripped, got %q", got)
+	}
+}
+
+func TestStripBlockCommentsForFilePreservesKotlinBacktickIdentifier(t *testing.T) {
+	const declaration = "val `unit's label` = 1"
+	content := []byte(declaration + "\n/* ordinary comment */ val next = 2\n")
+
+	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.kt")), "\n")
+	if lines[0] != declaration || strings.TrimSpace(lines[1]) != "val next = 2" {
+		t.Fatalf("expected the identifier to remain and the ordinary comment to be stripped, got %#v", lines)
 	}
 }
 

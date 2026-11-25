@@ -2,6 +2,7 @@ package shared
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -33,12 +34,12 @@ func StripBlockComments(content []byte) []byte {
 	return stripBlockComments(content, false)
 }
 
-// StripJavaBlockComments preserves escape sequences in Java text blocks.
-func StripJavaBlockComments(content []byte) []byte {
-	return stripBlockComments(content, true)
+// StripBlockCommentsForFile applies the quoted-literal rules for the source file.
+func StripBlockCommentsForFile(content []byte, filePath string) []byte {
+	return stripBlockComments(content, strings.EqualFold(filepath.Ext(filePath), ".java"))
 }
 
-func stripBlockComments(content []byte, textBlockEscapes bool) []byte {
+func stripBlockComments(content []byte, javaSource bool) []byte {
 	if len(content) == 0 {
 		return content
 	}
@@ -48,10 +49,12 @@ func stripBlockComments(content []byte, textBlockEscapes bool) []byte {
 
 	for index := 0; index < len(stripped); {
 		switch {
+		case !javaSource && stripped[index] == '`':
+			index = afterImportDelimiter(stripped, index+1, "`\r\n")
 		case stripped[index] == '\'' || stripped[index] == '"':
-			index = skipImportQuotedLiteral(stripped, index, textBlockEscapes)
+			index = skipImportQuotedLiteral(stripped, index, javaSource)
 		case hasBytePrefix(stripped, index, '/', '/'):
-			index = skipImportLineComment(stripped, index+2)
+			index = afterImportDelimiter(stripped, index+2, "\r\n")
 		case hasBytePrefix(stripped, index, '/', '*'):
 			index = maskImportBlockComment(stripped, index)
 		default:
@@ -62,9 +65,9 @@ func stripBlockComments(content []byte, textBlockEscapes bool) []byte {
 	return stripped
 }
 
-func skipImportLineComment(content []byte, start int) int {
-	if end := bytes.IndexAny(content[start:], "\r\n"); end >= 0 {
-		return start + end
+func afterImportDelimiter(content []byte, start int, delimiters string) int {
+	if end := bytes.IndexAny(content[start:], delimiters); end >= 0 {
+		return start + end + 1
 	}
 	return len(content)
 }

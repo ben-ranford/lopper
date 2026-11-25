@@ -180,7 +180,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := shared.StripBlockCommentsForFile(content, filePath)
 	parser := kotlinAndroidImportParser{
 		filePackage: filePackage,
 		lookups:     lookups,
