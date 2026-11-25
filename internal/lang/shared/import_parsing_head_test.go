@@ -23,11 +23,11 @@ val next = 1
 	}
 }
 
-func TestStripBlockCommentsForFilePreservesJavaTextBlocks(t *testing.T) {
+func TestStripBlockCommentsPreservesJavaTextBlocks(t *testing.T) {
 	const textLine = `    Quote sequence \""" and /* literal marker */`
 	content := []byte("class Example {\n  String text = \"\"\"\n" + textLine + "\n    \"\"\";\n  /* ordinary comment */ int value = 1;\n}\n")
 
-	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.java")), "\n")
+	lines := strings.Split(string(scanImportSource(content, true, false)), "\n")
 	if lines[2] != textLine || strings.TrimSpace(lines[3]) != `""";` {
 		t.Fatalf("expected the complete text block to remain unchanged, got %#v", lines[1:4])
 	}
@@ -36,17 +36,17 @@ func TestStripBlockCommentsForFilePreservesJavaTextBlocks(t *testing.T) {
 	}
 }
 
-func TestStripBlockCommentsForFilePreservesKotlinBacktickIdentifier(t *testing.T) {
+func TestStripBlockCommentsPreservesKotlinBacktickIdentifier(t *testing.T) {
 	const declaration = "val `unit's label` = 1"
 	content := []byte(declaration + "\n/* ordinary comment */ val next = 2\n")
 
-	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.kt")), "\n")
+	lines := strings.Split(string(StripBlockComments(content)), "\n")
 	if lines[0] != declaration || strings.TrimSpace(lines[1]) != "val next = 2" {
 		t.Fatalf("expected the identifier to remain and the ordinary comment to be stripped, got %#v", lines)
 	}
 }
 
-func TestStripBlockCommentsForFilePreservesKotlinTemplates(t *testing.T) {
+func TestStripBlockCommentsPreservesKotlinTemplates(t *testing.T) {
 	const nestedComment = "/* optional /* note */ */"
 	source := []string{
 		`val title = "${"Reader's guide"}"`,
@@ -60,7 +60,7 @@ func TestStripBlockCommentsForFilePreservesKotlinTemplates(t *testing.T) {
 		`/* ordinary comment */ val next = 2`,
 	}
 	content := []byte(strings.Join(source, "\n"))
-	lines := strings.Split(string(StripBlockCommentsForFile(content, "Example.kt")), "\n")
+	lines := strings.Split(string(StripBlockComments(content)), "\n")
 	want := slices.Clone(source)
 	want[4] = strings.Replace(want[4], nestedComment, strings.Repeat(" ", len(nestedComment)), 1)
 	if !slices.Equal(lines[:len(lines)-1], want[:len(want)-1]) {
@@ -71,7 +71,7 @@ func TestStripBlockCommentsForFilePreservesKotlinTemplates(t *testing.T) {
 	}
 }
 
-func TestStripBlockCommentsForFilePreservesKotlinQuotedTemplateReferences(t *testing.T) {
+func TestStripBlockCommentsPreservesKotlinQuotedTemplateReferences(t *testing.T) {
 	const escaped = "`item \"label\"`"
 	source := []string{
 		"val " + escaped + " = \"Daily\"",
@@ -83,24 +83,24 @@ func TestStripBlockCommentsForFilePreservesKotlinQuotedTemplateReferences(t *tes
 		const comment = "/* ordinary note */"
 		content := []byte(declaration + "\n" + comment + "\n")
 		want := declaration + "\n" + strings.Repeat(" ", len(comment)) + "\n"
-		if got := string(StripBlockCommentsForFile(content, "Example.kt")); got != want {
+		if got := string(StripBlockComments(content)); got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	}
 }
 
-func TestStripBlockCommentsForFileHonorsLanguageCommentNesting(t *testing.T) {
+func TestStripBlockCommentsHonorsLanguageCommentNesting(t *testing.T) {
 	const note = "/* opening /* inner note */"
 	const kotlinTail = "  keep the reader's note inside */"
 	kotlinSource := note + "\r\n" + kotlinTail + "\r\nval next = 2"
 	kotlinWant := strings.Repeat(" ", len(note)) + "\r\n" +
 		strings.Repeat(" ", len(kotlinTail)) + "\r\nval next = 2"
-	if got := string(StripBlockCommentsForFile([]byte(kotlinSource), "Example.kt")); got != kotlinWant {
+	if got := string(StripBlockComments([]byte(kotlinSource))); got != kotlinWant {
 		t.Errorf("got Kotlin source %q, want %q", got, kotlinWant)
 	}
 	const javaTail = " int next = 2;"
 	javaWant := strings.Repeat(" ", len(note)) + javaTail
-	if got := string(StripBlockCommentsForFile([]byte(note+javaTail), "Example.java")); got != javaWant {
+	if got := string(scanImportSource([]byte(note+javaTail), true, false)); got != javaWant {
 		t.Errorf("got Java source %q, want %q", got, javaWant)
 	}
 }
@@ -140,11 +140,60 @@ func TestStripBlockCommentsHandlesEndOfInput(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			input := []byte(test.content)
-			if got := string(StripBlockCommentsForFile(input, test.filePath)); got != test.want {
+			if got := string(scanImportSource(input, test.filePath == "Example.java", false)); got != test.want {
 				t.Errorf("got %q, want %q", got, test.want)
 			}
 			if string(input) != test.content {
 				t.Error("changed input bytes")
+			}
+		})
+	}
+}
+
+func TestMaskJVMImportSourcePreservesSourcePositions(t *testing.T) {
+	const text = "  Normal display text /* printed marker */"
+	tests := []struct {
+		name       string
+		filePath   string
+		importLine string
+		open       string
+		close      string
+	}{
+		{
+			name:       "Kotlin raw string",
+			filePath:   "Example.kt",
+			importLine: "  import example.`when`.Widget",
+			open:       "val label = \"\"\"",
+			close:      "\"\"\"",
+		},
+		{
+			name:       "Java text block",
+			filePath:   "Example.JAVA",
+			importLine: "  import example.Widget;",
+			open:       "String label = \"\"\"",
+			close:      "\"\"\";",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content := strings.Join([]string{test.importLine, test.open, text, test.close}, "\r\n")
+			input := []byte(content)
+			masked := MaskJVMImportSource(input, test.filePath)
+			if len(masked) != len(input) || string(input) != content {
+				t.Fatal("expected the original input and source width to remain unchanged")
+			}
+			lines := strings.Split(string(masked), "\r\n")
+			if len(lines) != 4 || lines[0] != test.importLine || lines[2] != strings.Repeat(" ", len(text)) {
+				t.Fatalf("expected intact import and masked literal contents, got %#v", lines)
+			}
+			records := ParseImportLines(masked, test.filePath, func(line string, _ int) []ImportRecord {
+				if strings.HasPrefix(strings.TrimSpace(line), "import ") {
+					return []ImportRecord{{Module: "example.Widget"}}
+				}
+				return nil
+			})
+			if len(records) != 1 || records[0].Location != Location(test.filePath, 1, 3) {
+				t.Fatalf("unexpected import locations: %#v", records)
 			}
 		})
 	}

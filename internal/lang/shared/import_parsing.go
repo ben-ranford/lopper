@@ -31,15 +31,15 @@ func StripLineComment(line, marker string) string {
 }
 
 func StripBlockComments(content []byte) []byte {
-	return stripBlockComments(content, false)
+	return scanImportSource(content, false, false)
 }
 
-// StripBlockCommentsForFile applies the quoted-literal rules for the source file.
-func StripBlockCommentsForFile(content []byte, filePath string) []byte {
-	return stripBlockComments(content, strings.EqualFold(filepath.Ext(filePath), ".java"))
+// MaskJVMImportSource masks block comments and literal contents while preserving source positions and Kotlin identifiers.
+func MaskJVMImportSource(content []byte, filePath string) []byte {
+	return scanImportSource(content, strings.EqualFold(filepath.Ext(filePath), ".java"), true)
 }
 
-func stripBlockComments(content []byte, javaSource bool) []byte {
+func scanImportSource(content []byte, javaSource, maskLiterals bool) []byte {
 	if len(content) == 0 {
 		return content
 	}
@@ -52,7 +52,7 @@ func stripBlockComments(content []byte, javaSource bool) []byte {
 		case !javaSource && stripped[index] == '`':
 			index = afterImportDelimiter(stripped, index+1, "`\r\n")
 		case stripped[index] == '\'' || stripped[index] == '"':
-			index = skipImportQuotedLiteral(stripped, index, javaSource)
+			index = scanImportQuotedLiteral(stripped, index, javaSource, maskLiterals)
 		case hasBytePrefix(stripped, index, '/', '/'):
 			index = afterImportDelimiter(stripped, index+2, "\r\n")
 		case hasBytePrefix(stripped, index, '/', '*'):
@@ -90,6 +90,17 @@ func maskImportBlockComment(content []byte, start int, allowNesting bool) int {
 		index = next
 	}
 	return index
+}
+
+func scanImportQuotedLiteral(content []byte, start int, javaSource, maskLiteral bool) int {
+	end := skipImportQuotedLiteral(content, start, javaSource)
+	if maskLiteral {
+		// Keep the boundary bytes so a literal cannot act as leading whitespace.
+		for index := start + 1; index < end-1; index++ {
+			maskNonNewline(content, index)
+		}
+	}
+	return end
 }
 
 func skipImportQuotedLiteral(content []byte, start int, javaSource bool) int {
