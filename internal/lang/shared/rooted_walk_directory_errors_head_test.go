@@ -50,6 +50,24 @@ func TestRootedWalkReadDirSkipsOptedInDescendantPermissionError(t *testing.T) {
 	}
 }
 
+func TestRootedWalkReadDirPropagatesCancellationDuringSkippedPermissionError(t *testing.T) {
+	info, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	walker := rootedRepoWalker{budget: RootedWalkBudget{OnSkippedDescendantDirectoryError: func(string, error) {}}}
+	root := &sharedWalkTestRoot{info: info, open: func(string) (safeio.File, error) {
+		cancel()
+		return nil, fs.ErrPermission
+	}}
+	_, err = walker.readDir(ctx, root, "blocked", "/repo/blocked")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled directory scan, got %v", err)
+	}
+}
+
 func TestRootedWalkDoesNotSkipRootOrOrdinaryDirectoryErrors(t *testing.T) {
 	walker := rootedRepoWalker{budget: RootedWalkBudget{OnSkippedDescendantDirectoryError: func(string, error) { t.Fatal("unexpected callback") }}}
 	if walker.skipDescendantDirectoryError(".", "/repo", fs.ErrPermission) {

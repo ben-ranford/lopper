@@ -136,7 +136,7 @@ func (w *rootedRepoWalker) walkDirectory(ctx context.Context, parentRoot safeio.
 	currentRoot, err := openPinnedChildRoot(parentRoot, entry.Name(), relPath)
 	if err != nil {
 		if w.skipDescendantDirectoryError(relPath, path, err) {
-			return nil
+			return walkContextErr(ctx)
 		}
 		return err
 	}
@@ -188,7 +188,7 @@ func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, relPat
 	file, err := safeio.OpenPinnedDirectory(root, ".")
 	if err != nil {
 		if w.skipDescendantDirectoryError(relPath, path, err) {
-			return nil, nil
+			return nil, walkContextErr(ctx)
 		}
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func (w *rootedRepoWalker) readDir(ctx context.Context, root safeio.Root, relPat
 		if readErr != nil {
 			if w.skipDescendantDirectoryError(relPath, path, readErr) {
 				w.consumeQueuedTraversalEntries(w.state.traversalEntriesQueued - queuedBefore)
-				return nil, nil
+				return nil, walkContextErr(ctx)
 			}
 			return nil, readErr
 		}
