@@ -61,7 +61,7 @@ func isDirectModuleScope(node *sitter.Node) bool {
 		case "import_specifier", "named_imports", "import_clause", "import_statement",
 			"pair_pattern", "object_pattern", "variable_declarator", "lexical_declaration",
 			"variable_declaration", "export_statement", "assignment_expression",
-		"parenthesized_expression", "expression_statement", "call_expression", "arguments":
+			"parenthesized_expression", "expression_statement", "call_expression", "arguments":
 			continue
 		default:
 			return false
