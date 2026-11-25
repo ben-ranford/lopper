@@ -328,11 +328,6 @@ func applyImportUsage(imp ImportBinding, file FileScan, usedExports map[string]s
 func applyNamedImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
 	count := file.IdentifierUsage[imp.LocalName]
 	if count <= 0 {
-		for _, propertyCount := range file.NamespaceUsage[imp.LocalName] {
-			count += propertyCount
-		}
-	}
-	if count <= 0 {
 		return false
 	}
 	usedExports[imp.ExportName] = struct{}{}

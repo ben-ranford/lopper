@@ -234,11 +234,12 @@ func parseObjectPattern(node *sitter.Node, content []byte, module, relPath strin
 func makeImportBinding(module, exportName, localName string, kind ImportKind, relPath string, node *sitter.Node) ImportBinding {
 	location := shared.Location(relPath, int(node.StartPoint().Row)+1, int(node.StartPoint().Column)+1)
 	return ImportBinding{
-		Module:     module,
-		ExportName: exportName,
-		LocalName:  localName,
-		Kind:       kind,
-		Location:   location,
+		Module:      module,
+		ExportName:  exportName,
+		LocalName:   localName,
+		Kind:        kind,
+		Location:    location,
+		moduleScope: kind == ImportNamed && isDirectModuleScope(node),
 	}
 }
 

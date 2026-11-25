@@ -2,24 +2,52 @@ package js
 
 import sitter "github.com/smacker/go-tree-sitter"
 
-func collectIdentifierUsage(tree *sitter.Tree, content []byte) map[string]int {
+func collectIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) map[string]int {
 	counts := make(map[string]int)
+	moduleNames := uniqueModuleNamedImports(imports)
 	root := tree.RootNode()
 	walkNode(root, func(node *sitter.Node) {
 		if node.Type() != "identifier" {
 			return
 		}
-		if !isIdentifierUsage(node) {
-			return
-		}
 		name := nodeText(node, content)
-		if name == "" {
-			return
+		if name != "" && (isIdentifierUsage(node) || isNamedImportDestructure(node, moduleNames[name])) {
+			counts[name]++
 		}
-		counts[name]++
 	})
 
 	return counts
+}
+
+func uniqueModuleNamedImports(imports []ImportBinding) map[string]bool {
+	names := make(map[string]bool, len(imports))
+	for _, imported := range imports {
+		_, seen := names[imported.LocalName]
+		names[imported.LocalName] = !seen && imported.Kind == ImportNamed && imported.moduleScope
+	}
+	return names
+}
+
+func isNamedImportDestructure(node *sitter.Node, moduleNamed bool) bool {
+	return moduleNamed && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node)
+}
+
+// Only claim a binding when both its declaration and use are in direct module scope.
+func isDirectModuleScope(node *sitter.Node) bool {
+	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
+		switch parent.Type() {
+		case "program":
+			return true
+		case "import_specifier", "named_imports", "import_clause", "import_statement",
+			"pair_pattern", "object_pattern", "variable_declarator", "lexical_declaration",
+			"variable_declaration", "export_statement", "assignment_expression",
+			"parenthesized_expression", "expression_statement":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func collectNamespaceUsage(tree *sitter.Tree, content []byte) map[string]map[string]int {
