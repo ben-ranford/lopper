@@ -21,6 +21,8 @@ const (
 	workspaceFieldStart  = "members"
 )
 
+const maxRustUseStatementBytes = 64 * 1024
+
 type dependencyInfo struct {
 	Canonical         string
 	LocalPath         bool
