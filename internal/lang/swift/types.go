@@ -116,13 +116,6 @@ type resolvedPin struct {
 	} `json:"state"`
 }
 
-type resolvedDocument struct {
-	Pins   []resolvedPin `json:"pins"`
-	Object struct {
-		Pins []resolvedPin `json:"pins"`
-	} `json:"object"`
-}
-
 type podLockDocument struct {
 	Pods            []any                     `yaml:"PODS"`
 	Dependencies    []string                  `yaml:"DEPENDENCIES"`

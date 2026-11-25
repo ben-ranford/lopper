@@ -49,14 +49,14 @@ func TestSwiftAdapterMetadataAndDetect(t *testing.T) {
 }
 
 func TestSwiftParseResolvedPinsBranches(t *testing.T) {
-	pins, err := parseResolvedPins([]byte(`{"pins":[{"identity":"alamofire","location":"https://github.com/Alamofire/Alamofire.git","state":{"version":"5.8.0"}}],"object":{"pins":[{"package":"Kingfisher","repositoryURL":"https://github.com/onevcat/Kingfisher.git","state":{"revision":"abc"}}]}}`))
+	pins, err := parseResolvedPins([]byte(`{"pins":[{"identity":"alamofire","location":"https://github.com/Alamofire/Alamofire.git","state":{"version":"5.8.0"}}],"object":{"pins":[{"package":"Kingfisher","repositoryURL":"https://github.com/onevcat/Kingfisher.git","state":{"revision":"abc"}}]}}`), maxResolvedPins)
 	if err != nil {
 		t.Fatalf("parse resolved pins: %v", err)
 	}
 	if len(pins) != 2 {
 		t.Fatalf("expected both top-level and object pins, got %#v", pins)
 	}
-	if _, err := parseResolvedPins([]byte("{")); err == nil {
+	if _, err := parseResolvedPins([]byte("{"), maxResolvedPins); err == nil {
 		t.Fatalf("expected invalid resolved json to fail")
 	}
 }

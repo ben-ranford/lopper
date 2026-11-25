@@ -1,6 +1,7 @@
 package swift
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -34,7 +37,10 @@ func buildDependencyCatalogWithOptions(repoPath string, opts dependencyCatalogOp
 	}
 	warnings := make([]string, 0)
 
-	swiftPM, manifestWarnings, err := loadPackageManagerCatalog(repoPath, &catalog, loadManifestData, loadResolvedData)
+	swiftPM, manifestWarnings, err := loadPackageManagerCatalog(repoPath, &catalog,
+		loadBoundedCatalogSource(packageManifestName, "SwiftPM", report.CoverageGapSwiftPackageCatalogLimit, loadManifestData, safeio.ErrFileTooLarge),
+		loadBoundedCatalogSource(packageResolvedName, "SwiftPM", report.CoverageGapSwiftPackageCatalogLimit, loadResolvedData, safeio.ErrFileTooLarge, errResolvedPinLimit),
+	)
 	if err != nil {
 		return dependencyCatalog{}, nil, err
 	}
@@ -83,6 +89,23 @@ func (s *packageManagerCatalogState) Active() bool {
 }
 
 type catalogLoader func(string, *dependencyCatalog) (bool, []string, error)
+
+func loadBoundedCatalogSource(path, manager, code string, loader catalogLoader, limitErrors ...error) catalogLoader {
+	return func(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
+		found, warnings, err := loader(repoPath, catalog)
+		if !shared.IsPureSentinelError(err, limitErrors...) {
+			return found, warnings, err
+		}
+		warning := fmt.Sprintf("%v; %s coverage may be incomplete", err, manager)
+		catalog.CoverageGaps = append(catalog.CoverageGaps, report.CoverageGap{
+			Code:     code,
+			Language: swiftAdapterID,
+			Path:     path,
+			Evidence: []string{warning},
+		})
+		return true, append(warnings, warning), nil
+	}
+}
 
 func loadPackageManagerCatalog(repoPath string, catalog *dependencyCatalog, manifestLoader, lockLoader catalogLoader) (packageManagerCatalogState, []string, error) {
 	manifestFound, manifestWarnings, err := manifestLoader(repoPath, catalog)
@@ -214,7 +237,7 @@ func loadResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []stri
 		return false, nil, fmt.Errorf("read %s: %w", packageResolvedName, err)
 	}
 
-	pins, err := parseResolvedPins(content)
+	pins, err := parseResolvedPins(content, maxResolvedPins)
 	if err != nil {
 		return false, nil, fmt.Errorf("parse %s: %w", packageResolvedName, err)
 	}
@@ -273,17 +296,45 @@ func addResolvedPinMappings(catalog *dependencyCatalog, depID string, pin resolv
 	}
 }
 
-func parseResolvedPins(content []byte) ([]resolvedPin, error) {
-	doc := resolvedDocument{}
+func parseResolvedPins(content []byte, limit int) ([]resolvedPin, error) {
+	var doc struct {
+		Pins   json.RawMessage `json:"pins"`
+		Object struct {
+			Pins json.RawMessage `json:"pins"`
+		} `json:"object"`
+	}
 	if err := json.Unmarshal(content, &doc); err != nil {
 		return nil, err
 	}
-	if len(doc.Pins) > maxResolvedPins || len(doc.Object.Pins) > maxResolvedPins || len(doc.Pins)+len(doc.Object.Pins) > maxResolvedPins {
-		return nil, errResolvedPinLimit
+	pins, err := appendResolvedPins(nil, doc.Pins, limit)
+	if err != nil {
+		return nil, err
 	}
-	pins := make([]resolvedPin, 0, len(doc.Pins)+len(doc.Object.Pins))
-	pins = append(pins, doc.Pins...)
-	pins = append(pins, doc.Object.Pins...)
+	return appendResolvedPins(pins, doc.Object.Pins, limit)
+}
+
+func appendResolvedPins(pins []resolvedPin, content json.RawMessage, limit int) ([]resolvedPin, error) {
+	if len(content) == 0 || bytes.Equal(content, []byte("null")) {
+		return pins, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token != json.Delim('[') {
+		return nil, errors.New("expected a Package.resolved pins array")
+	}
+	for decoder.More() {
+		if len(pins) >= limit {
+			return nil, errResolvedPinLimit
+		}
+		var pin resolvedPin
+		if err := decoder.Decode(&pin); err != nil {
+			return nil, err
+		}
+		pins = append(pins, pin)
+	}
 	return pins, nil
 }
 
