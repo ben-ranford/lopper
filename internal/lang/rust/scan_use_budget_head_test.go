@@ -47,9 +47,19 @@ func TestRustUseStatementLimitReportsSourceCoverage(t *testing.T) {
 }
 
 func TestRustUseTerminatorRecordsWorkLimit(t *testing.T) {
-	content := []byte("use serde::Deserialize;")
-	scan := rustUseTerminator{remaining: 1}
-	if _, ok := scan.buildRustUseStatement(content, 0, 1, 0, content); ok || !scan.limited {
-		t.Fatalf("expected the exhausted work budget to reject the statement and mark the scan limited")
+	for _, source := range []string{"use serde::Deserialize;", "use serde::Deserialize"} {
+		content := []byte(source)
+		scan := rustUseTerminator{remaining: 1}
+		if _, ok := scan.buildRustUseStatement(content, 0, 1, 0, content); ok || !scan.limited {
+			t.Fatalf("expected the work limit to reject %q and mark the scan limited", source)
+		}
+	}
+}
+
+func TestRustUseTerminatorLeavesUnfinishedStatementUnmarkedWithinBudget(t *testing.T) {
+	content := []byte("use serde::Deserialize")
+	scan := rustUseTerminator{remaining: len(content)}
+	if _, ok := scan.buildRustUseStatement(content, 0, 1, 0, content); ok || scan.limited {
+		t.Fatal("expected an unfinished statement within budget to remain an ordinary parse failure")
 	}
 }

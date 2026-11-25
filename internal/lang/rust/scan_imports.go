@@ -285,12 +285,15 @@ func (ut *rustUseTerminator) buildRustUseStatement(content []byte, lineStart, li
 	}
 
 	end := ut.next(content, clauseOffset)
-	if end == len(content) {
-		return rustImportStatement{}, false
+	work := end - clauseOffset
+	if end < len(content) {
+		work++
 	}
-	work := end - clauseOffset + 1
 	if work > maxRustUseStatementBytes || work > ut.remaining {
 		ut.limited = true
+		return rustImportStatement{}, false
+	}
+	if end == len(content) {
 		return rustImportStatement{}, false
 	}
 
