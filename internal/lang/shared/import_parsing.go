@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -45,77 +46,76 @@ func stripBlockComments(content []byte, textBlockEscapes bool) []byte {
 	stripped := make([]byte, len(content))
 	copy(stripped, content)
 
-	inBlockComment := false
-	quote := byte(0)
-	tripleQuote := false
-	escaped := false
-	for i := 0; i < len(stripped); i++ {
-		if quote != 0 {
-			if !tripleQuote || textBlockEscapes {
-				if escaped {
-					escaped = false
-					continue
-				}
-				if stripped[i] == '\\' {
-					escaped = true
-					continue
-				}
-			}
-			if tripleQuote {
-				if i+2 < len(stripped) && stripped[i] == quote && stripped[i+1] == quote && stripped[i+2] == quote {
-					i += 2
-					// Kotlin raw strings may contain extra quotes before their closing delimiter.
-					for !textBlockEscapes && i+1 < len(stripped) && stripped[i+1] == quote {
-						i++
-					}
-					quote = 0
-					tripleQuote = false
-				}
-				continue
-			}
-			if stripped[i] == quote {
-				quote = 0
-			}
-			continue
-		}
-		if inBlockComment {
-			if i+1 < len(stripped) && stripped[i] == '*' && stripped[i+1] == '/' {
-				stripped[i] = ' '
-				stripped[i+1] = ' '
-				inBlockComment = false
-				i++
-				continue
-			}
-			if stripped[i] != '\n' && stripped[i] != '\r' {
-				stripped[i] = ' '
-			}
-			continue
-		}
-		if i+1 < len(stripped) && stripped[i] == '/' && stripped[i+1] == '/' {
-			for i+1 < len(stripped) && stripped[i+1] != '\n' && stripped[i+1] != '\r' {
-				i++
-			}
-			continue
-		}
-		if i+2 < len(stripped) && stripped[i] == '"' && stripped[i+1] == '"' && stripped[i+2] == '"' {
-			quote = stripped[i]
-			tripleQuote = true
-			i += 2
-			continue
-		}
-		if stripped[i] == '\'' || stripped[i] == '"' {
-			quote = stripped[i]
-			continue
-		}
-		if i+1 < len(stripped) && stripped[i] == '/' && stripped[i+1] == '*' {
-			stripped[i] = ' '
-			stripped[i+1] = ' '
-			inBlockComment = true
-			i++
+	for index := 0; index < len(stripped); {
+		switch {
+		case stripped[index] == '\'' || stripped[index] == '"':
+			index = skipImportQuotedLiteral(stripped, index, textBlockEscapes)
+		case hasBytePrefix(stripped, index, '/', '/'):
+			index = skipImportLineComment(stripped, index+2)
+		case hasBytePrefix(stripped, index, '/', '*'):
+			index = maskImportBlockComment(stripped, index)
+		default:
+			index++
 		}
 	}
 
 	return stripped
+}
+
+func skipImportLineComment(content []byte, start int) int {
+	if end := bytes.IndexAny(content[start:], "\r\n"); end >= 0 {
+		return start + end
+	}
+	return len(content)
+}
+
+func maskImportBlockComment(content []byte, start int) int {
+	content[start], content[start+1] = ' ', ' '
+	for index := start + 2; index < len(content); {
+		next, state := scanBlockComment(content, index)
+		if state == scannerStateCode {
+			return next
+		}
+		index = next
+	}
+	return len(content)
+}
+
+func skipImportQuotedLiteral(content []byte, start int, textBlockEscapes bool) int {
+	if hasImportTextBlockDelimiter(content, start) {
+		return skipImportTextBlock(content, start+3, textBlockEscapes)
+	}
+	quote := content[start]
+	for index := start + 1; index < len(content); index++ {
+		switch content[index] {
+		case '\\':
+			index++
+		case quote:
+			return index + 1
+		}
+	}
+	return len(content)
+}
+
+func skipImportTextBlock(content []byte, start int, textBlockEscapes bool) int {
+	for index := start; index < len(content); index++ {
+		switch {
+		case textBlockEscapes && content[index] == '\\':
+			index++
+		case hasImportTextBlockDelimiter(content, index):
+			end := index + 3
+			// Kotlin raw strings may contain extra quotes before their closing delimiter.
+			for !textBlockEscapes && end < len(content) && content[end] == '"' {
+				end++
+			}
+			return end
+		}
+	}
+	return len(content)
+}
+
+func hasImportTextBlockDelimiter(content []byte, index int) bool {
+	return index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"'
 }
 
 func Location(filePath string, line, column int) report.Location {

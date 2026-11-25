@@ -49,3 +49,28 @@ import com.acme.Widget
 		t.Fatalf("expected only the ordinary comment to be stripped, got %#v", lines)
 	}
 }
+
+func TestStripBlockCommentsHandlesEndOfInput(t *testing.T) {
+	const unfinishedBlock = "/* note"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "line comment", content: "// note", want: "// note"},
+		{name: "unfinished block comment", content: unfinishedBlock, want: strings.Repeat(" ", len(unfinishedBlock))},
+		{name: "unfinished quoted string", content: `"note`, want: `"note`},
+		{name: "unfinished raw string", content: `"""note`, want: `"""note`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := []byte(test.content)
+			if got := string(StripBlockComments(input)); got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+			if string(input) != test.content {
+				t.Error("changed input bytes")
+			}
+		})
+	}
+}
