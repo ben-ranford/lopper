@@ -22,6 +22,9 @@ const (
 	maxScanFiles                          = 4096
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
+	maxSwiftPackageManifestBytes          = 2 * 1024 * 1024
+	maxSwiftPackageResolvedBytes          = 8 * 1024 * 1024
+	maxResolvedPins                       = 8192
 	maxPodDeclarations                    = 512
 	maxPodManifestBytes                   = 2 * 1024 * 1024
 	maxPodLockBytes                       = 8 * 1024 * 1024
@@ -111,13 +114,6 @@ type resolvedPin struct {
 		Revision string `json:"revision"`
 		Branch   string `json:"branch"`
 	} `json:"state"`
-}
-
-type resolvedDocument struct {
-	Pins   []resolvedPin `json:"pins"`
-	Object struct {
-		Pins []resolvedPin `json:"pins"`
-	} `json:"object"`
 }
 
 type podLockDocument struct {
