@@ -1,6 +1,7 @@
 package js
 
 import (
+	"bytes"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -133,15 +134,15 @@ func parseRequireCall(node *sitter.Node, content []byte, relPath string) []Impor
 	return bindings
 }
 
-const maxDynamicCalleeBytes = len("require")
+const maxDynamicCalleeBytes = uint32(len("require"))
 
 func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath string) (report.ImportUse, bool) {
 	functionNode := node.ChildByFieldName("function")
 	if functionNode == nil {
 		return report.ImportUse{}, false
 	}
-	functionName, ok := boundedCalleeName(functionNode, content)
-	if !ok || (functionName != "require" && functionName != "import") {
+	functionName := dynamicImportCalleeName(functionNode, content)
+	if functionName == "" {
 		return report.ImportUse{}, false
 	}
 	argumentsNode := node.ChildByFieldName("arguments")
@@ -160,15 +161,20 @@ func parseUncertainDynamicImport(node *sitter.Node, content []byte, relPath stri
 	}, true
 }
 
-func boundedCalleeName(functionNode *sitter.Node, content []byte) (string, bool) {
-	start, end := int(functionNode.StartByte()), int(functionNode.EndByte())
-	if start < 0 || end < start || end > len(content) {
-		return "", false
+func dynamicImportCalleeName(functionNode *sitter.Node, content []byte) string {
+	start, end := functionNode.StartByte(), functionNode.EndByte()
+	if end <= start || uint64(end) > uint64(len(content)) || end-start > maxDynamicCalleeBytes {
+		return ""
 	}
-	if span := end - start; span == 0 || span > maxDynamicCalleeBytes {
-		return "", false
+	name := content[start:end]
+	switch {
+	case bytes.Equal(name, []byte("require")):
+		return "require"
+	case bytes.Equal(name, []byte("import")):
+		return "import"
+	default:
+		return ""
 	}
-	return string(content[start:end]), true
 }
 
 func parseRequireBinding(call *sitter.Node, content []byte, module, relPath string) []ImportBinding {
