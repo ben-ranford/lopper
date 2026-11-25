@@ -15,15 +15,19 @@ suite("workspace paths", () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-workspace-paths-"));
     const workspaceRoot = path.join(tempRoot, "workspace");
     const sourceFile = path.join(workspaceRoot, "app", "src", "Main.kt");
+    const dotPrefixedChild = path.join(workspaceRoot, "..notes", "readme.md");
     const outsideRoot = path.join(tempRoot, "outside");
 
     try {
       await mkdir(path.dirname(sourceFile), { recursive: true });
+      await mkdir(path.dirname(dotPrefixedChild), { recursive: true });
       await mkdir(outsideRoot, { recursive: true });
       await writeFile(sourceFile, "class Main", "utf8");
+      await writeFile(dotPrefixedChild, "notes", "utf8");
       await symlink(outsideRoot, path.join(workspaceRoot, "outside-link"));
 
       assert.equal(isPathInsideWorkspace(sourceFile, workspaceRoot), true);
+      assert.equal(isPathInsideWorkspace(dotPrefixedChild, workspaceRoot), true);
       assert.equal(isPathInsideWorkspace(path.join(workspaceRoot, "outside-link", "Main.kt"), workspaceRoot), false);
       assert.equal(
         isResolvedPathInsideWorkspace(path.join(workspaceRoot, "outside-link", "Main.kt"), workspaceRoot),

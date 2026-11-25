@@ -78,5 +78,5 @@ export function workspaceAncestorDirectories(
 
 function isPathInside(candidatePath: string, workspaceRoot: string): boolean {
   const relativePath = path.relative(workspaceRoot, candidatePath);
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  return relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath));
 }
