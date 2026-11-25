@@ -434,13 +434,13 @@ func matchesDependency(module, dependency string) bool {
 
 func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string) {
 	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
+	seenWarnings := make(map[string]struct{}, min(len(warnings), maxAggregatedDependencyWarnings))
+	warnings = appendUniqueDependencyWarnings(nil, seenWarnings, warnings)
 	if len(dependencies) == 0 {
 		return nil, warnings
 	}
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
-	seenWarnings := make(map[string]struct{}, len(warnings))
-	warnings = appendUniqueDependencyWarnings(nil, seenWarnings, warnings)
 	for _, dep := range dependencies {
 		depReport, depWarnings := buildDependencyReport(dependencyReportOptions{
 			RepoPath:                          repoPath,
@@ -462,7 +462,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		sort.Slice(reports, func(i, j int) bool {
 			return reports[i].Name < reports[j].Name
 		})
-		warnings = append(warnings, "top-N removal ranking disabled because JS/TS dependency coverage is incomplete")
+		warnings = addIncompleteCoverageWarning(warnings, seenWarnings)
 		return reports, warnings
 	}
 
@@ -480,8 +480,9 @@ func resolveMinUsageRecommendationThreshold(value *int) int {
 }
 
 const (
-	maxAggregatedDependencyWarnings = 32
-	aggregatedWarningCapNotice      = "additional dependency warnings omitted after the report cap"
+	maxAggregatedDependencyWarnings  = 32
+	aggregatedWarningCapNotice       = "additional dependency warnings omitted after the report cap"
+	incompleteTopDependenciesWarning = "top-N removal ranking disabled because JS/TS dependency coverage is incomplete"
 )
 
 func appendUniqueDependencyWarnings(dst []string, seen map[string]struct{}, extra []string) []string {
@@ -503,4 +504,16 @@ func appendUniqueDependencyWarnings(dst []string, seen map[string]struct{}, extr
 		dst = append(dst, warning)
 	}
 	return dst
+}
+
+func addIncompleteCoverageWarning(warnings []string, seen map[string]struct{}) []string {
+	if _, exists := seen[incompleteTopDependenciesWarning]; exists {
+		return warnings
+	}
+	if len(warnings) < maxAggregatedDependencyWarnings {
+		return append(warnings, incompleteTopDependenciesWarning)
+	}
+	// Preserve the coverage warning and the notice within the existing cap.
+	warnings[maxAggregatedDependencyWarnings-1] = incompleteTopDependenciesWarning
+	return append(warnings[:maxAggregatedDependencyWarnings], aggregatedWarningCapNotice)
 }
