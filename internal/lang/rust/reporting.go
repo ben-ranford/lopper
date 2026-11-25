@@ -2,6 +2,7 @@ package rust
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -37,13 +38,24 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	dep := shared.BuildDependencyReportFromStats(dependency, "rust", stats)
+	dep.UsageIncomplete = slices.ContainsFunc(scan.CoverageGaps, func(gap report.CoverageGap) bool {
+		return gap.Code == report.CoverageGapRustUseStatementLimit
+	})
+	if dep.UsageIncomplete {
+		dep.SuppressedUnusedImports = dep.UnusedImports
+		dep.UnusedImports = nil
+		dep.UsedExportsCount = 0
+		dep.TotalExportsCount = 0
+		dep.UsedPercent = 0
+	}
+	lowUsage := dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "broad-imports",
 			Severity: "medium",
 			Message:  "found broad wildcard imports; prefer narrower symbol imports",
 		})
-		if dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+		if lowUsage {
 			dep.Recommendations = append(dep.Recommendations, report.Recommendation{
 				Code:      "prefer-explicit-imports",
 				Priority:  "medium",
@@ -72,7 +84,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 			Message:  "macro-heavy usage may reduce static import attribution precision",
 		})
 	}
-	if dep.TotalExportsCount > 0 && dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+	if dep.TotalExportsCount > 0 && lowUsage {
 		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
 			Code:      "reduce-rust-surface-area",
 			Priority:  "low",
