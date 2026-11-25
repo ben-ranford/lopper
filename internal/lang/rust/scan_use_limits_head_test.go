@@ -53,22 +53,15 @@ func TestUseClauseLimitReportsPerFileCoverageAndKeepsEarlierImport(t *testing.T)
 		UnresolvedImports: make(map[string]int),
 		LocalModuleCache:  make(map[string]bool),
 	}
-	ctx := useImportContext{
-		FilePath:  "src/lib.rs",
-		Line:      1,
-		Column:    1,
-		DepLookup: map[string]dependencyInfo{"serde": {Canonical: "serde"}},
-		Scan:      scan,
-	}
-	imports := appendUseClauseImportsWithLimits(nil, "serde::{Deserialize, Serialize}", ctx, 4, 1)
-	if len(imports) != 1 || imports[0].Dependency != "serde" || imports[0].Name != "Deserialize" {
-		t.Fatalf("expected the earlier import to remain available, got %#v", imports)
+	_, imports := collectRustImportsWithUseClauseLimits([]byte("use serde::{Deserialize, Serialize};\nuse serde::Serialize;"), "src/lib.rs", "", map[string]dependencyInfo{"serde": {Canonical: "serde"}}, scan, true, 4, 1)
+	if len(imports) != 2 || imports[0].Dependency != "serde" || imports[0].Name != "Deserialize" || imports[1].Name != "Serialize" {
+		t.Fatalf("expected imports before and after the cap to remain available, got %#v", imports)
 	}
 	if len(scan.Warnings) != 1 || scan.Warnings[0] != rustUseStatementLimitWarning {
 		t.Fatalf("expected the per-file use limit warning, got %#v", scan.Warnings)
 	}
 	if len(scan.CoverageGaps) != 1 || scan.CoverageGaps[0].Code != report.CoverageGapRustUseStatementLimit ||
-		scan.CoverageGaps[0].Path != ctx.FilePath {
+		scan.CoverageGaps[0].Path != "src/lib.rs" {
 		t.Fatalf("expected one per-file coverage gap, got %#v", scan.CoverageGaps)
 	}
 }

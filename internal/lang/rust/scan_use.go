@@ -22,15 +22,8 @@ func parseUseStatementIndex(content string, idx []int) (string, int, int, bool) 
 	return clause, line, column, true
 }
 
-func appendUseClauseImports(imports []importBinding, clause string, ctx useImportContext) []importBinding {
-	return appendUseClauseImportsWithLimits(imports, clause, ctx, maxUseClauseDepth, maxUseClauseEntries)
-}
-
-func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ctx useImportContext, maxDepth, maxEntries int) []importBinding {
+func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ctx useImportContext, maxDepth, maxEntries int) ([]importBinding, bool) {
 	entries, capped := parseUseClauseWithLimits(clause, maxDepth, maxEntries)
-	if capped {
-		recordRustUseStatementLimit(ctx.Scan, ctx.FilePath)
-	}
 	nextToken := 0
 	multiline := strings.ContainsRune(clause, '\n')
 	declarationClause := string(shared.MaskCommentsAndStringsForFile([]byte(clause), ctx.FilePath))
@@ -47,7 +40,7 @@ func appendUseClauseImportsWithLimits(imports []importBinding, clause string, ct
 		}
 		imports = append(imports, binding)
 	}
-	return imports
+	return imports, capped
 }
 
 func locateMultilineUseEntry(clause string, entry usePathEntry, ctx useImportContext, searchStart int) (useImportContext, int) {

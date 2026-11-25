@@ -43,8 +43,13 @@ type rustImportStatement struct {
 const rustUseStatementLimitWarning = "Rust use statement processing reached its size or work limit; dependency coverage may be incomplete"
 
 func collectRustImports(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool) ([]importBinding, []importBinding) {
+	return collectRustImportsWithUseClauseLimits(content, filePath, crateRoot, depLookup, scan, includeUse, maxUseClauseDepth, maxUseClauseEntries)
+}
+
+func collectRustImportsWithUseClauseLimits(content []byte, filePath, crateRoot string, depLookup map[string]dependencyInfo, scan *scanResult, includeUse bool, maxDepth, maxEntries int) ([]importBinding, []importBinding) {
 	externImports := make([]importBinding, 0)
 	useImports := make([]importBinding, 0)
+	clauseLimited := false
 	limited := scanRustImportStatements(content, includeUse, func(kind rustImportKind, stmt rustImportStatement) {
 		switch kind {
 		case rustImportExternCrate:
@@ -61,10 +66,12 @@ func collectRustImports(content []byte, filePath, crateRoot string, depLookup ma
 				DepLookup: depLookup,
 				Scan:      scan,
 			}
-			useImports = appendUseClauseImports(useImports, string(stmt.Clause), ctx)
+			var capped bool
+			useImports, capped = appendUseClauseImportsWithLimits(useImports, string(stmt.Clause), ctx, maxDepth, maxEntries)
+			clauseLimited = clauseLimited || capped
 		}
 	})
-	if limited {
+	if limited || clauseLimited {
 		recordRustUseStatementLimit(scan, filePath)
 	}
 	return externImports, useImports
@@ -75,11 +82,6 @@ func recordRustUseStatementLimit(scan *scanResult, filePath string) {
 		return
 	}
 	path := filepath.ToSlash(filePath)
-	for _, gap := range scan.CoverageGaps {
-		if gap.Code == report.CoverageGapRustUseStatementLimit && gap.Language == rustAdapterID && gap.Path == path {
-			return
-		}
-	}
 	scan.Warnings = append(scan.Warnings, rustUseStatementLimitWarning)
 	scan.CoverageGaps = append(scan.CoverageGaps, report.CoverageGap{
 		Code:     report.CoverageGapRustUseStatementLimit,
