@@ -134,8 +134,8 @@ func dependencyFromModule(module string) string {
 		return ""
 	}
 
-	// Filter out Node.js built-in modules (both "node:*" and bare names like "fs")
-	if isNodeBuiltin(module) {
+	// Ignore built-ins and the reserved node: namespace during npm attribution.
+	if isNodeBuiltin(module) || strings.HasPrefix(module, nodeBuiltinPrefix) {
 		return ""
 	}
 
