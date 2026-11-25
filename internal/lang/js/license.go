@@ -159,16 +159,22 @@ type licenseFileProbe struct {
 }
 
 type licenseFileStatus struct {
-	limited      bool
-	skippedLarge bool
+	limited          bool
+	skippedLarge     bool
+	skippedDirectory bool
+	walkError        bool
 }
 
 func (s *licenseFileStatus) warning() []string {
 	switch {
 	case s.skippedLarge:
 		return []string{"license file detection incomplete: a candidate exceeded the file size limit"}
+	case s.skippedDirectory:
+		return []string{"license file detection incomplete: a directory could not be read"}
 	case s.limited:
 		return []string{"license file detection incomplete: scan limit reached"}
+	case s.walkError:
+		return []string{"license file detection incomplete: directory traversal failed"}
 	default:
 		return nil
 	}
@@ -196,7 +202,10 @@ var errLicenseFound = errors.New("license file found")
 func probeLicenseFilesWithLimits(depRoot string, maxCandidates, maxWalkEntries int, maxBytes int64) (*licenseFileProbe, licenseFileStatus) {
 	status := licenseFileStatus{}
 	var probe *licenseFileProbe
-	err := walkLicenseFiles(depRoot, maxCandidates, maxWalkEntries, func(file shared.RootedWalkFile) error {
+	budget := licenseWalkBudget(maxCandidates, maxWalkEntries, func(string, error) {
+		status.skippedDirectory = true
+	})
+	err := walkLicenseFiles(depRoot, budget, func(file shared.RootedWalkFile) error {
 		if !isLicenseCandidate(file.Path) {
 			return nil
 		}
@@ -212,11 +221,15 @@ func probeLicenseFilesWithLimits(depRoot string, maxCandidates, maxWalkEntries i
 		probe = &licenseFileProbe{path: file.Path, spdx: spdx, confidence: confidence}
 		return errLicenseFound
 	})
-	if errors.Is(err, errLicenseFound) {
+	if shared.IsPureSentinelError(err, errLicenseFound) {
 		return probe, status
 	}
-	if _, limited := shared.RootedWalkBudgetWarning("license file detection", licenseWalkBudget(maxCandidates, maxWalkEntries), err); limited {
-		status.limited = true
+	if err != nil {
+		if _, limited := shared.RootedWalkBudgetWarning("license file detection", budget, err); limited {
+			status.limited = true
+		} else {
+			status.walkError = true
+		}
 	}
 	return probe, status
 }
@@ -232,7 +245,7 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 
 func findLicenseFiles(depRoot string) []string {
 	files := make([]string, 0, maxLicenseCandidates)
-	if err := walkLicenseFiles(depRoot, maxLicenseCandidates, maxLicenseWalkEntries, func(file shared.RootedWalkFile) error {
+	if err := walkLicenseFiles(depRoot, licenseWalkBudget(maxLicenseCandidates, maxLicenseWalkEntries, nil), func(file shared.RootedWalkFile) error {
 		if isLicenseCandidate(file.Path) {
 			files = append(files, file.Path)
 		}
@@ -243,7 +256,7 @@ func findLicenseFiles(depRoot string) []string {
 	return files
 }
 
-func walkLicenseFiles(depRoot string, maxCandidates, maxWalkEntries int, visit shared.RootedWalkVisit) (err error) {
+func walkLicenseFiles(depRoot string, budget shared.RootedWalkBudget, visit shared.RootedWalkVisit) (err error) {
 	root, err := safeio.OpenRootNoFollow(depRoot)
 	if err != nil {
 		return err
@@ -253,10 +266,10 @@ func walkLicenseFiles(depRoot string, maxCandidates, maxWalkEntries int, visit s
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	return shared.WalkRepoFilesWithinRootPinned(context.Background(), depRoot, root, licenseWalkBudget(maxCandidates, maxWalkEntries), shouldSkipLicenseDir, visit)
+	return shared.WalkRepoFilesWithinRootPinned(context.Background(), depRoot, root, budget, shouldSkipLicenseDir, visit)
 }
 
-func licenseWalkBudget(maxCandidates, maxWalkEntries int) shared.RootedWalkBudget {
+func licenseWalkBudget(maxCandidates, maxWalkEntries int, onSkippedDirectoryError func(string, error)) shared.RootedWalkBudget {
 	return shared.RootedWalkBudget{
 		MaxTraversalEntries: maxWalkEntries,
 		MaxFiles:            maxCandidates,
@@ -264,6 +277,7 @@ func licenseWalkBudget(maxCandidates, maxWalkEntries int) shared.RootedWalkBudge
 		CountCandidate: func(path string, _ fs.DirEntry) bool {
 			return isLicenseCandidate(path)
 		},
+		OnSkippedDescendantDirectoryError: onSkippedDirectoryError,
 	}
 }
 
