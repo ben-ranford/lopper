@@ -163,7 +163,7 @@ type licenseFileStatus struct {
 	skippedLarge bool
 }
 
-func (s licenseFileStatus) warning() []string {
+func (s *licenseFileStatus) warning() []string {
 	switch {
 	case s.skippedLarge:
 		return []string{"license file detection incomplete: a candidate exceeded the file size limit"}
@@ -232,21 +232,27 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 
 func findLicenseFiles(depRoot string) []string {
 	files := make([]string, 0, maxLicenseCandidates)
-	_ = walkLicenseFiles(depRoot, maxLicenseCandidates, maxLicenseWalkEntries, func(file shared.RootedWalkFile) error {
+	if err := walkLicenseFiles(depRoot, maxLicenseCandidates, maxLicenseWalkEntries, func(file shared.RootedWalkFile) error {
 		if isLicenseCandidate(file.Path) {
 			files = append(files, file.Path)
 		}
 		return nil
-	})
+	}); err != nil {
+		return files
+	}
 	return files
 }
 
-func walkLicenseFiles(depRoot string, maxCandidates, maxWalkEntries int, visit shared.RootedWalkVisit) error {
+func walkLicenseFiles(depRoot string, maxCandidates, maxWalkEntries int, visit shared.RootedWalkVisit) (err error) {
 	root, err := safeio.OpenRootNoFollow(depRoot)
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	return shared.WalkRepoFilesWithinRootPinned(context.Background(), depRoot, root, licenseWalkBudget(maxCandidates, maxWalkEntries), shouldSkipLicenseDir, visit)
 }
 
