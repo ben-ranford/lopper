@@ -336,7 +336,7 @@ func applyNamedImportUsage(imp ImportBinding, file FileScan, usedExports map[str
 }
 
 func namedImportUsageCount(imp ImportBinding, file FileScan) int {
-	return file.IdentifierUsage[imp.LocalName] + file.namedDestructureUsage[imp.Location]
+	return file.IdentifierUsage[imp.LocalName] + file.namedImportUsageByLocation[imp.Location]
 }
 
 func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {

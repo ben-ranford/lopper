@@ -13,7 +13,7 @@ func collectIdentifierUsage(tree *sitter.Tree, content []byte) map[string]int {
 
 func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []ImportBinding) (map[string]int, map[report.Location]int) {
 	counts := make(map[string]int)
-	destructures := make(map[report.Location]int)
+	namedImportUsageByLocation := make(map[report.Location]int)
 	moduleNames := uniqueModuleNamedImports(imports)
 	root := tree.RootNode()
 	walkNode(root, func(node *sitter.Node) {
@@ -29,12 +29,12 @@ func collectFileIdentifierUsage(tree *sitter.Tree, content []byte, imports []Imp
 			return
 		}
 		location := moduleNames[name]
-		if location.Line > 0 && isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node) {
-			destructures[location]++
+		if location.Line > 0 && ((isStaticObjectDestructureValueUsage(node) && isDirectModuleScope(node)) || isNamedObjectUsage(node)) {
+			namedImportUsageByLocation[location]++
 		}
 	})
 
-	return counts, destructures
+	return counts, namedImportUsageByLocation
 }
 
 func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Location {
@@ -54,6 +54,10 @@ func uniqueModuleNamedImports(imports []ImportBinding) map[string]report.Locatio
 
 // Only claim a binding when both its declaration and use are in direct module scope.
 func isDirectModuleScope(node *sitter.Node) bool {
+	return hasDirectModuleScope(node, false)
+}
+
+func hasDirectModuleScope(node *sitter.Node, allowExpressionContainers bool) bool {
 	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
 		switch parent.Type() {
 		case "program":
@@ -61,13 +65,29 @@ func isDirectModuleScope(node *sitter.Node) bool {
 		case "import_specifier", "named_imports", "import_clause", "import_statement",
 			"pair_pattern", "object_pattern", "variable_declarator", "lexical_declaration",
 			"variable_declaration", "export_statement", "assignment_expression",
-			"parenthesized_expression", "expression_statement":
+			"parenthesized_expression", "expression_statement", "call_expression", "arguments":
 			continue
+		case "member_expression", "subscript_expression", "binary_expression", "ternary_expression",
+			"if_statement", "else_clause", "unary_expression", "update_expression", "await_expression",
+			"new_expression", "sequence_expression", "array", "object", "pair", "spread_element",
+			"template_string", "template_substitution":
+			if !allowExpressionContainers {
+				return false
+			}
 		default:
 			return false
 		}
 	}
 	return false
+}
+
+func isNamedObjectUsage(node *sitter.Node) bool {
+	parent := node.Parent()
+	if parent == nil || (parent.Type() != "member_expression" && parent.Type() != "subscript_expression") {
+		return false
+	}
+	object := parent.ChildByFieldName("object")
+	return object != nil && object.ID() == node.ID() && hasDirectModuleScope(parent, true)
 }
 
 func collectNamespaceUsage(tree *sitter.Tree, content []byte) map[string]map[string]int {
