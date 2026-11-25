@@ -271,6 +271,38 @@ func TestProbeLicenseCandidateSkipsFileAboveLimit(t *testing.T) {
 	}
 }
 
+func TestProbeLicenseCandidatesReportsSkippedLargeCandidateAfterLaterMatch(t *testing.T) {
+	root := t.TempDir()
+	large := filepath.Join(root, "LICENSE")
+	known := filepath.Join(root, "COPYING")
+	testutil.MustWriteFile(t, large, "MIT License\n"+strings.Repeat(" ", 32))
+	testutil.MustWriteFile(t, known, "MIT License")
+
+	probe, status := probeLicenseCandidatesWithLimit(root, []string{large, known}, 20)
+	if probe == nil || probe.path != known || probe.spdx != "MIT" {
+		t.Fatalf("expected later candidate license evidence, got %#v", probe)
+	}
+	if !status.skippedLarge || len(status.warning()) != 1 {
+		t.Fatalf("expected incomplete detection warning after skipped candidate, got %#v", status)
+	}
+}
+
+func TestFindLicenseFilesWithLimitsReportsIncompleteDiscovery(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "MIT License")
+	testutil.MustWriteFile(t, filepath.Join(root, "COPYING"), "MIT License")
+
+	candidateLimited := findLicenseFilesWithLimits(root, 1, 16)
+	if len(candidateLimited.files) != 1 || !candidateLimited.candidateLimit || len((licenseFileStatus{candidateLimit: candidateLimited.candidateLimit}).warning()) != 1 {
+		t.Fatalf("expected candidate-limit status, got %#v", candidateLimited)
+	}
+
+	walkLimited := findLicenseFilesWithLimits(root, 5, 1)
+	if !walkLimited.walkLimit || len((licenseFileStatus{walkLimit: walkLimited.walkLimit}).warning()) != 1 {
+		t.Fatalf("expected traversal-limit status, got %#v", walkLimited)
+	}
+}
+
 func TestCollectRegistryProvenanceSignals(t *testing.T) {
 	pkg := packageJSON{
 		Resolved:   "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",

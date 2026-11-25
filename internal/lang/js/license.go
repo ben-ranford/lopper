@@ -2,6 +2,7 @@ package js
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -22,19 +23,21 @@ func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) 
 		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{"unable to resolve dependency root for license/provenance detection"}
 	}
 	pkg, warnings := loadDependencyPackageJSON(depRoot)
-	license := detectLicenseFromMetadataOrFiles(pkg, depRoot)
+	license, fileStatus := detectLicenseFromMetadataOrFiles(pkg, depRoot)
+	warnings = append(warnings, fileStatus.warning()...)
 	provenance := buildProvenance(pkg, includeRegistryProvenance)
 	return license, provenance, warnings
 }
 
-func detectLicenseFromMetadataOrFiles(pkg packageJSON, depRoot string) *report.DependencyLicense {
+func detectLicenseFromMetadataOrFiles(pkg packageJSON, depRoot string) (*report.DependencyLicense, licenseFileStatus) {
 	if license := detectLicenseFromPackageJSON(pkg); license != nil {
-		return license
+		return license, licenseFileStatus{}
 	}
-	if license := detectLicenseFromFiles(depRoot); license != nil {
-		return license
+	license, status := detectLicenseFromFilesWithStatus(depRoot)
+	if license != nil {
+		return license, status
 	}
-	return unknownDependencyLicense()
+	return unknownDependencyLicense(), status
 }
 
 func unknownDependencyLicense() *report.DependencyLicense {
@@ -153,41 +156,82 @@ type licenseFileProbe struct {
 	confidence string
 }
 
-func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
-	probe := probeLicenseFiles(depRoot)
-	if probe == nil {
-		return nil
-	}
-	return synthesizeLicenseFromFileProbe(*probe)
+type licenseFileStatus struct {
+	candidateLimit bool
+	walkLimit      bool
+	skippedLarge   bool
 }
 
-func probeLicenseFiles(depRoot string) *licenseFileProbe {
-	return probeLicenseCandidates(depRoot, findLicenseFiles(depRoot))
+func (s licenseFileStatus) warning() []string {
+	switch {
+	case s.skippedLarge:
+		return []string{"license file detection incomplete: a candidate exceeded the file size limit"}
+	case s.candidateLimit:
+		return []string{"license file detection incomplete: candidate limit reached"}
+	case s.walkLimit:
+		return []string{"license file detection incomplete: traversal limit reached"}
+	default:
+		return nil
+	}
+}
+
+func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
+	license, _ := detectLicenseFromFilesWithStatus(depRoot)
+	return license
+}
+
+func detectLicenseFromFilesWithStatus(depRoot string) (*report.DependencyLicense, licenseFileStatus) {
+	probe, status := probeLicenseFiles(depRoot)
+	if probe == nil {
+		return nil, status
+	}
+	return synthesizeLicenseFromFileProbe(*probe), status
+}
+
+func probeLicenseFiles(depRoot string) (*licenseFileProbe, licenseFileStatus) {
+	discovery := findLicenseFilesWithLimits(depRoot, maxLicenseCandidates, maxLicenseWalkEntries)
+	probe, status := probeLicenseCandidatesWithLimit(depRoot, discovery.files, maxLicenseFileBytes)
+	status.candidateLimit = discovery.candidateLimit
+	status.walkLimit = discovery.walkLimit
+	return probe, status
 }
 
 func probeLicenseCandidates(depRoot string, candidates []string) *licenseFileProbe {
+	probe, _ := probeLicenseCandidatesWithLimit(depRoot, candidates, maxLicenseFileBytes)
+	return probe
+}
+
+func probeLicenseCandidatesWithLimit(depRoot string, candidates []string, maxBytes int64) (*licenseFileProbe, licenseFileStatus) {
+	status := licenseFileStatus{}
 	for _, candidate := range candidates {
-		if probe := probeLicenseCandidate(depRoot, candidate); probe != nil {
-			return probe
+		probe, skippedLarge := probeLicenseCandidateWithLimit(depRoot, candidate, maxBytes)
+		status.skippedLarge = status.skippedLarge || skippedLarge
+		if probe != nil {
+			return probe, status
 		}
 	}
-	return nil
+	return nil, status
 }
 
 func probeLicenseCandidate(depRoot, candidate string) *licenseFileProbe {
-	content, err := safeio.ReadFileUnderLimit(depRoot, candidate, maxLicenseFileBytes)
+	probe, _ := probeLicenseCandidateWithLimit(depRoot, candidate, maxLicenseFileBytes)
+	return probe
+}
+
+func probeLicenseCandidateWithLimit(depRoot, candidate string, maxBytes int64) (*licenseFileProbe, bool) {
+	content, err := safeio.ReadFileUnderLimit(depRoot, candidate, maxBytes)
 	if err != nil {
-		return nil
+		return nil, errors.Is(err, safeio.ErrFileTooLarge)
 	}
 	spdx, confidence := detectSPDXFromLicenseContent(string(content))
 	if spdx == "" {
-		return nil
+		return nil, false
 	}
 	return &licenseFileProbe{
 		path:       candidate,
 		spdx:       spdx,
 		confidence: confidence,
-	}
+	}, false
 }
 
 func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLicense {
@@ -199,22 +243,32 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 	}
 }
 
-func findLicenseFiles(depRoot string) []string {
-	files := make([]string, 0, 4)
-	walkEntries := 0
-	if filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files, &walkEntries)) != nil {
-		return files
-	}
-	return files
+type licenseFileDiscovery struct {
+	files          []string
+	candidateLimit bool
+	walkLimit      bool
 }
 
-func licenseWalkFunc(depRoot string, files *[]string, walkEntries *int) fs.WalkDirFunc {
+func findLicenseFiles(depRoot string) []string {
+	return findLicenseFilesWithLimits(depRoot, maxLicenseCandidates, maxLicenseWalkEntries).files
+}
+
+func findLicenseFilesWithLimits(depRoot string, maxCandidates, maxWalkEntries int) licenseFileDiscovery {
+	files := make([]string, 0, 4)
+	walkEntries := 0
+	discovery := licenseFileDiscovery{files: files}
+	_ = filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &discovery, &walkEntries, maxCandidates, maxWalkEntries))
+	return discovery
+}
+
+func licenseWalkFunc(depRoot string, discovery *licenseFileDiscovery, walkEntries *int, maxCandidates, maxWalkEntries int) fs.WalkDirFunc {
 	return func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		*walkEntries = *walkEntries + 1
-		if *walkEntries > maxLicenseWalkEntries {
+		if *walkEntries > maxWalkEntries {
+			discovery.walkLimit = true
 			return fs.SkipAll
 		}
 		if shouldSkipLicenseDir(depRoot, path, d) {
@@ -223,8 +277,9 @@ func licenseWalkFunc(depRoot string, files *[]string, walkEntries *int) fs.WalkD
 		if d.IsDir() || !isLicenseCandidate(path) {
 			return nil
 		}
-		*files = append(*files, path)
-		if len(*files) >= maxLicenseCandidates {
+		discovery.files = append(discovery.files, path)
+		if len(discovery.files) >= maxCandidates {
+			discovery.candidateLimit = true
 			return fs.SkipAll
 		}
 		return nil
