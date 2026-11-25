@@ -72,6 +72,7 @@ func TestDependencyFromModuleBuiltins(t *testing.T) {
 		{"fs/promises subpath", testFsPromises, ""},
 		{"node:test", "node:test", ""},
 		{"fs package subpath", "fs/compat", "fs"},
+		{"unknown Node specifier", "node:unknown-module", ""},
 
 		// npm packages should return package name
 		{"lodash", "lodash", "lodash"},

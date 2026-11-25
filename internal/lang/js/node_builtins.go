@@ -1,5 +1,9 @@
 package js
 
+import "strings"
+
+const nodeBuiltinPrefix = "node:"
+
 // nodeBuiltinModules contains the list of Node.js core/built-in modules.
 // These modules should not be treated as npm dependencies.
 //
@@ -7,16 +11,12 @@ package js
 // only the public module specifiers. Bare specifiers and node: specifiers have
 // different supported sets, so subpaths are listed explicitly.
 //
-// To update this list, run:
+// To update both lists, run:
 //
-//	node -p "[...require('module').builtinModules].filter(m => !m.startsWith('_')).sort().join('\n')"
+//	node -p "require('node:module').builtinModules.filter(name => !name.startsWith('_')).sort().join('\n')"
 //
-// Or programmatically in Node.js v16+:
-//
-//	const builtins = require('module').builtinModules
-//	  .filter(m => !m.startsWith('_') && !m.startsWith('node:'))
-//
-// Last updated: 2026-02-11 (Node.js v24.x)
+// Store the node:-only entries in nodePrefixedBuiltinModules without the prefix.
+// Last checked against Node.js v26.13.1.
 var nodeBuiltinModules = map[string]bool{
 	"assert":              true,
 	"assert/strict":       true,
@@ -85,9 +85,8 @@ var nodePrefixedBuiltinModules = map[string]bool{
 // isNodeBuiltin checks if a module name is a Node.js built-in module.
 // It matches Node's exact public specifiers for both bare names and node: names.
 func isNodeBuiltin(moduleName string) bool {
-	if len(moduleName) > 5 && moduleName[:5] == "node:" {
-		moduleName = moduleName[5:]
-		return nodeBuiltinModules[moduleName] || nodePrefixedBuiltinModules[moduleName]
+	if name, prefixed := strings.CutPrefix(moduleName, nodeBuiltinPrefix); prefixed {
+		return nodeBuiltinModules[name] || nodePrefixedBuiltinModules[name]
 	}
 	return nodeBuiltinModules[moduleName]
 }
