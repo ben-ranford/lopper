@@ -80,6 +80,18 @@ func TestNamespaceUsageMemberExpression(t *testing.T) {
 	}
 }
 
+func TestCollectDependencyImportUsageTracksNamedImportObjectUsage(t *testing.T) {
+	usage := collectDependencyImportUsageFromSource(t, "config-kit", `import { settings } from "config-kit"
+settings.enabled
+`)
+	if _, ok := usage.UsedExports["settings"]; !ok {
+		t.Fatalf("expected named import object usage to retain settings, got %#v", usage.UsedExports)
+	}
+	if got := usage.Counts["settings"]; got != 1 {
+		t.Fatalf("expected named import object usage count 1, got %d", got)
+	}
+}
+
 func TestNamespaceUsageObjectDestructuring(t *testing.T) {
 	repo := t.TempDir()
 	source := `import * as util from "lodash"
