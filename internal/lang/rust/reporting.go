@@ -10,6 +10,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+const incompleteTopRustDependenciesWarning = "top-N removal ranking disabled because Rust use-statement coverage is incomplete"
+
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsageThreshold := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
 	weights := shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights)
@@ -28,6 +30,13 @@ func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]re
 func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
+	if len(dependencies) > 0 && rustUseStatementCoverageIncomplete(scan) {
+		reports := make([]report.DependencyReport, 0, len(dependencies))
+		for _, dependency := range dependencies {
+			reports = append(reports, buildDependencyReport(dependency, scan, minUsageThreshold))
+		}
+		return reports, []string{incompleteTopRustDependenciesWarning}
+	}
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
 	}
@@ -38,9 +47,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	dep := shared.BuildDependencyReportFromStats(dependency, "rust", stats)
-	dep.UsageIncomplete = slices.ContainsFunc(scan.CoverageGaps, func(gap report.CoverageGap) bool {
-		return gap.Code == report.CoverageGapRustUseStatementLimit
-	})
+	dep.UsageIncomplete = rustUseStatementCoverageIncomplete(scan)
 	if dep.UsageIncomplete {
 		dep.SuppressedUnusedImports = dep.UnusedImports
 		dep.UnusedImports = nil
@@ -103,6 +110,12 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	shared.SortRiskCues(dep.RiskCues)
 	shared.SortRecommendations(dep.Recommendations, report.RecommendationPriorityRank)
 	return dep
+}
+
+func rustUseStatementCoverageIncomplete(scan scanResult) bool {
+	return slices.ContainsFunc(scan.CoverageGaps, func(gap report.CoverageGap) bool {
+		return gap.Code == report.CoverageGapRustUseStatementLimit
+	})
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
