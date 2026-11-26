@@ -607,6 +607,57 @@ func TestDetectWithCompileDatabaseAndCMakeSignals(t *testing.T) {
 	}
 }
 
+func TestCompileDatabaseCommandFallbackPreservesQuotedPaths(t *testing.T) {
+	repo := t.TempDir()
+	command := `c++ -I"third party/include" -c "src/main file.cpp"`
+	content := fmt.Sprintf(`[{"directory":".","file":%q,"command":%q}]`, "src/main file.cpp", command)
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), content)
+
+	context, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	includeDir := filepath.Join(repo, "third party", "include")
+	if !slices.Contains(context.IncludeDirs, includeDir) {
+		t.Fatalf("expected quoted include directory, got %#v", context.IncludeDirs)
+	}
+	if !slices.Contains(context.SourceFiles, filepath.Join(repo, "src", "main file.cpp")) {
+		t.Fatalf("expected quoted source path, got %#v", context.SourceFiles)
+	}
+}
+
+func TestCompileCommandEntryUsesWindowsQuotesForWindowsMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry compileCommandEntry
+		want  []string
+	}{
+		{
+			name: "drive directory",
+			entry: compileCommandEntry{
+				Directory: `C:\build`,
+				Command:   `cl.exe -IC:\O'Brien\headers -I"C:\'shared include" -c C:\O'Brien\main.cpp`,
+			},
+			want: []string{"cl.exe", `-IC:\O'Brien\headers`, `-IC:\'shared include`, "-c", `C:\O'Brien\main.cpp`},
+		},
+		{
+			name: "UNC file",
+			entry: compileCommandEntry{
+				File:    `\\server\share\main.cpp`,
+				Command: `cl.exe -I\\server\O'Brien\headers -c \\server\O'Brien\main.cpp`,
+			},
+			want: []string{"cl.exe", `-I\\server\O'Brien\headers`, "-c", `\\server\O'Brien\main.cpp`},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if args := test.entry.compileArgs(); !slices.Equal(args, test.want) {
+				t.Fatalf("compileArgs() = %#v, want %#v", args, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveCompilePathAndDirectory(t *testing.T) {
 	dbPath := filepath.Join("/tmp", "build", compileCommandsFile)
 	if got := resolveCompileDirectory(dbPath, ""); got != filepath.Dir(dbPath) {
