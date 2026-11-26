@@ -18,6 +18,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as tar from "tar";
 
+import { isResolvedPathInsideWorkspace } from "./workspacePaths";
+
 export interface GitHubReleaseAsset {
   name: string;
   browser_download_url: string;
@@ -408,7 +410,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
   }
 
   private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoots: readonly string[]): Promise<boolean> {
-    if (workspaceRoots.some((workspaceRoot) => isPathInsideWorkspace(binaryPath, workspaceRoot))) {
+    if (workspaceRoots.some((workspaceRoot) => isResolvedPathInsideWorkspace(binaryPath, workspaceRoot))) {
       return true;
     }
 
@@ -417,7 +419,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
         this.canonicalizePath(binaryPath),
         ...workspaceRoots.map((workspaceRoot) => this.canonicalizePath(workspaceRoot)),
       ]);
-      return canonicalWorkspaceRoots.some((workspaceRoot) => isPathInsideWorkspace(canonicalBinaryPath, workspaceRoot));
+      return canonicalWorkspaceRoots.some((workspaceRoot) => isResolvedPathInsideWorkspace(canonicalBinaryPath, workspaceRoot));
     } catch (error) {
       const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
       this.output.appendLine(
@@ -873,11 +875,6 @@ function archSegment(arch: string): string {
     default:
       throw new Error(`managed downloads are not supported on architecture ${arch}`);
   }
-}
-
-function isPathInsideWorkspace(candidatePath: string, workspaceRoot: string): boolean {
-  const relativePath = path.relative(path.resolve(workspaceRoot), path.resolve(candidatePath));
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
 function canonicalPath(targetPath: string): Promise<string> {
