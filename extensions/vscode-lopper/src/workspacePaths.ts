@@ -34,6 +34,7 @@ export function isResolvedPathInsideWorkspace(candidatePath: string, workspaceRo
   return isPathInside(path.resolve(candidatePath), path.resolve(workspaceRoot));
 }
 
+// A missing leaf can resolve through its nearest existing parent.
 export function resolveWorkspaceFilePath(workspaceRoot: string, relativePath: string): string | undefined {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const candidatePath = path.resolve(resolvedWorkspaceRoot, relativePath);
@@ -49,34 +50,32 @@ export function isSameWorkspacePath(leftPath: string, rightPath: string): boolea
   return path.resolve(leftPath) === path.resolve(rightPath);
 }
 
-export function workspaceAncestorDirectories(
+export function workspaceRelativeAncestorDirectories(
   candidatePath: string,
   workspaceRoot: string,
   maxAncestors: number,
 ): string[] | undefined {
-  const canonicalWorkspaceRoot = canonicalizeExistingPath(workspaceRoot);
-  const canonicalCandidatePath = canonicalizeExistingPath(candidatePath);
-  if (!canonicalWorkspaceRoot || !canonicalCandidatePath || !isPathInside(canonicalCandidatePath, canonicalWorkspaceRoot)) {
+  const relativePath = path.relative(workspaceRoot, candidatePath);
+  if (relativePath === "" || !isRelativePathInsideWorkspace(relativePath)) {
     return undefined;
   }
 
   const ancestors: string[] = [];
-  let currentDirectory = path.dirname(canonicalCandidatePath);
+  let currentDirectory = path.dirname(relativePath);
   for (let depth = 0; depth < maxAncestors; depth++) {
     ancestors.push(currentDirectory);
-    if (currentDirectory === canonicalWorkspaceRoot) {
+    if (currentDirectory === ".") {
       break;
     }
-    const parentDirectory = path.dirname(currentDirectory);
-    if (parentDirectory === currentDirectory) {
-      break;
-    }
-    currentDirectory = parentDirectory;
+    currentDirectory = path.dirname(currentDirectory);
   }
   return ancestors;
 }
 
 function isPathInside(candidatePath: string, workspaceRoot: string): boolean {
-  const relativePath = path.relative(workspaceRoot, candidatePath);
-  return relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath));
+  return isRelativePathInsideWorkspace(path.relative(workspaceRoot, candidatePath));
+}
+
+function isRelativePathInsideWorkspace(relativePath: string): boolean {
+  return relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath);
 }

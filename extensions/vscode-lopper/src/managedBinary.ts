@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as tar from "tar";
 
-import { isPathInsideWorkspace, isResolvedPathInsideWorkspace } from "./workspacePaths";
+import { isResolvedPathInsideWorkspace } from "./workspacePaths";
 
 export interface GitHubReleaseAsset {
   name: string;
@@ -410,10 +410,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
   }
 
   private async isWorkspaceLocalBinary(binaryPath: string, workspaceRoots: readonly string[]): Promise<boolean> {
-    if (workspaceRoots.some((workspaceRoot) => (
-      isResolvedPathInsideWorkspace(binaryPath, workspaceRoot)
-      || isPathInsideWorkspace(binaryPath, workspaceRoot)
-    ))) {
+    if (workspaceRoots.some((workspaceRoot) => isResolvedPathInsideWorkspace(binaryPath, workspaceRoot))) {
       return true;
     }
 
@@ -422,7 +419,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
         this.canonicalizePath(binaryPath),
         ...workspaceRoots.map((workspaceRoot) => this.canonicalizePath(workspaceRoot)),
       ]);
-      return canonicalWorkspaceRoots.some((workspaceRoot) => isPathInsideWorkspace(canonicalBinaryPath, workspaceRoot));
+      return canonicalWorkspaceRoots.some((workspaceRoot) => isResolvedPathInsideWorkspace(canonicalBinaryPath, workspaceRoot));
     } catch (error) {
       const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
       this.output.appendLine(

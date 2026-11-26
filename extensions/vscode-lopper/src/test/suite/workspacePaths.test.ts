@@ -7,7 +7,8 @@ import {
   canonicalizeExistingPath,
   isPathInsideWorkspace,
   isResolvedPathInsideWorkspace,
-  workspaceAncestorDirectories,
+  resolveWorkspaceFilePath,
+  workspaceRelativeAncestorDirectories,
 } from "../../workspacePaths";
 
 suite("workspace paths", () => {
@@ -35,11 +36,17 @@ suite("workspace paths", () => {
       );
       const canonicalWorkspaceRoot = canonicalizeExistingPath(workspaceRoot);
       assert.ok(canonicalWorkspaceRoot);
+      assert.equal(resolveWorkspaceFilePath(workspaceRoot, "new.md"), path.join(workspaceRoot, "new.md"));
       assert.deepEqual(
-        workspaceAncestorDirectories(sourceFile, workspaceRoot, 2),
-        [path.join(canonicalWorkspaceRoot, "app", "src"), path.join(canonicalWorkspaceRoot, "app")],
+        workspaceRelativeAncestorDirectories(sourceFile, workspaceRoot, 2),
+        [path.join("app", "src"), "app"],
       );
-      assert.equal(workspaceAncestorDirectories(path.join(outsideRoot, "Main.kt"), workspaceRoot, 2), undefined);
+      assert.deepEqual(
+        workspaceRelativeAncestorDirectories(dotPrefixedChild, workspaceRoot, 3),
+        ["..notes", "."],
+      );
+      assert.equal(workspaceRelativeAncestorDirectories(workspaceRoot, workspaceRoot, 2), undefined);
+      assert.equal(workspaceRelativeAncestorDirectories(path.join(outsideRoot, "Main.kt"), workspaceRoot, 2), undefined);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

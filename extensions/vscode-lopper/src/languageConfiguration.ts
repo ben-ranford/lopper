@@ -1,12 +1,11 @@
 import { constants, type Stats } from "node:fs";
-import { lstat, open, type FileHandle } from "node:fs/promises";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
 import {
-  canonicalizeExistingPath,
-  isPathInsideWorkspace,
-  workspaceAncestorDirectories,
+  isResolvedPathInsideWorkspace,
+  workspaceRelativeAncestorDirectories,
 } from "./workspacePaths";
 
 export const lopperLanguageValues = [
@@ -147,17 +146,22 @@ export class AndroidModuleSignalCache implements AndroidModuleSignalProvider {
       return false;
     }
 
-    const workspaceRoot = canonicalizeExistingPath(workspaceFolderPath);
-    if (!workspaceRoot) {
-      return false;
-    }
-    const ancestorDirectories = workspaceAncestorDirectories(fileName, workspaceRoot, maxAndroidAncestors);
+    const ancestorDirectories = workspaceRelativeAncestorDirectories(fileName, workspaceFolderPath, maxAndroidAncestors);
     if (!ancestorDirectories) {
       return false;
     }
 
+    const workspaceRoot = await realpath(workspaceFolderPath).catch(() => undefined);
+    if (!workspaceRoot) {
+      return false;
+    }
+
     const generation = this.generation;
-    for (const currentDir of ancestorDirectories) {
+    for (const relativeDirectory of ancestorDirectories) {
+      if (generation !== this.generation) {
+        break;
+      }
+      const currentDir = path.join(workspaceRoot, relativeDirectory);
       if (await this.moduleSignalsAndroid(currentDir, workspaceRoot) && generation === this.generation) {
         return true;
       }
@@ -407,7 +411,7 @@ function androidSignalModuleRoot(filePath: string, workspaceFolderPath?: string)
     return moduleRoot;
   }
 
-  if (!isPathInsideWorkspace(moduleRoot, workspaceFolderPath)) {
+  if (!isResolvedPathInsideWorkspace(moduleRoot, workspaceFolderPath)) {
     return undefined;
   }
   return moduleRoot;
