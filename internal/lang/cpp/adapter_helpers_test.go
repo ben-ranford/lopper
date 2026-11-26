@@ -626,6 +626,38 @@ func TestCompileDatabaseCommandFallbackPreservesQuotedPaths(t *testing.T) {
 	}
 }
 
+func TestCompileCommandEntryUsesWindowsQuotesForWindowsMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry compileCommandEntry
+		want  []string
+	}{
+		{
+			name: "drive directory",
+			entry: compileCommandEntry{
+				Directory: `C:\build`,
+				Command:   `cl.exe -IC:\O'Brien\headers -I"C:\'shared include" -c C:\O'Brien\main.cpp`,
+			},
+			want: []string{"cl.exe", `-IC:\O'Brien\headers`, `-IC:\'shared include`, "-c", `C:\O'Brien\main.cpp`},
+		},
+		{
+			name: "UNC file",
+			entry: compileCommandEntry{
+				File:    `\\server\share\main.cpp`,
+				Command: `cl.exe -I\\server\O'Brien\headers -c \\server\O'Brien\main.cpp`,
+			},
+			want: []string{"cl.exe", `-I\\server\O'Brien\headers`, "-c", `\\server\O'Brien\main.cpp`},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if args := test.entry.compileArgs(); !slices.Equal(args, test.want) {
+				t.Fatalf("compileArgs() = %#v, want %#v", args, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveCompilePathAndDirectory(t *testing.T) {
 	dbPath := filepath.Join("/tmp", "build", compileCommandsFile)
 	if got := resolveCompileDirectory(dbPath, ""); got != filepath.Dir(dbPath) {
