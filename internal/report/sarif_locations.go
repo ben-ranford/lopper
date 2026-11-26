@@ -122,7 +122,18 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 }
 
 func toSARIFArtifactURI(file string) string {
+	// Check for two leading backslashes before normalizing separators.
+	windowsPrefix := strings.HasPrefix(file, `\\`)
 	file = strings.ReplaceAll(file, "\\", "/")
+	if windowsPrefix {
+		file = normalizeWindowsDevicePath(file)
+		if file == "" {
+			return ""
+		}
+		if isUNCPath(file) {
+			return fileURLFromUNCPath(file)
+		}
+	}
 	file = path.Clean(file)
 	if isWindowsDriveAbsolutePath(file) || path.IsAbs(file) {
 		return fileURLFromPath(file)
@@ -133,6 +144,51 @@ func toSARIFArtifactURI(file string) string {
 	// URL path encoding preserves literal filename bytes and prevents a colon in
 	// the first segment from becoming a scheme. RawPath must remain unset.
 	return (&url.URL{Path: file}).String()
+}
+
+func normalizeWindowsDevicePath(pathValue string) string {
+	var devicePath string
+	switch {
+	case strings.HasPrefix(pathValue, "//?/"):
+		devicePath = strings.TrimPrefix(pathValue, "//?/")
+	case strings.HasPrefix(pathValue, "//./"):
+		devicePath = strings.TrimPrefix(pathValue, "//./")
+	default:
+		return pathValue
+	}
+
+	if len(devicePath) >= len("UNC/") && strings.EqualFold(devicePath[:len("UNC/")], "UNC/") {
+		return "//" + devicePath[len("UNC/"):]
+	}
+	if isWindowsDriveAbsolutePath(devicePath) {
+		return devicePath
+	}
+	return ""
+}
+
+func isUNCPath(pathValue string) bool {
+	return strings.HasPrefix(pathValue, "//") && !strings.HasPrefix(pathValue, "///")
+}
+
+func fileURLFromUNCPath(pathValue string) string {
+	uncPath := strings.TrimPrefix(pathValue, "//")
+	host, sharePath, found := strings.Cut(uncPath, "/")
+	if host == "" || !found {
+		return ""
+	}
+	share, relativePath, _ := strings.Cut(sharePath, "/")
+	if share == "" {
+		return ""
+	}
+	cleanedPath := path.Clean("/" + relativePath)
+	if cleanedPath == "/" {
+		cleanedPath = ""
+	}
+	return (&url.URL{
+		Scheme: "file",
+		Host:   host,
+		Path:   "/" + share + cleanedPath,
+	}).String()
 }
 
 func fileURLFromPath(pathValue string) string {
