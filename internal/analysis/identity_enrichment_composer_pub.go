@@ -121,7 +121,7 @@ func readComposerIdentityDeclarations(repoPath, path string, warnings *identityW
 	if path == "" {
 		return declared, nil
 	}
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityManifestBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return declared, nil
@@ -157,7 +157,7 @@ func collectComposerLockIdentityEvidence(repoPath, path string, declared map[str
 	if path == "" {
 		return resolved
 	}
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return resolved

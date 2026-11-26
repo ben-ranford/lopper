@@ -164,7 +164,7 @@ func collectNuGetLockModels(ctx context.Context, repoPath string, paths []string
 		}
 		cleanPath := filepath.Clean(path)
 		models[cleanPath] = nil
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -196,7 +196,7 @@ func collectNuGetLockModels(ctx context.Context, repoPath string, paths []string
 }
 
 func readNuGetMSBuildDocument(repoPath, path, elementName string, warnings *identityWarningCollector) (nugetMSBuildDocument, bool) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityMSBuildBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nugetMSBuildDocument{}, false

@@ -278,7 +278,7 @@ func ensureAllReleaseDeltaUpdatesApplied(updatesByCode map[string]releaseDeltaUp
 }
 
 func readReleaseDelta(source releaseDeltaSource) (releaseDelta, error) {
-	data, err := safeio.ReadFileUnder(source.root, filepath.Join(source.root, source.path))
+	data, err := safeio.ReadRegularFileUnderLimit(source.root, filepath.Join(source.root, source.path), maxFeaturePolicyDocumentBytes)
 	if err != nil {
 		return releaseDelta{}, fmt.Errorf("read release delta: %w", err)
 	}

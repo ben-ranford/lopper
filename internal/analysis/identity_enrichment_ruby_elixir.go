@@ -110,7 +110,7 @@ func collectRubyIdentityEvidenceFromPaths(ctx context.Context, repoPath string, 
 		if ctx.Err() != nil {
 			return
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -354,7 +354,7 @@ func readElixirIdentityManifest(repoPath, path string, warnings *identityWarning
 	if path == "" {
 		return manifest
 	}
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityManifestBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return manifest
@@ -481,7 +481,7 @@ func parseElixirIdentityDependencyTuple(value string) (string, bool) {
 }
 
 func readElixirIdentityLock(repoPath, path string, warnings *identityWarningCollector) ([]elixirIdentityLockedPackage, bool) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil, false

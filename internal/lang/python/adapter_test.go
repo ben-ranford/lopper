@@ -994,7 +994,7 @@ func TestImportParsersSkipLocalAndStdlibImports(t *testing.T) {
 		t.Fatalf("expected no bindings for local module import, got %#v", bindings)
 	}
 
-	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.py"), maxPythonSourceBytes); err == nil {
 		t.Fatal("expected read error for missing python file")
 	}
 }
@@ -1005,7 +1005,7 @@ func TestReadPythonFileFallsBackWhenRelativePathComputationFails(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 
-	content, relativePath, err := shared.ReadSourceFile(repoPath, "adapter.go")
+	content, relativePath, err := shared.ReadSourceFile(repoPath, "adapter.go", maxPythonSourceBytes)
 	if err != nil {
 		t.Fatalf("read python file: %v", err)
 	}

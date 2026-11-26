@@ -7,10 +7,12 @@ import (
 )
 
 const (
-	mixExsName     = "mix.exs"
-	mixLockName    = "mix.lock"
-	maxDetectFiles = 1200
-	maxScanFiles   = 2400
+	mixExsName             = "mix.exs"
+	mixLockName            = "mix.lock"
+	maxDetectFiles         = 1200
+	maxScanFiles           = 2400
+	maxManifestBytes       = 2 * 1024 * 1024
+	maxScannableElixirFile = 2 * 1024 * 1024
 )
 
 var (

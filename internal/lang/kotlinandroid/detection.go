@@ -115,9 +115,9 @@ func buildFileSignalsAndroidPlugin(repoPath, path string) bool {
 		err     error
 	)
 	if strings.TrimSpace(repoPath) != "" {
-		content, err = safeio.ReadFileUnder(repoPath, path)
+		content, err = safeio.ReadRegularFileUnderLimit(repoPath, path, shared.GradleManifestByteLimit)
 	} else {
-		content, err = safeio.ReadFile(path)
+		content, err = safeio.ReadRegularFileLimit(path, shared.GradleManifestByteLimit)
 	}
 	if err != nil {
 		return false
@@ -229,7 +229,7 @@ func shouldKeepRepoRootForPackageAnalysis(repoPath string) bool {
 func hasRootGradleDependencyDeclarations(repoPath string) bool {
 	for _, fileName := range []string{buildGradleName, buildGradleKTSName} {
 		path := filepath.Join(repoPath, fileName)
-		content, err := safeio.ReadFileUnder(repoPath, path)
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, shared.GradleManifestByteLimit)
 		if err != nil {
 			continue
 		}

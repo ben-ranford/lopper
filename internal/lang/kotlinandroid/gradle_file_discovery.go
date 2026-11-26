@@ -63,7 +63,7 @@ func streamGradleFiles(repoPath string, matches func(fileName string) bool, cons
 			return nil
 		}
 		result.Matched = true
-		content, readErr := safeio.ReadFileUnder(repoPath, path)
+		content, readErr := safeio.ReadRegularFileUnderLimit(repoPath, path, shared.GradleManifestByteLimit)
 		if readErr != nil {
 			result.Warnings = append(result.Warnings, formatGradleReadWarning(repoPath, path, readErr))
 			return nil

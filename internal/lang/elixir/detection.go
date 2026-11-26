@@ -57,7 +57,7 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 	if _, err := os.Stat(mixPath); err == nil {
 		detection.Matched = true
 		detection.Confidence += 55
-		content, readErr := safeio.ReadFileUnder(repoPath, mixPath)
+		content, readErr := safeio.ReadRegularFileUnderLimit(repoPath, mixPath, maxManifestBytes)
 		if readErr != nil {
 			return false, readErr
 		}

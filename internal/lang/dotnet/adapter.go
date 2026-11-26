@@ -14,14 +14,16 @@ type Adapter struct {
 }
 
 const (
-	centralPackagesFile = "Directory.Packages.props"
-	csharpProjectExt    = ".csproj"
-	fsharpProjectExt    = ".fsproj"
-	solutionFileExt     = ".sln"
-	csharpSourceExt     = ".cs"
-	fsharpSourceExt     = ".fs"
-	maxDetectFiles      = 1024
-	maxScanFiles        = 4096
+	centralPackagesFile    = "Directory.Packages.props"
+	csharpProjectExt       = ".csproj"
+	fsharpProjectExt       = ".fsproj"
+	solutionFileExt        = ".sln"
+	csharpSourceExt        = ".cs"
+	fsharpSourceExt        = ".fs"
+	maxDetectFiles         = 1024
+	maxScanFiles           = 4096
+	maxDotNetManifestBytes = 2 * 1024 * 1024
+	maxDotNetSourceBytes   = 2 * 1024 * 1024
 )
 
 func NewAdapter() *Adapter {

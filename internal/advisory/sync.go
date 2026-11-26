@@ -672,7 +672,7 @@ func downloadSnapshot(ctx context.Context, sourceURL string, client *http.Client
 
 func loadSnapshotMetadata(path string, sizeBytes int64, schema string) ([]string, int) {
 	return loadSnapshotMetadataFromReader(schema, sizeBytes, func() ([]byte, error) {
-		return safeio.ReadFile(path)
+		return safeio.ReadRegularFileLimit(path, maxSyncMetadataBytes)
 	})
 }
 

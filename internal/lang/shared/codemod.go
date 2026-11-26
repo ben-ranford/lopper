@@ -9,7 +9,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const CodemodModeSuggestOnly = "suggest-only"
+const (
+	CodemodModeSuggestOnly  = "suggest-only"
+	codemodPreviewByteLimit = 2 * 1024 * 1024
+)
 
 type CodemodSuggestionSpec struct {
 	Language          string
@@ -119,7 +122,7 @@ func LoadCodemodSourceLines(repoPath, filePath string, lineCache map[string][]st
 	if lines, ok := lineCache[filePath]; ok {
 		return lines, "", true
 	}
-	content, err := safeio.ReadFileUnder(repoPath, filepath.Join(repoPath, filePath))
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, filepath.Join(repoPath, filePath), codemodPreviewByteLimit)
 	if err != nil {
 		return nil, fmt.Sprintf("codemod preview skipped for %s: %v", filePath, err), false
 	}
