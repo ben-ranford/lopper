@@ -1,6 +1,7 @@
 package swift
 
 import (
+	"bytes"
 	"iter"
 	"strings"
 )
@@ -11,26 +12,17 @@ type swiftStatement struct {
 	offset int
 }
 
-// Split leading import statements from the rest of each sanitized source line.
-// A semicolon elsewhere (for example in a Swift regex literal) is not an import boundary.
+// Split only after masking literals and comments so offsets refer to the original source.
 func swiftStatements(content []byte) iter.Seq[swiftStatement] {
 	return func(yield func(swiftStatement) bool) {
 		lineNumber := 1
 		for line := range strings.SplitSeq(blankSwiftStringsAndComments(content), "\n") {
 			offset := 0
-			for {
-				part, rest, separated := strings.Cut(line, ";")
-				if !separated || !swiftImportPattern.MatchString(part) {
-					break
-				}
+			for part := range strings.SplitSeq(line, ";") {
 				if !yield(swiftStatement{text: part, line: lineNumber, offset: offset}) {
 					return
 				}
 				offset += len(part) + 1
-				line = rest
-			}
-			if !yield(swiftStatement{text: line, line: lineNumber, offset: offset}) {
-				return
 			}
 			lineNumber++
 		}
@@ -99,7 +91,7 @@ func blankSwiftCommentsPreservingStrings(content string) string {
 }
 
 func consumeSwiftStringContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
-	if matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
+	if !state.escaped && matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
 		delimiterLen := swiftStringDelimiterLength(state.rawHashCount, state.multiline)
 		builder.WriteString(strings.Repeat(" ", delimiterLen))
 		resetSwiftStringScanState(state)
@@ -133,6 +125,16 @@ func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder
 		return index + 2
 	}
 
+	if content[index] == '#' {
+		hashes := 1
+		for index+hashes < len(content) && content[index+hashes] == '#' {
+			hashes++
+		}
+		if index+hashes < len(content) && content[index+hashes] == '/' {
+			return blankSwiftExtendedRegex(content, index, hashes, builder)
+		}
+	}
+
 	hashCount, nextIndex, isMultiline, ok := detectSwiftStringStart(content, index)
 	if ok {
 		builder.WriteString(strings.Repeat(" ", nextIndex-index))
@@ -145,6 +147,45 @@ func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder
 
 	builder.WriteByte(content[index])
 	return index + 1
+}
+
+// Swift's extended regex delimiters use matching runs of pound signs, even across lines.
+func blankSwiftExtendedRegex(content []byte, start, hashes int, builder *strings.Builder) int {
+	end := start + hashes + 1
+	// A newline after optional horizontal whitespace opens a multiline literal.
+	limit := len(content)
+	body := bytes.TrimLeft(content[end:], " \t")
+	if len(body) > 0 && body[0] != '\n' && body[0] != '\r' {
+		if newline := bytes.IndexAny(content[end:], "\r\n"); newline >= 0 {
+			limit = end + newline
+		}
+	}
+	for end < limit {
+		ch := content[end]
+		end++
+		if ch == '\\' && end < limit {
+			end++ // An escaped slash cannot close the pattern.
+			continue
+		}
+		if ch != '/' {
+			continue
+		}
+		hashStart := end
+		for end < limit && content[end] == '#' {
+			end++
+		}
+		if end-hashStart == hashes {
+			break
+		}
+	}
+	for _, ch := range content[start:end] {
+		if ch == '\n' || ch == '\r' {
+			builder.WriteByte(ch)
+		} else {
+			builder.WriteByte(' ')
+		}
+	}
+	return end
 }
 
 func resetSwiftStringScanState(state *swiftStringScanState) {

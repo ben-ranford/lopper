@@ -279,13 +279,13 @@ func run() {
 }
 
 func TestParseSwiftImportsKeepsStatementLocations(t *testing.T) {
-	content := []byte("let note = \"; import Phantom\"\n import First;  internal import Second\nlet pattern = #/; import Phantom/#")
+	content := []byte("let note = \"; import Phantom\"\n import First; let marker = 0;  internal import Second\nlet pattern = #/; import Phantom/#")
 	got := parseSwiftImports(content, swiftMainFileName)
 	if len(got) != 2 || got[0].Module != "First" || got[1].Module != "Second" {
 		t.Fatalf("unexpected imports: %#v", got)
 	}
 	if got[0].Location.Line != 2 || got[0].Location.Column != 2 ||
-		got[1].Location.Line != 2 || got[1].Location.Column != 17 {
+		got[1].Location.Line != 2 || got[1].Location.Column != 33 {
 		t.Fatalf("unexpected import positions: %#v", got)
 	}
 }
@@ -301,6 +301,16 @@ func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
 		{"separate lines", "internal import Foundation\nlet session = Session.default", true},
 		{"scoped import only", "internal import struct Foundation.URL", false},
 		{"masked semicolons", `internal import Foundation; let note = "; Session.default" // ; Session.default`, false},
+		{"escaped quote in string", `let p = #/plain/#; let note = "quote: \" Alamofire.foo"`, false},
+		{"qualified use after escaped quote", `let p = #/plain/#; let note = "quote: \" still text"; let s = Alamofire.Session.default`, true},
+		{"interleaved import", "let marker = 0; import NIO; let b = ByteBufferAllocator()", false},
+		{"qualified name inside regex", "let pattern = #/Alamofire.Session.default/#", false},
+		{"extended regex", "let pattern = #/Session.default/#", false},
+		{"escaped apparent close", `let p = #/a\/#Session.default/#`, false},
+		{"even escapes before close", `let p = #/a\\/#; let s = Session.default`, true},
+		{"unterminated single line", "let p = #/unfinished\nlet s = Session.default", true},
+		{"multiline regex", "let pattern = ##/\n  /#; import Phantom; Session.default\n/##", false},
+		{"real use after regex", "let pattern = #/; import Phantom; /#; let session = Session.default", true},
 		{"local declaration", "internal import Foundation; struct Session {}\nlet session = Session()", false},
 		{"ambiguous imports", "internal import Foundation; import NIO; let session = Session.default", false},
 	}
@@ -311,6 +321,18 @@ func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
 				t.Errorf("Alamofire used = %t, want %t", used, tc.wantUsed)
 			}
 		})
+	}
+}
+
+func TestSwiftAdapterCreditsQualifiedUseAfterInterleavedImport(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftDemoPackage(t, repo, []swiftFixtureDependency{alamofireFixtureDependency(), swiftNIOFixtureDependency()},
+		"import Alamofire; let marker = 0; import NIO; let b = NIO.ByteBufferAllocator()")
+	for dep, want := range map[string]bool{"alamofire": false, swiftNIOID: true} {
+		got := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: dep})
+		if got.TotalExportsCount == 0 || (got.UsedExportsCount > 0) != want {
+			t.Errorf("%s: mapped exports %d, used exports %d, want mapped and used=%t", dep, got.TotalExportsCount, got.UsedExportsCount, want)
+		}
 	}
 }
 

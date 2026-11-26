@@ -1,6 +1,7 @@
 package swift
 
 import (
+	"bytes"
 	"context"
 	"io/fs"
 	"path/filepath"
@@ -66,6 +67,9 @@ func isLargeSwiftFile(entry fs.DirEntry) bool {
 func (s *repoScanner) buildFileScan(path, fallback string, content []byte) fileScan {
 	relPath := s.relativePath(path, fallback)
 	mappedImports := s.resolveImports(parseSwiftImports(content, relPath))
+	if bytes.Contains(content, []byte("#/")) {
+		content = []byte(blankSwiftStringsAndComments(content))
+	}
 	return fileScan{
 		Path:    relPath,
 		Imports: mappedImports,
