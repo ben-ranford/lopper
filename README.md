@@ -71,6 +71,25 @@ docker run --rm ghcr.io/ben-ranford/lopper:latest --help
 docker run --rm -v "$PWD":/repo:ro -w /repo ghcr.io/ben-ranford/lopper:latest analyse --top 20 --repo . --language all
 ```
 
+## Verifying releases
+
+GitHub releases include `SHA256SUMS` for the archives and a keyless Cosign bundle, `SHA256SUMS.bundle`. The release workflow also publishes SLSA build provenance for those files and for the GHCR image. Replace `<tag>` with the release you downloaded.
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify "lopper_<tag>_linux_amd64.tar.gz" --repo ben-ranford/lopper
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity "https://github.com/ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  SHA256SUMS
+gh attestation verify "oci://ghcr.io/ben-ranford/lopper:<tag>" --repo ben-ranford/lopper
+```
+
+Rolling releases use the same checksum files. Their Cosign certificate identity is `https://github.com/ben-ranford/lopper/.github/workflows/rolling.yml@refs/heads/main`.
+
+The signed provenance keeps the workflow identity from GitHub's OIDC token and also records the release source commit that was built. When a release publishes `SHA256SUMS`, the GitHub Action verifies the archive and stops if that entry is missing or does not match. Releases published before this asset install with a warning. Set `checksum-strict: true` to make a missing checksum file fatal.
+
 ## Supported languages
 
 These adapter IDs are the `--language` values in `internal/cli/usage.go`. `--language auto` selects the highest-confidence adapter. `--language all` merges every matching adapter.

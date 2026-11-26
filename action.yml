@@ -11,6 +11,10 @@ inputs:
     description: Optional token used when resolving and downloading GitHub release assets.
     required: false
     default: ''
+  checksum-strict:
+    description: Fail installation when the selected release does not publish SHA256SUMS. A published checksum that omits the archive or does not match always fails the installation.
+    required: false
+    default: 'false'
   repo:
     description: Repository path to analyse.
     required: false
@@ -214,6 +218,7 @@ runs:
         LOPPER_VERSION: ${{ inputs.version }}
         LOPPER_ACTION_REF: ${{ github.action_ref }}
         LOPPER_GITHUB_TOKEN: ${{ inputs.github-token }}
+        LOPPER_CHECKSUM_STRICT: ${{ inputs.checksum-strict }}
       run: bash "$GITHUB_ACTION_PATH/scripts/github-action/install-lopper.sh"
 
     - name: Run Lopper analysis
