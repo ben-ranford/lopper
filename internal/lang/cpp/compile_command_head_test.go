@@ -83,6 +83,26 @@ func TestSplitCompileCommandPreservesPOSIXQuotes(t *testing.T) {
 			command: `c++ -DROOT="vendor\'" -Iinclude -c main.cpp`,
 			want:    []string{"c++", `-DROOT=vendor\'`, "-Iinclude", "-c", "main.cpp"},
 		},
+		{
+			name:    "escape before punctuation without quotes",
+			command: `c++ -Ivendor\+local -c main.cpp`,
+			want:    []string{"c++", "-Ivendor+local", "-c", "main.cpp"},
+		},
+		{
+			name:    "escaped dollar and backtick in double quotes",
+			command: "c++ -I\"vendor\\$data\\`cache\" -c main.cpp",
+			want:    []string{"c++", "-Ivendor$data`cache", "-c", "main.cpp"},
+		},
+		{
+			name:    "line continuation without quotes",
+			command: "c++ \\\n-Iven\\\ndor -c main.cpp",
+			want:    []string{"c++", "-Ivendor", "-c", "main.cpp"},
+		},
+		{
+			name:    "line continuation in double quotes",
+			command: "c++ -I\"ven\\\ndor include\" -c main.cpp",
+			want:    []string{"c++", "-Ivendor include", "-c", "main.cpp"},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
