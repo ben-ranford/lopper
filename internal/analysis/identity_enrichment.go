@@ -815,91 +815,7 @@ func confidenceRank(value string) int {
 }
 
 func packageURL(ecosystem, namespace, name, version string) string {
-	ecosystem = report.CanonicalPackageEcosystem(ecosystem)
-	namespace = strings.TrimSpace(namespace)
-	name = strings.TrimSpace(name)
-	version = strings.TrimSpace(version)
-	if ecosystem == "" || name == "" || version == "" {
-		return ""
-	}
-	namespace, name = normalizedPURLCoordinates(ecosystem, namespace, name)
-	if purl, ok := scopedNPMPackageURL(ecosystem, namespace, name, version); ok {
-		return purl
-	}
-	if namespace == "" {
-		return canonicalPackageURL(ecosystem, name, version)
-	}
-	return namespacedPackageURL(ecosystem, namespace, name, version)
-}
-
-func normalizedPURLCoordinates(ecosystem, namespace, name string) (string, string) {
-	if ecosystem == "composer" && namespace == "" {
-		vendor, packageName, ok := strings.Cut(name, "/")
-		if ok && vendor != "" && packageName != "" {
-			return vendor, packageName
-		}
-	}
-	if ecosystem == "golang" && namespace == "" {
-		return splitPURLNamespaceName(name)
-	}
-	return namespace, name
-}
-
-func scopedNPMPackageURL(ecosystem, namespace, name, version string) (string, bool) {
-	if ecosystem != "npm" || namespace != "" || !strings.HasPrefix(name, "@") {
-		return "", false
-	}
-	scope, pkg, ok := strings.Cut(name, "/")
-	if !ok || scope == "" || pkg == "" {
-		return "", false
-	}
-	return "pkg:npm/" + escapeNPMScopePURL(scope) + "/" + escapePURL(pkg) + "@" + escapePURL(version), true
-}
-
-func namespacedPackageURL(ecosystem, namespace, name, version string) string {
-	if ecosystem == "golang" {
-		return report.CanonicalPURL("pkg:" + escapePURL(ecosystem) + "/" + escapePURLPathSegments(namespace, name) + "@" + escapePURL(version))
-	}
-	return "pkg:" + escapePURL(ecosystem) + "/" + escapePURL(namespace) + "/" + escapePURL(name) + "@" + escapePURL(version)
-}
-
-func canonicalPackageURL(ecosystem, name, version string) string {
-	purl := "pkg:" + escapePURL(ecosystem) + "/" + escapePURL(name) + "@" + escapePURL(version)
-	if ecosystem == "golang" {
-		return report.CanonicalPURL(purl)
-	}
-	return purl
-}
-
-func splitPURLNamespaceName(name string) (string, string) {
-	name = strings.TrimSpace(name)
-	lastSlash := strings.LastIndexByte(name, '/')
-	if lastSlash <= 0 || lastSlash+1 >= len(name) {
-		return "", name
-	}
-	return name[:lastSlash], name[lastSlash+1:]
-}
-
-func escapePURLPathSegments(namespace, name string) string {
-	segments := make([]string, 0, strings.Count(namespace, "/")+1)
-	for _, segment := range strings.Split(strings.TrimSpace(namespace), "/") {
-		if segment == "" {
-			continue
-		}
-		segments = append(segments, escapePURL(segment))
-	}
-	if trimmedName := strings.TrimSpace(name); trimmedName != "" {
-		segments = append(segments, escapePURL(trimmedName))
-	}
-	return strings.Join(segments, "/")
-}
-
-func escapePURL(value string) string {
-	return strings.ReplaceAll(url.PathEscape(strings.TrimSpace(value)), "+", "%2B")
-}
-
-func escapeNPMScopePURL(value string) string {
-	return strings.ReplaceAll(escapePURL(value), "@", "%40")
+	return report.BuildCanonicalPURL(ecosystem, namespace, name, version)
 }
 
 func collectGoIdentityEvidence(repoPath string, index identityIndex) {
@@ -1704,24 +1620,10 @@ func parsePNPMAliasReference(value string) (string, string, bool) {
 		name = reference[:versionAt]
 		version = reference[versionAt+1:]
 	}
-	if !validPNPMAliasTarget(name) {
+	if !report.ValidNPMPackageName(name) {
 		return "", "", false
 	}
 	return name, version, true
-}
-
-func validPNPMAliasTarget(name string) bool {
-	if name == "" || strings.ContainsAny(name, " \t\r\n") {
-		return false
-	}
-	if !strings.HasPrefix(name, "@") {
-		return !strings.ContainsAny(name, "@/")
-	}
-	scope, packageName, ok := strings.Cut(name, "/")
-	if !ok || len(scope) <= 1 || packageName == "" {
-		return false
-	}
-	return !strings.Contains(scope[1:], "@") && !strings.ContainsAny(packageName, "@/")
 }
 
 func normalizePNPMLockVersion(version, name string) string {

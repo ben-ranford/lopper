@@ -2,6 +2,43 @@ package report
 
 import "testing"
 
+func TestBuildCanonicalPURL(t *testing.T) {
+	for _, testCase := range []struct {
+		ecosystem, namespace, name, version, want string
+	}{
+		{"npm", "", "@scope/package", "1.0.0", "pkg:npm/%40scope/package@1.0.0"},
+		{"npm", "@scope", "package", "1.0.0", "pkg:npm/%40scope/package@1.0.0"},
+		{"npm", "", "package", "release@stable", "pkg:npm/package@release%40stable"},
+		{"composer", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
+		{"packagist", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
+		{"maven", "org.example", "library", "1.0.0", "pkg:maven/org.example/library@1.0.0"},
+		{"golang", "", "example.com/acme/library", "v1.0.0", "pkg:golang/example.com/acme/library@v1.0.0"},
+		{"pypi", "", "My_Package.Name", "1.0.0", "pkg:pypi/my-package-name@1.0.0"},
+		{"npm", "", "", "1.0.0", ""},
+		{"npm", "", "@scope", "1.0.0", ""},
+		{"npm", "", "@scope/package/extra", "1.0.0", ""},
+		{"npm", "@scope", "package/extra", "1.0.0", ""},
+		{"npm", "", "package/extra", "1.0.0", ""},
+		{"npm", "", "@/package", "1.0.0", ""},
+		{"npm", "@", "package", "1.0.0", ""},
+		{"npm", "", "@scope/package@extra", "1.0.0", ""},
+		{"npm", "@scope", "package@extra", "1.0.0", ""},
+		{"npm", "@scope", "package extra", "1.0.0", ""},
+		{"npm", "scope", "package", "1.0.0", ""},
+		{"pypi", "namespace", "package", "1.0.0", ""},
+		{"composer", "", "acme", "1.0.0", ""},
+		{"invalid_type", "", "library", "1.0.0", ""},
+	} {
+		got := BuildCanonicalPURL(testCase.ecosystem, testCase.namespace, testCase.name, testCase.version)
+		if got != testCase.want {
+			t.Fatalf("BuildCanonicalPURL(%q, %q, %q, %q) = %q, want %q", testCase.ecosystem, testCase.namespace, testCase.name, testCase.version, got, testCase.want)
+		}
+		if got != "" && CanonicalPURL(got) != got {
+			t.Fatalf("BuildCanonicalPURL(%q, %q, %q, %q) did not produce a canonical PURL: %q", testCase.ecosystem, testCase.namespace, testCase.name, testCase.version, got)
+		}
+	}
+}
+
 type identityNormalizationStringCase struct {
 	name            string
 	input           string
