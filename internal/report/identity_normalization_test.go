@@ -8,6 +8,7 @@ func TestBuildCanonicalPURL(t *testing.T) {
 	}{
 		{"npm", "", "@scope/package", "1.0.0", "pkg:npm/%40scope/package@1.0.0"},
 		{"npm", "@scope", "package", "1.0.0", "pkg:npm/%40scope/package@1.0.0"},
+		{"npm", "", "package", "release@stable", "pkg:npm/package@release%40stable"},
 		{"composer", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
 		{"packagist", "", "acme/library", "1.0.0", "pkg:composer/acme/library@1.0.0"},
 		{"maven", "org.example", "library", "1.0.0", "pkg:maven/org.example/library@1.0.0"},
@@ -15,6 +16,9 @@ func TestBuildCanonicalPURL(t *testing.T) {
 		{"pypi", "", "My_Package.Name", "1.0.0", "pkg:pypi/my-package-name@1.0.0"},
 		{"npm", "", "", "1.0.0", ""},
 		{"npm", "", "@scope", "1.0.0", ""},
+		{"npm", "", "@scope/package/extra", "1.0.0", ""},
+		{"npm", "@scope", "package/extra", "1.0.0", ""},
+		{"npm", "", "package/extra", "1.0.0", ""},
 		{"npm", "scope", "package", "1.0.0", ""},
 		{"pypi", "namespace", "package", "1.0.0", ""},
 		{"composer", "", "acme", "1.0.0", ""},

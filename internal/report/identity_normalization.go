@@ -54,7 +54,7 @@ func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 	if path == "" {
 		return ""
 	}
-	purlType, path, parsedVersion, suffix, ok := splitCanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+	purlType, path, parsedVersion, suffix, ok := splitCanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegmentWithAtSign(version))
 	if !ok || parsedVersion == "" {
 		return ""
 	}
@@ -62,6 +62,9 @@ func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 }
 
 func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
+	if ecosystem == "npm" {
+		return buildCanonicalNPMPURLPath(namespace, name)
+	}
 	if namespace != "" {
 		return escapePURLPathWithNamespace(namespace, name)
 	}
@@ -76,20 +79,29 @@ func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
 		if lastSlash := strings.LastIndexByte(name, '/'); lastSlash > 0 && lastSlash+1 < len(name) {
 			return escapePURLPathWithNamespace(name[:lastSlash], name[lastSlash+1:])
 		}
-	case "npm":
-		if strings.HasPrefix(name, "@") {
-			return escapeScopedNPMPURLPath(name)
-		}
+	}
+	return escapePURLSegment(name)
+}
+
+func buildCanonicalNPMPURLPath(namespace, name string) string {
+	if namespace == "" && strings.HasPrefix(name, "@") {
+		return escapeScopedNPMPURLPath(name)
+	}
+	if strings.ContainsRune(name, '/') {
+		return ""
+	}
+	if namespace != "" {
+		return escapePURLPathWithNamespace(namespace, name)
 	}
 	return escapePURLSegment(name)
 }
 
 func escapeScopedNPMPURLPath(name string) string {
 	scope, packageName, ok := strings.Cut(name, "/")
-	if !ok || scope == "" || packageName == "" {
+	if !ok || scope == "" || packageName == "" || strings.ContainsRune(packageName, '/') {
 		return ""
 	}
-	return escapeNPMScopeSegment(scope) + "/" + escapePURLSegment(packageName)
+	return escapePURLSegmentWithAtSign(scope) + "/" + escapePURLSegment(packageName)
 }
 
 func escapePURLPathWithNamespace(namespace, name string) string {
@@ -220,7 +232,7 @@ func canonicalizePURLPath(purlType, path string) string {
 			return "/" + escapePURLSegment(segments[0])
 		}
 		if len(segments) == 2 && strings.HasPrefix(segments[0], "@") {
-			return "/" + escapeNPMScopeSegment(segments[0]) + "/" + escapePURLSegment(segments[1])
+			return "/" + escapePURLSegmentWithAtSign(segments[0]) + "/" + escapePURLSegment(segments[1])
 		}
 		return path
 	case "pypi":
@@ -246,7 +258,7 @@ func canonicalizePURLVersion(version string) string {
 	if err != nil {
 		return "@" + version
 	}
-	return "@" + escapePURLSegment(decoded)
+	return "@" + escapePURLSegmentWithAtSign(decoded)
 }
 
 func decodedPURLPathSegments(purlType, path string) ([]string, bool) {
@@ -348,6 +360,7 @@ func escapePURLSegment(value string) string {
 	return strings.ReplaceAll(url.PathEscape(strings.TrimSpace(value)), "+", "%2B")
 }
 
-func escapeNPMScopeSegment(value string) string {
+// escapePURLSegmentWithAtSign also encodes the delimiter in versions and npm scopes.
+func escapePURLSegmentWithAtSign(value string) string {
 	return strings.ReplaceAll(escapePURLSegment(value), "@", "%40")
 }
