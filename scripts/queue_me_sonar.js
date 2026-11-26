@@ -126,7 +126,14 @@ function normalizedRun(run, expected) {
   const started = timestamp(run.started_at);
   const completed = timestamp(run.completed_at);
   requireEvidence(completed >= started, 'the Sonar check timestamps are inconsistent.');
-  return { id: run.id, suiteId: run.check_suite.id, started, completed, conclusion: run.conclusion };
+  return {
+    id: run.id,
+    suiteId: run.check_suite.id,
+    started,
+    completed,
+    conclusion: run.conclusion,
+    emptyAssociation: emptyAssociation(run),
+  };
 }
 
 function latestSuccessfulRun(runs, expected, analyzed) {
@@ -162,8 +169,14 @@ function checkedSuite(suites, run, expected) {
   }
   associatedPull(selected.pull_requests, expected);
   requireEvidence(selected.conclusion === 'success', 'the current Sonar check suite did not succeed.');
-  requireEvidence(selectedCreated <= run.started && timestamp(selected.updated_at) >= run.completed,
-    'the Sonar suite timestamps are inconsistent.');
+  const selectedUpdated = timestamp(selected.updated_at);
+  const strictTiming = selectedCreated <= run.started && selectedUpdated >= run.completed;
+  if (!strictTiming) {
+    const lateForkPublication = expected.forkProof && run.emptyAssociation && emptyAssociation(selected);
+    requireEvidence(lateForkPublication, 'the Sonar suite timestamps are inconsistent.');
+    requireEvidence(selectedCreated >= run.completed && selectedUpdated >= selectedCreated,
+      'the late fork Sonar suite timestamps are inconsistent.');
+  }
   return { suiteId: selected.id, createdAt: selected.created_at, updatedAt: selected.updated_at };
 }
 
