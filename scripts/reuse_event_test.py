@@ -524,6 +524,57 @@ class EventTests(unittest.TestCase):
                 self.assertEqual(snapshot, SNAPSHOT)
                 self.assertEqual([data["state"] for _, data in api.posts], ["pending"])
 
+    def fork_ci_api(self):
+        api = FakeAPI()
+        merge = "c" * 40
+        reusable = ".github/workflows/ci-tests.yml"
+        run = api.responses[PREFIX + "/actions/runs/41"]
+        run["pull_requests"] = []
+        run["referenced_workflows"] = [
+            dict(path=f"{REPOSITORY}/{reusable}@{merge}", ref="refs/pull/12/merge", sha=merge)]
+        api.responses[CI_RUNS]["workflow_runs"] = [copy.deepcopy(run)]
+        api.responses[PREFIX + "/git/commits/" + merge] = dict(
+            sha=merge, parents=[dict(sha=BASE), dict(sha=HEAD)])
+        for path in (event.CI_WORKFLOW, reusable):
+            for revision in (BASE, HEAD, merge):
+                api.responses[f"{PREFIX}/contents/{path}?ref={revision}"] = dict(
+                    type="file", path=path, sha="d" * 40)
+        return api
+
+    def test_fork_ci_merge_reference_binds_wakeup_and_current_producer(self):
+        api = self.fork_ci_api()
+        payload = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=41))
+        self.assertEqual(event.prepare(api, payload, "workflow_run", REPOSITORY, 10, SIGNAL, OWNER), SNAPSHOT)
+        self.assertEqual(event.current_ci(api, SNAPSHOT)["id"], 41)
+        run = api.responses[PREFIX + "/actions/runs/41"]
+        run["conclusion"] = "cancelled"
+        api.responses[CI_RUNS]["workflow_runs"] = [copy.deepcopy(run)]
+        with self.assertRaisesRegex(event.EventError, "completed cancelled"):
+            event.current_ci(api, SNAPSHOT)
+
+    def test_fork_ci_rejects_wrong_merge_or_changed_workflow(self):
+        for scenario in ("wrong_ref", "wrong_head_repository", "ambiguous_reference",
+                         "stale_parent", "changed_head_workflow", "changed_merge_workflow",
+                         "malformed_association"):
+            api = self.fork_ci_api()
+            run = api.responses[PREFIX + "/actions/runs/41"]
+            merge = "c" * 40
+            if scenario == "wrong_ref":
+                run["referenced_workflows"][0]["ref"] = "refs/pull/13/merge"
+            elif scenario == "wrong_head_repository":
+                run["head_repository"]["id"] = 99
+            elif scenario == "ambiguous_reference":
+                run["referenced_workflows"] *= 2
+            elif scenario == "stale_parent":
+                api.responses[PREFIX + "/git/commits/" + merge]["parents"][0]["sha"] = "e" * 40
+            elif scenario == "malformed_association":
+                run["pull_requests"] = None
+            else:
+                revision = HEAD if scenario == "changed_head_workflow" else merge
+                api.responses[f"{PREFIX}/contents/{event.CI_WORKFLOW}?ref={revision}"]["sha"] = "e" * 40
+            with self.subTest(scenario=scenario), self.assertRaises(event.EventError):
+                event.current_ci(api, SNAPSHOT)
+
     def test_spoofed_ci_identity_never_changes_status(self):
         payload = dict(repository=dict(id=10), action="completed", workflow_run=dict(id=41))
         for field, value in (("workflow_id", 99), ("path", "attacker.yml"), ("name", "other"),
@@ -1108,6 +1159,14 @@ class InputBoundaryTests(unittest.TestCase):
                 request = opener.call_args.args[0]
                 self.assertEqual(request.full_url, "https://api.github.com" + path)
                 self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+
+    def test_api_workflow_contents_refs_are_immutable_and_path_scoped(self):
+        verified = f"{PREFIX}/contents/{event.CI_WORKFLOW}?ref={BASE}"
+        self.assertEqual(event.github_api_url(verified), "https://api.github.com" + verified)
+        for path in (verified.replace(BASE, "main"), verified + f"&ref={HEAD}",
+                     verified.replace(event.CI_WORKFLOW, "README.md")):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                event.github_api_url(path)
 
     def test_api_traversal_and_origin_changes_fail_before_network_access(self):
         api = event.GitHub("test-token")

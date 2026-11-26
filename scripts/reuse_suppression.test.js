@@ -90,6 +90,26 @@ test('binds the adapter to the exact run attempt and locator, then rechecks both
   assert.equal(fixture.calls.filter((call) => call.method === 'runs').length, 2);
 });
 
+test('binds a fork producer with empty associations using its recorded merge source', async () => {
+  const fixture = harness();
+  const merge = 'c'.repeat(40);
+  Object.assign(fixture.run, { pull_requests: [], referenced_workflows: [{
+    ref: 'refs/pull/56/merge', path: `owner/repo/.github/workflows/ci-tests.yml@${merge}`, sha: merge,
+  }] });
+  fixture.runs = [{ ...fixture.run, referenced_workflows: undefined }];
+  const { rest } = fixture.arguments.github;
+  rest.git.getCommit = async (input) => {
+    assert.deepEqual(input, { ...REPO, commit_sha: merge });
+    return { data: { sha: merge, parents: [{ sha: BASE }, { sha: HEAD }] } };
+  };
+  rest.repos.getContent = async ({ path }) => ({ data: { type: 'file', path, sha: 'd'.repeat(40) } });
+  assert.deepEqual(await fixture.verify(), receipt());
+
+  fixture.run.referenced_workflows[0].ref = 'refs/pull/57/merge';
+  await assert.rejects(fixture.verify(), /Reuse suppression:/);
+  assert.equal(fixture.adapterCalls.length, 1);
+});
+
 test('chooses the newest run regardless of API order without an older-green fallback', async () => {
   const fixture = harness();
   fixture.runs = [makeRun(99), fixture.run, makeRun(98)];
