@@ -377,31 +377,12 @@ func writeTargets(node ast.Node) []ast.Expr {
 }
 
 func nestedScope(node ast.Node, parent *nameScope) (*nameScope, bool) {
-	switch typed := node.(type) {
-	case *ast.BlockStmt, *ast.FuncLit, *ast.CaseClause, *ast.CommClause:
+	switch node.(type) {
+	case *ast.BlockStmt, *ast.FuncLit, *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt,
+		*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.CaseClause, *ast.CommClause:
 		return newNameScope(parent), true
-	case *ast.IfStmt:
-		return scopeForDefine(typed.Init, parent)
-	case *ast.ForStmt:
-		return scopeForDefine(typed.Init, parent)
-	case *ast.SwitchStmt:
-		return scopeForDefine(typed.Init, parent)
-	case *ast.TypeSwitchStmt:
-		return scopeForDefine(typed.Assign, parent)
-	case *ast.RangeStmt:
-		if typed.Tok == token.DEFINE {
-			return newNameScope(parent), true
-		}
 	}
 	return parent, false
-}
-
-func scopeForDefine(stmt ast.Stmt, parent *nameScope) (*nameScope, bool) {
-	assign, ok := stmt.(*ast.AssignStmt)
-	if !ok || assign.Tok != token.DEFINE {
-		return parent, false
-	}
-	return newNameScope(parent), true
 }
 
 func (f *walkFrame) finishChild(child ast.Node, scope *nameScope) {

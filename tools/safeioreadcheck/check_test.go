@@ -349,6 +349,15 @@ func scopedSwitch(path string, first bool) {
 	}
 }
 
+func scopedTypeSwitch(path string, value any) {
+	limit := zeroLimit
+	switch limit := packageLimit; value.(type) {
+	default:
+		_, _ = safeio.ReadRegularFileLimit(path, limit)
+	}
+	_, _ = safeio.ReadRegularFileLimit(path, limit)
+}
+
 func scopedSelect(path string, ready <-chan struct{}) {
 	limit := zeroLimit
 	select {
@@ -410,6 +419,7 @@ func updatedLimit(path string, next int64, values []int64) {
 		"local.go\tshortInitializer\tsafeio.ReadFileLimit\t1",
 		"local.go\tdefaultVarLimit\tsafeio.ReadFileLimit\t1",
 		"local.go\tscopedSwitch\tsafeio.ReadRegularFileLimit\t1",
+		"local.go\tscopedTypeSwitch\tsafeio.ReadRegularFileLimit\t1",
 		"local.go\tscopedSelect\tsafeio.ReadRegularFileLimit\t1",
 		"local.go\tloopBound\tsafeio.ReadFileLimit\t1",
 	}
