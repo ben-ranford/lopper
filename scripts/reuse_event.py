@@ -54,6 +54,8 @@ RESULT_KEYS = frozenset(("version", "snapshot", "candidate", "detector_exit", "p
 SUPPRESSION_KEYS = frozenset(("version", "policySHA", "headSHA", "baseSHA", "runId", "runAttempt", "artifactId", "suppressionCount"))
 DEFERRED_KEYS = frozenset(("version", "snapshot", "reason", "runId", "runAttempt"))
 CI_WORKFLOW = ".github/workflows/ci.yml"
+CI_REUSABLE_WORKFLOW = ".github/workflows/ci-tests.yml"
+CI_WORKFLOW_PATHS = (CI_WORKFLOW, CI_REUSABLE_WORKFLOW)
 CI_NONTERMINAL = frozenset(("queued", "in_progress", "waiting", "pending", "requested"))
 CI_BLOCKED = ("failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure")
 CONTEXT = "reuse-check"
@@ -115,13 +117,19 @@ def api_segments(segments):
     return [urllib.parse.quote(segment, safe="") for segment in decoded]
 
 
-def api_query(raw):
+def api_query(raw, endpoint):
     if not raw:
         return ""
     try:
         query = urllib.parse.parse_qs(raw, keep_blank_values=True, strict_parsing=True)
     except ValueError as error:
         raise EventError("Malformed GitHub API query") from error
+    if set(query) == {"ref"}:
+        if ("/".join(endpoint) not in {f"contents/{path}" for path in CI_WORKFLOW_PATHS}
+                or len(query["ref"]) != 1):
+            raise EventError("Immutable ref requires a fixed CI workflow contents endpoint")
+        policy.immutable_sha(query["ref"][0])
+        return urllib.parse.urlencode(query, doseq=True)
     if (set(query) not in ({"per_page", "page"}, {"per_page", "page", "head_sha", "event"})
             or query["per_page"] != ["100"]
             or len(query["page"]) != 1
@@ -148,7 +156,7 @@ def github_api_url(path):
     except ValueError as error:
         raise EventError("Invalid API repository") from error
     normalized = "/" + "/".join(api_segments(segments[1:]))
-    query = api_query(parsed.query)
+    query = api_query(parsed.query, segments[4:])
     if "head_sha=" in query and segments[4:] != ["actions", "workflows", "ci.yml", "runs"]:
         raise EventError("CI run filters require the fixed CI workflow endpoint")
     return urllib.parse.urlunsplit(("https", "api.github.com", normalized, query, ""))
@@ -441,10 +449,56 @@ def validate_ci_identity(run, workflow, repository_id):
     policy.immutable_sha(run["head_sha"])
 
 
-def exact_ci_association(run, snapshot):
+def fork_ci_reference(run, repository, repository_id):
+    references = run.get("referenced_workflows")
+    if (run["head_repository"]["id"] == repository_id
+            or not isinstance(references, list) or len(references) != 1
+            or not isinstance(references[0], dict)):
+        raise EventError("CI producer has no unique pull request association")
+    reference = references[0]
+    ref = reference.get("ref")
+    match = re.fullmatch(r"refs/pull/([1-9][0-9]{0,15})/merge", ref) if isinstance(ref, str) else None
+    if not match:
+        raise EventError("CI reusable workflow is not bound to a pull request merge ref")
+    merge = policy.immutable_sha(reference.get("sha"))
+    if reference.get("path") != f"{repository}/{CI_REUSABLE_WORKFLOW}@{merge}":
+        raise EventError("CI reusable workflow does not match its immutable source")
+    return int(match[1]), merge
+
+
+def ci_workflow_blob(api, repository, path, revision):
+    document = api.request(f"/repos/{repository}/contents/{path}?ref={revision}")
+    if document["type"] != "file" or document["path"] != path:
+        raise EventError("Missing immutable CI workflow source")
+    return policy.immutable_sha(document["sha"])
+
+
+def exact_fork_ci_association(api, run, snapshot):
+    repository = snapshot["repository"]
+    pull_number, merge = fork_ci_reference(run, repository, snapshot["repository_id"])
+    if (pull_number != snapshot["pull_number"] or run["head_sha"] != snapshot["head"]
+            or run["head_repository"]["id"] != snapshot["head_repository_id"]):
+        raise EventError("CI producer association does not match the exact current pull request")
+    commit = api.request(f"/repos/{repository}/git/commits/{merge}")
+    parents = commit["parents"]
+    if (commit["sha"] != merge or not isinstance(parents, list) or len(parents) != 2
+            or [parent["sha"] for parent in parents] != [snapshot["base"], snapshot["head"]]):
+        raise EventError("CI merge commit does not have the exact base and head parents")
+    # The GitHub-recorded reference must come from the protected local workflow call.
+    # Check both the fork head and the actual merge tree against protected policy.
+    for path in CI_WORKFLOW_PATHS:
+        trusted = ci_workflow_blob(api, repository, path, snapshot["policy_source"])
+        for revision in (snapshot["head"], merge):
+            if ci_workflow_blob(api, repository, path, revision) != trusted:
+                raise EventError(f"CI workflow source {path} differs from protected policy")
+
+
+def exact_ci_association(api, run, snapshot):
     associations = run["pull_requests"]
     if not isinstance(associations, list):
         raise EventError("Malformed CI pull request associations")
+    if not associations:
+        return exact_fork_ci_association(api, run, snapshot)
     matches = [pull for pull in associations if pull["number"] == snapshot["pull_number"]]
     if len(matches) != 1:
         raise EventError("CI producer has no unique pull request association")
@@ -478,11 +532,14 @@ def ci_pull_number(api, event, repository, identifier):
 
 def resolve_ci_pull(api, run, repository, identifier):
     associations = run["pull_requests"]
-    if not isinstance(associations, list) or len(associations) != 1:
+    if not isinstance(associations, list) or len(associations) > 1:
         raise EventError("CI wakeup has no unambiguous pull request association")
-    pull_number = number(associations[0]["number"])
+    if associations:
+        pull_number = number(associations[0]["number"])
+    else:
+        pull_number, _ = fork_ci_reference(run, repository, identifier)
     snapshot = pull_snapshot(api, repository, identifier, pull_number)
-    exact_ci_association(run, snapshot)
+    exact_ci_association(api, run, snapshot)
     return pull_number
 
 
@@ -888,7 +945,7 @@ def current_ci(api, snapshot, expected=None, *, allow_registration=False, comple
             raise EventError("Previously observed CI producer disappeared")
         raise CIDeferred("Waiting for CI registration for the current pull request")
     validate_ci_identity(run, workflow, snapshot["repository_id"])
-    exact_ci_association(run, snapshot)
+    exact_ci_association(api, run, snapshot)
     epoch = (run["id"], run["run_attempt"])
     if expected is not None and epoch < expected:
         raise EventError("Current CI producer regressed behind the bound proof")
