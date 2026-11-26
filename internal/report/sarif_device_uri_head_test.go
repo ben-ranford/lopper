@@ -2,7 +2,7 @@ package report
 
 import "testing"
 
-func TestSARIFArtifactURINormalizesWindowsDevicePaths(t *testing.T) {
+func TestSARIFArtifactURIPreservesWindowsAndLocalPathForms(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
@@ -13,6 +13,10 @@ func TestSARIFArtifactURINormalizesWindowsDevicePaths(t *testing.T) {
 		{name: "extended unc", path: `\\?\UNC\server\share\source.go`, want: "file://server/share/source.go"},
 		{name: "device unc", path: `\\.\UNC\server\share\source.go`, want: "file://server/share/source.go"},
 		{name: "device namespace", path: `\\.\PhysicalDrive0`, want: ""},
+		{name: "bare UNC share", path: `\\server\share`, want: "file://server/share"},
+		{name: "UNC share with separator", path: `\\server\share\`, want: "file://server/share"},
+		{name: "POSIX double slash", path: "//workspace/src/source.go", want: "file:///workspace/src/source.go"},
+		{name: "POSIX dot path", path: "//./workspace/source.go", want: "file:///workspace/source.go"},
 	}
 
 	for _, test := range tests {

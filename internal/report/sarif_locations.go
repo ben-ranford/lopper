@@ -122,15 +122,17 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 }
 
 func toSARIFArtifactURI(file string) string {
+	// A leading pair of forward slashes can be a local absolute path.
+	windowsPrefix := strings.HasPrefix(file, `\\`)
 	file = strings.ReplaceAll(file, "\\", "/")
-	if normalized, devicePath := normalizeWindowsDevicePath(file); devicePath {
-		if normalized == "" {
+	if windowsPrefix {
+		file = normalizeWindowsDevicePath(file)
+		if file == "" {
 			return ""
 		}
-		file = normalized
-	}
-	if isUNCPath(file) {
-		return fileURLFromUNCPath(file)
+		if isUNCPath(file) {
+			return fileURLFromUNCPath(file)
+		}
 	}
 	file = path.Clean(file)
 	if isWindowsDriveAbsolutePath(file) || path.IsAbs(file) {
@@ -144,7 +146,7 @@ func toSARIFArtifactURI(file string) string {
 	return (&url.URL{Path: file}).String()
 }
 
-func normalizeWindowsDevicePath(pathValue string) (string, bool) {
+func normalizeWindowsDevicePath(pathValue string) string {
 	var devicePath string
 	switch {
 	case strings.HasPrefix(pathValue, "//?/"):
@@ -152,16 +154,16 @@ func normalizeWindowsDevicePath(pathValue string) (string, bool) {
 	case strings.HasPrefix(pathValue, "//./"):
 		devicePath = strings.TrimPrefix(pathValue, "//./")
 	default:
-		return pathValue, false
+		return pathValue
 	}
 
 	if len(devicePath) >= len("UNC/") && strings.EqualFold(devicePath[:len("UNC/")], "UNC/") {
-		return "//" + devicePath[len("UNC/"):], true
+		return "//" + devicePath[len("UNC/"):]
 	}
 	if isWindowsDriveAbsolutePath(devicePath) {
-		return devicePath, true
+		return devicePath
 	}
-	return "", true
+	return ""
 }
 
 func isUNCPath(pathValue string) bool {
@@ -179,6 +181,9 @@ func fileURLFromUNCPath(pathValue string) string {
 		return ""
 	}
 	cleanedPath := path.Clean("/" + relativePath)
+	if cleanedPath == "/" {
+		cleanedPath = ""
+	}
 	return (&url.URL{
 		Scheme: "file",
 		Host:   host,
