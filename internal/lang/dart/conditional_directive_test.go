@@ -161,6 +161,10 @@ func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T)
 			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/show Client.dart';`,
 			want:      []string{"*"},
 		},
+		"unicode escape in a fallback uri": {
+			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/mobile\u0020platform.dart' as platform;`,
+			want:      []string{"platform"},
+		},
 		"show after the branch": {
 			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' show Client, Request;`,
 			want:      []string{"Client", "Request"},
