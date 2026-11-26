@@ -122,7 +122,7 @@ func toSARIFLocation(location Location) (sarifLocation, bool) {
 }
 
 func toSARIFArtifactURI(file string) string {
-	// A leading pair of forward slashes can be a local absolute path.
+	// Check for two leading backslashes before normalizing separators.
 	windowsPrefix := strings.HasPrefix(file, `\\`)
 	file = strings.ReplaceAll(file, "\\", "/")
 	if windowsPrefix {
