@@ -223,18 +223,18 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 		}
 		start := offset
 		offset += len(directive) + 1
-		kind, module, clause, conditional, ok := parseImportDirectiveWithCondition(directive)
+		parsed, ok := parseDartDirective(directive)
 		if !ok {
 			continue
 		}
-		if conditional {
+		if parsed.conditionalEnd > 0 {
 			if len(usageContent) == 0 {
 				usageContent = bytes.Clone(content)
 			}
-			maskConditionalDirective(usageContent[start : offset-1])
+			maskConditionalDirective(usageContent[start+parsed.conditionalStart : start+parsed.conditionalEnd])
 		}
 
-		dependency := resolveDependencyFromModuleWithOptions(module, depLookup, unresolved, includeLocalPathImports)
+		dependency := resolveDependencyFromModuleWithOptions(parsed.module, depLookup, unresolved, includeLocalPathImports)
 		if dependency == "" {
 			continue
 		}
@@ -243,7 +243,7 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 			Line:   directiveLine + 1,
 			Column: shared.FirstContentColumn(lines[directiveLine]),
 		}
-		bindings := buildDirectiveBindings(kind, module, clause, dependency, location)
+		bindings := buildDirectiveBindings(parsed.kind, parsed.module, parsed.clause, dependency, location)
 		imports = append(imports, locateDirectiveBindings(lines[directiveLine:lineIndex], bindings)...)
 	}
 	if len(usageContent) == 0 {
@@ -529,23 +529,35 @@ func isDirectiveContinuationLine(line string) bool {
 }
 
 func parseImportDirective(line string) (string, string, string, bool) {
-	kind, module, clause, _, ok := parseImportDirectiveWithCondition(line)
-	return kind, module, clause, ok
+	parsed, ok := parseDartDirective(line)
+	return parsed.kind, parsed.module, parsed.clause, ok
 }
 
-func parseImportDirectiveWithCondition(line string) (string, string, string, bool, bool) {
-	match := directivePattern.FindStringSubmatch(line)
-	if len(match) != 4 {
-		return "", "", "", false, false
+type parsedDartDirective struct {
+	kind, module, clause             string
+	conditionalStart, conditionalEnd int
+}
+
+func parseDartDirective(line string) (parsedDartDirective, bool) {
+	match := directivePattern.FindStringSubmatchIndex(line)
+	if len(match) != 8 {
+		return parsedDartDirective{}, false
 	}
-	kind := strings.TrimSpace(strings.ToLower(match[1]))
-	module := strings.TrimSpace(match[2])
-	clause := strings.TrimSpace(match[3])
-	conditional, ok := classifyDirectiveClause(clause)
+	parsed := parsedDartDirective{
+		kind:   strings.TrimSpace(strings.ToLower(line[match[2]:match[3]])),
+		module: strings.TrimSpace(line[match[4]:match[5]]),
+		clause: strings.TrimSpace(line[match[6]:match[7]]),
+	}
+	conditional, ok := classifyDirectiveClause(parsed.clause)
 	if !ok {
-		return "", "", "", false, false
+		return parsedDartDirective{}, false
 	}
-	return kind, module, clause, conditional, true
+	if conditional {
+		// The captures start at the keyword and end immediately before the terminator.
+		parsed.conditionalStart = match[2]
+		parsed.conditionalEnd = match[7] + 1
+	}
+	return parsed, true
 }
 
 func classifyDirectiveClause(clause string) (conditional, valid bool) {

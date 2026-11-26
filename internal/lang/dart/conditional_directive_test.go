@@ -166,6 +166,49 @@ func TestDartConditionalRawValueKeepsAliasLocation(t *testing.T) {
 	}
 }
 
+func TestDartConditionalMaskPreservesSurroundingComments(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{
+			name: "block comment before import",
+			source: `import 'package:http/http.dart' as io;
+/* Select a platform implementation.
+*/ import 'src/default.dart' if (dart.library.io) 'src/io.dart';
+void main() { io.Client(); }
+`,
+			want: 1,
+		},
+		{
+			name: "block comment after terminator",
+			source: `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' as io; /*
+    io.Client();
+*/
+void main() {}
+`,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			sourcePath := filepath.Join(repo, mainDartFileName)
+			writeFile(t, sourcePath, testCase.source)
+			var result scanResult
+			if err := scanDartSourceFile(repo, sourcePath, map[string]dependencyInfo{"http": {}}, &result); err != nil {
+				t.Fatalf("scan conditional Dart source: %v", err)
+			}
+			if len(result.Files) != 1 || len(result.Files[0].Imports) != 1 || result.Files[0].Imports[0].Local != "io" {
+				t.Fatalf("expected one io alias, got %#v", result.Files)
+			}
+			if got := result.Files[0].Usage["io"]; got != testCase.want {
+				t.Fatalf("alias uses = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T) {
 	testCases := map[string]struct {
 		directive string
