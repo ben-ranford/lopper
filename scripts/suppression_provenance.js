@@ -12,6 +12,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const WORKFLOW_PATH = '.github/workflows/ci.yml';
+const REUSABLE_WORKFLOW_PATH = '.github/workflows/ci-tests.yml';
+const SHA = /^[a-f0-9]{40}$/;
 const DETECTOR_PATH = 'scripts/inline_suppression_tracker.js';
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
@@ -123,7 +125,31 @@ function assertPull(pull, expected) {
   requireCondition(typeof pull.base.ref === 'string' && pull.base.ref.length > 0, 'missing pull request base ref');
 }
 
-function assertRun(run, workflow, expected, livePull) {
+async function assertForkProducer(github, repo, run, expected) {
+  const references = run.referenced_workflows;
+  const reference = Array.isArray(references) && references.length === 1 ? references[0] : undefined;
+  const merge = reference?.sha;
+  requireCondition(expected.headRepoId !== expected.repoId && typeof merge === 'string' && SHA.test(merge) &&
+    reference.ref === `refs/pull/${expected.pullNumber}/merge` &&
+    reference.path === `${repo.owner}/${repo.repo}/${REUSABLE_WORKFLOW_PATH}@${merge}`,
+  'producer has no exact pull request association');
+  const { data: commit } = await github.rest.git.getCommit({ ...repo, commit_sha: merge });
+  requireCondition(commit?.sha === merge && Array.isArray(commit.parents) && commit.parents.length === 2 &&
+    commit.parents[0]?.sha === expected.baseSHA && commit.parents[1]?.sha === expected.headSHA,
+  'producer merge commit does not have the exact base and head parents');
+  async function blob(path, ref) {
+    const { data } = await github.rest.repos.getContent({ ...repo, path, ref });
+    requireCondition(data?.type === 'file' && data.path === path && typeof data.sha === 'string' && SHA.test(data.sha),
+      'missing immutable CI workflow source');
+    return data.sha;
+  }
+  await Promise.all([WORKFLOW_PATH, REUSABLE_WORKFLOW_PATH].map(async (path) => {
+    const [trusted, head, merged] = await Promise.all([expected.policySHA, expected.headSHA, merge].map((ref) => blob(path, ref)));
+    requireCondition(trusted === head && trusted === merged, `CI workflow source ${path} differs from protected policy`);
+  }));
+}
+
+async function assertRun(github, repo, run, workflow, expected, livePull) {
   requireCondition(workflow?.path === WORKFLOW_PATH && workflow.name === 'ci' && positiveID(workflow.id), 'unexpected CI workflow identity');
   requireCondition(run?.id === expected.runId && run.workflow_id === workflow.id && run.path === WORKFLOW_PATH && run.name === 'ci', 'producer workflow mismatch');
   requireCondition(run.event === 'pull_request' && run.head_sha === expected.headSHA, 'producer event or head mismatch');
@@ -131,11 +157,15 @@ function assertRun(run, workflow, expected, livePull) {
   requireCondition(run.repository?.id === expected.repoId && run.head_repository?.id === expected.headRepoId, 'producer repository mismatch');
   const pulls = run.pull_requests;
   requireCondition(Array.isArray(pulls), 'producer has no exact pull request association');
-  const matches = pulls.filter((pull) => pull?.number === expected.pullNumber);
-  const pull = matches[0];
-  requireCondition(matches.length === 1 && pull.head?.sha === expected.headSHA && pull.base?.sha === expected.baseSHA &&
-    pull.base?.ref === livePull.base.ref && pull.head?.repo?.id === expected.headRepoId &&
-    pull.base?.repo?.id === expected.repoId, 'producer has no exact pull request association');
+  if (pulls.length === 0) {
+    await assertForkProducer(github, repo, run, expected);
+  } else {
+    const matches = pulls.filter((pull) => pull?.number === expected.pullNumber);
+    const pull = matches[0];
+    requireCondition(matches.length === 1 && pull.head?.sha === expected.headSHA && pull.base?.sha === expected.baseSHA &&
+      pull.base?.ref === livePull.base.ref && pull.head?.repo?.id === expected.headRepoId &&
+      pull.base?.repo?.id === expected.repoId, 'producer has no exact pull request association');
+  }
   const pending = NONTERMINAL.has(run.status) && run.conclusion === null;
   requireCondition(pending || (run.status === 'completed' && run.conclusion === 'success'), 'producer is not a successful completed pull_request run');
   requireCondition(!pending || run.run_attempt > expected.runAttempt, 'successful producer became nonterminal without a new attempt');
@@ -234,7 +264,7 @@ async function verifySuppressionProvenance({ github, context, expected: supplied
     github.rest.actions.getArtifact({ ...repo, artifact_id: artifactId }),
   ]);
   assertPull(pull.data, expected);
-  const deferred = assertRun(run.data, workflow.data, expected, pull.data);
+  const deferred = await assertRun(github, repo, run.data, workflow.data, expected, pull.data);
   // A changed generation cannot authenticate an old artifact's attempt window.
   // Its identity, bytes and report must still be valid before a typed deferral;
   // an archive failure must never be hidden by concurrent CI progress.
@@ -248,10 +278,11 @@ async function verifySuppressionProvenance({ github, context, expected: supplied
     github.rest.actions.getWorkflowRun({ ...repo, run_id: expected.runId }),
   ]);
   assertPull(currentPull.data, expected);
-  const currentDeferred = assertRun(currentRun.data, workflow.data, expected, currentPull.data);
+  const currentDeferred = await assertRun(github, repo, currentRun.data, workflow.data, expected, currentPull.data);
   if (currentDeferred) throw currentDeferred;
   return { version: 2, policySHA: expected.policySHA, headSHA: expected.headSHA, baseSHA: expected.baseSHA, runId: expected.runId, runAttempt: expected.runAttempt, artifactId, suppressionCount: 0 };
 }
 
 module.exports = verifySuppressionProvenance;
 module.exports.isDeferred = (error) => error instanceof ProducerDeferred;
+module.exports.assertForkProducer = assertForkProducer;

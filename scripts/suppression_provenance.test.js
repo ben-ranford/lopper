@@ -144,6 +144,35 @@ function harness(options = {}) {
     args: { github, context, expected, artifactId: 55, archive } };
 }
 
+test('checks the fork merge source during initial verification and the final reread', async () => {
+  const fixture = harness();
+  const merge = 'c'.repeat(40);
+  const reusable = '.github/workflows/ci-tests.yml';
+  Object.assign(fixture.run, { pull_requests: [], referenced_workflows: [{
+    ref: 'refs/pull/1750/merge', path: `owner/lopper/${reusable}@${merge}`, sha: merge,
+  }] });
+  const { rest } = fixture.args.github;
+  let mergeReads = 0;
+  rest.git.getCommit = async ({ commit_sha: sha }) => {
+    assert.equal(sha, merge);
+    mergeReads++;
+    return { data: { sha, parents: [{ sha: BASE }, { sha: HEAD }] } };
+  };
+  const getContent = rest.repos.getContent;
+  let changeOnReread = false;
+  rest.repos.getContent = async (input) => {
+    if (!input.path.startsWith('.github/workflows/')) return getContent(input);
+    const changed = changeOnReread && mergeReads === 4 && input.path === reusable && input.ref === merge;
+    return { data: { type: 'file', path: input.path, sha: (changed ? 'e' : 'd').repeat(40) } };
+  };
+  assert.equal((await verifySuppressionProvenance(fixture.args)).artifactId, 55);
+  assert.equal(mergeReads, 2);
+  changeOnReread = true;
+  await assert.rejects(verifySuppressionProvenance(fixture.args), /differs from protected policy/);
+  assert.equal(mergeReads, 4);
+});
+
+
 test('accepts late production on the exact completed attempt and recomputes with the real base detector', async () => {
   const fixture = harness();
   assert.deepEqual(await verifySuppressionProvenance(fixture.args), {
