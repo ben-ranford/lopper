@@ -2,12 +2,15 @@ package rust
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+const incompleteTopRustDependenciesWarning = "top-N removal ranking disabled because Rust use-statement coverage is incomplete"
 
 func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]report.DependencyReport, []string) {
 	minUsageThreshold := resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations)
@@ -27,6 +30,13 @@ func buildRequestedRustDependencies(req language.Request, scan scanResult) ([]re
 func buildTopRustDependencies(topN int, scan scanResult, minUsageThreshold int, weights report.RemovalCandidateWeights) ([]report.DependencyReport, []string) {
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	dependencies := shared.ListDependencies(fileUsages, normalizeDependencyID)
+	if len(dependencies) > 0 && rustUseStatementCoverageIncomplete(scan) {
+		reports := make([]report.DependencyReport, 0, len(dependencies))
+		for _, dependency := range dependencies {
+			reports = append(reports, buildDependencyReport(dependency, scan, minUsageThreshold))
+		}
+		return reports, []string{incompleteTopRustDependenciesWarning}
+	}
 	reportBuilder := func(dependency string) (report.DependencyReport, []string) {
 		return buildDependencyReport(dependency, scan, minUsageThreshold), nil
 	}
@@ -37,13 +47,22 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	fileUsages := shared.MapFileUsages(scan.Files, func(file fileScan) []shared.ImportRecord { return file.Imports }, func(file fileScan) map[string]int { return file.Usage })
 	stats := shared.BuildDependencyStats(dependency, fileUsages, normalizeDependencyID)
 	dep := shared.BuildDependencyReportFromStats(dependency, "rust", stats)
+	dep.UsageIncomplete = rustUseStatementCoverageIncomplete(scan)
+	if dep.UsageIncomplete {
+		dep.SuppressedUnusedImports = dep.UnusedImports
+		dep.UnusedImports = nil
+		dep.UsedExportsCount = 0
+		dep.TotalExportsCount = 0
+		dep.UsedPercent = 0
+	}
+	lowUsage := dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold)
 	if stats.WildcardImports > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "broad-imports",
 			Severity: "medium",
 			Message:  "found broad wildcard imports; prefer narrower symbol imports",
 		})
-		if dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+		if lowUsage {
 			dep.Recommendations = append(dep.Recommendations, report.Recommendation{
 				Code:      "prefer-explicit-imports",
 				Priority:  "medium",
@@ -72,7 +91,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 			Message:  "macro-heavy usage may reduce static import attribution precision",
 		})
 	}
-	if dep.TotalExportsCount > 0 && dep.UsedPercent > 0 && dep.UsedPercent < float64(minUsageThreshold) {
+	if dep.TotalExportsCount > 0 && lowUsage {
 		dep.Recommendations = append(dep.Recommendations, report.Recommendation{
 			Code:      "reduce-rust-surface-area",
 			Priority:  "low",
@@ -91,6 +110,12 @@ func buildDependencyReport(dependency string, scan scanResult, minUsageThreshold
 	shared.SortRiskCues(dep.RiskCues)
 	shared.SortRecommendations(dep.Recommendations, report.RecommendationPriorityRank)
 	return dep
+}
+
+func rustUseStatementCoverageIncomplete(scan scanResult) bool {
+	return slices.ContainsFunc(scan.CoverageGaps, func(gap report.CoverageGap) bool {
+		return gap.Code == report.CoverageGapRustUseStatementLimit
+	})
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
