@@ -1,6 +1,7 @@
 package dart
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -193,33 +194,44 @@ func scanDartSourceFileWithOptions(repoPath, path string, depLookup map[string]d
 	if relative, relErr := filepath.Rel(repoPath, path); relErr == nil && strings.TrimSpace(relative) != "" {
 		relativePath = relative
 	}
-	imports := parseDartImportsWithOptions(content, relativePath, depLookup, result.UnresolvedImports, includeLocalPathImports)
+	imports, usageContent := parseDartImportsWithOptions(content, relativePath, depLookup, result.UnresolvedImports, includeLocalPathImports)
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
 		Imports: imports,
-		Usage:   shared.CountUsage(content, imports),
+		Usage:   shared.CountUsage(usageContent, imports),
 	})
 	return nil
 }
 
 func parseDartImports(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int) []importBinding {
-	return parseDartImportsWithOptions(content, filePath, depLookup, unresolved, false)
+	imports, _ := parseDartImportsWithOptions(content, filePath, depLookup, unresolved, false)
+	return imports
 }
 
-func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int, includeLocalPathImports bool) []importBinding {
-	lines := strings.Split(string(content), "\n")
-	lines = stripBlockCommentLines(lines)
+func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[string]dependencyInfo, unresolved map[string]int, includeLocalPathImports bool) ([]importBinding, []byte) {
+	lines := stripBlockCommentLines(strings.Split(string(content), "\n"))
 	imports := make([]importBinding, 0)
-	for i := 0; i < len(lines); i++ {
-		directive, consumed, ok := collectDirective(lines[i:])
+	var usageContent []byte
+	offset := 0
+	for lineIndex := 0; lineIndex < len(lines); {
+		directive, consumed, ok := collectDirective(lines[lineIndex:])
+		directiveLine := lineIndex
+		lineIndex += consumed
+		if !ok {
+			offset += len(lines[directiveLine]) + 1
+			continue
+		}
+		start := offset
+		offset += len(directive) + 1
+		kind, module, clause, conditional, ok := parseImportDirectiveWithCondition(directive)
 		if !ok {
 			continue
 		}
-		lineIndex := i
-		i += consumed - 1
-		kind, module, clause, ok := parseImportDirective(directive)
-		if !ok {
-			continue
+		if conditional {
+			if len(usageContent) == 0 {
+				usageContent = bytes.Clone(content)
+			}
+			maskConditionalDirective(usageContent[start : offset-1])
 		}
 
 		dependency := resolveDependencyFromModuleWithOptions(module, depLookup, unresolved, includeLocalPathImports)
@@ -228,13 +240,25 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 		}
 		location := report.Location{
 			File:   filePath,
-			Line:   lineIndex + 1,
-			Column: shared.FirstContentColumn(lines[lineIndex]),
+			Line:   directiveLine + 1,
+			Column: shared.FirstContentColumn(lines[directiveLine]),
 		}
 		bindings := buildDirectiveBindings(kind, module, clause, dependency, location)
-		imports = append(imports, locateDirectiveBindings(lines[lineIndex:lineIndex+consumed], bindings)...)
+		imports = append(imports, locateDirectiveBindings(lines[directiveLine:lineIndex], bindings)...)
 	}
-	return imports
+	if len(usageContent) == 0 {
+		usageContent = content
+	}
+	return imports, usageContent
+}
+
+func maskConditionalDirective(content []byte) {
+	// This span contains declarations only. Keep newlines for location-based usage counting.
+	for index, value := range content {
+		if value != '\n' {
+			content[index] = ' '
+		}
+	}
 }
 
 func locateDirectiveBindings(lines []string, bindings []importBinding) []importBinding {
@@ -499,34 +523,41 @@ func isDirectiveContinuationLine(line string) bool {
 }
 
 func parseImportDirective(line string) (string, string, string, bool) {
+	kind, module, clause, _, ok := parseImportDirectiveWithCondition(line)
+	return kind, module, clause, ok
+}
+
+func parseImportDirectiveWithCondition(line string) (string, string, string, bool, bool) {
 	match := directivePattern.FindStringSubmatch(line)
 	if len(match) != 4 {
-		return "", "", "", false
+		return "", "", "", false, false
 	}
 	kind := strings.TrimSpace(strings.ToLower(match[1]))
 	module := strings.TrimSpace(match[2])
 	clause := strings.TrimSpace(match[3])
-	if !isValidDirectiveClause(clause) {
-		return "", "", "", false
+	conditional, ok := classifyDirectiveClause(clause)
+	if !ok {
+		return "", "", "", false, false
 	}
-	return kind, module, clause, true
+	return kind, module, clause, conditional, true
 }
 
-func isValidDirectiveClause(clause string) bool {
+func classifyDirectiveClause(clause string) (conditional, valid bool) {
 	remaining := strings.TrimSpace(clause)
 	for remaining != "" {
 		switch {
 		case directiveAliasClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveAliasClausePattern.ReplaceAllString(remaining, ""))
 		case directiveConditionalClausePattern.MatchString(remaining):
+			conditional = true
 			remaining = strings.TrimSpace(directiveConditionalClausePattern.ReplaceAllString(remaining, ""))
 		case directiveCombinatorClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveCombinatorClausePattern.ReplaceAllString(remaining, ""))
 		default:
-			return false
+			return false, false
 		}
 	}
-	return true
+	return conditional, true
 }
 
 func buildDirectiveBindings(kind, module, clause, dependency string, location report.Location) []importBinding {

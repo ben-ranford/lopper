@@ -192,6 +192,17 @@ void main() {}
 
 void main() {}
 `,
+		"conditional predicate with the same alias": `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' as io;
+
+void main() {}
+`,
+		"conditional predicate in another directive": `import 'package:http/http.dart'
+    as io;
+import 'src/default.dart'
+    if (dart.library.io) 'src/io.dart';
+
+void main() {}
+`,
 		"alias split after as": `import 'package:http/http.dart' deferred as
     http;
 
