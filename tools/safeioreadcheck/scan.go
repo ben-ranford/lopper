@@ -131,7 +131,7 @@ func parsePackageFiles(root string, paths []string) ([]rawReference, error) {
 	grouped := map[string][]parsedFile{}
 	var order []string
 	for _, path := range paths {
-		src, err := safeio.ReadFileLimit(path, maxScanFileBytes)
+		src, err := safeio.ReadRegularFileLimit(path, maxScanFileBytes)
 		if err != nil {
 			if errors.Is(err, safeio.ErrFileTooLarge) {
 				return nil, fmt.Errorf("%s exceeds the %d byte scan limit", path, maxScanFileBytes)
@@ -303,6 +303,7 @@ func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameS
 	ast.Inspect(node, func(current ast.Node) bool {
 		if current == nil {
 			frame := frames[len(frames)-1]
+			finishNode(stack[len(stack)-1], scope)
 			frames = frames[:len(frames)-1]
 			stack = stack[:len(stack)-1]
 			if frame.pushed {
@@ -364,41 +365,48 @@ func bindNode(node ast.Node, scope *nameScope) {
 	case *ast.FuncLit:
 		declareFields(scope, typed.Type.Params)
 		declareFields(scope, typed.Type.Results)
-	case *ast.AssignStmt:
-		if typed.Tok == token.DEFINE {
-			declareExprs(scope, typed.Lhs)
-		}
 	case *ast.RangeStmt:
 		if typed.Tok == token.DEFINE {
 			declareExpr(scope, typed.Key)
 			declareExpr(scope, typed.Value)
+		} else {
+			scope.forget(typed.Key)
+			scope.forget(typed.Value)
 		}
-	case *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt:
-		declareDefineInit(scope, defineInit(typed))
 	}
 }
 
-func defineInit(node ast.Node) ast.Stmt {
+func finishNode(node ast.Node, scope *nameScope) {
 	switch typed := node.(type) {
-	case *ast.IfStmt:
-		return typed.Init
-	case *ast.ForStmt:
-		return typed.Init
-	case *ast.SwitchStmt:
-		return typed.Init
-	case *ast.TypeSwitchStmt:
-		return typed.Assign
-	default:
-		return nil
+	case *ast.AssignStmt:
+		if typed.Tok == token.DEFINE {
+			bindShortDeclaration(scope, typed)
+			return
+		}
+		for _, expr := range typed.Lhs {
+			scope.forget(expr)
+		}
+	case *ast.IncDecStmt:
+		scope.forget(typed.X)
+	case *ast.UnaryExpr:
+		if typed.Op == token.AND {
+			scope.forget(typed.X)
+		}
 	}
 }
 
-func declareDefineInit(scope *nameScope, stmt ast.Stmt) {
-	assign, ok := stmt.(*ast.AssignStmt)
-	if !ok || assign.Tok != token.DEFINE {
+func bindShortDeclaration(scope *nameScope, assign *ast.AssignStmt) {
+	if len(assign.Lhs) != len(assign.Rhs) {
+		declareExprs(scope, assign.Lhs)
 		return
 	}
-	declareExprs(scope, assign.Lhs)
+	known := scope.visibleInts()
+	for i, expr := range assign.Lhs {
+		if ident, ok := expr.(*ast.Ident); ok {
+			value, knownValue := evalInt(assign.Rhs[i], known, 0)
+			scope.declare(ident.Name, value, knownValue)
+		}
+	}
 }
 
 func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
@@ -480,6 +488,19 @@ func (s *nameScope) declare(name string, value int64, ok bool) {
 		return
 	}
 	delete(s.ints, name)
+}
+
+func (s *nameScope) forget(expr ast.Expr) {
+	ident, ok := ast.Unparen(expr).(*ast.Ident)
+	if !ok {
+		return
+	}
+	for scope := s; scope != nil; scope = scope.parent {
+		if scope.names[ident.Name] {
+			delete(scope.ints, ident.Name)
+			return
+		}
+	}
 }
 
 func (s *nameScope) visibleInts() map[string]int64 {
@@ -690,6 +711,9 @@ func evalBasicInt(lit *ast.BasicLit) (int64, bool) {
 }
 
 func evalUnaryInt(expr *ast.UnaryExpr, known map[string]int64, iotaValue int64) (int64, bool) {
+	if expr.Op == token.ADD {
+		return evalInt(expr.X, known, iotaValue)
+	}
 	if expr.Op != token.SUB {
 		return 0, false
 	}

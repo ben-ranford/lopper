@@ -18,6 +18,16 @@ func TestRegularParserReadsUsePositiveLimits(t *testing.T) {
 	if err != nil || string(data) != "safe" {
 		t.Fatalf("expected complete input at the bound, got %q, %v", data, err)
 	}
+	pinnedRoot := openTestRoot(t, root)
+	data, err = ReadRegularFileWithinRootLimit(pinnedRoot, "manifest", 4)
+	if err != nil || string(data) != "safe" {
+		t.Fatalf("expected direct rooted read at the bound, got %q, %v", data, err)
+	}
+	for _, maxBytes := range []int64{0, -1} {
+		if _, err := ReadRegularFileWithinRootLimit(pinnedRoot, "manifest", maxBytes); !errors.Is(err, fs.ErrInvalid) {
+			t.Fatalf("expected %d-byte limit to be rejected, got %v", maxBytes, err)
+		}
+	}
 	if _, err := ReadRegularFileLimit(file, 3); !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected exact-file byte limit, got %v", err)
 	}

@@ -74,6 +74,9 @@ func ReadFileWithinRootLimit(root Root, targetPath string, maxBytes int64) (_ []
 // ReadRegularFileWithinRootLimit reads only a pinned regular file using an
 // open strategy that does not wait on FIFO-like leaf objects.
 func ReadRegularFileWithinRootLimit(root Root, targetPath string, maxBytes int64) (_ []byte, err error) {
+	if maxBytes <= 0 {
+		return nil, fs.ErrInvalid
+	}
 	targetRel, err := resolveRelativeTarget(targetPath, allowRootTarget)
 	if err != nil {
 		return nil, err

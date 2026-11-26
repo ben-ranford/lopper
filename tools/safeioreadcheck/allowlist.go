@@ -66,7 +66,7 @@ func checkAllowlist(path string, refs []Reference) ([]string, error) {
 }
 
 func loadAllowlist(path string) ([]allowEntry, error) {
-	data, err := safeio.ReadFileLimit(path, maxScanFileBytes)
+	data, err := safeio.ReadRegularFileLimit(path, maxScanFileBytes)
 	if err != nil {
 		if errors.Is(err, safeio.ErrFileTooLarge) {
 			return nil, fmt.Errorf("%s exceeds the %d byte allowlist limit", path, maxScanFileBytes)

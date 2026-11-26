@@ -262,6 +262,39 @@ func localIota(path string) {
 	_, _ = safeio.ReadFileLimit(path, zero)
 	_, _ = safeio.ReadFileLimit(path, one)
 }
+
+func shortDeclaration(path string) {
+	limit := int64(0)
+	_, _ = safeio.ReadFileLimit(path, limit)
+}
+
+func shortInitializer(path string) {
+	const limit = 0
+	if limit, ready := int64(+limit), true; ready {
+		_, _ = safeio.ReadFileLimit(path, limit)
+	}
+}
+
+func shortPositive(path string) {
+	limit := int64(+1)
+	_, _ = safeio.ReadFileLimit(path, limit)
+}
+
+func updatedLimit(path string, next int64, values []int64) {
+	limit := int64(0)
+	limit = next
+	_, _ = safeio.ReadFileLimit(path, limit)
+	other := int64(0)
+	other++
+	_, _ = safeio.ReadFileLimit(path, other)
+	addressed := int64(0)
+	_ = &addressed
+	_, _ = safeio.ReadFileLimit(path, addressed)
+	iterated := int64(0)
+	for _, iterated = range values {
+		_, _ = safeio.ReadFileLimit(path, iterated)
+	}
+}
 `,
 	})
 
@@ -278,6 +311,8 @@ func localIota(path string) {
 		"local.go\tshadowsPackage\tsafeio.ReadFileLimit\t1",
 		"local.go\tafterBlock\tsafeio.ReadFileLimit\t1",
 		"local.go\tlocalIota\tsafeio.ReadFileLimit\t1",
+		"local.go\tshortDeclaration\tsafeio.ReadFileLimit\t1",
+		"local.go\tshortInitializer\tsafeio.ReadFileLimit\t1",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reads = %#v", got)
@@ -460,7 +495,9 @@ func TestEvalIntCoversArithmeticEdges(t *testing.T) {
 		{expr: "notInt(4)", ok: false},
 		{expr: "byte", ok: false},
 		{expr: "9223372036854775808", ok: false},
-		{expr: "+1", ok: false},
+		{expr: "+1", want: 1, ok: true},
+		{expr: "+0", want: 0, ok: true},
+		{expr: "^1", ok: false},
 		{expr: "-missing", ok: false},
 		{expr: "1 + missing", ok: false},
 		{expr: "(int64)(1)", ok: false},
