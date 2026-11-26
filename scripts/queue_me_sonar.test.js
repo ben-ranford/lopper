@@ -67,6 +67,10 @@ function forkHarness(options = {}) {
   return harness({ checks: [{ ...check(), pull_requests: [] }], suites: [{ ...suite(), pull_requests: [] }], ...options });
 }
 
+function latePublishedSuite() {
+  return { ...suite(), created_at: '2026-09-30T15:21:22Z' };
+}
+
 function fixedIssue(index) {
   return { key: `issue-${index}`, project: PROJECT, pullRequest: '42', issueStatus: 'FIXED' };
 }
@@ -270,6 +274,52 @@ test('documented empty fork associations require two matching live canonical PR 
   const githubRequests = audit.requests.filter(({ url }) => url.origin === 'https://api.github.com');
   assert.equal(githubRequests.length, 6);
   assert.equal(githubRequests.filter(({ url }) => url.pathname.endsWith('/pulls/42')).length, 2);
+});
+
+test('verified forks can publish a suite after the completed run', async () => {
+  const lateSuite = latePublishedSuite();
+  const audit = forkHarness({ suites: [{ ...lateSuite, pull_requests: [] }] });
+  const receipt = await audit.run({ baseSHA: 'b'.repeat(40) });
+  assert.equal(receipt.checkRunId, 80);
+  assert.equal(receipt.suiteId, lateSuite.id);
+  assert.equal(receipt.createdAt, lateSuite.created_at);
+  assert.equal(audit.requests.filter(({ url }) => url.pathname.endsWith('/pulls/42')).length, 2);
+});
+
+test('a late fork suite must retain its publication timestamps across both reads', async () => {
+  const audit = forkHarness({
+    suites: [{ ...latePublishedSuite(), pull_requests: [] }],
+    transform: (body, endpoint, count) => {
+      if (endpoint.endsWith('/check-suites') && count === 2) {
+        body.check_suites[0].updated_at = '2026-09-30T15:21:23Z';
+      }
+      return body;
+    },
+  });
+  await assert.rejects(audit.run({ baseSHA: 'b'.repeat(40) }), /analysis evidence changed/);
+});
+
+test('late fork publication rejects mixed associations and inconsistent suite chronology', async (t) => {
+  const cases = [
+    ['both associated', { checks: [check()], suites: [latePublishedSuite()] }],
+    ['run only', { suites: [latePublishedSuite()] }],
+    ['suite only', {
+      checks: [check()],
+      suites: [{ ...latePublishedSuite(), pull_requests: [] }],
+    }],
+    ['created before completion', {
+      suites: [{ ...suite(), pull_requests: [], created_at: '2026-09-30T15:21:20Z' }],
+    }],
+    ['created in the completion second', {
+      suites: [{ ...latePublishedSuite(), pull_requests: [], created_at: check().completed_at }],
+    }],
+    ['updated before creation', {
+      suites: [{ ...latePublishedSuite(), pull_requests: [], updated_at: check().completed_at }],
+    }],
+  ];
+  for (const [name, options] of cases) {
+    await t.test(name, () => assert.rejects(forkHarness(options).run(), /timestamps/));
+  }
 });
 
 test('empty association fallback rejects nonforks, missing identities, and ineligible PRs', async (t) => {
