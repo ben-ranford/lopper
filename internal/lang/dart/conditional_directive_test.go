@@ -148,6 +148,24 @@ void main() {
 	}
 }
 
+func TestDartConditionalRawValueKeepsAliasLocation(t *testing.T) {
+	source := []byte(`import 'package:http/http.dart'
+    if (dart.library.io == r'enabled\') 'src/io.dart'
+    as platform; // ' as ignored
+`)
+	imports := parseDartImports(source, "lib/main.dart", map[string]dependencyInfo{"http": {}}, nil)
+	if len(imports) != 1 {
+		t.Fatalf("expected one alias binding, got %#v", imports)
+	}
+	binding := imports[0]
+	if binding.Dependency != "http" || binding.Local != "platform" {
+		t.Fatalf("expected the primary package alias, got %#v", binding)
+	}
+	if binding.Location.Line != 3 || binding.Location.Column != 8 {
+		t.Fatalf("expected the alias on line 3, column 8, got %#v", binding.Location)
+	}
+}
+
 func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T) {
 	testCases := map[string]struct {
 		directive string
@@ -165,6 +183,10 @@ func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T)
 			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/mobile\u0020platform.dart' as platform;`,
 			want:      []string{"platform"},
 		},
+		"raw comparison ending with a backslash": {
+			directive: `import 'package:http/http.dart' if (dart.library.io == r'enabled\') 'src/io.dart' as platform;`,
+			want:      []string{"platform"},
+		},
 		"show after the branch": {
 			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' show Client, Request;`,
 			want:      []string{"Client", "Request"},
@@ -173,7 +195,11 @@ func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T)
 
 	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
-			kind, module, clause, ok := parseImportDirective(testCase.directive)
+			directive, _, ok := collectDirective([]string{testCase.directive})
+			if !ok {
+				t.Fatalf("expected %q to end with a directive terminator", testCase.directive)
+			}
+			kind, module, clause, ok := parseImportDirective(directive)
 			if !ok {
 				t.Fatalf("expected %q to parse", testCase.directive)
 			}

@@ -289,7 +289,7 @@ func directiveDeclarationLocations(lines []string, bindings []importBinding) map
 		}
 	}
 	locations := make(map[string]directiveBindingLocation, len(wanted))
-	code := string(shared.MaskCommentsAndStringsForFile([]byte(strings.Join(lines, "\n")), "directive.dart"))
+	code := maskDirectiveLiteralsAndComments(strings.Join(lines, "\n"))
 	addDirectiveAliasLocation(code, locations, wanted)
 	showList := false
 	for lineOffset, line := range strings.Split(code, "\n") {
@@ -460,7 +460,7 @@ func collectDirective(lines []string) (string, int, bool) {
 }
 
 func hasDirectiveTerminator(line string) bool {
-	state := directiveTerminatorState{}
+	state := directiveQuoteState{}
 	for i := 0; i < len(line); i++ {
 		character := line[i]
 		if state.consumeQuoted(character) {
@@ -473,17 +473,18 @@ func hasDirectiveTerminator(line string) bool {
 		if character == ';' {
 			return hasOnlyDirectiveTrailingContent(line[i+1:])
 		}
-		state.openQuote(character)
+		state.openQuote(line, i)
 	}
 	return false
 }
 
-type directiveTerminatorState struct {
+type directiveQuoteState struct {
 	quote   byte
 	escaped bool
+	raw     bool
 }
 
-func (s *directiveTerminatorState) consumeQuoted(character byte) bool {
+func (s *directiveQuoteState) consumeQuoted(character byte) bool {
 	if s.quote == 0 {
 		return false
 	}
@@ -493,17 +494,22 @@ func (s *directiveTerminatorState) consumeQuoted(character byte) bool {
 	}
 	switch character {
 	case '\\':
-		s.escaped = true
+		s.escaped = !s.raw
 	case s.quote:
 		s.quote = 0
 	}
 	return true
 }
 
-func (s *directiveTerminatorState) openQuote(character byte) {
-	if character == '\'' || character == '"' {
-		s.quote = character
+func (s *directiveQuoteState) openQuote(text string, index int) bool {
+	character := text[index]
+	if character != '\'' && character != '"' {
+		return false
 	}
+	s.quote = character
+	s.raw = index > 0 && (text[index-1] == 'r' || text[index-1] == 'R') &&
+		(index == 1 || !isDartIdentifierByte(text[index-2]))
+	return true
 }
 
 func directiveCommentStarts(line string, index int) bool {
@@ -574,7 +580,7 @@ func buildDirectiveBindings(kind, module, clause, dependency string, location re
 
 	// Conditional branches carry URIs of their own; blank them so an alias or a
 	// show identifier can only be read from the clause itself.
-	clause = maskDirectiveStringLiterals(clause)
+	clause = maskDirectiveLiteralsAndComments(clause)
 	alias := extractAlias(clause)
 	showSymbols := parseShowSymbols(clause)
 	bindings := make([]importBinding, 0, 1+len(showSymbols))
@@ -614,32 +620,25 @@ func buildDirectiveBindings(kind, module, clause, dependency string, location re
 	}}
 }
 
-func maskDirectiveStringLiterals(clause string) string {
-	var masked strings.Builder
-	masked.Grow(len(clause))
-	quote := byte(0)
-	for i := 0; i < len(clause); i++ {
-		character := clause[i]
-		if quote == 0 {
-			if character == '\'' || character == '"' {
-				quote = character
-				masked.WriteByte(' ')
-				continue
+func maskDirectiveLiteralsAndComments(text string) string {
+	masked := []byte(text)
+	state := directiveQuoteState{}
+	for index := 0; index < len(text); index++ {
+		character := text[index]
+		if state.consumeQuoted(character) || state.openQuote(text, index) {
+			if character != '\n' && character != '\r' {
+				masked[index] = ' '
 			}
-			masked.WriteByte(character)
 			continue
 		}
-		if character == '\\' && i+1 < len(clause) {
-			masked.WriteString("  ")
-			i++
-			continue
+		if directiveCommentStarts(text, index) {
+			for index < len(text) && text[index] != '\n' && text[index] != '\r' {
+				masked[index] = ' '
+				index++
+			}
 		}
-		if character == quote {
-			quote = 0
-		}
-		masked.WriteByte(' ')
 	}
-	return masked.String()
+	return string(masked)
 }
 
 func extractAlias(clause string) string {
