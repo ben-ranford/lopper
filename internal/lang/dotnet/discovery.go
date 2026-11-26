@@ -436,7 +436,7 @@ func (d *sourceDiscoverer) discoverFile(path string) error {
 	if !isSourceFile(path) || isGeneratedSource(path) {
 		return nil
 	}
-	content, relativePath, err := shared.ReadSourceFile(d.repoPath, path)
+	content, relativePath, err := shared.ReadSourceFile(d.repoPath, path, maxDotNetSourceBytes)
 	if err != nil {
 		return err
 	}

@@ -23,6 +23,7 @@ const (
 	maxDetectFiles         = 1024
 	maxScanFiles           = 4096
 	maxDotNetManifestBytes = 2 * 1024 * 1024
+	maxDotNetSourceBytes   = 2 * 1024 * 1024
 )
 
 func NewAdapter() *Adapter {

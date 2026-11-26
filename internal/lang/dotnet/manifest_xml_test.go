@@ -142,7 +142,7 @@ func TestDotNetDiscoveryPathBoundaryBranches(t *testing.T) {
 		t.Fatalf("expected out-of-repo solution project to be ignored, got %#v", roots)
 	}
 
-	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.cs")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.cs"), maxDotNetSourceBytes); err == nil {
 		t.Fatalf("expected missing source file to return an error")
 	}
 	deps := map[string]struct{}{}

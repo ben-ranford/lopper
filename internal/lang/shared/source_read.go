@@ -6,14 +6,13 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const sourceReadByteLimit = 2 * 1024 * 1024
-
 // ReadSourceFile reads a source confined to repoPath and returns its display
 // path. When the supplied paths cannot be relativized (such as an absolute repo
-// and relative source), the display path remains sourcePath. Read errors return
-// neither partial content nor a display path.
-func ReadSourceFile(repoPath, sourcePath string) ([]byte, string, error) {
-	content, err := safeio.ReadRegularFileUnderLimit(repoPath, sourcePath, sourceReadByteLimit)
+// and relative source), the display path remains sourcePath. maxBytes must be
+// a positive domain-specific limit. Read errors return neither partial content
+// nor a display path.
+func ReadSourceFile(repoPath, sourcePath string, maxBytes int64) ([]byte, string, error) {
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, sourcePath, maxBytes)
 	if err != nil {
 		return nil, "", err
 	}
