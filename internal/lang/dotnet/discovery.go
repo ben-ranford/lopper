@@ -436,7 +436,7 @@ func (d *sourceDiscoverer) discoverFile(path string) error {
 	if !isSourceFile(path) || isGeneratedSource(path) {
 		return nil
 	}
-	content, relativePath, err := shared.ReadSourceFile(d.repoPath, path)
+	content, relativePath, err := shared.ReadSourceFile(d.repoPath, path, maxDotNetSourceBytes)
 	if err != nil {
 		return err
 	}
@@ -521,7 +521,7 @@ func parsePackageVersions(repoPath, manifestPath string) ([]string, error) {
 }
 
 func parseManifestDependencies(repoPath, manifestPath, elementName string) ([]string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxDotNetManifestBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -676,7 +676,7 @@ func isSourceFileName(lowerName string) bool {
 }
 
 func addSolutionRoots(repoPath, solutionPath string, roots map[string]struct{}) error {
-	content, err := safeio.ReadFileUnder(repoPath, solutionPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, solutionPath, maxDotNetManifestBytes)
 	if err != nil {
 		return err
 	}

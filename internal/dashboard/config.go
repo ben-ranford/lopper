@@ -65,13 +65,15 @@ func ResolveConfigPath(configDir, value string) string {
 	return filepath.Join(configDir, trimmed)
 }
 
+const maxDashboardConfigBytes = 8 * 1024 * 1024
+
 func LoadConfig(path string) (LoadedConfig, error) {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {
 		return LoadedConfig{}, fmt.Errorf("dashboard config path is required")
 	}
 
-	data, err := safeio.ReadFile(trimmedPath)
+	data, err := safeio.ReadRegularFileLimit(trimmedPath, maxDashboardConfigBytes)
 	if err != nil {
 		return LoadedConfig{}, err
 	}

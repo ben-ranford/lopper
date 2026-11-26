@@ -549,6 +549,39 @@ func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
 	}
 }
 
+func TestListDependenciesPreservesMissingWarningsAlongsideResolvedDependency(t *testing.T) {
+	repo := t.TempDir()
+	installedRoot := filepath.Join(repo, "apps", "installed")
+	missingRoot := filepath.Join(repo, "apps", "missing")
+	installedFile := filepath.Join(installedRoot, "src", testIndexJS)
+	missingFile := filepath.Join(missingRoot, "src", testIndexJS)
+	for _, sourcePath := range []string{installedFile, missingFile} {
+		if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+			t.Fatalf("mkdir source: %v", err)
+		}
+		if err := os.WriteFile(sourcePath, []byte("import 'dep'\n"), 0o600); err != nil {
+			t.Fatalf("write source: %v", err)
+		}
+	}
+	if err := writeDependency(installedRoot, "dep", testModuleExportsStub); err != nil {
+		t.Fatalf("write installed dependency: %v", err)
+	}
+
+	deps, roots, warnings := listDependencies(repo, ScanResult{Files: []FileScan{
+		{Path: filepath.Join("apps", "installed", "src", testIndexJS), Imports: []ImportBinding{{Module: "dep"}}},
+		{Path: filepath.Join("apps", "missing", "src", testIndexJS), Imports: []ImportBinding{{Module: "dep"}}},
+	}})
+	if !slices.Equal(deps, []string{"dep"}) {
+		t.Fatalf("expected installed dependency, got %#v", deps)
+	}
+	if roots["dep"] != filepath.Join(installedRoot, "node_modules", "dep") {
+		t.Fatalf("unexpected dependency root: %#v", roots)
+	}
+	if !slices.Contains(warnings, "dependency not found in node_modules: dep") {
+		t.Fatalf("expected missing dependency warning, got %#v", warnings)
+	}
+}
+
 func TestListDependenciesNestedWorkspaceNodeModules(t *testing.T) {
 	repo := t.TempDir()
 	appDir := filepath.Join(repo, "apps", "api")

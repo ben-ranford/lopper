@@ -24,6 +24,17 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+// Identity evidence is optional. A large input is recorded as unavailable
+// through the same diagnostics as other read errors.
+const (
+	maxIdentityGoBytes         = 2 << 20
+	maxIdentityManifestBytes   = 2 << 20
+	maxIdentityJSManifestBytes = 1 << 20
+	maxIdentityMSBuildBytes    = 4 << 20
+	maxIdentityLockBytes       = 16 << 20
+	maxIdentityJSLockBytes     = 32 << 20
+)
+
 const (
 	identityStatusDeclared      = "declared"
 	identityStatusResolved      = "resolved"
@@ -815,91 +826,7 @@ func confidenceRank(value string) int {
 }
 
 func packageURL(ecosystem, namespace, name, version string) string {
-	ecosystem = report.CanonicalPackageEcosystem(ecosystem)
-	namespace = strings.TrimSpace(namespace)
-	name = strings.TrimSpace(name)
-	version = strings.TrimSpace(version)
-	if ecosystem == "" || name == "" || version == "" {
-		return ""
-	}
-	namespace, name = normalizedPURLCoordinates(ecosystem, namespace, name)
-	if purl, ok := scopedNPMPackageURL(ecosystem, namespace, name, version); ok {
-		return purl
-	}
-	if namespace == "" {
-		return canonicalPackageURL(ecosystem, name, version)
-	}
-	return namespacedPackageURL(ecosystem, namespace, name, version)
-}
-
-func normalizedPURLCoordinates(ecosystem, namespace, name string) (string, string) {
-	if ecosystem == "composer" && namespace == "" {
-		vendor, packageName, ok := strings.Cut(name, "/")
-		if ok && vendor != "" && packageName != "" {
-			return vendor, packageName
-		}
-	}
-	if ecosystem == "golang" && namespace == "" {
-		return splitPURLNamespaceName(name)
-	}
-	return namespace, name
-}
-
-func scopedNPMPackageURL(ecosystem, namespace, name, version string) (string, bool) {
-	if ecosystem != "npm" || namespace != "" || !strings.HasPrefix(name, "@") {
-		return "", false
-	}
-	scope, pkg, ok := strings.Cut(name, "/")
-	if !ok || scope == "" || pkg == "" {
-		return "", false
-	}
-	return "pkg:npm/" + escapeNPMScopePURL(scope) + "/" + escapePURL(pkg) + "@" + escapePURL(version), true
-}
-
-func namespacedPackageURL(ecosystem, namespace, name, version string) string {
-	if ecosystem == "golang" {
-		return report.CanonicalPURL("pkg:" + escapePURL(ecosystem) + "/" + escapePURLPathSegments(namespace, name) + "@" + escapePURL(version))
-	}
-	return "pkg:" + escapePURL(ecosystem) + "/" + escapePURL(namespace) + "/" + escapePURL(name) + "@" + escapePURL(version)
-}
-
-func canonicalPackageURL(ecosystem, name, version string) string {
-	purl := "pkg:" + escapePURL(ecosystem) + "/" + escapePURL(name) + "@" + escapePURL(version)
-	if ecosystem == "golang" {
-		return report.CanonicalPURL(purl)
-	}
-	return purl
-}
-
-func splitPURLNamespaceName(name string) (string, string) {
-	name = strings.TrimSpace(name)
-	lastSlash := strings.LastIndexByte(name, '/')
-	if lastSlash <= 0 || lastSlash+1 >= len(name) {
-		return "", name
-	}
-	return name[:lastSlash], name[lastSlash+1:]
-}
-
-func escapePURLPathSegments(namespace, name string) string {
-	segments := make([]string, 0, strings.Count(namespace, "/")+1)
-	for _, segment := range strings.Split(strings.TrimSpace(namespace), "/") {
-		if segment == "" {
-			continue
-		}
-		segments = append(segments, escapePURL(segment))
-	}
-	if trimmedName := strings.TrimSpace(name); trimmedName != "" {
-		segments = append(segments, escapePURL(trimmedName))
-	}
-	return strings.Join(segments, "/")
-}
-
-func escapePURL(value string) string {
-	return strings.ReplaceAll(url.PathEscape(strings.TrimSpace(value)), "+", "%2B")
-}
-
-func escapeNPMScopePURL(value string) string {
-	return strings.ReplaceAll(escapePURL(value), "@", "%40")
+	return report.BuildCanonicalPURL(ecosystem, namespace, name, version)
 }
 
 func collectGoIdentityEvidence(repoPath string, index identityIndex) {
@@ -923,7 +850,7 @@ func collectGoIdentityEvidenceFromPaths(ctx context.Context, repoPath string, in
 		if ctx.Err() != nil {
 			return
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityGoBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -958,7 +885,7 @@ func loadGoWorkspaceReplacements(ctx context.Context, repoPath string, paths []s
 		if ctx.Err() != nil {
 			return workspaces
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityGoBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -1321,7 +1248,7 @@ func isJSIdentityPackageFile(nodeModulesPath, path string, entry fs.DirEntry) bo
 }
 
 func addJSIdentityPackageEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, readErr := safeio.ReadFileUnder(repoPath, path)
+	data, readErr := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSManifestBytes)
 	if readErr != nil {
 		warnings.addFailure("read", path, identityReadFailed, readErr)
 		return
@@ -1353,7 +1280,7 @@ func collectPackageLockIdentityEvidence(repoPath string, index identityIndex) in
 }
 
 func collectPackageLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1478,7 +1405,7 @@ func packageLockScopedName(scope, segment, declaredName string) (string, bool) {
 }
 
 func collectYarnLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1580,7 +1507,7 @@ func collectPNPMLockIdentityEvidence(repoPath string, index identityIndex) int {
 }
 
 func collectPNPMLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1704,24 +1631,10 @@ func parsePNPMAliasReference(value string) (string, string, bool) {
 		name = reference[:versionAt]
 		version = reference[versionAt+1:]
 	}
-	if !validPNPMAliasTarget(name) {
+	if !report.ValidNPMPackageName(name) {
 		return "", "", false
 	}
 	return name, version, true
-}
-
-func validPNPMAliasTarget(name string) bool {
-	if name == "" || strings.ContainsAny(name, " \t\r\n") {
-		return false
-	}
-	if !strings.HasPrefix(name, "@") {
-		return !strings.ContainsAny(name, "@/")
-	}
-	scope, packageName, ok := strings.Cut(name, "/")
-	if !ok || len(scope) <= 1 || packageName == "" {
-		return false
-	}
-	return !strings.Contains(scope[1:], "@") && !strings.ContainsAny(packageName, "@/")
 }
 
 func normalizePNPMLockVersion(version, name string) string {
@@ -1928,7 +1841,7 @@ func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warn
 }
 
 func collectRequirementsEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2033,7 +1946,7 @@ func collectGradleDeclarationEvidence(ctx context.Context, repoPath string, inde
 		if ctx.Err() != nil {
 			return declarations
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, shared.GradleDiscoveryFileBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -2076,7 +1989,7 @@ func collectGradleLockIdentityEvidenceFromPaths(ctx context.Context, repoPath st
 }
 
 func collectGradleLockIdentityEvidenceFromPath(repoPath, path string, index identityIndex, declarations map[string]struct{}, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2202,7 +2115,7 @@ type swiftResolvedDoc struct {
 }
 
 func collectSwiftPackageResolvedEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2227,7 +2140,7 @@ type podLockDoc struct {
 }
 
 func collectPodfileLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2244,7 +2157,7 @@ func collectPodfileLockEvidence(repoPath, path string, index identityIndex, warn
 }
 
 func collectCarthageResolvedEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

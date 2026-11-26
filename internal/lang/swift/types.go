@@ -1,6 +1,9 @@
 package swift
 
-import "github.com/ben-ranford/lopper/internal/lang/shared"
+import (
+	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
+)
 
 const (
 	swiftAdapterID                        = "swift"
@@ -18,8 +21,15 @@ const (
 	rootCarthageSourceReadBatchSize       = 128
 	maxScanFiles                          = 4096
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
+	maxCarthageManifestBytes              = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
+	maxSwiftPackageManifestBytes          = 2 * 1024 * 1024
+	maxSwiftPackageResolvedBytes          = 8 * 1024 * 1024
+	maxResolvedPins                       = 8192
 	maxPodDeclarations                    = 512
+	maxPodManifestBytes                   = 2 * 1024 * 1024
+	maxPodLockBytes                       = 8 * 1024 * 1024
+	maxPodLockEntries                     = 4096
 	maxCarthageDeclarations               = 512
 	maxWarningSamples                     = 5
 	ambiguousDependencyKey                = "\x00"
@@ -57,6 +67,7 @@ type dependencyCatalog struct {
 	AliasToDependency  map[string]string
 	ModuleToDependency map[string]string
 	LocalModules       map[string]struct{}
+	CoverageGaps       []report.CoverageGap
 	HasSwiftPM         bool
 	HasCocoaPods       bool
 	HasCarthage        bool
@@ -104,13 +115,6 @@ type resolvedPin struct {
 		Revision string `json:"revision"`
 		Branch   string `json:"branch"`
 	} `json:"state"`
-}
-
-type resolvedDocument struct {
-	Pins   []resolvedPin `json:"pins"`
-	Object struct {
-		Pins []resolvedPin `json:"pins"`
-	} `json:"object"`
 }
 
 type podLockDocument struct {

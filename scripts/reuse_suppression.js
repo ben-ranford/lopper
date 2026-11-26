@@ -3,6 +3,7 @@
 // Only load this module and its provenance adapter from the protected snapshot.
 // CI artifacts and job names remain untrusted evidence, never executable code.
 const https = require('node:https');
+const { assertForkProducer } = require('./suppression_provenance.js');
 
 const WORKFLOW_PATH = '.github/workflows/ci.yml';
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
@@ -160,11 +161,23 @@ async function latestProducer(github, repo, snapshot, previous) {
     requireEvidence(!previous, 'producer disappeared during verification');
     throw new CIDeferred(snapshot, 'registration');
   }
-  assertSelectedIdentity(selected, workflow, snapshot);
+  const forkWithoutAssociation = (run) => snapshot.head_repository_id !== snapshot.repository_id &&
+    Array.isArray(run.pull_requests) && run.pull_requests.length === 0;
+  // The inventory can omit fork associations. Bind the selected run using its
+  // authenticated detail response before accepting its status or artifacts.
+  if (!forkWithoutAssociation(selected)) assertSelectedIdentity(selected, workflow, snapshot);
   if (previous) requireEvidence(selected.id >= previous.id, 'producer epoch regressed');
   const { data: current } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: selected.id });
-  assertSelectedIdentity(current, workflow, snapshot);
+  assertRunIdentity(current, workflow, snapshot);
   requireEvidence(current.id === selected.id, 'producer changed during selection');
+  if (forkWithoutAssociation(current)) {
+    await assertForkProducer(github, repo, current, {
+      repoId: snapshot.repository_id, headRepoId: snapshot.head_repository_id, pullNumber: snapshot.pull_number,
+      policySHA: snapshot.policy_source, baseSHA: snapshot.base, headSHA: snapshot.head,
+    });
+  } else {
+    assertSelectedIdentity(current, workflow, snapshot);
+  }
   requireCurrentEpoch(current, selected);
   if (previous) requireCurrentEpoch(current, previous);
   const pending = NONTERMINAL.has(current.status) && current.conclusion === null;

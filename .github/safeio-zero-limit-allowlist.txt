@@ -1,0 +1,5 @@
+# Compatibility exceptions for established APIs.
+# Columns: path<TAB>function<TAB>callee<TAB>index<TAB>rationale
+internal/baseline/snapshot.go	LoadSnapshotFile	safeio.ReadFile	1	Explicit user-selected reports may exceed the indexed baseline limit; existing compatibility tests cover this load path.
+internal/safeio/read.go	ReadFileUnder	safeio.ReadFileUnderLimit	1	Compatibility wrapper intentionally keeps the historical zero-limit API; new callers are rejected by this guard and must use an explicit positive limit.
+internal/safeio/read.go	ReadFileWithinRoot	safeio.ReadFileWithinRootLimit	1	Pinned-root compatibility preserves the historical zero-limit API; the guard rejects new callers unless they declare an explicit positive limit.

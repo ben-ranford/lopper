@@ -49,7 +49,7 @@ func (s *repoScanner) scanSwiftFile(path string, entry fs.DirEntry) error {
 		return nil
 	}
 
-	content, err := safeio.ReadFileUnder(s.repoPath, path)
+	content, err := safeio.ReadRegularFileUnderLimit(s.repoPath, path, maxScannableSwiftFile)
 	if err != nil {
 		return err
 	}

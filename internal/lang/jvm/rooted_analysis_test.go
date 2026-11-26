@@ -668,6 +668,7 @@ type jvmRootedTestRoot struct {
 	info     fs.FileInfo
 	lstat    func(string) (fs.FileInfo, error)
 	open     func(string) (safeio.File, error)
+	openFile func(string, int, os.FileMode) (safeio.File, error)
 	openRoot func(string) (safeio.Root, error)
 	close    func() error
 }
@@ -679,7 +680,13 @@ func (r *jvmRootedTestRoot) Open(name string) (safeio.File, error) {
 	return nil, errors.New("unexpected open: " + name)
 }
 
-func (*jvmRootedTestRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
+func (r *jvmRootedTestRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
+	if r.openFile != nil {
+		return r.openFile(name, flag, perm)
+	}
+	if r.Root != nil {
+		return r.Root.OpenFile(name, flag, perm)
+	}
 	return nil, errors.New("unexpected open file")
 }
 
@@ -831,11 +838,12 @@ func newJVMRootedReadTestRoot(t *testing.T, repo, targetName string, targetFile 
 	return &jvmRootedTestRoot{
 		Root:  realRoot,
 		lstat: realRoot.Lstat,
-		open: func(name string) (safeio.File, error) {
+		open:  realRoot.Open,
+		openFile: func(name string, flag int, perm os.FileMode) (safeio.File, error) {
 			if name == targetName {
 				return targetFile, nil
 			}
-			return realRoot.Open(name)
+			return realRoot.OpenFile(name, flag, perm)
 		},
 	}
 }

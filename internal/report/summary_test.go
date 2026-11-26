@@ -109,6 +109,30 @@ func TestComputeSummaryAndLanguageBreakdownEmpty(t *testing.T) {
 	}
 }
 
+func TestFinalizeDerivedStateReplacesStaleValues(t *testing.T) {
+	rep := Report{
+		Dependencies: []DependencyReport{
+			{Name: "alpha", Language: "go", UsedExportsCount: 1, TotalExportsCount: 2},
+			{Name: "beta", Language: "python", UsedExportsCount: 2, TotalExportsCount: 4},
+		},
+		Summary:           &Summary{DependencyCount: 99},
+		LanguageBreakdown: []LanguageSummary{{Language: "preserved", DependencyCount: 77}},
+	}
+
+	FinalizeDerivedState(&rep)
+	if rep.Summary == nil || rep.Summary.DependencyCount != 2 || rep.Summary.UsedExportsCount != 3 || rep.Summary.TotalExportsCount != 6 {
+		t.Fatalf("expected finalization to refresh summary, got %#v", rep.Summary)
+	}
+	if len(rep.LanguageBreakdown) != 2 || rep.LanguageBreakdown[0].Language != "go" || rep.LanguageBreakdown[1].Language != "python" {
+		t.Fatalf("expected finalization to refresh language breakdown, got %#v", rep.LanguageBreakdown)
+	}
+
+	FinalizeDerivedState(&rep)
+	if rep.Summary.DependencyCount != 2 || len(rep.LanguageBreakdown) != 2 {
+		t.Fatalf("expected finalization to remain deterministic, got %#v", rep)
+	}
+}
+
 func TestComputeLanguageBreakdownAdditionalBranches(t *testing.T) {
 	if got := ComputeLanguageBreakdown([]DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2}}); len(got) != 0 {
 		t.Fatalf("expected empty breakdown when all dependencies have empty language, got %#v", got)

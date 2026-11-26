@@ -424,6 +424,15 @@ func TestWriteRuntimeTraceStateAndReuseChecks(t *testing.T) {
 	assertRuntimeReuseResult(t, tracePath, "npm run test", CaptureProviderNode, false)
 }
 
+func TestReuseRuntimeTraceSkipsStateAboveReadLimit(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	state := `{"schema":"v2","command":"npm test","provider":"node"}` + strings.Repeat(" ", maxRuntimeTraceStateBytes)
+	if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, false)
+}
+
 func TestWriteRuntimeTraceStateFailsWhenParentMissing(t *testing.T) {
 	missingParentTrace := filepath.Join(t.TempDir(), "missing", runtimeTraceNDJSON)
 	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand, CaptureProviderNode); err == nil {

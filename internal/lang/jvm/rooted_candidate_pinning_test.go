@@ -180,6 +180,13 @@ func (r *countingJVMRoot) Open(name string) (safeio.File, error) {
 	return r.Root.Open(name)
 }
 
+func (r *countingJVMRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
+	if name != "." {
+		r.counts.fileOpenCalls++
+	}
+	return r.Root.OpenFile(name, flag, perm)
+}
+
 func (r *countingJVMRoot) OpenRoot(name string) (safeio.Root, error) {
 	r.counts.openRootCalls++
 	child, err := r.Root.OpenRoot(name)
@@ -296,6 +303,10 @@ func (r *swappingJVMRoot) Open(name string) (safeio.File, error) {
 		return nil, errors.Join(fs.ErrInvalid, file.Close())
 	}
 	return &swappingJVMDirectory{ReadDirFile: directory, swap: r.swap}, nil
+}
+
+func (r *swappingJVMRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
+	return r.Root.OpenFile(name, flag, perm)
 }
 
 func (r *swappingJVMRoot) OpenRoot(name string) (safeio.Root, error) {

@@ -8,17 +8,23 @@ import (
 )
 
 const (
-	rustAdapterID        = "rust"
-	cargoTomlName        = "Cargo.toml"
-	cargoLockName        = "Cargo.lock"
-	maxDetectionEntries  = 2048
-	maxScanFiles         = 2048
-	maxScannableRustFile = 2 * 1024 * 1024
-	maxManifestCount     = 256
-	maxWarningSamples    = 5
-	localModuleCacheSep  = "\x00"
-	workspaceFieldStart  = "members"
+	rustAdapterID         = "rust"
+	cargoTomlName         = "Cargo.toml"
+	cargoLockName         = "Cargo.lock"
+	maxDetectionEntries   = 2048
+	maxScanFiles          = 2048
+	maxScannableRustFile  = 2 * 1024 * 1024
+	maxCargoManifestBytes = 2 * 1024 * 1024
+	maxManifestCount      = 256
+	maxScanRoots          = 256
+	maxUseClauseDepth     = 64
+	maxUseClauseEntries   = 512
+	maxWarningSamples     = 5
+	localModuleCacheSep   = "\x00"
+	workspaceFieldStart   = "members"
 )
+
+const maxRustUseStatementBytes = 64 * 1024
 
 type dependencyInfo struct {
 	Canonical         string

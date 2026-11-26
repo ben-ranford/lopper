@@ -2,6 +2,7 @@ package swift
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -379,7 +381,7 @@ func TestSwiftCocoaPodsLockLoaderBranches(t *testing.T) {
 }
 
 func TestSwiftCocoaPodsParserAndWarningBranches(t *testing.T) {
-	if got := parsePodDeclarations([]byte("\n# comment\npod 'Alamofire'\nnot a pod\n")); !slices.Equal(got, []string{"Alamofire"}) {
+	if got, err := parsePodDeclarations([]byte("\n# comment\npod 'Alamofire'\nnot a pod\n")); err != nil || !slices.Equal(got, []string{"Alamofire"}) {
 		t.Fatalf("unexpected parsed pod declarations: %#v", got)
 	}
 	if _, err := parsePodLockEntries([]byte("PODS: [\n")); err == nil {
@@ -401,6 +403,47 @@ func TestSwiftCocoaPodsParserAndWarningBranches(t *testing.T) {
 	}
 }
 
+func TestSwiftCocoaPodsCatalogLoadersBoundUntrustedInput(t *testing.T) {
+	t.Run("Podfile size", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), "pod 'Demo'\n"+strings.Repeat(" ", maxPodManifestBytes))
+		found, warnings, err := loadPodManifestData(repo, &dependencyCatalog{})
+		if found || len(warnings) != 0 || !errors.Is(err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected Podfile byte limit, found=%v warnings=%#v err=%v", found, warnings, err)
+		}
+	})
+
+	t.Run("Podfile.lock size", func(t *testing.T) {
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, podLockName), "PODS: []\n"+strings.Repeat(" ", maxPodLockBytes))
+		found, warnings, err := loadPodLockData(repo, &dependencyCatalog{})
+		if found || len(warnings) != 0 || !errors.Is(err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected Podfile.lock byte limit, found=%v warnings=%#v err=%v", found, warnings, err)
+		}
+	})
+
+	t.Run("Podfile declarations", func(t *testing.T) {
+		var podfile strings.Builder
+		for i := 0; i <= maxPodDeclarations; i++ {
+			podfile.WriteString("pod 'Demo'\n")
+		}
+		if _, err := parsePodDeclarations([]byte(podfile.String())); !errors.Is(err, errPodDeclarationLimit) {
+			t.Fatalf("expected Podfile declaration limit, got %v", err)
+		}
+	})
+
+	t.Run("Podfile.lock entries", func(t *testing.T) {
+		var lockfile strings.Builder
+		lockfile.WriteString("PODS:\n")
+		for i := 0; i <= maxPodLockEntries; i++ {
+			lockfile.WriteString("  - Demo\n")
+		}
+		if _, err := parsePodLockEntries([]byte(lockfile.String())); !errors.Is(err, errPodLockEntryLimit) {
+			t.Fatalf("expected Podfile.lock entry limit, got %v", err)
+		}
+	})
+}
+
 func TestSwiftBuildDependencyCatalogSurfacesPodLoaderFailures(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, podManifestName), 0o750); err != nil {
@@ -408,5 +451,71 @@ func TestSwiftBuildDependencyCatalogSurfacesPodLoaderFailures(t *testing.T) {
 	}
 	if _, _, err := buildDependencyCatalog(repo); err == nil {
 		t.Fatalf("expected build dependency catalog to surface Podfile loader failure")
+	}
+}
+
+func TestBoundedPodLockEntriesCountsExpandedSpecifications(t *testing.T) {
+	doc := podLockDocument{Pods: []any{
+		map[string]any{"Alpha (1.0.0)": nil, "Beta (1.0.0)": nil},
+		"Gamma (1.0.0)",
+		map[any]any{"Delta (1.0.0)": nil, 7: nil},
+		42,
+	}}
+
+	if entries, err := boundedPodLockEntries(doc, 4); len(entries) != 0 || !errors.Is(err, errPodLockEntryLimit) {
+		t.Fatalf("expected expansion limit, got %#v and %v", entries, err)
+	}
+	if entries, err := boundedPodLockEntries(doc, 5); len(entries) != 4 || err != nil {
+		t.Fatalf("expected four valid entries within the budget, got %#v and %v", entries, err)
+	}
+}
+
+func TestSwiftAdapterRetainsAvailableCatalogsOnCocoaPodsLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{name: podManifestName, limit: maxPodManifestBytes},
+		{name: podLockName, limit: maxPodLockBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeSwiftDemoPackage(t, repo, []swiftFixtureDependency{alamofireFixtureDependency()}, `import Alamofire
+import Kingfisher
+let session = Session.default
+let manager = KingfisherManager.shared`)
+			pods := []swiftFixturePodDependency{{name: "Kingfisher", version: "7.9.0"}}
+			testutil.MustWriteFile(t, filepath.Join(repo, podManifestName), buildPodfileContent(pods))
+			testutil.MustWriteFile(t, filepath.Join(repo, podLockName), buildPodLockContent(pods))
+			testutil.MustWriteFile(t, filepath.Join(repo, tc.name), strings.Repeat(" ", tc.limit+1))
+
+			result := mustAnalyseSwiftRequest(t, language.Request{RepoPath: repo, TopN: 10})
+			for _, want := range []string{"alamofire", "kingfisher"} {
+				if !slices.ContainsFunc(result.Dependencies, func(dep report.DependencyReport) bool { return dep.Name == want }) {
+					t.Fatalf("expected dependency %q after the CocoaPods limit", want)
+				}
+			}
+			assertWarningContains(t, result.Warnings, tc.name+": file exceeds size limit")
+			if len(result.CoverageGaps) != 1 {
+				t.Fatalf("expected one CocoaPods coverage gap, got %#v", result.CoverageGaps)
+			}
+			gap := result.CoverageGaps[0]
+			if gap.Code != report.CoverageGapSwiftCocoaPodsLimit || gap.Language != swiftAdapterID || gap.Path != tc.name ||
+				len(gap.Evidence) != 1 || !slices.Contains(result.Warnings, gap.Evidence[0]) {
+				t.Fatalf("expected a CocoaPods limit gap with its warning, got %#v", gap)
+			}
+		})
+	}
+}
+
+func TestCocoaPodsLimitPreservesOtherIOErrors(t *testing.T) {
+	closeErr := errors.New("close CocoaPods input")
+	loader := loadBoundedCocoaPodsSource(podManifestName, func(string, *dependencyCatalog) (bool, []string, error) {
+		return false, nil, errors.Join(safeio.ErrFileTooLarge, closeErr)
+	})
+	var catalog dependencyCatalog
+	found, warnings, err := loader(t.TempDir(), &catalog)
+	if found || len(warnings) != 0 || len(catalog.CoverageGaps) != 0 || !errors.Is(err, closeErr) {
+		t.Fatalf("expected the combined I/O error, got found=%v, warnings=%v, gaps=%v, err=%v", found, warnings, catalog.CoverageGaps, err)
 	}
 }

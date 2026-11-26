@@ -40,6 +40,97 @@ func CanonicalPackageNameForEcosystem(ecosystem, value string) string {
 	}
 }
 
+// BuildCanonicalPURL creates a canonical package URL from dependency identity
+// coordinates. It returns an empty value for invalid or incomplete coordinates.
+func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
+	ecosystem = CanonicalPackageEcosystem(ecosystem)
+	namespace = strings.TrimSpace(namespace)
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	if ecosystem == "" || !purlTypeRe.MatchString(ecosystem) || name == "" || version == "" {
+		return ""
+	}
+	path := buildCanonicalPURLPath(ecosystem, namespace, name)
+	if path == "" {
+		return ""
+	}
+	purlType, path, parsedVersion, suffix, ok := splitCanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegmentWithAtSign(version))
+	if !ok || parsedVersion == "" {
+		return ""
+	}
+	return canonicalPURLFromParts(purlType, path, parsedVersion, suffix)
+}
+
+func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
+	if ecosystem == "npm" {
+		return buildCanonicalNPMPURLPath(namespace, name)
+	}
+	if namespace != "" {
+		return escapePURLPathWithNamespace(namespace, name)
+	}
+	switch ecosystem {
+	case "composer":
+		vendor, packageName, ok := strings.Cut(name, "/")
+		if !ok || vendor == "" || packageName == "" {
+			return ""
+		}
+		return escapePURLPathWithNamespace(vendor, packageName)
+	case "golang":
+		if lastSlash := strings.LastIndexByte(name, '/'); lastSlash > 0 && lastSlash+1 < len(name) {
+			return escapePURLPathWithNamespace(name[:lastSlash], name[lastSlash+1:])
+		}
+	}
+	return escapePURLSegment(name)
+}
+
+func buildCanonicalNPMPURLPath(namespace, name string) string {
+	namespace, name, ok := npmPackageCoordinates(namespace, name)
+	if !ok {
+		return ""
+	}
+	if namespace == "" {
+		return escapePURLSegment(name)
+	}
+	return escapePURLSegmentWithAtSign(namespace) + "/" + escapePURLSegment(name)
+}
+
+// ValidNPMPackageName checks the coordinate syntax for an unscoped or scoped npm package name.
+func ValidNPMPackageName(name string) bool {
+	_, _, ok := npmPackageCoordinates("", name)
+	return ok
+}
+
+func npmPackageCoordinates(namespace, name string) (string, string, bool) {
+	if namespace == "" && strings.HasPrefix(name, "@") {
+		var ok bool
+		namespace, name, ok = strings.Cut(name, "/")
+		if !ok {
+			return "", "", false
+		}
+	}
+	const disallowed = "@/ \t\r\n"
+	if name == "" || strings.ContainsAny(name, disallowed) {
+		return "", "", false
+	}
+	if namespace != "" && (len(namespace) <= 1 || namespace[0] != '@' || strings.ContainsAny(namespace[1:], disallowed)) {
+		return "", "", false
+	}
+	return namespace, name, true
+}
+
+func escapePURLPathWithNamespace(namespace, name string) string {
+	segments := make([]string, 0, strings.Count(namespace, "/")+1)
+	for _, segment := range strings.Split(namespace, "/") {
+		if segment != "" {
+			segments = append(segments, escapePURLSegment(segment))
+		}
+	}
+	if len(segments) == 0 {
+		return ""
+	}
+	return strings.Join(append(segments, escapePURLSegment(name)), "/")
+}
+
 func CanonicalPURL(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" || !strings.HasPrefix(strings.ToLower(trimmed), "pkg:") {
@@ -49,6 +140,10 @@ func CanonicalPURL(value string) string {
 	if !ok {
 		return value
 	}
+	return canonicalPURLFromParts(purlType, path, version, suffix)
+}
+
+func canonicalPURLFromParts(purlType, path, version, suffix string) string {
 	return "pkg:" + purlType + canonicalizePURLPath(purlType, path) + canonicalizePURLVersion(version) + suffix
 }
 
@@ -151,7 +246,7 @@ func canonicalizePURLPath(purlType, path string) string {
 			return "/" + escapePURLSegment(segments[0])
 		}
 		if len(segments) == 2 && strings.HasPrefix(segments[0], "@") {
-			return "/" + escapeNPMScopeSegment(segments[0]) + "/" + escapePURLSegment(segments[1])
+			return "/" + escapePURLSegmentWithAtSign(segments[0]) + "/" + escapePURLSegment(segments[1])
 		}
 		return path
 	case "pypi":
@@ -177,7 +272,7 @@ func canonicalizePURLVersion(version string) string {
 	if err != nil {
 		return "@" + version
 	}
-	return "@" + escapePURLSegment(decoded)
+	return "@" + escapePURLSegmentWithAtSign(decoded)
 }
 
 func decodedPURLPathSegments(purlType, path string) ([]string, bool) {
@@ -279,6 +374,7 @@ func escapePURLSegment(value string) string {
 	return strings.ReplaceAll(url.PathEscape(strings.TrimSpace(value)), "+", "%2B")
 }
 
-func escapeNPMScopeSegment(value string) string {
+// escapePURLSegmentWithAtSign also encodes the delimiter in versions and npm scopes.
+func escapePURLSegmentWithAtSign(value string) string {
 	return strings.ReplaceAll(escapePURLSegment(value), "@", "%40")
 }

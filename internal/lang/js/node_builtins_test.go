@@ -30,12 +30,16 @@ func TestIsNodeBuiltin(t *testing.T) {
 		{"fs/promises", testFsPromises, true},
 		{"path/posix", "path/posix", true},
 		{"node:fs/promises", "node:" + testFsPromises, true},
+		{"node:test", "node:test", true},
+		{"node:test/reporters", "node:test/reporters", true},
 
 		// Not built-ins
 		{"lodash", "lodash", false},
 		{"react", "react", false},
 		{testBabelCore, testBabelCore, false},
 		{"fake-fs", "fake-fs", false},
+		{"package subpath matching fs", "fs/compat", false},
+		{"node subpath not exported by fs", "node:fs/compat", false},
 
 		// Edge cases
 		{"empty string", "", false},
@@ -66,6 +70,9 @@ func TestDependencyFromModuleBuiltins(t *testing.T) {
 		{"node:fs prefix", "node:fs", ""},
 		{"node:path prefix", "node:path", ""},
 		{"fs/promises subpath", testFsPromises, ""},
+		{"node:test", "node:test", ""},
+		{"fs package subpath", "fs/compat", "fs"},
+		{"unknown Node specifier", "node:unknown-module", ""},
 
 		// npm packages should return package name
 		{"lodash", "lodash", "lodash"},

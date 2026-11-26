@@ -235,6 +235,7 @@ func ListStoreEntries(dir string) ([]string, error) {
 	return names, nil
 }
 
+// ReadStoreEntry reads a regular snapshot and uses MaxSnapshotBytes when no positive limit is supplied.
 func ReadStoreEntry(dir, name string, maxBytes int64) (data []byte, err error) {
 	absDir, err := resolveStorePath(dir)
 	if err != nil {
@@ -254,7 +255,10 @@ func ReadStoreEntry(dir, name string, maxBytes int64) (data []byte, err error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("baseline snapshot must be a regular file: %s", path)
 	}
-	data, err = safeio.ReadFileUnderLimit(absDir, path, maxBytes)
+	if maxBytes <= 0 {
+		maxBytes = MaxSnapshotBytes
+	}
+	data, err = safeio.ReadRegularFileUnderLimit(absDir, path, maxBytes)
 	if errors.Is(err, safeio.ErrFileTooLarge) {
 		return nil, fmt.Errorf("%w: %s", ErrSnapshotTooLarge, path)
 	}

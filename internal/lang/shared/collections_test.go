@@ -58,13 +58,18 @@ func TestTopCountKeys(t *testing.T) {
 
 func TestReadYAMLUnderRepo(t *testing.T) {
 	repo := t.TempDir()
+	const yamlContent = "name: app\n"
+	const yamlLimit = int64(len(yamlContent))
 	type manifest struct {
 		Name string `yaml:"name"`
 	}
 
 	pubspecPath := filepath.Join(repo, "pubspec.yaml")
-	testutil.MustWriteFile(t, pubspecPath, "name: app\n")
-	parsed, err := ReadYAMLUnderRepo[manifest](repo, pubspecPath)
+	testutil.MustWriteFile(t, pubspecPath, yamlContent)
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, pubspecPath, 0); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("expected invalid limit error, got %v", err)
+	}
+	parsed, err := ReadYAMLUnderRepoLimit[manifest](repo, pubspecPath, yamlLimit)
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
@@ -73,13 +78,13 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 	}
 
 	missingPath := filepath.Join(repo, "missing.yaml")
-	if _, err := ReadYAMLUnderRepo[manifest](repo, missingPath); !errors.Is(err, os.ErrNotExist) {
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, missingPath, yamlLimit); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing file error, got %v", err)
 	}
 
 	invalidPath := filepath.Join(repo, "invalid.yaml")
 	testutil.MustWriteFile(t, invalidPath, "name: [\n")
-	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, invalidPath, yamlLimit); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
 		t.Fatalf("expected parse error for invalid yaml, got %v", err)
 	}
 }

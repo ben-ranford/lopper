@@ -195,7 +195,6 @@ func applyAdvisories(reportData report.Report, advisorySourceTrustRoot, advisory
 		return reportData, err
 	}
 	report.AnnotateVulnerabilities(&reportData, advisories)
-	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	return reportData, nil
 }
 
@@ -212,7 +211,6 @@ func applyVulnerabilityExceptionsToReport(reportData report.Report, exceptions [
 		return reportData
 	}
 	diagnostics := report.ApplyVulnerabilityExceptions(&reportData, exceptions, now)
-	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	reportData.Warnings = appendVulnerabilityExceptionWarnings(reportData.Warnings, diagnostics)
 	return reportData
 }

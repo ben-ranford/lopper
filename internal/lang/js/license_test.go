@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -249,12 +250,24 @@ func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	testutil.MustWriteFile(t, unknown, "custom internal license text")
 	testutil.MustWriteFile(t, known, "MIT License\nPermission is hereby granted...")
 
-	probe := probeLicenseCandidates(root, []string{unknown, known})
-	if probe == nil {
+	license := detectLicenseFromFiles(root)
+	if license == nil {
 		t.Fatalf("expected probe result for known license candidate")
 	}
-	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
-		t.Fatalf("unexpected probe result: %#v", probe)
+	if license.SPDX != "MIT" || license.Source != "license-file" || license.Confidence != "medium" {
+		t.Fatalf("unexpected probe result: %#v", license)
+	}
+}
+
+func TestProbeLicenseCandidateSkipsFileAboveLimit(t *testing.T) {
+	root := t.TempDir()
+	candidate := filepath.Join(root, "LICENSE")
+	const licenseLimit = 256 * 1024
+	content := "MIT License\nPermission is hereby granted...\n" + strings.Repeat(" ", licenseLimit)
+	testutil.MustWriteFile(t, candidate, content)
+
+	if license := detectLicenseFromFiles(root); license != nil {
+		t.Fatalf("expected oversized license file to be skipped, got %#v", license)
 	}
 }
 

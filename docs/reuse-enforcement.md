@@ -279,8 +279,13 @@ base tracker and producer script are all included in the scoped review paths.
 This proves only the protected detector's recognized suppression markers on
 changed lines. It does not prove absence on unchanged files, in the prospective
 merged tree, or for ShellCheck directives. The separate queue audit owns that
-broader policy. Missing fork associations fail closed and remain a live proof
-case. [#1606 closed](https://github.com/ben-ranford/lopper/issues/1606#issuecomment-5971166507)
+broader policy. If GitHub omits a fork CI run's PR association, the reuse
+controller and suppression verifier require the run's recorded local reusable
+workflow to identify the PR merge ref and its immutable merge commit. The commit
+must have the current base and head as its ordered parents, and both CI workflow
+files must match protected policy at the head and merge. Missing or inconsistent
+evidence still fails closed. The queue audit still requires its own recorded
+associations. [#1606 closed](https://github.com/ben-ranford/lopper/issues/1606#issuecomment-5971166507)
 on recorded late-CI completion and protected artifact-provenance evidence. That
 issue-specific result does not close #1612 or establish automatic queue recovery.
 The pending-CI handling in #1817 and the terminal-CI preparation and historical

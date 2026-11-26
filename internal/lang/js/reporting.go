@@ -63,7 +63,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	warnings = append(warnings, riskWarnings...)
 	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
-	coverageIncomplete := opts.ScanResult.UsageIncomplete || surface.CoverageIncomplete
+	coverageIncomplete := dependencyCoverageIncomplete(opts.ScanResult, surface, usage)
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -108,6 +108,7 @@ type dependencyUsageSummary struct {
 	unusedImports           []report.ImportUse
 	unfilteredUnusedImports []report.ImportUse
 	warnings                []string
+	usageIncomplete         bool
 }
 
 type dependencyImportUsage struct {
@@ -117,11 +118,16 @@ type dependencyImportUsage struct {
 	UnusedImports        map[string]*report.ImportUse
 	HasAmbiguousWildcard bool
 	Warnings             []string
+	UsageIncomplete      bool
 }
 
 // collectDependencyUsageSummary aggregates dependency import usage into report-ready lists and warnings.
 func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dependencyUsageSummary {
-	usage := collectDependencyImportUsage(scanResult, dependency)
+	return collectDependencyUsageSummaryWithResolver(scanResult, dependency, newReExportResolver(scanResult))
+}
+
+func collectDependencyUsageSummaryWithResolver(scanResult ScanResult, dependency string, resolver *reExportResolver) dependencyUsageSummary {
+	usage := collectDependencyImportUsageWithResolver(scanResult, dependency, resolver)
 	usedImportList, unusedImportList := finalizeImportUsageLists(usage.UsedImports, usage.UnusedImports)
 	warnings := dependencyUsageWarnings(dependency, usage.UsedExports, usage.HasAmbiguousWildcard)
 	warnings = append(warnings, usage.Warnings...)
@@ -132,7 +138,12 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 		unusedImports:           unusedImportList,
 		unfilteredUnusedImports: shared.SortedImportUses(usage.UnusedImports),
 		warnings:                warnings,
+		usageIncomplete:         usage.UsageIncomplete,
 	}
+}
+
+func dependencyCoverageIncomplete(scanResult ScanResult, surface ExportSurface, usage dependencyUsageSummary) bool {
+	return scanResult.UsageIncomplete || surface.CoverageIncomplete || usage.usageIncomplete
 }
 
 // finalizeImportUsageLists flattens import maps and removes used/unused overlaps from the unused list.
@@ -163,6 +174,10 @@ func resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimePro
 }
 
 func collectDependencyImportUsage(scanResult ScanResult, dependency string) dependencyImportUsage {
+	return collectDependencyImportUsageWithResolver(scanResult, dependency, newReExportResolver(scanResult))
+}
+
+func collectDependencyImportUsageWithResolver(scanResult ScanResult, dependency string, resolver *reExportResolver) dependencyImportUsage {
 	result := dependencyImportUsage{
 		UsedExports:   make(map[string]struct{}),
 		Counts:        make(map[string]int),
@@ -171,7 +186,7 @@ func collectDependencyImportUsage(scanResult ScanResult, dependency string) depe
 	}
 	ctx := dependencyImportAttributionContext{
 		dependency:    dependency,
-		resolver:      newReExportResolver(scanResult),
+		resolver:      resolver,
 		usedExports:   result.UsedExports,
 		counts:        result.Counts,
 		usedImports:   result.UsedImports,
@@ -189,6 +204,7 @@ func collectDependencyImportUsage(scanResult ScanResult, dependency string) depe
 		}
 	}
 	result.Warnings = ctx.resolver.warnings()
+	result.UsageIncomplete = ctx.resolver.resolutionIncomplete
 	return result
 }
 
@@ -310,13 +326,17 @@ func applyImportUsage(imp ImportBinding, file FileScan, usedExports map[string]s
 }
 
 func applyNamedImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
-	count := file.IdentifierUsage[imp.LocalName]
+	count := namedImportUsageCount(imp, file)
 	if count <= 0 {
 		return false
 	}
 	usedExports[imp.ExportName] = struct{}{}
 	counts[imp.ExportName] += count
 	return true
+}
+
+func namedImportUsageCount(imp ImportBinding, file FileScan) int {
+	return file.IdentifierUsage[imp.LocalName] + file.namedImportUsageByLocation[imp.Location]
 }
 
 func applyNamespaceOrDefaultImportUsage(imp ImportBinding, file FileScan, usedExports map[string]struct{}, counts map[string]int) bool {
@@ -434,6 +454,8 @@ func matchesDependency(module, dependency string) bool {
 
 func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string) {
 	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
+	seenWarnings := make(map[string]struct{}, min(len(warnings), maxAggregatedDependencyWarnings))
+	warnings = appendUniqueDependencyWarnings(nil, seenWarnings, warnings)
 	if len(dependencies) == 0 {
 		return nil, warnings
 	}
@@ -451,7 +473,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 			IncludeRegistryProvenance:         includeRegistryProvenance,
 		})
 		reports = append(reports, depReport)
-		warnings = append(warnings, depWarnings...)
+		warnings = appendUniqueDependencyWarnings(warnings, seenWarnings, depWarnings)
 	}
 
 	if scanResult.UsageIncomplete || slices.ContainsFunc(reports, func(dependency report.DependencyReport) bool {
@@ -460,7 +482,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		sort.Slice(reports, func(i, j int) bool {
 			return reports[i].Name < reports[j].Name
 		})
-		warnings = append(warnings, "top-N removal ranking disabled because JS/TS dependency coverage is incomplete")
+		warnings = addIncompleteCoverageWarning(warnings, seenWarnings)
 		return reports, warnings
 	}
 
@@ -475,4 +497,43 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 
 func resolveMinUsageRecommendationThreshold(value *int) int {
 	return shared.ResolveMinUsageRecommendationThreshold(value)
+}
+
+const (
+	maxAggregatedDependencyWarnings  = 32
+	aggregatedWarningCapNotice       = "additional dependency warnings omitted after the report cap"
+	incompleteTopDependenciesWarning = "top-N removal ranking disabled because JS/TS dependency coverage is incomplete"
+)
+
+func appendUniqueDependencyWarnings(dst []string, seen map[string]struct{}, extra []string) []string {
+	for _, warning := range extra {
+		if warning == "" {
+			continue
+		}
+		if _, exists := seen[warning]; exists {
+			continue
+		}
+		if len(dst) >= maxAggregatedDependencyWarnings {
+			if _, capped := seen[aggregatedWarningCapNotice]; !capped {
+				seen[aggregatedWarningCapNotice] = struct{}{}
+				dst = append(dst, aggregatedWarningCapNotice)
+			}
+			return dst
+		}
+		seen[warning] = struct{}{}
+		dst = append(dst, warning)
+	}
+	return dst
+}
+
+func addIncompleteCoverageWarning(warnings []string, seen map[string]struct{}) []string {
+	if _, exists := seen[incompleteTopDependenciesWarning]; exists {
+		return warnings
+	}
+	if len(warnings) < maxAggregatedDependencyWarnings {
+		return append(warnings, incompleteTopDependenciesWarning)
+	}
+	// Preserve the coverage warning and the notice within the existing cap.
+	warnings[maxAggregatedDependencyWarnings-1] = incompleteTopDependenciesWarning
+	return append(warnings[:maxAggregatedDependencyWarnings], aggregatedWarningCapNotice)
 }

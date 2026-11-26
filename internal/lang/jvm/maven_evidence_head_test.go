@@ -65,14 +65,14 @@ type mavenReadCountRoot struct {
 	openErr error
 }
 
-func (r *mavenReadCountRoot) Open(name string) (safeio.File, error) {
+func (r *mavenReadCountRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
 	if name == "pom.xml" {
 		r.opens++
 		if r.openErr != nil {
 			return nil, r.openErr
 		}
 	}
-	return r.Root.Open(name)
+	return r.Root.OpenFile(name, flag, perm)
 }
 
 func TestJVMRetainsPOMReadFailureWithoutDecode(t *testing.T) {
