@@ -41,7 +41,7 @@ func CanonicalPackageNameForEcosystem(ecosystem, value string) string {
 }
 
 // BuildCanonicalPURL creates a canonical package URL from dependency identity
-// coordinates. It returns an empty value when the coordinates are incomplete.
+// coordinates. It returns an empty value for invalid or incomplete coordinates.
 func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 	ecosystem = CanonicalPackageEcosystem(ecosystem)
 	namespace = strings.TrimSpace(namespace)
@@ -54,7 +54,11 @@ func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 	if path == "" {
 		return ""
 	}
-	return CanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+	purlType, path, parsedVersion, suffix, ok := splitCanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+	if !ok || parsedVersion == "" {
+		return ""
+	}
+	return canonicalPURLFromParts(purlType, path, parsedVersion, suffix)
 }
 
 func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
@@ -110,6 +114,10 @@ func CanonicalPURL(value string) string {
 	if !ok {
 		return value
 	}
+	return canonicalPURLFromParts(purlType, path, version, suffix)
+}
+
+func canonicalPURLFromParts(purlType, path, version, suffix string) string {
 	return "pkg:" + purlType + canonicalizePURLPath(purlType, path) + canonicalizePURLVersion(version) + suffix
 }
 
