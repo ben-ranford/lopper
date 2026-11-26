@@ -286,6 +286,19 @@ test('verified forks can publish a suite after the completed run', async () => {
   assert.equal(audit.requests.filter(({ url }) => url.pathname.endsWith('/pulls/42')).length, 2);
 });
 
+test('a late fork suite must retain its publication timestamps across both reads', async () => {
+  const audit = forkHarness({
+    suites: [{ ...latePublishedSuite(), pull_requests: [] }],
+    transform: (body, endpoint, count) => {
+      if (endpoint.endsWith('/check-suites') && count === 2) {
+        body.check_suites[0].updated_at = '2026-09-30T15:21:23Z';
+      }
+      return body;
+    },
+  });
+  await assert.rejects(audit.run({ baseSHA: 'b'.repeat(40) }), /analysis evidence changed/);
+});
+
 test('late fork publication rejects mixed associations and inconsistent suite chronology', async (t) => {
   const cases = [
     ['both associated', { checks: [check()], suites: [latePublishedSuite()] }],
