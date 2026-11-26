@@ -173,7 +173,7 @@ func (c *analysisCache) readCachePointer(entry cacheEntryDescriptor, path string
 			if errors.Is(err, fs.ErrNotExist) {
 				return cachePointer{}, "missing", nil
 			}
-			return cachePointer{}, "pointer-corrupt", nil
+			return cachePointer{}, cachePointerCorruptReason, nil
 		}
 		return pointer, "", nil
 	}
@@ -183,13 +183,13 @@ func (c *analysisCache) readCachePointer(entry cacheEntryDescriptor, path string
 			return cachePointer{}, "missing", nil
 		}
 		if errors.Is(err, safeio.ErrFileTooLarge) {
-			return cachePointer{}, "pointer-corrupt", nil
+			return cachePointer{}, cachePointerCorruptReason, nil
 		}
 		return cachePointer{}, "", err
 	}
 	var pointer cachePointer
 	if err := json.Unmarshal(data, &pointer); err != nil {
-		return cachePointer{}, "pointer-corrupt", nil
+		return cachePointer{}, cachePointerCorruptReason, nil
 	}
 	return pointer, "", nil
 }

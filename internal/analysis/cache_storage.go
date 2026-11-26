@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	cacheObjectCorruptReason = "object-corrupt"
-	maxCacheObjectBytes      = 128 << 20
-	maxCachePointerBytes     = 4 << 10
+	cacheObjectCorruptReason  = "object-corrupt"
+	cachePointerCorruptReason = "pointer-corrupt"
+	maxCacheObjectBytes       = 128 << 20
+	maxCachePointerBytes      = 4 << 10
 )
 
 type cachePointer struct {
