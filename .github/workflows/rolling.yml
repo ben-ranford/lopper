@@ -801,7 +801,10 @@ jobs:
           if not sha_pattern.fullmatch(workflow_sha):
               fail("OIDC workflow SHA is invalid.")
           workflow_path_ref = claim_string("workflow_ref")
-          job_workflow_ref = claim_string("job_workflow_ref")
+          # Direct jobs use workflow_ref. Reusable jobs also identify the called workflow.
+          job_workflow_ref = workflow_path_ref
+          if "job_workflow_ref" in claims:
+              job_workflow_ref = claim_string("job_workflow_ref")
           prefix = repository + "/"
           if not workflow_path_ref.startswith(prefix) or not job_workflow_ref.startswith(prefix):
               fail("OIDC workflow ref is outside the repository.")

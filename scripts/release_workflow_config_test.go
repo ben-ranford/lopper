@@ -5953,9 +5953,8 @@ func TestReleaseAttestationsStayOnPublishingJobs(t *testing.T) {
 	})
 }
 
-func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T) {
-	t.Parallel()
-
+func releaseProvenancePredicateScript(t *testing.T) string {
+	t.Helper()
 	type source struct {
 		path, job, sha, ref string
 	}
@@ -5982,28 +5981,34 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 	if strings.Contains(run, `echo "${oidc_token}"`) || strings.Contains(run, "printf '%s' \"${oidc_token}\"") {
 		t.Fatal("provenance predicate script must not print the OIDC token")
 	}
+	return run
+}
+
+func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T) {
+	t.Parallel()
+
+	run := releaseProvenancePredicateScript(t)
 
 	workflowSHA := strings.Repeat("a", 40)
 	sourceSHA := strings.Repeat("b", 40)
 	claims := map[string]any{
 		"sha": workflowSHA, "ref": "refs/heads/main", "repository": "ben-ranford/lopper",
-		"event_name":       "workflow_dispatch",
-		"job_workflow_ref": "ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main",
-		"workflow_ref":     "ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main",
-		"repository_id":    "123", "repository_owner_id": 84072202, "runner_environment": "github-hosted",
+		"event_name":    "workflow_dispatch",
+		"workflow_ref":  "ben-ranford/lopper/.github/workflows/release.yml@refs/heads/main",
+		"repository_id": "123", "repository_owner_id": 84072202, "runner_environment": "github-hosted",
 		"run_id": "99", "run_attempt": "1",
 	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token := "aaa." + base64.RawURLEncoding.EncodeToString(payload) + ".bbb"
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/bin/sh\nprintf '%s' \"$FIXTURE_JWT\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	runPredicate := func(t *testing.T, releaseSHA, githubSHA, sourceRef string) ([]byte, error) {
 		t.Helper()
+		payload, err := json.Marshal(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token := "aaa." + base64.RawURLEncoding.EncodeToString(payload) + ".bbb"
 		cmd := exec.Command("bash", "-c", run)
 		cmd.Env = append(os.Environ(),
 			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -6059,6 +6064,16 @@ func TestReleaseProvenancePredicateRecordsWorkflowAndSourceCommits(t *testing.T)
 	if _, err := runPredicate(t, sourceSHA, workflowSHA, "not-a-ref"); err == nil {
 		t.Fatal("predicate writer accepted a source ref that is not a git ref")
 	}
+	t.Run("reusable workflow builder", func(t *testing.T) {
+		claims["job_workflow_ref"] = "ben-ranford/lopper/.github/workflows/release-orchestration.yml@refs/heads/main"
+		predicate, err := runPredicate(t, sourceSHA, workflowSHA, sourceRef)
+		if err != nil {
+			t.Fatalf("predicate writer failed: %v\n%s", err, predicate)
+		}
+		assertTextContainsAll(t, string(predicate), "reusable workflow provenance predicate", []string{
+			`"id":"https://github.com/ben-ranford/lopper/.github/workflows/release-orchestration.yml@refs/heads/main"`,
+		})
+	})
 }
 
 func assertDependencyCommit(t *testing.T, dependencies []any, ref, commit string) {
