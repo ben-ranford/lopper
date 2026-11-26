@@ -431,10 +431,10 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *n
 	switch typed := node.(type) {
 	case *ast.SelectorExpr:
 		pkg, ok := typed.X.(*ast.Ident)
-		if !ok || scope.isDeclared(pkg.Name) {
+		if !ok {
 			return
 		}
-		if _, known := names.selectors[pkg.Name]; !known {
+		if _, known := names.selectors[pkg.Name]; !known || scope.isDeclared(pkg.Name) {
 			return
 		}
 		if !considerCallee(typed.Sel.Name, parent, typed, scope) {
@@ -442,10 +442,7 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *n
 		}
 		record(fn, typed.Sel.Name, typed.Pos())
 	case *ast.Ident:
-		if (!names.dot && !names.samePkg) || scope.isDeclared(typed.Name) {
-			return
-		}
-		if isBindingName(typed, parent) {
+		if (!names.dot && !names.samePkg) || scope.isDeclared(typed.Name) || isBindingName(typed, parent) {
 			return
 		}
 		if !considerCallee(typed.Name, parent, typed, scope) {
