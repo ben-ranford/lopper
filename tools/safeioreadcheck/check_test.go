@@ -267,7 +267,10 @@ func TestLocalConstantsCannotBypassZeroLimit(t *testing.T) {
 
 import "github.com/ben-ranford/lopper/internal/safeio"
 
-const packageLimit = 1 << 20
+const (
+	packageLimit int64 = 1 << 20
+	zeroLimit int64 = 0
+)
 
 func zero(path string) {
 	const limit = 0
@@ -310,25 +313,25 @@ func localIota(path string) {
 }
 
 func shortDeclaration(path string) {
-	limit := int64(0)
+	limit := zeroLimit
 	_, _ = safeio.ReadFileLimit(path, limit)
 }
 
 func shortInitializer(path string) {
-	const limit = 0
-	if limit, ready := int64(+limit), true; ready {
+	const limit int64 = 0
+	if limit, ready := +limit, true; ready {
 		_, _ = safeio.ReadFileLimit(path, limit)
 	}
 }
 
 func shortPositive(path string) {
-	limit := int64(+1)
+	limit := +packageLimit
 	_, _ = safeio.ReadFileLimit(path, limit)
 }
 
 func defaultVarLimit(path string) {
 	var (
-		positive = int64(12)
+		positive = packageLimit
 		limit int64
 	)
 	_, _ = safeio.ReadFileLimit(path, positive)
@@ -336,10 +339,10 @@ func defaultVarLimit(path string) {
 }
 
 func scopedSwitch(path string, first bool) {
-	limit := int64(0)
+	limit := zeroLimit
 	switch first {
 	case true:
-		limit := int64(12)
+		limit := packageLimit
 		_, _ = safeio.ReadRegularFileLimit(path, limit)
 	default:
 		_, _ = safeio.ReadRegularFileLimit(path, limit)
@@ -347,10 +350,10 @@ func scopedSwitch(path string, first bool) {
 }
 
 func scopedSelect(path string, ready <-chan struct{}) {
-	limit := int64(0)
+	limit := zeroLimit
 	select {
 	case <-ready:
-		limit := int64(12)
+		limit := packageLimit
 		_, _ = safeio.ReadRegularFileLimit(path, limit)
 	default:
 		_, _ = safeio.ReadRegularFileLimit(path, limit)
@@ -358,16 +361,16 @@ func scopedSelect(path string, ready <-chan struct{}) {
 }
 
 func updatedLimit(path string, next int64, values []int64) {
-	limit := int64(0)
+	limit := zeroLimit
 	limit = next
 	_, _ = safeio.ReadRegularFileLimit(path, limit)
-	other := int64(0)
+	other := zeroLimit
 	other++
 	_, _ = safeio.ReadRegularFileLimit(path, other)
-	addressed := int64(0)
+	addressed := zeroLimit
 	_ = &addressed
 	_, _ = safeio.ReadRegularFileLimit(path, addressed)
-	iterated := int64(0)
+	iterated := zeroLimit
 	for _, iterated = range values {
 		_, _ = safeio.ReadRegularFileLimit(path, iterated)
 	}
@@ -571,7 +574,8 @@ func TestEvalIntCoversArithmeticEdges(t *testing.T) {
 		{expr: "1 & 1", ok: false},
 		{expr: "1.5", ok: false},
 		{expr: "missing", ok: false},
-		{expr: "int32(4)", want: 4, ok: true},
+		{expr: "int32(4)", ok: false},
+		{expr: "int64(uint8(n))", ok: false},
 		{expr: "notInt(4)", ok: false},
 		{expr: "byte", ok: false},
 		{expr: "9223372036854775808", ok: false},

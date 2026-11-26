@@ -726,9 +726,8 @@ func evalInt(expr ast.Expr, known map[string]int64, iotaValue int64) (int64, boo
 		return evalIdentInt(typed, known, iotaValue)
 	case *ast.BinaryExpr:
 		return evalBinaryInt(typed, known, iotaValue)
-	case *ast.CallExpr:
-		return evalCallInt(typed, known, iotaValue)
 	default:
+		// Call expressions need type information, including integer conversions.
 		return 0, false
 	}
 }
@@ -807,26 +806,6 @@ func applyShift(op token.Token, left, right int64) (int64, bool) {
 		return left << right, true
 	}
 	return left >> right, true
-}
-
-func evalCallInt(expr *ast.CallExpr, known map[string]int64, iotaValue int64) (int64, bool) {
-	if len(expr.Args) != 1 || !isIntConversion(expr.Fun) {
-		return 0, false
-	}
-	return evalInt(expr.Args[0], known, iotaValue)
-}
-
-func isIntConversion(expr ast.Expr) bool {
-	ident, ok := expr.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	switch ident.Name {
-	case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
-		return true
-	default:
-		return false
-	}
 }
 
 func assignIndexes(refs []rawReference) []Reference {
