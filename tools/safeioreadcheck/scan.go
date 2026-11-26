@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -762,7 +764,7 @@ func evalUnaryInt(expr *ast.UnaryExpr, known map[string]int64, iotaValue int64) 
 	if !ok {
 		return 0, false
 	}
-	return -value, true
+	return constant.Int64Val(constant.UnaryOp(token.SUB, constant.MakeInt64(value), 0))
 }
 
 func evalIdentInt(ident *ast.Ident, known map[string]int64, iotaValue int64) (int64, bool) {
@@ -784,12 +786,8 @@ func evalBinaryInt(expr *ast.BinaryExpr, known map[string]int64, iotaValue int64
 
 func applyBinaryInt(op token.Token, left, right int64) (int64, bool) {
 	switch op {
-	case token.ADD:
-		return left + right, true
-	case token.SUB:
-		return left - right, true
-	case token.MUL:
-		return left * right, true
+	case token.ADD, token.SUB, token.MUL:
+		return constant.Int64Val(constant.BinaryOp(constant.MakeInt64(left), op, constant.MakeInt64(right)))
 	case token.QUO:
 		return applyQuotient(left, right)
 	case token.SHL, token.SHR:
@@ -800,7 +798,7 @@ func applyBinaryInt(op token.Token, left, right int64) (int64, bool) {
 }
 
 func applyQuotient(left, right int64) (int64, bool) {
-	if right == 0 {
+	if right == 0 || (left == math.MinInt64 && right == -1) {
 		return 0, false
 	}
 	return left / right, true
@@ -810,10 +808,7 @@ func applyShift(op token.Token, left, right int64) (int64, bool) {
 	if right < 0 || right >= 63 {
 		return 0, false
 	}
-	if op == token.SHL {
-		return left << right, true
-	}
-	return left >> right, true
+	return constant.Int64Val(constant.Shift(constant.MakeInt64(left), op, uint(right)))
 }
 
 func assignIndexes(refs []rawReference) []Reference {
