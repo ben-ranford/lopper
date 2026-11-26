@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -172,7 +173,86 @@ func (e *compileCommandEntry) compileArgs() []string {
 	if e.Command == "" {
 		return nil
 	}
-	return strings.Fields(e.Command)
+	windowsSyntax := runtime.GOOS == "windows" || isWindowsCompilePath(e.Directory) || isWindowsCompilePath(e.File)
+	return splitCompileCommand(e.Command, windowsSyntax)
+}
+
+func splitCompileCommand(command string, windowsSyntax bool) []string {
+	args := make([]string, 0)
+	var current strings.Builder
+	var quote byte
+	argumentStarted := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case quote == 0 && (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'):
+			if argumentStarted {
+				args = append(args, current.String())
+				current.Reset()
+				argumentStarted = false
+			}
+			continue
+		case windowsSyntax && ch == '\\':
+			i = consumeWindowsCompileBackslashes(command, i, &current) - 1
+		case ch == '\\' && i+1 < len(command) && command[i+1] == '\n' && quote != '\'':
+			i++
+			continue
+		case ch == '\\' && i+1 < len(command) && compileCommandEscapes(command[i+1], quote):
+			i++
+			current.WriteByte(command[i])
+		case quote != 0 && ch == quote:
+			quote = 0
+		case quote == 0 && isCompileCommandQuote(ch, windowsSyntax):
+			quote = ch
+		default:
+			current.WriteByte(ch)
+		}
+		argumentStarted = true
+	}
+	if argumentStarted {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+func isCompileCommandQuote(character byte, windowsSyntax bool) bool {
+	return character == '"' || (character == '\'' && !windowsSyntax)
+}
+
+func compileCommandEscapes(next, quote byte) bool {
+	if quote == '\'' {
+		return false
+	}
+	return quote == 0 || next == '\\' || next == '"' || next == '$' || next == '`'
+}
+
+func consumeWindowsCompileBackslashes(command string, start int, current *strings.Builder) int {
+	end := start + 1
+	for end < len(command) && command[end] == '\\' {
+		end++
+	}
+	if end == len(command) || command[end] != '"' {
+		current.WriteString(command[start:end])
+		return end
+	}
+	// Before a quote, each pair encodes one backslash. An odd final backslash escapes the quote.
+	count := end - start
+	current.WriteString(command[start : start+count/2])
+	if count%2 == 1 {
+		current.WriteByte('"')
+		end++
+	}
+	return end
+}
+
+func isWindowsCompilePath(path string) bool {
+	if strings.HasPrefix(path, `\\`) {
+		return true
+	}
+	if len(path) < 3 || path[1] != ':' || (path[2] != '\\' && path[2] != '/') {
+		return false
+	}
+	return (path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')
 }
 
 func recordCompileSource(sourceFileSet map[string]struct{}, sourcePath string) {
