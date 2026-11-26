@@ -92,7 +92,7 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 		t.Fatalf("expected no source warning, got %#v", scan.Warnings)
 	}
 
-	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.cs")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "missing.cs"), maxDotNetSourceBytes); err == nil {
 		t.Fatalf("expected readSourceFile error for missing file")
 	}
 
@@ -565,7 +565,7 @@ func TestUnreadableManifestAndSourceErrorBranches(t *testing.T) {
 	if _, err := parsePackageVersions(repo, filepath.Join(repo, "..", "escape.props")); err == nil {
 		t.Fatalf("expected parsePackageVersions error for escaped path")
 	}
-	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "..", "escape.cs")); err == nil {
+	if _, _, err := shared.ReadSourceFile(repo, filepath.Join(repo, "..", "escape.cs"), maxDotNetSourceBytes); err == nil {
 		t.Fatalf("expected readSourceFile error for escaped path")
 	}
 }

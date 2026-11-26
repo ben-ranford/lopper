@@ -80,6 +80,18 @@ func TestNamespaceUsageMemberExpression(t *testing.T) {
 	}
 }
 
+func TestCollectDependencyImportUsageTracksNamedImportObjectUsage(t *testing.T) {
+	usage := collectDependencyImportUsageFromSource(t, "config-kit", `import { settings } from "config-kit"
+settings.enabled
+`)
+	if _, ok := usage.UsedExports["settings"]; !ok {
+		t.Fatalf("expected named import object usage to retain settings, got %#v", usage.UsedExports)
+	}
+	if got := usage.Counts["settings"]; got != 1 {
+		t.Fatalf("expected named import object usage count 1, got %d", got)
+	}
+}
+
 func TestNamespaceUsageObjectDestructuring(t *testing.T) {
 	repo := t.TempDir()
 	source := `import * as util from "lodash"
@@ -411,6 +423,21 @@ map([1], (x) => x)
 	}
 	if usage.HasAmbiguousWildcard {
 		t.Fatalf("did not expect ambiguous wildcard usage for static namespace destructure")
+	}
+}
+
+func TestCollectDependencyImportUsageTracksNamedImportObjectDestructure(t *testing.T) {
+	usage := collectDependencyImportUsageFromSource(t, "library", `import { config, start } from "library"
+const { port, host } = config
+start()
+`)
+	for _, exportName := range []string{"config", "start"} {
+		if _, ok := usage.UsedExports[exportName]; !ok {
+			t.Fatalf("expected named import %q to be used, got %#v", exportName, usage.UsedExports)
+		}
+	}
+	if len(usage.UnusedImports) != 0 {
+		t.Fatalf("expected no unused named imports, got %#v", usage.UnusedImports)
 	}
 }
 

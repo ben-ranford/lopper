@@ -692,6 +692,8 @@ ZERO_WRITE = "zero write"
 MAX_TOOLCHAIN_FILES = 20000
 MAX_TOOLCHAIN_BYTES = 300000000
 FIXTURE_MODE = int("777", 8)
+FIXTURE_SETUP_NAME = "setup.sh"
+FIXTURE_INSTALLER_BYTES = b"installer\n"
 
 
 def sealed_file_mode(relative):
@@ -946,12 +948,11 @@ def extract_verified_toolchain(payload, destination, expected_sha, expected_tree
 
 
 def read_official_tarball():
-    import urllib.error
     import urllib.request
     request = urllib.request.Request(OFFICIAL_GO_URL, method="GET")
     try:
         response = urllib.request.urlopen(request, timeout=120)
-    except (OSError, urllib.error.URLError) as error:
+    except OSError as error:
         raise ValueError(COMPILER_INTEGRITY) from error
     with response:
         host = urllib.parse.urlparse(response.geturl()).hostname
@@ -1068,16 +1069,16 @@ def assert_extra_file_uses_official_archive():
         expected = toolchain_tree_digest(source)
         archive = fixture_archive(source)
         digest = hashlib.sha256(archive).hexdigest()
-        extra = source / "setup.sh"
-        extra.write_bytes(b"installer\n")
+        extra = source / FIXTURE_SETUP_NAME
+        extra.write_bytes(FIXTURE_INSTALLER_BYTES)
         os.chmod(extra, FIXTURE_MODE)
         destination = directory / "private"
         private, origin = private_toolchain(source, destination, expected, lambda: (archive, digest))
         if origin != "official-tarball" or private.read_bytes() != b"official-go":
             raise AssertionError("extra installer did not fall back to the official archive")
-        if (destination / "setup.sh").exists() or toolchain_tree_digest(destination) != expected:
+        if (destination / FIXTURE_SETUP_NAME).exists() or toolchain_tree_digest(destination) != expected:
             raise AssertionError("fallback tree is not the official file set")
-        if extra.read_bytes() != b"installer\n" or stat.S_IMODE(extra.lstat().st_mode) != FIXTURE_MODE:
+        if extra.read_bytes() != FIXTURE_INSTALLER_BYTES or stat.S_IMODE(extra.lstat().st_mode) != FIXTURE_MODE:
             raise AssertionError("toolcache installer was modified")
 
 
@@ -1089,8 +1090,8 @@ def assert_unverified_archive_rejected():
         write_fixture_toolchain(source, b"official-go", FIXTURE_MODE)
         expected = toolchain_tree_digest(source)
         archive = bytearray(fixture_archive(source))
-        extra = source / "setup.sh"
-        extra.write_bytes(b"installer\n")
+        extra = source / FIXTURE_SETUP_NAME
+        extra.write_bytes(FIXTURE_INSTALLER_BYTES)
         os.chmod(extra, FIXTURE_MODE)
         archive[min(32, len(archive) - 1)] ^= 1
         digest = hashlib.sha256(bytes(archive) + b"x").hexdigest()

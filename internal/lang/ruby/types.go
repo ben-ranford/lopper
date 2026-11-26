@@ -8,11 +8,13 @@ import (
 )
 
 const (
-	gemfileName     = "Gemfile"
-	gemfileLockName = "Gemfile.lock"
-	gemspecExt      = ".gemspec"
-	maxGemspecBytes = 1 * 1024 * 1024
-	maxDetectFiles  = 1024
+	gemfileName             = "Gemfile"
+	gemfileLockName         = "Gemfile.lock"
+	gemspecExt              = ".gemspec"
+	maxGemspecBytes         = 1 * 1024 * 1024
+	maxBundlerManifestBytes = 2 * 1024 * 1024
+	maxScannableRubyFile    = 2 * 1024 * 1024
+	maxDetectFiles          = 1024
 )
 
 const (

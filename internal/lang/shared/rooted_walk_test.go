@@ -1194,7 +1194,7 @@ func TestReadSourceFileDisplayPathAndConfinement(t *testing.T) {
 	}
 	t.Chdir(repo)
 	for _, path := range []string{source, "source.py"} {
-		content, display, err := ReadSourceFile(repo, path)
+		content, display, err := ReadSourceFile(repo, path, sourceReadTestByteLimit)
 		if err != nil || string(content) != "import example\n" || display != "source.py" {
 			t.Fatalf("read %q: content=%q display=%q err=%v", path, content, display, err)
 		}

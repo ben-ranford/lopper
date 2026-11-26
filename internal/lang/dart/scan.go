@@ -185,7 +185,7 @@ func scanDartSourceFileWithOptions(repoPath, path string, depLookup map[string]d
 		return nil
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxScannableDartFile)
 	if err != nil {
 		return err
 	}

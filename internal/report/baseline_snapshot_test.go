@@ -437,11 +437,11 @@ func assertLoadWithKeyPreservesReportData(t *testing.T, content, wantKey string)
 	if rep.SchemaVersion != "" {
 		t.Fatalf("LoadWithKey() schema version = %q, want preserved empty value", rep.SchemaVersion)
 	}
-	if rep.Summary == nil || rep.Summary.DependencyCount != 99 {
-		t.Fatalf("LoadWithKey() summary = %#v, want supplied summary", rep.Summary)
+	if rep.Summary == nil || rep.Summary.DependencyCount != 3 {
+		t.Fatalf("LoadWithKey() summary = %#v, want recomputed summary", rep.Summary)
 	}
-	if len(rep.LanguageBreakdown) != 1 || rep.LanguageBreakdown[0].Language != "preserved" || rep.LanguageBreakdown[0].DependencyCount != 77 {
-		t.Fatalf("LoadWithKey() language breakdown = %#v, want supplied value", rep.LanguageBreakdown)
+	if len(rep.LanguageBreakdown) != 2 || rep.LanguageBreakdown[0].Language != "go" || rep.LanguageBreakdown[1].Language != "python" {
+		t.Fatalf("LoadWithKey() language breakdown = %#v, want recomputed value", rep.LanguageBreakdown)
 	}
 	if !slices.Equal(rep.Warnings, []string{" first ", "first"}) {
 		t.Fatalf("LoadWithKey() warnings = %q, want supplied values", rep.Warnings)

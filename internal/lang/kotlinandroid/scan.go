@@ -144,13 +144,13 @@ func scanKotlinAndroidSourceFile(repoPath, path string, lookups dependencyLookup
 
 func readKotlinAndroidSource(repoPath, path string) ([]byte, string, error) {
 	if strings.TrimSpace(repoPath) == "" {
-		content, err := safeio.ReadFile(path)
+		content, err := safeio.ReadRegularFileLimit(path, maxKotlinAndroidSourceBytes)
 		if err != nil {
 			return nil, "", err
 		}
 		return content, path, nil
 	}
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxKotlinAndroidSourceBytes)
 	if err != nil {
 		return nil, "", err
 	}
@@ -180,7 +180,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := shared.MaskJVMImportSource(content, filePath)
 	parser := kotlinAndroidImportParser{
 		filePackage: filePackage,
 		lookups:     lookups,

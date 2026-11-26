@@ -19,6 +19,8 @@ type Adapter struct {
 	language.AdapterLifecycle
 }
 
+const maxPythonSourceBytes = 2 * 1024 * 1024
+
 func NewAdapter() *Adapter {
 	adapter := &Adapter{}
 	adapter.AdapterLifecycle = language.NewAdapterLifecycle("python", []string{"py"}, adapter.DetectWithConfidence)
@@ -145,7 +147,7 @@ func scanPythonRepoEntry(repoPath, path string, entry fs.DirEntry, result *scanR
 	if err != nil {
 		return err
 	}
-	content, relativePath, err := shared.ReadSourceFile(repoPath, cleanPath)
+	content, relativePath, err := shared.ReadSourceFile(repoPath, cleanPath, maxPythonSourceBytes)
 	if err != nil {
 		return err
 	}

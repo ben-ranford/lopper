@@ -3,6 +3,11 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import {
+  isResolvedPathInsideWorkspace,
+  workspaceRelativeAncestorDirectories,
+} from "./workspacePaths";
+
 export const lopperLanguageValues = [
   "auto",
   "all",
@@ -141,30 +146,25 @@ export class AndroidModuleSignalCache implements AndroidModuleSignalProvider {
       return false;
     }
 
+    const ancestorDirectories = workspaceRelativeAncestorDirectories(fileName, workspaceFolderPath, maxAndroidAncestors);
+    if (!ancestorDirectories) {
+      return false;
+    }
+
     const workspaceRoot = await realpath(workspaceFolderPath).catch(() => undefined);
     if (!workspaceRoot) {
       return false;
     }
-    const resolvedFile = path.resolve(fileName);
-    const relativeFile = path.relative(path.resolve(workspaceFolderPath), resolvedFile);
-    if (relativeFile === ".." || relativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFile)) {
-      return false;
-    }
 
-    let currentDir = path.dirname(path.join(workspaceRoot, relativeFile));
     const generation = this.generation;
-    for (let depth = 0; depth < maxAndroidAncestors && generation === this.generation; depth++) {
+    for (const relativeDirectory of ancestorDirectories) {
+      if (generation !== this.generation) {
+        break;
+      }
+      const currentDir = path.join(workspaceRoot, relativeDirectory);
       if (await this.moduleSignalsAndroid(currentDir, workspaceRoot) && generation === this.generation) {
         return true;
       }
-      if (currentDir === workspaceRoot) {
-        break;
-      }
-      const parentDir = path.dirname(currentDir);
-      if (parentDir === currentDir) {
-        break;
-      }
-      currentDir = parentDir;
     }
 
     return false;
@@ -411,9 +411,7 @@ function androidSignalModuleRoot(filePath: string, workspaceFolderPath?: string)
     return moduleRoot;
   }
 
-  const workspaceRoot = path.resolve(workspaceFolderPath);
-  const relativeModuleRoot = path.relative(workspaceRoot, moduleRoot);
-  if (relativeModuleRoot === ".." || relativeModuleRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeModuleRoot)) {
+  if (!isResolvedPathInsideWorkspace(moduleRoot, workspaceFolderPath)) {
     return undefined;
   }
   return moduleRoot;

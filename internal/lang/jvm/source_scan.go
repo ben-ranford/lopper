@@ -33,7 +33,7 @@ type scanResult struct {
 }
 
 func scanRepo(ctx context.Context, repoPath string, depPrefixes, depAliases map[string]string) (scanResult, error) {
-	return scanRepoWithSourceReader(ctx, repoPath, depPrefixes, depAliases, safeio.ReadFileUnderLimit)
+	return scanRepoWithSourceReader(ctx, repoPath, depPrefixes, depAliases, safeio.ReadRegularFileUnderLimit)
 }
 
 func scanRepoWithinRoot(ctx context.Context, repoPath string, root safeio.Root, depPrefixes, depAliases map[string]string) (scanResult, error) {
@@ -78,7 +78,7 @@ type jvmSourceReader func(rootDir, targetPath string, maxBytes int64) ([]byte, e
 
 func rootedJVMSourceReader(parent safeio.Root, leaf string) jvmSourceReader {
 	return func(_, _ string, maxBytes int64) ([]byte, error) {
-		return safeio.ReadFileWithinRootLimit(parent, leaf, maxBytes)
+		return safeio.ReadRegularFileWithinRootLimit(parent, leaf, maxBytes)
 	}
 }
 
@@ -120,7 +120,7 @@ func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes,
 }
 
 func scanJVMSourceFile(repoPath, path string, depPrefixes, depAliases map[string]string, result *scanResult) error {
-	return scanJVMSourceFileWithReader(repoPath, path, nil, depPrefixes, depAliases, result, safeio.ReadFileUnderLimit)
+	return scanJVMSourceFileWithReader(repoPath, path, nil, depPrefixes, depAliases, result, safeio.ReadRegularFileUnderLimit)
 }
 
 func scanJVMSourceFileWithReader(repoPath, path string, entry fs.DirEntry, depPrefixes, depAliases map[string]string, result *scanResult, readSource jvmSourceReader) error {
@@ -132,7 +132,7 @@ func scanJVMSourceFileWithReader(repoPath, path string, entry fs.DirEntry, depPr
 		err     error
 	)
 	if strings.TrimSpace(repoPath) == "" {
-		content, err = safeio.ReadFileLimit(path, maxScannableJVMSourceFile)
+		content, err = safeio.ReadRegularFileLimit(path, maxScannableJVMSourceFile)
 	} else {
 		content, err = readSource(repoPath, path, maxScannableJVMSourceFile)
 	}
@@ -240,7 +240,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath, filePackage string, depPrefixes, depAliases map[string]string) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := shared.MaskJVMImportSource(content, filePath)
 	parser := jvmImportParser{
 		filePackage: filePackage,
 		depPrefixes: depPrefixes,

@@ -10,16 +10,12 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func ReadYAMLUnderRepo[T any](repoPath, path string) (T, error) {
-	return ReadYAMLUnderRepoLimit[T](repoPath, path, 0)
-}
-
-// ReadYAMLUnderRepoLimit reads and parses YAML under repoPath without allowing
-// a regular file to exceed maxBytes when a positive limit is provided.
+// ReadYAMLUnderRepoLimit reads and parses a regular YAML file under repoPath.
+// maxBytes must be positive and bounds the file content before parsing.
 func ReadYAMLUnderRepoLimit[T any](repoPath, path string, maxBytes int64) (T, error) {
 	var value T
 
-	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxBytes)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxBytes)
 	if err != nil {
 		return value, err
 	}

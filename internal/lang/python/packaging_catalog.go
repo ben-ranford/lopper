@@ -52,7 +52,7 @@ func (c *packagingCatalog) read(repo, path string) (report.PythonManifestDocumen
 	if name == pythonPyprojectFile || name == pythonPipfileName {
 		limit = ManifestReadLimitBytes
 	}
-	data, err := safeio.ReadFileUnderLimit(repo, path, limit)
+	data, err := safeio.ReadRegularFileUnderLimit(repo, path, limit)
 	if err != nil {
 		document.FailureStage = "read"
 	} else {

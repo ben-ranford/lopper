@@ -1,7 +1,9 @@
 package js
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -15,8 +17,9 @@ import (
 )
 
 const (
-	jsPnpmWorkspaceFile = "pnpm-workspace.yaml"
-	jsYarnRCFile        = ".yarnrc.yml"
+	jsPnpmWorkspaceFile       = "pnpm-workspace.yaml"
+	jsYarnRCFile              = ".yarnrc.yml"
+	maxWorkspaceManifestBytes = 2 * 1024 * 1024
 )
 
 type workspaceDependencyCatalog struct {
@@ -126,7 +129,7 @@ func readWorkspacePackageJSON(repoPath, manifestPath string) (packageJSON, bool,
 		return packageJSON{}, false, fmt.Sprintf("workspace manifest path is a directory: %s", workspaceDisplayPath(repoPath, manifestPath))
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxWorkspaceManifestBytes)
 	if err != nil {
 		return packageJSON{}, false, fmt.Sprintf("unable to read workspace manifest %s: %v", workspaceDisplayPath(repoPath, manifestPath), err)
 	}
@@ -147,7 +150,7 @@ func readPnpmWorkspaceManifest(repoPath string) (pnpmWorkspaceManifest, bool, st
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsPnpmWorkspaceFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[pnpmWorkspaceManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[pnpmWorkspaceManifest](repoPath, path, maxWorkspaceManifestBytes)
 	if err != nil {
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsPnpmWorkspaceFile, err)
 	}
@@ -163,7 +166,7 @@ func readYarnCatalogManifest(repoPath string) (yarnCatalogManifest, bool, string
 		return yarnCatalogManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsYarnRCFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[yarnCatalogManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[yarnCatalogManifest](repoPath, path, maxWorkspaceManifestBytes)
 	if err != nil {
 		return yarnCatalogManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsYarnRCFile, err)
 	}
@@ -254,49 +257,71 @@ func discoverWorkspacePackageDirs(repoPath string, workspacePatterns []string) (
 	return out, dedupeWorkspaceWarnings(warnings)
 }
 
-func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (map[string]struct{}, []string) {
-	dirs := make(map[string]struct{})
-	warnings := make([]string, 0)
+func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (dirs map[string]struct{}, warnings []string) {
+	dirs = make(map[string]struct{})
+	warnings = make([]string, 0)
+	if shared.ShouldSkipDir(filepath.Base(searchRoot), skipDirectories) {
+		return dirs, warnings
+	}
 
-	if warning, skip := validateWorkspaceSearchRoot(searchRoot); skip {
+	root, warning := openWorkspaceSearchRoot(repoPath, searchRoot)
+	if root == nil {
 		if warning != "" {
 			warnings = append(warnings, warning)
 		}
 		return dirs, warnings
 	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			warnings = append(warnings, fmt.Sprintf("unable to close workspace search root %q: %v", searchRoot, err))
+		}
+	}()
 
-	walkErr := filepath.WalkDir(searchRoot, workspacePackageDirWalker(repoPath, rootManifestPath, compiledPatterns, dirs))
+	walkErr := shared.WalkRepoFilesWithinRoot(
+		context.Background(),
+		searchRoot,
+		root,
+		shared.RootedWalkBudget{},
+		func(name string) bool { return shared.ShouldSkipDir(name, skipDirectories) },
+		workspacePackageDirVisitor(repoPath, rootManifestPath, compiledPatterns, dirs),
+	)
 	if walkErr != nil {
 		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests under %q: %v", searchRoot, walkErr))
 	}
 	return dirs, warnings
 }
 
-func validateWorkspaceSearchRoot(searchRoot string) (string, bool) {
-	info, err := os.Stat(searchRoot)
+func openWorkspaceSearchRoot(repoPath, searchRoot string) (safeio.Root, string) {
+	if _, ok := workspaceRelativeDir(repoPath, searchRoot); !ok {
+		return nil, fmt.Sprintf("unable to access workspace search root %q outside repository", searchRoot)
+	}
+
+	info, err := os.Lstat(searchRoot)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", true
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ""
 		}
-		return fmt.Sprintf("unable to access workspace search root %q: %v", searchRoot, err), true
+		return nil, fmt.Sprintf("unable to access workspace search root %q: %v", searchRoot, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Sprintf("unable to open workspace search root %q: path is a symlink", searchRoot)
 	}
 	if !info.IsDir() {
-		return "", true
+		return nil, ""
 	}
-	return "", false
+
+	root, err := safeio.OpenRootNoFollow(searchRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ""
+		}
+		return nil, fmt.Sprintf("unable to open workspace search root %q: %v", searchRoot, err)
+	}
+	return root, ""
 }
 
-func workspacePackageDirWalker(repoPath, rootManifestPath string, compiledPatterns []workspacePattern, dirs map[string]struct{}) fs.WalkDirFunc {
-	return func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if shouldSkipWorkspaceWalkDir(entry) {
-			return filepath.SkipDir
-		}
-		if entry.IsDir() {
-			return nil
-		}
+func workspacePackageDirVisitor(repoPath, rootManifestPath string, compiledPatterns []workspacePattern, dirs map[string]struct{}) func(string, fs.DirEntry) error {
+	return func(path string, entry fs.DirEntry) error {
 		if !isWorkspacePackageManifestEntry(path, entry, rootManifestPath) {
 			return nil
 		}
@@ -307,10 +332,6 @@ func workspacePackageDirWalker(repoPath, rootManifestPath string, compiledPatter
 		dirs[dir] = struct{}{}
 		return nil
 	}
-}
-
-func shouldSkipWorkspaceWalkDir(entry fs.DirEntry) bool {
-	return entry.IsDir() && shared.ShouldSkipDir(entry.Name(), skipDirectories)
 }
 
 func isWorkspacePackageManifestEntry(path string, entry fs.DirEntry, rootManifestPath string) bool {
