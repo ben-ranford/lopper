@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -243,8 +244,8 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 			Line:   directiveLine + 1,
 			Column: shared.FirstContentColumn(lines[directiveLine]),
 		}
-		bindings := buildDirectiveBindings(parsed.kind, parsed.module, parsed.clause, dependency, location)
-		imports = append(imports, locateDirectiveBindings(lines[directiveLine:lineIndex], bindings)...)
+		bindings := buildDirectiveBindings(parsed.kind, parsed.module, parsed.bindingClause, dependency, location)
+		imports = append(imports, locateDirectiveBindings(directive, bindings, parsed.conditionalClauseStart, parsed.conditionalClauseEnd)...)
 	}
 	if len(usageContent) == 0 {
 		usageContent = content
@@ -261,8 +262,8 @@ func maskConditionalDirective(content []byte) {
 	}
 }
 
-func locateDirectiveBindings(lines []string, bindings []importBinding) []importBinding {
-	locations := directiveDeclarationLocations(lines, bindings)
+func locateDirectiveBindings(directive string, bindings []importBinding, conditionalStart, conditionalEnd int) []importBinding {
+	locations := directiveDeclarationLocations(directive, bindings, conditionalStart, conditionalEnd)
 	for i := range bindings {
 		if bindings[i].Wildcard {
 			continue
@@ -281,7 +282,7 @@ type directiveBindingLocation struct {
 	column     int
 }
 
-func directiveDeclarationLocations(lines []string, bindings []importBinding) map[string]directiveBindingLocation {
+func directiveDeclarationLocations(directive string, bindings []importBinding, conditionalStart, conditionalEnd int) map[string]directiveBindingLocation {
 	wanted := make(map[string]struct{}, len(bindings))
 	for _, binding := range bindings {
 		if !binding.Wildcard && binding.Local != "" {
@@ -289,7 +290,12 @@ func directiveDeclarationLocations(lines []string, bindings []importBinding) map
 		}
 	}
 	locations := make(map[string]directiveBindingLocation, len(wanted))
-	code := maskDirectiveLiteralsAndComments(strings.Join(lines, "\n"))
+	code := maskDirectiveLiteralsAndComments(directive)
+	if conditionalEnd > conditionalStart {
+		masked := []byte(code)
+		maskConditionalDirective(masked[conditionalStart:conditionalEnd])
+		code = string(masked)
+	}
 	addDirectiveAliasLocation(code, locations, wanted)
 	showList := false
 	for lineOffset, line := range strings.Split(code, "\n") {
@@ -534,8 +540,9 @@ func parseImportDirective(line string) (string, string, string, bool) {
 }
 
 type parsedDartDirective struct {
-	kind, module, clause             string
-	conditionalStart, conditionalEnd int
+	kind, module, clause, bindingClause          string
+	conditionalStart, conditionalEnd             int
+	conditionalClauseStart, conditionalClauseEnd int
 }
 
 func parseDartDirective(line string) (parsedDartDirective, bool) {
@@ -543,39 +550,49 @@ func parseDartDirective(line string) (parsedDartDirective, bool) {
 	if len(match) != 8 {
 		return parsedDartDirective{}, false
 	}
+	rawClause := line[match[6]:match[7]]
 	parsed := parsedDartDirective{
 		kind:   strings.TrimSpace(strings.ToLower(line[match[2]:match[3]])),
 		module: strings.TrimSpace(line[match[4]:match[5]]),
-		clause: strings.TrimSpace(line[match[6]:match[7]]),
+		clause: strings.TrimSpace(rawClause),
 	}
-	conditional, ok := classifyDirectiveClause(parsed.clause)
+	conditionalClauseEnd, ok := classifyDirectiveClause(parsed.clause)
 	if !ok {
 		return parsedDartDirective{}, false
 	}
-	if conditional {
+	if conditionalClauseEnd > 0 {
 		// The captures start at the keyword and end immediately before the terminator.
 		parsed.conditionalStart = match[2]
 		parsed.conditionalEnd = match[7] + 1
+		parsed.conditionalClauseStart = match[6] + len(rawClause) - len(strings.TrimLeftFunc(rawClause, unicode.IsSpace))
+		parsed.conditionalClauseEnd = parsed.conditionalClauseStart + conditionalClauseEnd
 	}
+	parsed.bindingClause = parsed.clause[conditionalClauseEnd:]
 	return parsed, true
 }
 
-func classifyDirectiveClause(clause string) (conditional, valid bool) {
-	remaining := strings.TrimSpace(clause)
+func classifyDirectiveClause(clause string) (conditionalEnd int, valid bool) {
+	remaining := clause
+	for {
+		remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
+		match := directiveConditionalClausePattern.FindStringIndex(remaining)
+		if len(match) == 0 {
+			break
+		}
+		remaining = remaining[match[1]:]
+		conditionalEnd = len(clause) - len(remaining)
+	}
 	for remaining != "" {
 		switch {
 		case directiveAliasClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveAliasClausePattern.ReplaceAllString(remaining, ""))
-		case directiveConditionalClausePattern.MatchString(remaining):
-			conditional = true
-			remaining = strings.TrimSpace(directiveConditionalClausePattern.ReplaceAllString(remaining, ""))
 		case directiveCombinatorClausePattern.MatchString(remaining):
 			remaining = strings.TrimSpace(directiveCombinatorClausePattern.ReplaceAllString(remaining, ""))
 		default:
-			return false, false
+			return 0, false
 		}
 	}
-	return conditional, true
+	return conditionalEnd, true
 }
 
 func buildDirectiveBindings(kind, module, clause, dependency string, location report.Location) []importBinding {
@@ -590,8 +607,6 @@ func buildDirectiveBindings(kind, module, clause, dependency string, location re
 		}}
 	}
 
-	// Conditional branches carry URIs of their own; blank them so an alias or a
-	// show identifier can only be read from the clause itself.
 	clause = maskDirectiveLiteralsAndComments(clause)
 	alias := extractAlias(clause)
 	showSymbols := parseShowSymbols(clause)

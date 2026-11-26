@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func TestParseImportDirectiveAcceptsConditionalClauses(t *testing.T) {
@@ -105,6 +104,10 @@ func TestParseImportDirectiveRejectsMalformedConditionalClauses(t *testing.T) {
 		"empty condition segment":     `import 'package:http/http.dart' if (dart..io) 'src/io.dart';`,
 		"trailing dot condition":      `import 'package:http/http.dart' if (dart.library.) 'src/io.dart';`,
 		"branch after combinator":     `import 'package:http/http.dart' show Client if (dart.library.io) 'src/io.dart' as x unless y;`,
+		"branch after alias":          `import 'package:http/http.dart' as http if (dart.library.io) 'src/io.dart';`,
+		"branch after deferred alias": `import 'package:http/http.dart' deferred as http if (dart.library.io) 'src/io.dart';`,
+		"branch after show":           `import 'package:http/http.dart' show Client if (dart.library.io) 'src/io.dart';`,
+		"branch after hide":           `import 'package:http/http.dart' hide Client if (dart.library.io) 'src/io.dart';`,
 		"equality without operand":    `import 'package:foo/foo.dart' if (dart.library.io ==) 'src/io.dart';`,
 		"unquoted equality operand":   `import 'package:foo/foo.dart' if (dart.library.io == true) 'src/io.dart';`,
 		"equality on empty condition": `import 'package:foo/foo.dart' if (== 'true') 'src/io.dart';`,
@@ -234,19 +237,15 @@ func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T)
 			directive: `import 'package:http/http.dart' if (dart.library.io) 'src/io.dart' show Client, Request;`,
 			want:      []string{"Client", "Request"},
 		},
+		"show after a predicate identifier": {
+			directive: `import 'package:http/http.dart' if (config.show == 'true') 'src/io.dart' show Client;`,
+			want:      []string{"Client"},
+		},
 	}
 
 	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
-			directive, _, ok := collectDirective([]string{testCase.directive})
-			if !ok {
-				t.Fatalf("expected %q to end with a directive terminator", testCase.directive)
-			}
-			kind, module, clause, ok := parseImportDirective(directive)
-			if !ok {
-				t.Fatalf("expected %q to parse", testCase.directive)
-			}
-			bindings := buildDirectiveBindings(kind, module, clause, "http", report.Location{})
+			bindings := parseDartImports([]byte(testCase.directive), "lib/main.dart", map[string]dependencyInfo{"http": {}}, nil)
 			got := make([]string, 0, len(bindings))
 			for _, binding := range bindings {
 				got = append(got, binding.Name)
@@ -255,5 +254,33 @@ func TestBuildDirectiveBindingsIgnoresIdentifiersInConditionalUris(t *testing.T)
 				t.Fatalf("bindings for %q = %v, want %v", testCase.directive, got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestDartConditionalShowBindingKeepsCombinatorLocation(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, mainDartFileName)
+	writeFile(t, sourcePath, `import 'package:http/http.dart'
+    if (config.show.Client == 'true') 'src/io.dart'
+    show Client;
+
+void main() {}
+`)
+	var result scanResult
+	if err := scanDartSourceFile(repo, sourcePath, map[string]dependencyInfo{"http": {}}, &result); err != nil {
+		t.Fatalf("scan conditional Dart source: %v", err)
+	}
+	if len(result.Files) != 1 || len(result.Files[0].Imports) != 1 {
+		t.Fatalf("expected one explicit binding, got %#v", result.Files)
+	}
+	binding := result.Files[0].Imports[0]
+	if binding.Local != "Client" || binding.Wildcard {
+		t.Fatalf("expected explicit unused Client binding, got %#v", binding)
+	}
+	if binding.Location.Line != 3 || binding.Location.Column != 10 {
+		t.Fatalf("expected Client on line 3, column 10, got %#v", binding.Location)
+	}
+	if got := result.Files[0].Usage["Client"]; got != 0 {
+		t.Fatalf("Client uses = %d, want 0", got)
 	}
 }
