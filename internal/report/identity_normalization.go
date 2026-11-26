@@ -84,24 +84,38 @@ func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
 }
 
 func buildCanonicalNPMPURLPath(namespace, name string) string {
-	if namespace == "" && strings.HasPrefix(name, "@") {
-		return escapeScopedNPMPURLPath(name)
-	}
-	if strings.ContainsRune(name, '/') {
+	namespace, name, ok := npmPackageCoordinates(namespace, name)
+	if !ok {
 		return ""
 	}
-	if namespace != "" {
-		return escapePURLPathWithNamespace(namespace, name)
+	if namespace == "" {
+		return escapePURLSegment(name)
 	}
-	return escapePURLSegment(name)
+	return escapePURLSegmentWithAtSign(namespace) + "/" + escapePURLSegment(name)
 }
 
-func escapeScopedNPMPURLPath(name string) string {
-	scope, packageName, ok := strings.Cut(name, "/")
-	if !ok || scope == "" || packageName == "" || strings.ContainsRune(packageName, '/') {
-		return ""
+// ValidNPMPackageName checks the coordinate syntax for an unscoped or scoped npm package name.
+func ValidNPMPackageName(name string) bool {
+	_, _, ok := npmPackageCoordinates("", name)
+	return ok
+}
+
+func npmPackageCoordinates(namespace, name string) (string, string, bool) {
+	if namespace == "" && strings.HasPrefix(name, "@") {
+		var ok bool
+		namespace, name, ok = strings.Cut(name, "/")
+		if !ok {
+			return "", "", false
+		}
 	}
-	return escapePURLSegmentWithAtSign(scope) + "/" + escapePURLSegment(packageName)
+	const disallowed = "@/ \t\r\n"
+	if name == "" || strings.ContainsAny(name, disallowed) {
+		return "", "", false
+	}
+	if namespace != "" && (len(namespace) <= 1 || namespace[0] != '@' || strings.ContainsAny(namespace[1:], disallowed)) {
+		return "", "", false
+	}
+	return namespace, name, true
 }
 
 func escapePURLPathWithNamespace(namespace, name string) string {

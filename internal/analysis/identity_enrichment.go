@@ -1620,24 +1620,10 @@ func parsePNPMAliasReference(value string) (string, string, bool) {
 		name = reference[:versionAt]
 		version = reference[versionAt+1:]
 	}
-	if !validPNPMAliasTarget(name) {
+	if !report.ValidNPMPackageName(name) {
 		return "", "", false
 	}
 	return name, version, true
-}
-
-func validPNPMAliasTarget(name string) bool {
-	if name == "" || strings.ContainsAny(name, " \t\r\n") {
-		return false
-	}
-	if !strings.HasPrefix(name, "@") {
-		return !strings.ContainsAny(name, "@/")
-	}
-	scope, packageName, ok := strings.Cut(name, "/")
-	if !ok || len(scope) <= 1 || packageName == "" {
-		return false
-	}
-	return !strings.Contains(scope[1:], "@") && !strings.ContainsAny(packageName, "@/")
 }
 
 func normalizePNPMLockVersion(version, name string) string {
