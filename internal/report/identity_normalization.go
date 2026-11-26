@@ -50,38 +50,55 @@ func BuildCanonicalPURL(ecosystem, namespace, name, version string) string {
 	if ecosystem == "" || !purlTypeRe.MatchString(ecosystem) || name == "" || version == "" {
 		return ""
 	}
-	if ecosystem == "composer" && namespace == "" {
-		if vendor, packageName, ok := strings.Cut(name, "/"); ok && vendor != "" && packageName != "" {
-			namespace, name = vendor, packageName
-		} else {
-			return ""
-		}
-	}
-	if ecosystem == "golang" && namespace == "" {
-		if lastSlash := strings.LastIndexByte(name, '/'); lastSlash > 0 && lastSlash+1 < len(name) {
-			namespace, name = name[:lastSlash], name[lastSlash+1:]
-		}
-	}
-	if ecosystem == "npm" && namespace == "" && strings.HasPrefix(name, "@") {
-		if scope, packageName, ok := strings.Cut(name, "/"); ok && scope != "" && packageName != "" {
-			return CanonicalPURL("pkg:npm/" + escapeNPMScopeSegment(scope) + "/" + escapePURLSegment(packageName) + "@" + escapePURLSegment(version))
-		}
+	path := buildCanonicalPURLPath(ecosystem, namespace, name)
+	if path == "" {
 		return ""
 	}
-	path := escapePURLSegment(name)
+	return CanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+}
+
+func buildCanonicalPURLPath(ecosystem, namespace, name string) string {
 	if namespace != "" {
-		segments := make([]string, 0, strings.Count(namespace, "/")+1)
-		for _, segment := range strings.Split(namespace, "/") {
-			if segment != "" {
-				segments = append(segments, escapePURLSegment(segment))
-			}
-		}
-		if len(segments) == 0 {
+		return escapePURLPathWithNamespace(namespace, name)
+	}
+	switch ecosystem {
+	case "composer":
+		vendor, packageName, ok := strings.Cut(name, "/")
+		if !ok || vendor == "" || packageName == "" {
 			return ""
 		}
-		path = strings.Join(append(segments, path), "/")
+		return escapePURLPathWithNamespace(vendor, packageName)
+	case "golang":
+		if lastSlash := strings.LastIndexByte(name, '/'); lastSlash > 0 && lastSlash+1 < len(name) {
+			return escapePURLPathWithNamespace(name[:lastSlash], name[lastSlash+1:])
+		}
+	case "npm":
+		if strings.HasPrefix(name, "@") {
+			return escapeScopedNPMPURLPath(name)
+		}
 	}
-	return CanonicalPURL("pkg:" + ecosystem + "/" + path + "@" + escapePURLSegment(version))
+	return escapePURLSegment(name)
+}
+
+func escapeScopedNPMPURLPath(name string) string {
+	scope, packageName, ok := strings.Cut(name, "/")
+	if !ok || scope == "" || packageName == "" {
+		return ""
+	}
+	return escapeNPMScopeSegment(scope) + "/" + escapePURLSegment(packageName)
+}
+
+func escapePURLPathWithNamespace(namespace, name string) string {
+	segments := make([]string, 0, strings.Count(namespace, "/")+1)
+	for _, segment := range strings.Split(namespace, "/") {
+		if segment != "" {
+			segments = append(segments, escapePURLSegment(segment))
+		}
+	}
+	if len(segments) == 0 {
+		return ""
+	}
+	return strings.Join(append(segments, escapePURLSegment(name)), "/")
 }
 
 func CanonicalPURL(value string) string {
