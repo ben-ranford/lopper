@@ -339,7 +339,7 @@ func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameS
 
 func nestedScope(node ast.Node, parent *nameScope) (*nameScope, bool) {
 	switch typed := node.(type) {
-	case *ast.BlockStmt, *ast.FuncLit:
+	case *ast.BlockStmt, *ast.FuncLit, *ast.CaseClause, *ast.CommClause:
 		return newNameScope(parent), true
 	case *ast.IfStmt:
 		return scopeForDefine(typed.Init, parent)

@@ -335,6 +335,28 @@ func defaultVarLimit(path string) {
 	_, _ = safeio.ReadFileLimit(path, limit)
 }
 
+func scopedSwitch(path string, first bool) {
+	limit := int64(0)
+	switch first {
+	case true:
+		limit := int64(12)
+		_, _ = safeio.ReadRegularFileLimit(path, limit)
+	default:
+		_, _ = safeio.ReadRegularFileLimit(path, limit)
+	}
+}
+
+func scopedSelect(path string, ready <-chan struct{}) {
+	limit := int64(0)
+	select {
+	case <-ready:
+		limit := int64(12)
+		_, _ = safeio.ReadRegularFileLimit(path, limit)
+	default:
+		_, _ = safeio.ReadRegularFileLimit(path, limit)
+	}
+}
+
 func updatedLimit(path string, next int64, values []int64) {
 	limit := int64(0)
 	limit = next
@@ -369,6 +391,8 @@ func updatedLimit(path string, next int64, values []int64) {
 		"local.go\tshortDeclaration\tsafeio.ReadFileLimit\t1",
 		"local.go\tshortInitializer\tsafeio.ReadFileLimit\t1",
 		"local.go\tdefaultVarLimit\tsafeio.ReadFileLimit\t1",
+		"local.go\tscopedSwitch\tsafeio.ReadRegularFileLimit\t1",
+		"local.go\tscopedSelect\tsafeio.ReadRegularFileLimit\t1",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reads = %#v", got)
