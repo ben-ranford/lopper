@@ -178,7 +178,7 @@ func loadComposerLockMappings(repoPath string, data *composerData) error {
 
 func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 	path := filepath.Join(repoPath, filename)
-	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, composerInputByteLimit(filename))
+	bytes, err := safeio.ReadRegularFileUnderLimit(repoPath, path, composerInputByteLimit(filename))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, false, nil

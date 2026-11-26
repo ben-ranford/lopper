@@ -69,6 +69,15 @@ import sio "github.com/ben-ranford/lopper/internal/safeio"
 func aliased(path string) {
 	_, _ = sio.ReadFile(path)
 }
+
+func aliasParameter(path string, sio struct{ ReadFile func(string) ([]byte, error) }) {
+	_, _ = sio.ReadFile(path)
+}
+
+func aliasInitializer(path string) {
+	var sio, _ = sio.ReadFile(path)
+	_ = sio
+}
 `,
 		"dot.go": `package sample
 
@@ -76,6 +85,17 @@ import . "github.com/ben-ranford/lopper/internal/safeio"
 
 func dotted(path string) {
 	_, _ = ReadFile(path)
+}
+
+func dottedParameter(path string, ReadFile func(string) ([]byte, error)) {
+	_, _ = ReadFile(path)
+}
+
+func dottedLocal(path string, reader func(string) ([]byte, error)) {
+	var ReadFile = reader
+	_, _ = ReadFile(path)
+	ReadFileUnder := reader
+	_, _ = ReadFileUnder(path)
 }
 `,
 		"blank.go": `package sample
@@ -110,6 +130,17 @@ const (
 func useIota(root, path string) {
 	_, _ = safeio.ReadFileUnderLimit(root, path, iotaZero)
 	_, _ = safeio.ReadFileUnderLimit(root, path, iotaOne)
+}
+
+var sharedLimit int64 = 12
+
+func dynamicLimit(root, path string) {
+	_, _ = safeio.ReadFileUnderLimit(root, path, sharedLimit)
+	_, _ = safeio.ReadRegularFileUnderLimit(root, path, sharedLimit)
+}
+
+func unevaluatedLimit(root, path string) {
+	_, _ = safeio.ReadFileUnderLimit(root, path, 2 ^ 2)
 }
 `,
 		"methods.go": `package sample
@@ -164,6 +195,14 @@ func hidden(path string) {
 	_, _ = safeio.ReadFile(path)
 }
 `,
+		"internal/dist/read.go": `package dist
+
+import "github.com/ben-ranford/lopper/internal/safeio"
+
+func read(path string) {
+	_, _ = safeio.ReadFile(path)
+}
+`,
 		".artifacts/generated.go": `package generated
 
 import "github.com/ben-ranford/lopper/internal/safeio"
@@ -193,16 +232,23 @@ func generated(path string) {
 		"unbounded.go\tloadLimited\tsafeio.ReadFileUnderLimit\t4",
 		"unbounded.go\tloadLimited\tsafeio.ReadFileUnderLimit\t5",
 		"unbounded.go\tloadLimited\tsafeio.ReadFileUnderLimit\t6",
+		"unbounded.go\tloadLimited\tsafeio.ReadFileUnderLimit\t7",
+		"unbounded.go\tloadLimited\tsafeio.ReadFileUnderLimit\t8",
 		"unbounded.go\tloadLimited\tsafeio.ReadFileLimit\t1",
 		"unbounded.go\tbox.read\tsafeio.ReadFile\t1",
 		"alias.go\taliased\tsafeio.ReadFile\t1",
+		"alias.go\taliasInitializer\tsafeio.ReadFile\t1",
 		"dot.go\tdotted\tsafeio.ReadFile\t1",
 		"values.go\tvar:readFile\tsafeio.ReadFile\t1",
 		"values.go\tuseIota\tsafeio.ReadFileUnderLimit\t1",
+		"values.go\tdynamicLimit\tsafeio.ReadFileUnderLimit\t1",
+		"values.go\tunevaluatedLimit\tsafeio.ReadFileUnderLimit\t1",
 		"methods.go\tpair.read\tsafeio.ReadFile\t1",
 		"methods.go\tpair.readUnder\tsafeio.ReadFileUnder\t1",
 		"methods.go\treceiver.raw\tsafeio.ReadFile\t1",
 		"same/read.go\tReadFileUnder\tsafeio.ReadFileUnderLimit\t1",
+		"same/read.go\tReadFileUnderLimit\tsafeio.ReadFileLimit\t1",
+		"internal/dist/read.go\tread\tsafeio.ReadFile\t1",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reads = %d, want %d\n%s", len(got), len(want), strings.Join(keys(got), "\n"))
@@ -251,7 +297,7 @@ func afterBlock(path string) {
 }
 
 func param(path string, packageLimit int64) {
-	_, _ = safeio.ReadFileLimit(path, packageLimit)
+	_, _ = safeio.ReadRegularFileLimit(path, packageLimit)
 }
 
 func localIota(path string) {
@@ -280,19 +326,28 @@ func shortPositive(path string) {
 	_, _ = safeio.ReadFileLimit(path, limit)
 }
 
+func defaultVarLimit(path string) {
+	var (
+		positive = int64(12)
+		limit int64
+	)
+	_, _ = safeio.ReadFileLimit(path, positive)
+	_, _ = safeio.ReadFileLimit(path, limit)
+}
+
 func updatedLimit(path string, next int64, values []int64) {
 	limit := int64(0)
 	limit = next
-	_, _ = safeio.ReadFileLimit(path, limit)
+	_, _ = safeio.ReadRegularFileLimit(path, limit)
 	other := int64(0)
 	other++
-	_, _ = safeio.ReadFileLimit(path, other)
+	_, _ = safeio.ReadRegularFileLimit(path, other)
 	addressed := int64(0)
 	_ = &addressed
-	_, _ = safeio.ReadFileLimit(path, addressed)
+	_, _ = safeio.ReadRegularFileLimit(path, addressed)
 	iterated := int64(0)
 	for _, iterated = range values {
-		_, _ = safeio.ReadFileLimit(path, iterated)
+		_, _ = safeio.ReadRegularFileLimit(path, iterated)
 	}
 }
 `,
@@ -313,6 +368,7 @@ func updatedLimit(path string, next int64, values []int64) {
 		"local.go\tlocalIota\tsafeio.ReadFileLimit\t1",
 		"local.go\tshortDeclaration\tsafeio.ReadFileLimit\t1",
 		"local.go\tshortInitializer\tsafeio.ReadFileLimit\t1",
+		"local.go\tdefaultVarLimit\tsafeio.ReadFileLimit\t1",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reads = %#v", got)

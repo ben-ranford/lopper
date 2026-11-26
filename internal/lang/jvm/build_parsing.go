@@ -667,7 +667,7 @@ func parseBuildFileEntry(repoPath, path string, entry fs.DirEntry, names []strin
 		return nil
 	}
 
-	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableJVMBuildFile)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxScannableJVMBuildFile)
 	if err != nil {
 		return nil
 	}
@@ -706,7 +706,7 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
 		return nil
 	}
-	content, readErr := safeio.ReadFileUnderLimit(c.repoPath, path, maxScannableJVMBuildFile)
+	content, readErr := safeio.ReadRegularFileUnderLimit(c.repoPath, path, maxScannableJVMBuildFile)
 	if readErr != nil {
 		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
 		return nil
@@ -743,7 +743,7 @@ func (c *buildFileWarningCollector) visitWithinRootContext(ctx context.Context, 
 		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
 		return nil
 	}
-	content, readErr := safeio.ReadFileWithinRootLimit(parent, leaf, maxScannableJVMBuildFile)
+	content, readErr := safeio.ReadRegularFileWithinRootLimit(parent, leaf, maxScannableJVMBuildFile)
 	if readErr != nil {
 		c.catalog.readFailure(c.repoPath, path, readErr)
 		if !isPureJVMBuildFileReadWarning(readErr) {
@@ -781,7 +781,7 @@ func readJVMBuildFileWithinRoot(root safeio.Root, repoPath, path string) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	return safeio.ReadFileWithinRootLimit(root, relativePath, maxScannableJVMBuildFile)
+	return safeio.ReadRegularFileWithinRootLimit(root, relativePath, maxScannableJVMBuildFile)
 }
 
 func formatBuildFileReadWarning(repoPath, path string, err error) string {

@@ -1841,7 +1841,7 @@ func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warn
 }
 
 func collectRequirementsEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

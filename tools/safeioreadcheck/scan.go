@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -85,10 +86,7 @@ func productionGoFiles(root string) ([]string, error) {
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if path != root && skipScanDir(name) {
-				return filepath.SkipDir
-			}
-			return nil
+			return checkScanDirectory(root, path)
 		}
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
@@ -112,12 +110,17 @@ func productionGoFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-func skipScanDir(name string) bool {
-	switch name {
-	case ".git", ".artifacts", ".omx", ".lopper-cache", "vendor", "node_modules", "bin", "dist":
-		return true
+func checkScanDirectory(root, path string) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	switch filepath.ToSlash(relative) {
+	case ".git", ".artifacts", ".omx", ".lopper-cache", "vendor", "bin", "dist",
+		"extensions/vscode-lopper/node_modules", "extensions/vscode-lopper/out", "extensions/vscode-lopper/.vscode-test":
+		return filepath.SkipDir
 	default:
-		return false
+		return nil
 	}
 }
 
@@ -294,36 +297,42 @@ func packageValueName(tok token.Token, spec *ast.ValueSpec) string {
 type referenceRecorder func(function, callee string, pos token.Pos)
 
 type walkFrame struct {
-	pushed bool
+	node     ast.Node
+	pushed   bool
+	iota     int64
+	previous []ast.Expr
 }
 
 func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
-	var stack []ast.Node
 	var frames []walkFrame
 	ast.Inspect(node, func(current ast.Node) bool {
 		if current == nil {
 			frame := frames[len(frames)-1]
-			finishNode(stack[len(stack)-1], scope)
 			frames = frames[:len(frames)-1]
-			stack = stack[:len(stack)-1]
+			finishNode(frame.node, scope)
+			if len(frames) > 0 {
+				frames[len(frames)-1].finishChild(frame.node, scope)
+			}
 			if frame.pushed {
 				scope = scope.parent
 			}
 			return false
 		}
 		var parent ast.Node
-		if len(stack) > 0 {
-			parent = stack[len(stack)-1]
+		if len(frames) > 0 {
+			parent = frames[len(frames)-1].node
 		}
 		pushed := false
 		if child, ok := nestedScope(current, scope); ok {
 			scope = child
 			pushed = true
 		}
-		bindNode(current, scope)
+		if literal, ok := current.(*ast.FuncLit); ok {
+			declareFields(scope, literal.Type.Params)
+			declareFields(scope, literal.Type.Results)
+		}
 		noteReference(current, parent, fn, names, scope, record)
-		stack = append(stack, current)
-		frames = append(frames, walkFrame{pushed: pushed})
+		frames = append(frames, walkFrame{node: current, pushed: pushed})
 		return true
 	})
 }
@@ -356,24 +365,33 @@ func scopeForDefine(stmt ast.Stmt, parent *nameScope) (*nameScope, bool) {
 	return newNameScope(parent), true
 }
 
-func bindNode(node ast.Node, scope *nameScope) {
-	switch typed := node.(type) {
+func (f *walkFrame) finishChild(child ast.Node, scope *nameScope) {
+	switch parent := f.node.(type) {
 	case *ast.GenDecl:
-		if typed.Tok == token.CONST || typed.Tok == token.VAR {
-			bindGenDecl(scope, typed)
+		if spec, ok := child.(*ast.ValueSpec); ok {
+			exprs := spec.Values
+			if parent.Tok == token.CONST {
+				exprs = valueExprs(spec, f.previous)
+				f.previous = exprs
+			}
+			bindSpec(scope, spec, exprs, f.iota)
+			f.iota++
 		}
-	case *ast.FuncLit:
-		declareFields(scope, typed.Type.Params)
-		declareFields(scope, typed.Type.Results)
 	case *ast.RangeStmt:
-		if typed.Tok == token.DEFINE {
-			declareExpr(scope, typed.Key)
-			declareExpr(scope, typed.Value)
-		} else {
-			scope.forget(typed.Key)
-			scope.forget(typed.Value)
+		if child == parent.X {
+			bindRange(scope, parent)
 		}
 	}
+}
+
+func bindRange(scope *nameScope, stmt *ast.RangeStmt) {
+	if stmt.Tok == token.DEFINE {
+		declareExpr(scope, stmt.Key)
+		declareExpr(scope, stmt.Value)
+		return
+	}
+	scope.forget(stmt.Key)
+	scope.forget(stmt.Value)
 }
 
 func finishNode(node ast.Node, scope *nameScope) {
@@ -413,7 +431,7 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *n
 	switch typed := node.(type) {
 	case *ast.SelectorExpr:
 		pkg, ok := typed.X.(*ast.Ident)
-		if !ok {
+		if !ok || scope.isDeclared(pkg.Name) {
 			return
 		}
 		if _, known := names.selectors[pkg.Name]; !known {
@@ -424,16 +442,33 @@ func noteReference(node, parent ast.Node, fn string, names safeioNames, scope *n
 		}
 		record(fn, typed.Sel.Name, typed.Pos())
 	case *ast.Ident:
-		if selector, ok := parent.(*ast.SelectorExpr); ok && selector.Sel == typed {
+		if (!names.dot && !names.samePkg) || scope.isDeclared(typed.Name) {
 			return
 		}
-		if !names.dot && !names.samePkg {
+		if isBindingName(typed, parent) {
 			return
 		}
 		if !considerCallee(typed.Name, parent, typed, scope) {
 			return
 		}
 		record(fn, typed.Name, typed.Pos())
+	}
+}
+
+func isBindingName(name *ast.Ident, parent ast.Node) bool {
+	switch typed := parent.(type) {
+	case *ast.SelectorExpr:
+		return typed.Sel == name
+	case *ast.AssignStmt:
+		return slices.Contains(typed.Lhs, ast.Expr(name))
+	case *ast.ValueSpec:
+		return slices.Contains(typed.Names, name)
+	case *ast.RangeStmt:
+		return typed.Key == name || typed.Value == name
+	case *ast.Field, *ast.TypeSpec, *ast.LabeledStmt, *ast.BranchStmt:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -445,15 +480,25 @@ func considerCallee(name string, parent, fun ast.Node, scope *nameScope) bool {
 	if !isLimitedRead(name) {
 		return false
 	}
+	legacy := isLegacyLimitedRead(name)
 	call, ok := parent.(*ast.CallExpr)
 	if !ok || call.Fun != fun {
-		return false
+		return legacy
 	}
 	if len(call.Args) == 0 {
 		return true
 	}
 	value, known := evalInt(call.Args[len(call.Args)-1], scope.visibleInts(), 0)
-	return known && value <= 0
+	return (known && value <= 0) || (!known && legacy)
+}
+
+func isLegacyLimitedRead(name string) bool {
+	switch name {
+	case "ReadFileLimit", "ReadFileUnderLimit", "ReadFileWithinRootLimit":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLimitedRead(name string) bool {
@@ -501,6 +546,15 @@ func (s *nameScope) forget(expr ast.Expr) {
 			return
 		}
 	}
+}
+
+func (s *nameScope) isDeclared(name string) bool {
+	for scope := s; scope != nil; scope = scope.parent {
+		if scope.names[name] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *nameScope) visibleInts() map[string]int64 {
@@ -551,23 +605,6 @@ func declareExpr(scope *nameScope, expr ast.Expr) {
 	scope.declare(ident.Name, 0, false)
 }
 
-func bindGenDecl(scope *nameScope, gen *ast.GenDecl) {
-	iotaValue := int64(0)
-	var previous []ast.Expr
-	for _, spec := range gen.Specs {
-		value, ok := spec.(*ast.ValueSpec)
-		if !ok {
-			continue
-		}
-		exprs := valueExprs(value, previous)
-		if len(value.Values) > 0 {
-			previous = exprs
-		}
-		bindSpec(scope, value, exprs, iotaValue)
-		iotaValue++
-	}
-}
-
 func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue int64) {
 	known := scope.visibleInts()
 	for index, name := range spec.Names {
@@ -614,7 +651,7 @@ func bindingsInFile(file *ast.File) []constBinding {
 
 func bindingsInDecl(decl ast.Decl) []constBinding {
 	gen, ok := decl.(*ast.GenDecl)
-	if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
+	if !ok || gen.Tok != token.CONST {
 		return nil
 	}
 	return bindingsInGenDecl(gen)
