@@ -146,57 +146,76 @@ func TestInstallScriptRejectsUnverifiedChecksums(t *testing.T) {
 }
 
 func TestInstallScriptChecksumPolicy(t *testing.T) {
-	for _, platform := range []struct{ os, arch string }{
-		{"linux", "amd64"},
-		{"darwin", "arm64"},
-		{"windows", runtime.GOARCH},
-	} {
+	for _, platform := range checksumPolicyPlatforms {
 		t.Run(platform.os, func(t *testing.T) {
-			t.Run("published checksum matches", func(t *testing.T) {
-				output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "200", "")
-				if strings.Contains(output, "without checksum verification") {
-					t.Fatalf("matching checksum warned: %s", output)
-				}
-			})
-			t.Run("published checksum mismatches", func(t *testing.T) {
-				output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "mismatch", "200", "")
-				if err == nil || !strings.Contains(output, "does not match SHA256SUMS") {
-					t.Fatalf("expected checksum mismatch, got %v\n%s", err, output)
-				}
-			})
-			t.Run("published checksum omits archive", func(t *testing.T) {
-				output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "missing", "200", "")
-				if err == nil || !strings.Contains(output, "exactly one entry") {
-					t.Fatalf("expected missing checksum entry, got %v\n%s", err, output)
-				}
-			})
-			t.Run("no published checksum warns and installs", func(t *testing.T) {
-				output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "404", "")
-				for _, want := range []string{"does not publish SHA256SUMS", "without checksum verification", "Installed lopper fixture"} {
-					if !strings.Contains(output, want) {
-						t.Fatalf("missing %q in %s", want, output)
-					}
-				}
-			})
-			t.Run("strict mode rejects a missing checksum", func(t *testing.T) {
-				fixture := checksumPolicyFixture(t, platform.os, platform.arch)
-				writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
-				fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_HTTP=404", "LOPPER_CHECKSUM_STRICT=true")
-				output, err := fixture.run(t, "v1.8.12", "", false, "")
-				if err == nil || !strings.Contains(output, "does not publish SHA256SUMS") || !strings.Contains(output, "Refusing to install") {
-					t.Fatalf("strict mode accepted a missing checksum: %v\n%s", err, output)
-				}
-				if strings.Contains(output, "without checksum verification") {
-					t.Fatalf("strict mode warned instead of refusing: %s", output)
-				}
-				content, readErr := os.ReadFile(fixture.calls)
-				if readErr != nil || strings.Contains(string(content), "asset\n") {
-					t.Fatalf("strict mode downloaded the archive: %v\n%s", readErr, content)
-				}
-				assertReleaseFileAbsent(t, fixture.pathFile)
-			})
+			testMatchingPublishedChecksum(t, platform)
+			testMismatchedPublishedChecksum(t, platform)
+			testMissingPublishedChecksumEntry(t, platform)
+			testMissingChecksumWarning(t, platform)
+			testStrictMissingChecksum(t, platform)
 		})
 	}
+}
+
+type checksumPolicyPlatform struct{ os, arch string }
+
+var checksumPolicyPlatforms = []checksumPolicyPlatform{
+	{"linux", "amd64"},
+	{"darwin", "arm64"},
+	{"windows", runtime.GOARCH},
+}
+
+func testMatchingPublishedChecksum(t *testing.T, platform checksumPolicyPlatform) {
+	t.Helper()
+	output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "200", "")
+	if strings.Contains(output, "without checksum verification") {
+		t.Fatalf("matching checksum warned: %s", output)
+	}
+}
+
+func testMismatchedPublishedChecksum(t *testing.T, platform checksumPolicyPlatform) {
+	t.Helper()
+	output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "mismatch", "200", "")
+	if err == nil || !strings.Contains(output, "does not match SHA256SUMS") {
+		t.Fatalf("expected checksum mismatch, got %v\n%s", err, output)
+	}
+}
+
+func testMissingPublishedChecksumEntry(t *testing.T, platform checksumPolicyPlatform) {
+	t.Helper()
+	output, err := installWithChecksumPolicyResult(t, platform.os, platform.arch, "missing", "200", "")
+	if err == nil || !strings.Contains(output, "exactly one entry") {
+		t.Fatalf("expected missing checksum entry, got %v\n%s", err, output)
+	}
+}
+
+func testMissingChecksumWarning(t *testing.T, platform checksumPolicyPlatform) {
+	t.Helper()
+	output := installWithChecksumPolicy(t, platform.os, platform.arch, "", "404", "")
+	for _, want := range []string{"does not publish SHA256SUMS", "without checksum verification", "Installed lopper fixture"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q in %s", want, output)
+		}
+	}
+}
+
+func testStrictMissingChecksum(t *testing.T, platform checksumPolicyPlatform) {
+	t.Helper()
+	fixture := checksumPolicyFixture(t, platform.os, platform.arch)
+	writeReleaseArchive(t, filepath.Join(fixture.dir, "archive"))
+	fixture.env = append(fixture.env, "FIXTURE_CHECKSUM_HTTP=404", "LOPPER_CHECKSUM_STRICT=true")
+	output, err := fixture.run(t, "v1.8.12", "", false, "")
+	if err == nil || !strings.Contains(output, "does not publish SHA256SUMS") || !strings.Contains(output, "Refusing to install") {
+		t.Fatalf("strict mode accepted a missing checksum: %v\n%s", err, output)
+	}
+	if strings.Contains(output, "without checksum verification") {
+		t.Fatalf("strict mode warned instead of refusing: %s", output)
+	}
+	content, readErr := os.ReadFile(fixture.calls)
+	if readErr != nil || strings.Contains(string(content), "asset\n") {
+		t.Fatalf("strict mode downloaded the archive: %v\n%s", readErr, content)
+	}
+	assertReleaseFileAbsent(t, fixture.pathFile)
 }
 
 func installWithChecksumPolicy(t *testing.T, goos, arch, mode, httpCode, strict string) string {
