@@ -304,6 +304,7 @@ type walkFrame struct {
 }
 
 func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameScope, record referenceRecorder) {
+	scope.writes = writtenNames(node)
 	var frames []walkFrame
 	ast.Inspect(node, func(current ast.Node) bool {
 		if current == nil {
@@ -335,6 +336,42 @@ func collectReferences(node ast.Node, fn string, names safeioNames, scope *nameS
 		frames = append(frames, walkFrame{node: current, pushed: pushed})
 		return true
 	})
+}
+
+// Only keep a variable's initializer when it cannot be written later in this
+// function. Source order alone cannot account for repeated control flow.
+func writtenNames(root ast.Node) map[string]bool {
+	written := map[string]bool{}
+	ast.Inspect(root, func(node ast.Node) bool {
+		for _, target := range writeTargets(node) {
+			if name, ok := ast.Unparen(target).(*ast.Ident); ok {
+				written[name.Name] = true
+			}
+		}
+		return true
+	})
+	return written
+}
+
+func writeTargets(node ast.Node) []ast.Expr {
+	switch typed := node.(type) {
+	case *ast.AssignStmt:
+		// A short declaration with multiple names can also reassign a binding.
+		if typed.Tok != token.DEFINE || len(typed.Lhs) > 1 {
+			return typed.Lhs
+		}
+	case *ast.RangeStmt:
+		if typed.Tok == token.ASSIGN {
+			return []ast.Expr{typed.Key, typed.Value}
+		}
+	case *ast.IncDecStmt:
+		return []ast.Expr{typed.X}
+	case *ast.UnaryExpr:
+		if typed.Op == token.AND {
+			return []ast.Expr{typed.X}
+		}
+	}
+	return nil
 }
 
 func nestedScope(node ast.Node, parent *nameScope) (*nameScope, bool) {
@@ -370,46 +407,25 @@ func (f *walkFrame) finishChild(child ast.Node, scope *nameScope) {
 	case *ast.GenDecl:
 		if spec, ok := child.(*ast.ValueSpec); ok {
 			exprs := spec.Values
-			if parent.Tok == token.CONST {
+			constant := parent.Tok == token.CONST
+			if constant {
 				exprs = valueExprs(spec, f.previous)
 				f.previous = exprs
 			}
-			bindSpec(scope, spec, exprs, f.iota)
+			bindSpec(scope, spec, exprs, f.iota, constant)
 			f.iota++
 		}
 	case *ast.RangeStmt:
-		if child == parent.X {
-			bindRange(scope, parent)
+		if child == parent.X && parent.Tok == token.DEFINE {
+			declareExpr(scope, parent.Key)
+			declareExpr(scope, parent.Value)
 		}
 	}
-}
-
-func bindRange(scope *nameScope, stmt *ast.RangeStmt) {
-	if stmt.Tok == token.DEFINE {
-		declareExpr(scope, stmt.Key)
-		declareExpr(scope, stmt.Value)
-		return
-	}
-	scope.forget(stmt.Key)
-	scope.forget(stmt.Value)
 }
 
 func finishNode(node ast.Node, scope *nameScope) {
-	switch typed := node.(type) {
-	case *ast.AssignStmt:
-		if typed.Tok == token.DEFINE {
-			bindShortDeclaration(scope, typed)
-			return
-		}
-		for _, expr := range typed.Lhs {
-			scope.forget(expr)
-		}
-	case *ast.IncDecStmt:
-		scope.forget(typed.X)
-	case *ast.UnaryExpr:
-		if typed.Op == token.AND {
-			scope.forget(typed.X)
-		}
+	if assign, ok := node.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
+		bindShortDeclaration(scope, assign)
 	}
 }
 
@@ -422,7 +438,7 @@ func bindShortDeclaration(scope *nameScope, assign *ast.AssignStmt) {
 	for i, expr := range assign.Lhs {
 		if ident, ok := expr.(*ast.Ident); ok {
 			value, knownValue := evalInt(assign.Rhs[i], known, 0)
-			scope.declare(ident.Name, value, knownValue)
+			scope.declare(ident.Name, value, knownValue && !scope.writes[ident.Name])
 		}
 	}
 }
@@ -506,10 +522,15 @@ type nameScope struct {
 	parent *nameScope
 	names  map[string]bool
 	ints   map[string]int64
+	writes map[string]bool
 }
 
 func newNameScope(parent *nameScope) *nameScope {
-	return &nameScope{parent: parent, names: map[string]bool{}, ints: map[string]int64{}}
+	scope := &nameScope{parent: parent, names: map[string]bool{}, ints: map[string]int64{}}
+	if parent != nil {
+		scope.writes = parent.writes
+	}
+	return scope
 }
 
 func packageScope(consts map[string]int64) *nameScope {
@@ -530,19 +551,6 @@ func (s *nameScope) declare(name string, value int64, ok bool) {
 		return
 	}
 	delete(s.ints, name)
-}
-
-func (s *nameScope) forget(expr ast.Expr) {
-	ident, ok := ast.Unparen(expr).(*ast.Ident)
-	if !ok {
-		return
-	}
-	for scope := s; scope != nil; scope = scope.parent {
-		if scope.names[ident.Name] {
-			delete(scope.ints, ident.Name)
-			return
-		}
-	}
 }
 
 func (s *nameScope) isDeclared(name string) bool {
@@ -602,7 +610,7 @@ func declareExpr(scope *nameScope, expr ast.Expr) {
 	scope.declare(ident.Name, 0, false)
 }
 
-func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue int64) {
+func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue int64, constant bool) {
 	known := scope.visibleInts()
 	for index, name := range spec.Names {
 		if name == nil {
@@ -613,7 +621,7 @@ func bindSpec(scope *nameScope, spec *ast.ValueSpec, exprs []ast.Expr, iotaValue
 		if index < len(exprs) {
 			value, ok = evalInt(exprs[index], known, iotaValue)
 		}
-		scope.declare(name.Name, value, ok)
+		scope.declare(name.Name, value, ok && (constant || !scope.writes[name.Name]))
 	}
 }
 

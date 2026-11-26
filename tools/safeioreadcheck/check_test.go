@@ -319,7 +319,7 @@ func shortDeclaration(path string) {
 
 func shortInitializer(path string) {
 	const limit int64 = 0
-	if limit, ready := +limit, true; ready {
+	if limit := +limit; limit == 0 {
 		_, _ = safeio.ReadFileLimit(path, limit)
 	}
 }
@@ -360,6 +360,21 @@ func scopedSelect(path string, ready <-chan struct{}) {
 	}
 }
 
+func loopBound(path string, count int) {
+	limit := packageLimit
+	for range count {
+		_, _ = safeio.ReadFileLimit(path, limit)
+		limit = packageLimit / 2
+	}
+}
+
+func stableLoopBound(path string, count int) {
+	limit := packageLimit
+	for range count {
+		_, _ = safeio.ReadFileLimit(path, limit)
+	}
+}
+
 func updatedLimit(path string, next int64, values []int64) {
 	limit := zeroLimit
 	limit = next
@@ -396,6 +411,7 @@ func updatedLimit(path string, next int64, values []int64) {
 		"local.go\tdefaultVarLimit\tsafeio.ReadFileLimit\t1",
 		"local.go\tscopedSwitch\tsafeio.ReadRegularFileLimit\t1",
 		"local.go\tscopedSelect\tsafeio.ReadRegularFileLimit\t1",
+		"local.go\tloopBound\tsafeio.ReadFileLimit\t1",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("reads = %#v", got)
