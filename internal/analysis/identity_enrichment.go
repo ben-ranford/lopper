@@ -24,6 +24,17 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+// Identity evidence is optional. A large input is recorded as unavailable
+// through the same diagnostics as other read errors.
+const (
+	maxIdentityGoBytes         = 2 << 20
+	maxIdentityManifestBytes   = 2 << 20
+	maxIdentityJSManifestBytes = 1 << 20
+	maxIdentityMSBuildBytes    = 4 << 20
+	maxIdentityLockBytes       = 16 << 20
+	maxIdentityJSLockBytes     = 32 << 20
+)
+
 const (
 	identityStatusDeclared      = "declared"
 	identityStatusResolved      = "resolved"
@@ -839,7 +850,7 @@ func collectGoIdentityEvidenceFromPaths(ctx context.Context, repoPath string, in
 		if ctx.Err() != nil {
 			return
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityGoBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -874,7 +885,7 @@ func loadGoWorkspaceReplacements(ctx context.Context, repoPath string, paths []s
 		if ctx.Err() != nil {
 			return workspaces
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityGoBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -1237,7 +1248,7 @@ func isJSIdentityPackageFile(nodeModulesPath, path string, entry fs.DirEntry) bo
 }
 
 func addJSIdentityPackageEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, readErr := safeio.ReadFileUnder(repoPath, path)
+	data, readErr := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSManifestBytes)
 	if readErr != nil {
 		warnings.addFailure("read", path, identityReadFailed, readErr)
 		return
@@ -1269,7 +1280,7 @@ func collectPackageLockIdentityEvidence(repoPath string, index identityIndex) in
 }
 
 func collectPackageLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1394,7 +1405,7 @@ func packageLockScopedName(scope, segment, declaredName string) (string, bool) {
 }
 
 func collectYarnLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1496,7 +1507,7 @@ func collectPNPMLockIdentityEvidence(repoPath string, index identityIndex) int {
 }
 
 func collectPNPMLockIdentityEvidenceAtPath(repoPath, path string, index identityIndex, warnings *identityWarningCollector) int {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityJSLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return 0
@@ -1830,7 +1841,7 @@ func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warn
 }
 
 func collectRequirementsEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -1935,7 +1946,7 @@ func collectGradleDeclarationEvidence(ctx context.Context, repoPath string, inde
 		if ctx.Err() != nil {
 			return declarations
 		}
-		data, err := safeio.ReadFileUnder(repoPath, path)
+		data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, shared.GradleDiscoveryFileBytes)
 		if err != nil {
 			warnings.addFailure("read", path, identityReadFailed, err)
 			continue
@@ -1978,7 +1989,7 @@ func collectGradleLockIdentityEvidenceFromPaths(ctx context.Context, repoPath st
 }
 
 func collectGradleLockIdentityEvidenceFromPath(repoPath, path string, index identityIndex, declarations map[string]struct{}, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2104,7 +2115,7 @@ type swiftResolvedDoc struct {
 }
 
 func collectSwiftPackageResolvedEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2129,7 +2140,7 @@ type podLockDoc struct {
 }
 
 func collectPodfileLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -2146,7 +2157,7 @@ func collectPodfileLockEvidence(repoPath, path string, index identityIndex, warn
 }
 
 func collectCarthageResolvedEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

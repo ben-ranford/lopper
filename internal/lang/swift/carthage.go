@@ -16,7 +16,7 @@ import (
 
 func loadCarthageManifestData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	manifestPath := filepath.Join(repoPath, carthageManifestName)
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxCarthageManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil
@@ -46,7 +46,7 @@ func loadCarthageManifestData(repoPath string, catalog *dependencyCatalog) (bool
 
 func loadCarthageResolvedData(repoPath string, catalog *dependencyCatalog) (bool, []string, error) {
 	resolvedPath := filepath.Join(repoPath, carthageResolvedName)
-	content, err := safeio.ReadFileUnder(repoPath, resolvedPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, resolvedPath, maxCarthageManifestBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil, nil

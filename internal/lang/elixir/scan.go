@@ -18,7 +18,7 @@ func scanElixirRepo(ctx context.Context, repoPath string, declared map[string]st
 		if ext != ".ex" && ext != ".exs" {
 			return nil
 		}
-		content, err := safeio.ReadFileUnder(repoPath, path)
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxScannableElixirFile)
 		if err != nil {
 			return err
 		}

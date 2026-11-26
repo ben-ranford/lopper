@@ -63,6 +63,8 @@ type codemodContentLine struct {
 	separator string
 }
 
+const maxCodemodTargetBytes = 8 << 20
+
 func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
 	if !req.ApplyCodemod {
 		return reportData, nil
@@ -269,7 +271,7 @@ func prepareCodemodFilesWithStat(repoPath string, suggestions []report.CodemodSu
 			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
 			continue
 		}
-		content, err := safeio.ReadFileUnder(repoPath, absPath)
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, absPath, maxCodemodTargetBytes)
 		if err != nil {
 			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
 			continue

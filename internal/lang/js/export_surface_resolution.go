@@ -9,9 +9,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const maxPackageJSONBytes = 2 * 1024 * 1024
+
 func loadPackageJSONForSurface(depPath string) (packageJSON, []string, error) {
 	pkgPath := filepath.Join(depPath, "package.json")
-	data, err := safeio.ReadFileUnder(depPath, pkgPath)
+	data, err := safeio.ReadRegularFileUnderLimit(depPath, pkgPath, maxPackageJSONBytes)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
 	}

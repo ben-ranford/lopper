@@ -496,7 +496,7 @@ func readGoWorkUseEntries(repoPath string) ([]string, error) {
 	if !exists {
 		return nil, nil
 	}
-	content, err := safeio.ReadFileUnder(repoPath, workPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, workPath, maxGoModBytes)
 	if err != nil {
 		return nil, err
 	}

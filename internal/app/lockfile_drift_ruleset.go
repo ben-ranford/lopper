@@ -99,6 +99,8 @@ var lockfileRules = []lockfileRule{
 	},
 }
 
+const maxLockfileDriftManifestBytes = 2 << 20
+
 func activeLockfileRules(features featureflags.Set) []lockfileRule {
 	active := make([]lockfileRule, 0, len(lockfileRules))
 	for _, rule := range lockfileRules {
@@ -196,7 +198,7 @@ func manifestDescription(rule lockfileRule) string {
 func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
 	needle := pyprojectSectionNeedle(section)
 	return func(repoPath, dir string) (bool, error) {
-		content, err := safeio.ReadFileUnder(repoPath, filepath.Join(dir, pyprojectManifestName))
+		content, err := safeio.ReadRegularFileUnderLimit(repoPath, filepath.Join(dir, pyprojectManifestName), maxLockfileDriftManifestBytes)
 		if err != nil {
 			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
 		}

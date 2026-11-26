@@ -14,14 +14,14 @@ func TestCIMakeTargetsRetainAndPartitionTheCIPrerequisiteGraph(t *testing.T) {
 	const runtimePycacheCheck = "runtime-pycache-check"
 	wantCI := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
-		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
+		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check", "safeio-read-check",
 		"security", "vuln-check", "stave-ui-check", "test", "test-leaks", "test-tui", "test-race", "bench-gate", "build", "cov",
 		runtimePycacheCheck,
 	}
 	wantTests := []string{"stave-ui-check", "test", "test-leaks", "test-tui", runtimePycacheCheck}
 	wantChecks := []string{
 		"fuzz-corpus-check", "benchdelta-cov", "automation-integrity", "format-check", "mod-check",
-		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check",
+		"feature-flag-check", "lint", "actionlint", "shellcheck", "dup-check", "suppression-check", "safeio-read-check",
 		"security", "vuln-check", "test-race", "bench-gate", "build", "cov", runtimePycacheCheck,
 	}
 

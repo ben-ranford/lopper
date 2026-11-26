@@ -24,9 +24,12 @@ var (
 	resolveGitBinaryPath = resolveProofGitBinaryPath
 	removeAll            = os.RemoveAll
 	mkdirTemp            = os.MkdirTemp
-	readFileUnder        = safeio.ReadFileUnder
-	statFile             = os.Stat
-	absPath              = filepath.Abs
+	readFileUnder        = func(rootDir, targetPath string) ([]byte, error) {
+		const maxFixtureBytes = 32 << 20
+		return safeio.ReadRegularFileUnderLimit(rootDir, targetPath, maxFixtureBytes)
+	}
+	statFile = os.Stat
+	absPath  = filepath.Abs
 )
 
 const (

@@ -374,7 +374,7 @@ func hasRepositorySignal(value any) bool {
 
 func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
 	pkgPath := filepath.Join(depRoot, "package.json")
-	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
+	data, err := safeio.ReadRegularFileUnderLimit(depRoot, pkgPath, maxPackageJSONBytes)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}

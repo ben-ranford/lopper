@@ -16,6 +16,7 @@ const (
 	EnvSlackWebhook = "LOPPER_NOTIFY_SLACK_WEBHOOK"
 	EnvTeamsWebhook = "LOPPER_NOTIFY_TEAMS_WEBHOOK"
 
+	maxNotificationConfigBytes    = 4 * 1024 * 1024
 	errInvalidNotificationsConfig = "invalid notifications config: %w"
 )
 
@@ -23,7 +24,7 @@ func LoadConfigOverrides(path string) (Overrides, error) {
 	if strings.TrimSpace(path) == "" {
 		return Overrides{}, nil
 	}
-	data, err := safeio.ReadFile(path)
+	data, err := safeio.ReadRegularFileLimit(path, maxNotificationConfigBytes)
 	if err != nil {
 		return Overrides{}, fmt.Errorf("read notify config %s: %w", path, err)
 	}

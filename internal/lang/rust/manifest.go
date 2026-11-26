@@ -414,7 +414,7 @@ func cargoManifestDiscoveryCoverageGaps(truncated bool) []report.CoverageGap {
 }
 
 func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string]dependencyInfo, error) {
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadRegularFileUnderLimit(repoPath, manifestPath, maxCargoManifestBytes)
 	if err != nil {
 		return manifestMeta{}, nil, err
 	}

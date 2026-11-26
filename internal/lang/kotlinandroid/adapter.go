@@ -14,12 +14,13 @@ type Adapter struct {
 }
 
 const (
-	buildGradleName     = "build.gradle"
-	buildGradleKTSName  = "build.gradle.kts"
-	settingsGradleName  = "settings.gradle"
-	settingsGradleKTS   = "settings.gradle.kts"
-	gradleLockfileName  = "gradle.lockfile"
-	androidManifestName = "androidmanifest.xml"
+	buildGradleName             = "build.gradle"
+	buildGradleKTSName          = "build.gradle.kts"
+	settingsGradleName          = "settings.gradle"
+	settingsGradleKTS           = "settings.gradle.kts"
+	gradleLockfileName          = "gradle.lockfile"
+	androidManifestName         = "androidmanifest.xml"
+	maxKotlinAndroidSourceBytes = 2 * 1024 * 1024
 )
 
 var kotlinAndroidSkippedDirectories = map[string]bool{

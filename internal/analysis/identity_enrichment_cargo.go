@@ -103,7 +103,7 @@ func collectCargoManifestModels(ctx context.Context, repoPath string, paths []st
 }
 
 func collectCargoManifestModel(repoPath, path string, warnings *identityWarningCollector) *cargoManifestModel {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityManifestBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil
@@ -253,7 +253,7 @@ func resolveCargoManifestDependencies(manifest, owner *cargoManifestModel) []car
 }
 
 func collectCargoLockIdentityEvidence(repoPath, path string, index identityIndex, direct cargoLockDependencyIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadRegularFileUnderLimit(repoPath, path, maxIdentityLockBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

@@ -14,7 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-var readMavenIdentityFile = safeio.ReadFileUnderLimit
+var readMavenIdentityFile = safeio.ReadRegularFileUnderLimit
 var decodeMavenIdentityFile = shared.DecodePOM
 
 func eligibleMavenIdentityPath(path string) bool {

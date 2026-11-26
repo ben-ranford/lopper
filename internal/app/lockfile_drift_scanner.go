@@ -178,8 +178,10 @@ func lockfileManifestReadErrorKey(snapshot lockfileDirSnapshot, rule lockfileRul
 
 func defaultLockfileManifestIO() lockfileManifestIO {
 	return lockfileManifestIO{
-		readFileUnder:      safeio.ReadFileUnder,
-		readFileUnderLimit: safeio.ReadFileUnderLimit,
+		readFileUnder: func(rootDir, targetPath string) ([]byte, error) {
+			return safeio.ReadRegularFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
+		},
+		readFileUnderLimit: safeio.ReadRegularFileUnderLimit,
 	}
 }
 

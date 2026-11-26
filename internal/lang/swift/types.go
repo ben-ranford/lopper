@@ -21,6 +21,7 @@ const (
 	rootCarthageSourceReadBatchSize       = 128
 	maxScanFiles                          = 4096
 	maxScannableSwiftFile                 = 2 * 1024 * 1024
+	maxCarthageManifestBytes              = 2 * 1024 * 1024
 	maxManifestDeclarations               = 512
 	maxSwiftPackageManifestBytes          = 2 * 1024 * 1024
 	maxSwiftPackageResolvedBytes          = 8 * 1024 * 1024
