@@ -80,6 +80,37 @@ func TestLoadOSVAdvisoryJSON(t *testing.T) {
 	}
 }
 
+func TestLoadJSONRequiresOneDocumentWithOptionalTrailingWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	valid := `{"advisories":[{"id":"LOCAL-1","package":"example.com/library","ecosystem":"Go","severity":"high"}]}`
+	for _, testCase := range []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{name: "trailing whitespace", content: valid + " \n\t"},
+		{name: "second document", content: valid + "\n{}", wantErr: true},
+		{name: "trailing text", content: valid + " trailing", wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(testCase.name, " ", "-")+".json")
+			if err := os.WriteFile(path, []byte(testCase.content), 0o600); err != nil {
+				t.Fatalf("write advisory fixture: %v", err)
+			}
+			advisories, err := Load(path)
+			if testCase.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "invalid JSON advisory source") {
+					t.Fatalf("expected structured JSON error, advisories=%#v err=%v", advisories, err)
+				}
+				return
+			}
+			if err != nil || len(advisories) != 1 || advisories[0].ID != "LOCAL-1" {
+				t.Fatalf("expected advisory after whitespace, advisories=%#v err=%v", advisories, err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsDocumentWithoutAdvisories(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.yml")
 	if err := os.WriteFile(path, []byte("advisories: []\n"), 0o600); err != nil {
