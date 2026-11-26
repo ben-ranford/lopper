@@ -174,7 +174,7 @@ function checkedSuite(suites, run, expected) {
   if (!strictTiming) {
     const lateForkPublication = expected.forkProof && run.emptyAssociation && emptyAssociation(selected);
     requireEvidence(lateForkPublication, 'the Sonar suite timestamps are inconsistent.');
-    requireEvidence(selectedCreated >= run.completed && selectedUpdated >= selectedCreated,
+    requireEvidence(selectedCreated > run.completed && selectedUpdated >= selectedCreated,
       'the late fork Sonar suite timestamps are inconsistent.');
   }
   return { suiteId: selected.id, createdAt: selected.created_at, updatedAt: selected.updated_at };

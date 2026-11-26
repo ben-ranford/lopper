@@ -310,6 +310,9 @@ test('late fork publication rejects mixed associations and inconsistent suite ch
     ['created before completion', {
       suites: [{ ...suite(), pull_requests: [], created_at: '2026-09-30T15:21:20Z' }],
     }],
+    ['created in the completion second', {
+      suites: [{ ...latePublishedSuite(), pull_requests: [], created_at: check().completed_at }],
+    }],
     ['updated before creation', {
       suites: [{ ...latePublishedSuite(), pull_requests: [], updated_at: check().completed_at }],
     }],
