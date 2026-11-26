@@ -194,15 +194,15 @@ func splitCompileCommand(command string, windowsSyntax bool) []string {
 			continue
 		case windowsSyntax && ch == '\\':
 			i = consumeWindowsCompileBackslashes(command, i, &current) - 1
+		case ch == '\\' && i+1 < len(command) && command[i+1] == '\n' && quote != '\'':
+			i++
+			continue
 		case ch == '\\' && i+1 < len(command) && compileCommandEscapes(command[i+1], quote):
 			i++
-			if command[i] == '\n' {
-				continue
-			}
 			current.WriteByte(command[i])
 		case quote != 0 && ch == quote:
 			quote = 0
-		case quote == 0 && (ch == '"' || (!windowsSyntax && ch == '\'')):
+		case quote == 0 && isCompileCommandQuote(ch, windowsSyntax):
 			quote = ch
 		default:
 			current.WriteByte(ch)
@@ -215,11 +215,15 @@ func splitCompileCommand(command string, windowsSyntax bool) []string {
 	return args
 }
 
+func isCompileCommandQuote(character byte, windowsSyntax bool) bool {
+	return character == '"' || (character == '\'' && !windowsSyntax)
+}
+
 func compileCommandEscapes(next, quote byte) bool {
 	if quote == '\'' {
 		return false
 	}
-	return quote == 0 || next == '\\' || next == '"' || next == '$' || next == '`' || next == '\n'
+	return quote == 0 || next == '\\' || next == '"' || next == '$' || next == '`'
 }
 
 func consumeWindowsCompileBackslashes(command string, start int, current *strings.Builder) int {
