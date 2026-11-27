@@ -2,6 +2,44 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.12](https://github.com/ben-ranford/lopper/compare/v1.8.11...v1.8.12) (2026-11-27)
+
+
+### Bug Fixes
+
+* **advisory:** reject trailing JSON after local advisory data ([#1942](https://github.com/ben-ranford/lopper/issues/1942)) ([1ebc484](https://github.com/ben-ranford/lopper/commit/1ebc484cc2ec3129dbc51dea9c556027a501c649))
+* **ci:** give native Windows cleanup time to scan open SMB files ([#1936](https://github.com/ben-ranford/lopper/issues/1936)) ([0ac7746](https://github.com/ben-ranford/lopper/commit/0ac77461ce1ac367d8cc4f65c6edaec7dd326cd2))
+* **ci:** recognize fork runs without PR associations ([#1971](https://github.com/ben-ranford/lopper/issues/1971)) ([78b49fd](https://github.com/ben-ranford/lopper/commit/78b49fd2ae2f48e35eff10e305902fc182c33e38))
+* **ci:** verify late SonarQube suites for public forks ([#1975](https://github.com/ben-ranford/lopper/issues/1975)) ([5af5c40](https://github.com/ben-ranford/lopper/commit/5af5c40bddcbfe88bed92abd60c483db86cbb98d))
+* **cpp:** preserve quoted compile command paths ([#1953](https://github.com/ben-ranford/lopper/issues/1953)) ([4ffc6ad](https://github.com/ben-ranford/lopper/commit/4ffc6ad51270eb7ed508b8e180c27dcfb9563faa))
+* **dart:** accept conditional import and export clauses ([#1932](https://github.com/ben-ranford/lopper/issues/1932)) ([6c8d319](https://github.com/ben-ranford/lopper/commit/6c8d3190a24fd42475e0918f63f06cac9cad5d5e))
+* **imports:** preserve block markers inside quoted literals ([#1946](https://github.com/ben-ranford/lopper/issues/1946)) ([e715d42](https://github.com/ben-ranford/lopper/commit/e715d4265ca6036d08748054ed8a72a4af181d7b))
+* **js:** bound dynamic-import callee text ([#1933](https://github.com/ben-ranford/lopper/issues/1933)) ([404878d](https://github.com/ben-ranford/lopper/commit/404878d48e566edd15488e49fc01956e12f387d0))
+* **js:** bound license discovery and reads ([#1944](https://github.com/ben-ranford/lopper/issues/1944)) ([3986272](https://github.com/ben-ranford/lopper/commit/3986272ea5f7b22e8267bf53cb79d9e18a89551b))
+* **js:** bound re-export attribution work ([#1934](https://github.com/ben-ranford/lopper/issues/1934)) ([366b30b](https://github.com/ben-ranford/lopper/commit/366b30b9d96257269f8bcf848d22b107e35a2ff6))
+* **js:** confine workspace package discovery to repository roots ([#1939](https://github.com/ben-ranford/lopper/issues/1939)) ([9360329](https://github.com/ben-ranford/lopper/commit/93603291ebc666fa890fb9d897dcd5e68bbc916f))
+* **js:** count named imports accessed as objects ([#1947](https://github.com/ben-ranford/lopper/issues/1947)) ([935c9e0](https://github.com/ben-ranford/lopper/commit/935c9e034d94a5d7101db963d24ce9b655100787))
+* **js:** count static destructuring of named imports ([#1949](https://github.com/ben-ranford/lopper/issues/1949)) ([f9882a9](https://github.com/ben-ranford/lopper/commit/f9882a9694077649351b67c26de0ccddcc2af3a3))
+* **js:** dedupe re-export cycle warnings across dependencies ([#1935](https://github.com/ben-ranford/lopper/issues/1935)) ([b44eaad](https://github.com/ben-ranford/lopper/commit/b44eaad066b841fdb8512c4aeb4a8dde4bf3e24f))
+* **js:** keep unresolved imports alongside resolved copies ([#1943](https://github.com/ben-ranford/lopper/issues/1943)) ([7499fb3](https://github.com/ben-ranford/lopper/commit/7499fb32f31cf07edaa023eae7ac9f309c3e71a5))
+* **js:** match exact Node builtin specifiers ([#1950](https://github.com/ben-ranford/lopper/issues/1950)) ([7517357](https://github.com/ben-ranford/lopper/commit/7517357764e0245e92d3be35a9fbe1061212c840))
+* **rust:** bound Cargo workspace member discovery ([#1938](https://github.com/ben-ranford/lopper/issues/1938)) ([4d68336](https://github.com/ben-ranford/lopper/commit/4d68336787bae67c34c998c106ed1e33865b692a))
+* **rust:** bound nested use declaration expansion ([#1952](https://github.com/ben-ranford/lopper/issues/1952)) ([838de74](https://github.com/ben-ranford/lopper/commit/838de74bab7fbb25b726486b2d48c97af3c3efc0))
+* **rust:** bound use statement scanning ([#1948](https://github.com/ben-ranford/lopper/issues/1948)) ([bf1854c](https://github.com/ben-ranford/lopper/commit/bf1854ca0330b1f04cc5a962ea6a64217596653f))
+* **rust:** cap source scan roots before collapse ([#1940](https://github.com/ben-ranford/lopper/issues/1940)) ([941a1d2](https://github.com/ben-ranford/lopper/commit/941a1d2a2c005f0624522ea6bc43b421a1ffca55))
+* **rust:** withhold removal advice when usage is incomplete ([#1969](https://github.com/ben-ranford/lopper/issues/1969)) ([e39ae79](https://github.com/ben-ranford/lopper/commit/e39ae790335e94bfd02d1b5e6242df391de35431))
+* **sarif:** preserve UNC server and share in file URIs ([#1951](https://github.com/ben-ranford/lopper/issues/1951)) ([9523528](https://github.com/ben-ranford/lopper/commit/952352891fa20f0ed58c89ad3a8c5cada47a0fd7))
+* **swift:** bound CocoaPods catalog reads ([#1941](https://github.com/ben-ranford/lopper/issues/1941)) ([80d340a](https://github.com/ben-ranford/lopper/commit/80d340aedca343c879aae591625e049a7e2df482))
+* **swift:** bound SwiftPM catalog inputs ([#1945](https://github.com/ben-ranford/lopper/issues/1945)) ([bfee686](https://github.com/ben-ranford/lopper/commit/bfee686250bfadc7a2bea6a37034a8310dffc5ac))
+
+
+### Code Refactoring
+
+* **identity:** centralize package URL construction ([#1956](https://github.com/ben-ranford/lopper/issues/1956)) ([d2308f7](https://github.com/ben-ranford/lopper/commit/d2308f7bf84ad9342e50297b462513c1585b257a))
+* **report:** centralize derived report finalization ([#1954](https://github.com/ben-ranford/lopper/issues/1954)) ([d123b10](https://github.com/ben-ranford/lopper/commit/d123b10510cd3ad9ef0e067fcf58be52b9884719))
+* **safeio:** require explicit parser read limits ([#1957](https://github.com/ben-ranford/lopper/issues/1957)) ([885aec3](https://github.com/ben-ranford/lopper/commit/885aec381ded7744a8b33a4a16c1d0a2d7cfb559))
+* **vscode:** centralize workspace path handling ([#1955](https://github.com/ben-ranford/lopper/issues/1955)) ([e11b5df](https://github.com/ben-ranford/lopper/commit/e11b5df937f00be70731f6e4532eac2678199542))
+
 ## [1.8.11](https://github.com/ben-ranford/lopper/compare/v1.8.10...v1.8.11) (2026-11-20)
 
 
