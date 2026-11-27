@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.12 (2026-11-27)
+
+- Updated VS Code behavior: centralize workspace path handling
+
 ## 1.8.11 (2026-11-20)
 
 - No user-visible VS Code extension changes.
