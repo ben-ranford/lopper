@@ -245,6 +245,125 @@ import class MyLib.Client`)
 	}
 }
 
+func TestParseSwiftAccessLevelImports(t *testing.T) {
+	importsContent := []byte(`public import PublicKit // trailing comment
+internal import InternalKit
+package import PackageKit
+fileprivate import FileKit
+private import struct ScopedKit.Entry
+@testable internal import TestKit
+open import InvalidKit
+/* public import CommentedKit */
+let message = "private import StringKit"
+`)
+	imports := parseSwiftImports(importsContent, swiftMainFileName)
+	modules := make([]string, 0, len(imports))
+	for _, imported := range imports {
+		modules = append(modules, imported.Module)
+	}
+	if !slices.Equal(modules, []string{"PublicKit", "InternalKit", "PackageKit", "FileKit", "ScopedKit", "TestKit"}) {
+		t.Fatalf("unexpected modules in access-level imports: %v", modules)
+	}
+}
+
+func TestSwiftAdapterCountsAccessLevelImportUsage(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency()}
+	mainContent := `internal import Alamofire
+func run() {
+  _ = Alamofire.Session.default
+}`
+	reportData := analyseSwiftDependencyUsage(t, dependencies, mainContent)
+	if reportData.UsedExportsCount < 1 {
+		t.Fatalf("expected access-level import to count as used, got %#v", reportData)
+	}
+}
+
+func TestParseSwiftImportsKeepsStatementLocations(t *testing.T) {
+	content := []byte("let note = \"; import Phantom\"\n import First; let marker = 0;  internal import Second\nlet pattern = #/; import Phantom/#")
+	got := parseSwiftImports(content, swiftMainFileName)
+	if len(got) != 2 || got[0].Module != "First" || got[1].Module != "Second" {
+		t.Fatalf("unexpected imports: %#v", got)
+	}
+	if got[0].Location.Line != 2 || got[0].Location.Column != 2 ||
+		got[1].Location.Line != 2 || got[1].Location.Column != 33 {
+		t.Fatalf("unexpected import positions: %#v", got)
+	}
+}
+
+func TestParseSwiftImportsIgnoresLiteralSemicolons(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"bare regex", `let pattern = /x; import NIO; y/; internal import RealKit`},
+		{"bare regex escaped slash", `let pattern = /x\/; import NIO; y/; internal import RealKit`},
+		{"bare regex in call", `let pattern = f(/x; import NIO; y/); internal import RealKit`},
+		{"bare regex after division", `let q = n/d/d; internal import RealKit`},
+		{"unapplied division", `let op = f(/); internal import RealKit; let q = n/d`},
+		{"escaped multiline string", `let text = """
+escaped \"""; import NIO;
+"""; internal import RealKit`},
+		{"escaped extended multiline string", `let text = #"""
+escaped \#"""#; import NIO;
+"""#; internal import RealKit`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseSwiftImports([]byte(tc.source), swiftMainFileName)
+			if len(got) != 1 || got[0].Module != "RealKit" {
+				t.Fatalf("expected only RealKit, got %#v", got)
+			}
+		})
+	}
+}
+
+func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
+	dependencies := []swiftFixtureDependency{alamofireFixtureDependency(), swiftNIOFixtureDependency()}
+	cases := []struct {
+		name     string
+		source   string
+		wantUsed bool
+	}{
+		{"same line", "internal import Foundation; let session = Session.default", true},
+		{"real use after bare regex", `internal import Foundation; let pattern = /x; import NIO; y/; let session = Session.default`, true},
+		{"separate lines", "internal import Foundation\nlet session = Session.default", true},
+		{"scoped import only", "internal import struct Foundation.URL", false},
+		{"masked semicolons", `internal import Foundation; let note = "; Session.default" // ; Session.default`, false},
+		{"escaped quote in string", `let p = #/plain/#; let note = "quote: \" Alamofire.foo"`, false},
+		{"qualified use after escaped quote", `let p = #/plain/#; let note = "quote: \" still text"; let s = Alamofire.Session.default`, true},
+		{"interleaved import", "let marker = 0; import NIO; let b = ByteBufferAllocator()", false},
+		{"qualified name inside regex", "let pattern = #/Alamofire.Session.default/#", false},
+		{"extended regex", "let pattern = #/Session.default/#", false},
+		{"escaped apparent close", `let p = #/a\/#Session.default/#`, false},
+		{"even escapes before close", `let p = #/a\\/#; let s = Session.default`, true},
+		{"unterminated single line", "let p = #/unfinished\nlet s = Session.default", true},
+		{"multiline regex", "let pattern = ##/\n  /#; import Phantom; Session.default\n/##", false},
+		{"real use after regex", "let pattern = #/; import Phantom; /#; let session = Session.default", true},
+		{"local declaration", "internal import Foundation; struct Session {}\nlet session = Session()", false},
+		{"ambiguous imports", "internal import Foundation; import NIO; let session = Session.default", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := analyseSwiftDependencyUsage(t, dependencies, "import Alamofire\n"+tc.source)
+			if used := got.UsedExportsCount > 0; used != tc.wantUsed {
+				t.Errorf("dependency usage for Alamofire = %t, want %t", used, tc.wantUsed)
+			}
+		})
+	}
+}
+
+func TestSwiftAdapterCreditsQualifiedUseAfterInterleavedImport(t *testing.T) {
+	repo := t.TempDir()
+	writeSwiftDemoPackage(t, repo, []swiftFixtureDependency{alamofireFixtureDependency(), swiftNIOFixtureDependency()},
+		"import Alamofire; let marker = 0; import NIO; let b = NIO.ByteBufferAllocator()")
+	for dep, want := range map[string]bool{"alamofire": false, swiftNIOID: true} {
+		got := mustSingleSwiftDependencyReport(t, language.Request{RepoPath: repo, Dependency: dep})
+		if got.TotalExportsCount == 0 || (got.UsedExportsCount > 0) != want {
+			t.Errorf("%s: mapped exports %d, used exports %d, want mapped and used=%t", dep, got.TotalExportsCount, got.UsedExportsCount, want)
+		}
+	}
+}
+
 type swiftFixtureDependency struct {
 	identity     string
 	manifestName string

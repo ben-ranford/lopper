@@ -45,9 +45,8 @@ func collectPotentialUnqualifiedSymbolsWithDeclarations(content []byte, imports 
 	importModules := importedModuleSet(imports)
 	seen := make(map[string]struct{})
 	potential := make([]string, 0)
-	lines := swiftSymbolScanLines(content)
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
+	for statement := range swiftStatements(content) {
+		line := strings.TrimSpace(statement.text)
 		if line == "" || swiftImportPattern.MatchString(line) {
 			continue
 		}
@@ -183,9 +182,8 @@ func isIgnoredUnqualifiedSymbol(key string, importModules, localDeclaredSymbols 
 
 func collectLocalDeclaredSymbols(content []byte) map[string]struct{} {
 	localDeclaredSymbols := make(map[string]struct{})
-	lines := swiftSymbolScanLines(content)
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
+	for statement := range swiftStatements(content) {
+		line := strings.TrimSpace(statement.text)
 		if line == "" || swiftImportPattern.MatchString(line) {
 			continue
 		}
