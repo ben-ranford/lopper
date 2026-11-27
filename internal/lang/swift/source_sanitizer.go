@@ -15,16 +15,16 @@ type swiftStatement struct {
 // Split only after masking literals and comments so offsets refer to the original source.
 func swiftStatements(content []byte) iter.Seq[swiftStatement] {
 	return func(yield func(swiftStatement) bool) {
-		lineNumber := 1
+		row := 1
 		for line := range strings.SplitSeq(blankSwiftStringsAndComments(content), "\n") {
 			offset := 0
 			for part := range strings.SplitSeq(line, ";") {
-				if !yield(swiftStatement{text: part, line: lineNumber, offset: offset}) {
+				if !yield(swiftStatement{text: part, line: row, offset: offset}) {
 					return
 				}
 				offset += len(part) + 1
 			}
-			lineNumber++
+			row++
 		}
 	}
 }
@@ -104,10 +104,12 @@ func consumeSwiftStringContent(content []byte, index int, builder *strings.Build
 		state.escaped = false
 		return index + 1
 	}
-	if ch == '\\' && !state.multiline && state.rawHashCount == 0 && !state.escaped {
-		state.escaped = true
-		builder.WriteByte(' ')
-		return index + 1
+	if !state.escaped {
+		if end := swiftStringEscapeEnd(content, index, state.rawHashCount); end > index {
+			state.escaped = true
+			builder.WriteString(strings.Repeat(" ", end-index))
+			return end
+		}
 	}
 
 	state.escaped = false
@@ -123,6 +125,13 @@ func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder
 		state.blockDepth = 1
 		builder.WriteString("  ")
 		return index + 2
+	}
+
+	if content[index] == '/' {
+		if end := swiftBareRegexEnd(content, index); end > index {
+			blankSwiftLiteral(content[index:end], builder)
+			return end
+		}
 	}
 
 	if content[index] == '#' {
@@ -147,6 +156,82 @@ func consumeSwiftCodeContent(content []byte, index int, builder *strings.Builder
 
 	builder.WriteByte(content[index])
 	return index + 1
+}
+
+// A bare slash may open a regex in expression position, not after an operand.
+func swiftBareRegexPosition(content []byte, start int) bool {
+	pos := start
+	for pos > 0 && swiftHorizontalSpace(content[pos-1]) {
+		pos--
+	}
+	if pos == 0 {
+		return true
+	}
+	switch content[pos-1] {
+	case '\n', '\r', '=', '(', '[', '{', ',', ':', ';', '?', '!', '&', '|':
+		return true
+	}
+	end := pos
+	for pos > 0 && swiftRegexContextWordByte(content[pos-1]) {
+		pos--
+	}
+	switch string(content[pos:end]) {
+	case "return", "throw", "case", "in":
+		return true
+	default:
+		return false
+	}
+}
+
+func swiftRegexContextWordByte(ch byte) bool {
+	return ch >= 0x80 || ch == '_' || ('0' <= ch && ch <= '9') ||
+		('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
+}
+
+func swiftHorizontalSpace(ch byte) bool {
+	return ch == ' ' || ch == '\t'
+}
+
+func swiftBareRegexEnd(content []byte, start int) int {
+	first := start + 1
+	if first >= len(content) || swiftHorizontalSpace(content[first]) || !swiftBareRegexPosition(content, start) {
+		return start
+	}
+	groups, classes := 0, 0
+	for pos := first; pos < len(content); pos++ {
+		switch content[pos] {
+		case '\n', '\r':
+			return start
+		case '\\':
+			if pos+1 == len(content) || content[pos+1] == '\n' || content[pos+1] == '\r' {
+				return start
+			}
+			pos++
+		case '[':
+			classes++
+		case ']':
+			if classes > 0 {
+				classes--
+			}
+		case '(':
+			if classes == 0 {
+				groups++
+			}
+		case ')':
+			if classes == 0 {
+				if groups == 0 {
+					return start
+				}
+				groups--
+			}
+		case '/':
+			if pos == first || groups != 0 || classes != 0 || swiftHorizontalSpace(content[pos-1]) {
+				return start
+			}
+			return pos + 1
+		}
+	}
+	return start
 }
 
 // Swift's extended regex delimiters use matching runs of pound signs, even across lines.
@@ -178,14 +263,18 @@ func blankSwiftExtendedRegex(content []byte, start, hashes int, builder *strings
 			break
 		}
 	}
-	for _, ch := range content[start:end] {
+	blankSwiftLiteral(content[start:end], builder)
+	return end
+}
+
+func blankSwiftLiteral(content []byte, builder *strings.Builder) {
+	for _, ch := range content {
 		if ch == '\n' || ch == '\r' {
 			builder.WriteByte(ch)
 		} else {
 			builder.WriteByte(' ')
 		}
 	}
-	return end
 }
 
 func resetSwiftStringScanState(state *swiftStringScanState) {
@@ -215,26 +304,37 @@ func consumeSwiftBlockCommentContent(content []byte, index int, builder *strings
 }
 
 func consumeSwiftStringContentPreservingContent(content []byte, index int, builder *strings.Builder, state *swiftStringScanState) int {
-	if matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
+	if !state.escaped && matchesSwiftStringDelimiter(content, index, state.rawHashCount, state.multiline) {
 		delimiterLen := swiftStringDelimiterLength(state.rawHashCount, state.multiline)
 		builder.Write(content[index : index+delimiterLen])
 		resetSwiftStringScanState(state)
 		return index + delimiterLen
 	}
 
-	ch := content[index]
-	builder.WriteByte(ch)
-	if ch == '\n' {
-		state.escaped = false
-		return index + 1
+	if !state.escaped {
+		if end := swiftStringEscapeEnd(content, index, state.rawHashCount); end > index {
+			state.escaped = true
+			builder.Write(content[index:end])
+			return end
+		}
 	}
-	if ch == '\\' && !state.multiline && state.rawHashCount == 0 && !state.escaped {
-		state.escaped = true
-		return index + 1
-	}
-
 	state.escaped = false
+	builder.WriteByte(content[index])
 	return index + 1
+}
+
+// A raw string escape must start with a backslash and the delimiter's hash count.
+func swiftStringEscapeEnd(content []byte, index, hashes int) int {
+	end := index + 1 + hashes
+	if content[index] != '\\' || end >= len(content) {
+		return index
+	}
+	for _, ch := range content[index+1 : end] {
+		if ch != '#' {
+			return index
+		}
+	}
+	return end
 }
 
 func detectSwiftStringStart(content []byte, index int) (int, int, bool, bool) {

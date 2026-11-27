@@ -290,6 +290,33 @@ func TestParseSwiftImportsKeepsStatementLocations(t *testing.T) {
 	}
 }
 
+func TestParseSwiftImportsIgnoresLiteralSemicolons(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"bare regex", `let pattern = /x; import NIO; y/; internal import RealKit`},
+		{"bare regex escaped slash", `let pattern = /x\/; import NIO; y/; internal import RealKit`},
+		{"bare regex in call", `let pattern = f(/x; import NIO; y/); internal import RealKit`},
+		{"bare regex after division", `let q = n/d/d; internal import RealKit`},
+		{"unapplied division", `let op = f(/); internal import RealKit; let q = n/d`},
+		{"escaped multiline string", `let text = """
+escaped \"""; import NIO;
+"""; internal import RealKit`},
+		{"escaped extended multiline string", `let text = #"""
+escaped \#"""#; import NIO;
+"""#; internal import RealKit`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseSwiftImports([]byte(tc.source), swiftMainFileName)
+			if len(got) != 1 || got[0].Module != "RealKit" {
+				t.Fatalf("expected only RealKit, got %#v", got)
+			}
+		})
+	}
+}
+
 func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
 	dependencies := []swiftFixtureDependency{alamofireFixtureDependency(), swiftNIOFixtureDependency()}
 	cases := []struct {
@@ -298,6 +325,7 @@ func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
 		wantUsed bool
 	}{
 		{"same line", "internal import Foundation; let session = Session.default", true},
+		{"real use after bare regex", `internal import Foundation; let pattern = /x; import NIO; y/; let session = Session.default`, true},
 		{"separate lines", "internal import Foundation\nlet session = Session.default", true},
 		{"scoped import only", "internal import struct Foundation.URL", false},
 		{"masked semicolons", `internal import Foundation; let note = "; Session.default" // ; Session.default`, false},
@@ -318,7 +346,7 @@ func TestSwiftAdapterScansStatementsAfterImport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := analyseSwiftDependencyUsage(t, dependencies, "import Alamofire\n"+tc.source)
 			if used := got.UsedExportsCount > 0; used != tc.wantUsed {
-				t.Errorf("Alamofire used = %t, want %t", used, tc.wantUsed)
+				t.Errorf("dependency usage for Alamofire = %t, want %t", used, tc.wantUsed)
 			}
 		})
 	}
